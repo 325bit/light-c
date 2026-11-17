@@ -6,6 +6,8 @@
   "socialClean": "Social App Cache",
   "aiToolCleanup": "AI Tool Cleanup",
   "aiToolCleanupDesc": "Track the caches left behind by AI clients and coding assistants.",
+  "devCache": "Dev Space Cleanup",
+  "devCacheDesc": "Clear dev toolchain caches and the stale side-by-side versions apps leave behind",
   "socialCleanDesc": "Clean cache files from WeChat, QQ, DingTalk, Lark and other apps",
   "systemSlim": "System Slim",
   "systemSlimDesc": "Adjust system settings to reclaim several GB of disk space",

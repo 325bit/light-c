@@ -8,6 +8,10 @@
   "selectAllDeepTitle": "当前页全部选中；执行清理时会包含这些分类的完整扫描结果",
   "searchQuery": "Windows 文件 {{path}} 可以删除吗",
   "confirmTitle": "确认清理",
+  "viewAllTitle": "{{name}} · 全部文件",
+  "viewAllSummary": "共 {{count}} 个文件 · {{size}}",
+  "viewAllSelected": "已选中 {{count}} 个 · {{size}}",
+  "viewAllNone": "尚未选中任何文件",
   "confirmDesc": "您即将删除 {{count}} 个文件，预计释放 {{size}} 空间。此操作不可撤销。",
   "scanStages": {
     "quick": "检查已知垃圾目录",

@@ -33,6 +33,12 @@ pub struct SlimItemStatus {
     /// 首屏先把这一项标成"分析中"，分析完通过 `system-slim:winsxs-ready` 事件补上结果。
     #[serde(default)]
     pub analyzing: bool,
+    /// 组件存储的可回收构成（只有 winsxs 一项会带上）。
+    ///
+    /// 中文说明：`size` 只给总数，用户在界面上看不出 6.9 GB 里有多少是被取代的旧组件、
+    /// 多少是缓存临时数据，因此把 DISM 分析的两项分别透出，由前端分行展示。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub breakdown: Option<WinsxsBreakdown>,
 }
 
 /// 后台 WinSxS 分析完成后推送的条目（事件名 `system-slim:winsxs-ready`）。
@@ -128,6 +134,28 @@ struct WinsxsAnalyzeResult {
     cleanup_recommended: bool,
     reclaimable_packages: u32,
     analysis_succeeded: bool,
+    /// 「备份和已禁用功能」一项的体积：被新版本取代、暂时保留用于回滚的旧组件副本。
+    ///
+    /// 中文说明：DISM 的可回收估算恰好由两项组成，拆开之后界面才能回答
+    /// 「它到底想清什么」——以前只给一个总数，用户看不出这 6.9 GB 是怎么来的。
+    #[serde(default)]
+    backups_size: u64,
+    /// 「缓存和临时数据」一项的体积：组件存储里可安全删除的缓存与临时副本。
+    #[serde(default)]
+    cache_size: u64,
+}
+
+/// 可回收组件的构成明细（DISM 分析的两行原始数据）。
+///
+/// 只提供数字，文案由前端按语言渲染 —— 后端拼中文会污染其它语言界面。
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+pub struct WinsxsBreakdown {
+    /// 被取代但仍保留的旧组件副本（「备份和已禁用功能」）。
+    pub backups: u64,
+    /// 缓存与临时数据。
+    pub cache: u64,
+    /// DISM 报告的可回收组件包数量。
+    pub packages: u32,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -149,7 +177,7 @@ struct WinsxsDiskCache {
 }
 
 /// 当前解析规则版本，与 `WinsxsDiskCache::schema_version` 对应。
-const WINSXS_CACHE_SCHEMA: u32 = 2;
+const WINSXS_CACHE_SCHEMA: u32 = 3;
 
 static WINSXS_ANALYZE_CACHE: LazyLock<RwLock<Option<WinsxsAnalyzeCache>>> =
     LazyLock::new(|| RwLock::new(None));
@@ -356,6 +384,7 @@ fn get_hibernation_status() -> SlimItemStatus {
             "开启休眠".to_string()
         },
         analyzing: false,
+        breakdown: None,
     }
 }
 
@@ -439,13 +468,29 @@ fn build_winsxs_items(
     // 分析中不允许点：结论还没出来，点了只会被后端拒绝（或跑一次重复的清理）。
     let winsxs_actionable = !analyzing && (!can_estimate || has_reclaimable);
 
+    // 只有真解析出分项才给明细：DISM 某些版本只报总数，硬拆一个 0 出来
+    // 会让界面显示"备份 0 B、缓存 = 全部"，比不显示更误导。
+    let breakdown = if can_estimate
+        && (analyze_result.backups_size > 0 || analyze_result.cache_size > 0)
+    {
+        Some(WinsxsBreakdown {
+            backups: analyze_result.backups_size,
+            cache: analyze_result.cache_size,
+            packages: analyze_result.reclaimable_packages,
+        })
+    } else {
+        None
+    };
+
     vec![
         SlimItemStatus {
             id: "winsxs".to_string(),
             name: "系统组件存储".to_string(),
-            description: "执行 DISM 官方组件清理，释放 WinSxS 中已被替代的旧组件和临时组件数据"
+            // 这句话要经得起追问"到底删什么"：写清执行的是哪条官方命令、
+            // 动的是哪两类数据、以及明确不碰什么。AI 助手也读这一条。
+            description: "调用 Windows 官方的 StartComponentCleanup：删除 WinSxS 中被新版本取代的旧组件副本，以及组件存储的缓存与临时数据；正在使用的组件、已安装的程序和更新本身都不受影响"
                 .to_string(),
-            warning: "普通清理等同于 StartComponentCleanup，不会压缩系统更新基线，通常可安全执行"
+            warning: "清理会删除被取代的旧组件副本，因此清理后通常无法回滚到这些版本；已安装的 Windows 更新不会被卸载"
                 .to_string(),
             status_text,
             enabled: has_reclaimable,
@@ -462,12 +507,13 @@ fn build_winsxs_items(
                 "无需清理".to_string()
             },
             analyzing,
+            breakdown,
         },
         SlimItemStatus {
             id: "winsxs_resetbase".to_string(),
             name: "深度清理（ResetBase）".to_string(),
             description:
-                "移除所有被替代的旧组件版本，包括普通清理为保留回滚能力而没有删除的部分"
+                "在普通清理的基础上再执行 ResetBase：把所有被取代的旧组件版本连同回滚基线一起删除，包括普通清理为了能回滚而保留的那部分"
                     .to_string(),
             warning:
                 "会一并删除系统更新的回滚版本：执行后，当前已安装的 Windows 更新无法卸载"
@@ -486,6 +532,7 @@ fn build_winsxs_items(
                 "无需清理".to_string()
             },
             analyzing,
+            breakdown: None,
         },
     ]
 }
@@ -669,8 +716,16 @@ where
         raw.extend_from_slice(&buffer[..read]);
         pending.extend_from_slice(&buffer[..read]);
 
-        // 自己按 \n 切行，不要求整行是合法 UTF-8
-        while let Some(pos) = pending.iter().position(|&byte| byte == b'\n') {
+        // 自己按 \n 或 \r 切行，不要求整行是合法 UTF-8。
+        //
+        // ⚠️ 必须认 \r：DISM 的进度条是在同一行里用 \r 反复重绘的
+        // （`[====10.0%====]` → `[=====11.0%=====]`），整段只有一个 \n。
+        // 只按 \n 切，一条进度要等到这一步结束才吐出来 —— 界面上看到的就是
+        // 百分比停在 10%、"已用 0s"永不刷新，用户以为卡死了。2026-11-17 实测。
+        while let Some(pos) = pending
+            .iter()
+            .position(|&byte| byte == b'\n' || byte == b'\r')
+        {
             let line_bytes: Vec<u8> = pending.drain(..=pos).collect();
             on_line(&String::from_utf8_lossy(&line_bytes));
         }
@@ -799,6 +854,13 @@ fn parse_winsxs_analyze_output(output: &str) -> WinsxsAnalyzeResult {
         if is_winsxs_reclaimable_size_line(&normalized) {
             if let Some(size_bytes) = parse_size_from_line(&normalized) {
                 result.reclaimable_size = result.reclaimable_size.saturating_add(size_bytes);
+                // 顺带记到对应的分项上：这两行是 DISM 唯一给出的可回收构成，
+                // 界面要靠它解释"这个总数是怎么来的"。
+                if is_winsxs_backups_line(&normalized) {
+                    result.backups_size = result.backups_size.saturating_add(size_bytes);
+                } else if is_winsxs_cache_line(&normalized) {
+                    result.cache_size = result.cache_size.saturating_add(size_bytes);
+                }
             }
         }
 
@@ -859,6 +921,20 @@ fn is_winsxs_reclaimable_size_line(line: &str) -> bool {
         || line.contains("备份")
         || line.contains("已禁用")
         || line.contains("缓存和临时")
+}
+
+/// 「备份和已禁用功能」行：被取代、暂时保留用于回滚的旧组件副本。
+fn is_winsxs_backups_line(line: &str) -> bool {
+    line.contains("backups and disabled features")
+        || line.contains("备份")
+        || line.contains("已禁用")
+}
+
+/// 「缓存和临时数据」行：组件存储里可安全删除的缓存与临时副本。
+fn is_winsxs_cache_line(line: &str) -> bool {
+    line.contains("cache and temporary data")
+        || line.contains("缓存和临时")
+        || line.contains("缓存与临时")
 }
 
 /// 从大小字符串解析字节数，支持 "3.50 GB"、"500 MB"、"12 KB" 等格式
@@ -1010,6 +1086,7 @@ fn get_pagefile_status() -> SlimItemStatus {
             "无需操作".to_string()
         },
         analyzing: false,
+        breakdown: None,
     }
 }
 
@@ -1722,15 +1799,15 @@ fn get_search_index_status() -> SlimItemStatus {
         description:
             "Windows 搜索索引数据库（Windows.db）异常膨胀时，重建可释放数 GB 空间，重建在后台进行"
                 .to_string(),
-        warning:
-            "重建期间搜索结果可能不完整，重建需数小时且会重新索引全部文件；膨胀问题可能再次出现"
-                .to_string(),
+        warning: "重建期间搜索结果可能不完整，重建需数小时且会重新索引全部文件；膨胀问题可能再次出现"
+            .to_string(),
         status_text,
         enabled: false,
         size: db_size,
         actionable,
         action_text,
         analyzing: false,
+        breakdown: None,
     }
 }
 
@@ -1828,6 +1905,21 @@ mod tests {
     }
 
     #[test]
+    fn splits_carriage_return_progress_updates() {
+        // DISM 在同一行里用 \r 重绘进度条，整段只有一个 \n。
+        // 只按 \n 切行的话，一条进度要等到整步结束才吐出来，
+        // 界面上的百分比和"已用 Ns"会一起冻住（2026-11-17 实测就是这个现象）。
+        let payload = b"[===10.0%===]\r[===35.0%===]\r[===60.0%===]\r\n";
+        let mut seen: Vec<u32> = Vec::new();
+        read_stream_with(&payload[..], |line| {
+            if let Some(pct) = parse_dism_progress(line) {
+                seen.push(pct);
+            }
+        });
+        assert_eq!(seen, vec![10, 35, 60], "每个 \\r 重绘都应被当成一次进度更新");
+    }
+
+    #[test]
     fn parses_whole_and_fractional_percentages() {
         // DISM 不同版本会给 "35.5%" 或 "35%" 两种写法，都要能解析。
         assert_eq!(parse_dism_progress("[===== 7% =====]"), Some(7));
@@ -1845,6 +1937,7 @@ mod tests {
             cleanup_recommended: true,
             reclaimable_packages: 3,
             analysis_succeeded: true,
+            ..Default::default()
         });
         assert_eq!(
             get_cached_winsxs_result().map(|result| result.reclaimable_size),
@@ -1856,6 +1949,7 @@ mod tests {
             cleanup_recommended: false,
             reclaimable_packages: 0,
             analysis_succeeded: true,
+            ..Default::default()
         });
         assert_eq!(
             get_cached_winsxs_result().map(|result| result.reclaimable_size),
@@ -1869,6 +1963,7 @@ mod tests {
             cleanup_recommended: true,
             reclaimable_packages: 3,
             analysis_succeeded: true,
+            ..Default::default()
         });
         set_cached_winsxs_result(WinsxsAnalyzeResult::default());
         assert_eq!(
@@ -1887,12 +1982,18 @@ mod tests {
             cleanup_recommended: true,
             reclaimable_packages: 7,
             analysis_succeeded: true,
+            // 分项明细也要能跟着磁盘缓存一起往返
+            backups_size: 1536,
+            cache_size: 512,
         };
 
         let json = serialize_disk_cache(result, 1_000).expect("应可序列化");
         let parsed = parse_disk_cache(&json, 1_500).expect("未过期应能读回");
         assert_eq!(parsed.reclaimable_size, result.reclaimable_size);
         assert_eq!(parsed.reclaimable_packages, 7);
+        // 分项明细必须跟着往返：丢了它，重开应用后界面又只剩一个总数
+        assert_eq!(parsed.backups_size, 1536);
+        assert_eq!(parsed.cache_size, 512);
 
         // 超过磁盘 TTL 后不再拿来展示，避免把好几天前的结论当成现状
         let too_old = 1_000 + WINSXS_DISK_CACHE_TTL_SECS + 1;
@@ -1964,6 +2065,34 @@ mod tests {
         assert!(result.analysis_succeeded);
         assert_eq!(result.reclaimable_packages, 2);
         assert!(result.cleanup_recommended, "「建议执行组件存储清理 : 是」必须判为建议清理");
+    }
+
+    #[test]
+    fn splits_reclaimable_size_into_breakdown() {
+        // DISM 的可回收估算恰好由两行组成：界面要分开显示"被取代的旧组件副本"
+        // 与"缓存和临时数据"，否则用户只看到一个总数，不知道它想删什么。
+        let english = "Backups and Disabled Features : 1.00 GB\n\
+                       Cache and Temporary Data : 512 MB\n\
+                       Number of Reclaimable Packages : 1\n\
+                       Component Store Cleanup Recommended : Yes\n";
+        let result = parse_winsxs_analyze_output(english);
+        assert_eq!(result.backups_size, 1024 * 1024 * 1024, "应认出备份项");
+        assert_eq!(result.cache_size, 512 * 1024 * 1024, "应认出缓存项");
+        assert_eq!(
+            result.reclaimable_size,
+            result.backups_size + result.cache_size,
+            "总数必须等于两项之和，不能只统计其中一行"
+        );
+
+        // 中文标签同样要拆开：只算总数等于把两类完全不同的数据混成一笔。
+        let chinese = "备份和已禁用的功能 : 2.00 GB\n\
+                       缓存和临时数据 : 256 MB\n\
+                       可回收的程序包数 : 1\n\
+                       建议执行组件存储清理 : 是\n";
+        let result = parse_winsxs_analyze_output(chinese);
+        assert_eq!(result.backups_size, 2 * 1024 * 1024 * 1024);
+        assert_eq!(result.cache_size, 256 * 1024 * 1024);
+        assert_eq!(result.reclaimable_size, result.backups_size + result.cache_size);
     }
 
     #[test]

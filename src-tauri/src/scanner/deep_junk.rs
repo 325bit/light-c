@@ -23,6 +23,13 @@ use walkdir::WalkDir;
 use super::{CategoryScanResult, FileInfo, JunkCategory};
 
 const DEEP_JUNK_PAGE_SIZE: usize = 500;
+
+/// 单次最多返回的条数上限。
+///
+/// 中文说明：界面上的「查看全部文件」要一次拿到整类结果（几万条），
+/// 一次一条 IPC 太慢；但仍保留一个上限，避免前端误传 usize::MAX 时把
+/// 整个结果序列化成几百 MB。
+const MAX_CATEGORY_PAGE: usize = 100_000;
 // 深度扫描耗时长，用户扫描后还需浏览分类和翻页，会话保留 60 分钟避免过早失效。
 const DEEP_JUNK_SESSION_TTL: Duration = Duration::from_secs(60 * 60);
 // 允许保留的深度扫描会话数，避免用户连续多次扫描时旧会话被立即挤出。
@@ -387,7 +394,7 @@ pub fn get_category_page(
         .iter()
         .find(|category| category.display_name == category_name)
         .ok_or_else(|| format!("未知垃圾分类: {}", category_name))?;
-    page_category(category, offset, limit.clamp(1, DEEP_JUNK_PAGE_SIZE * 2))
+    page_category(category, offset, limit.clamp(1, MAX_CATEGORY_PAGE))
 }
 
 /// 从短期扫描会话中取出完整分类路径，供删除命令处理分页未返回的文件。
@@ -439,13 +446,24 @@ fn page_result(
     offset: usize,
     limit: usize,
 ) -> Result<DeepJunkScanResult, String> {
-    let mut response = result.clone();
-    response.categories = result
-        .categories
-        .iter()
-        .map(|category| page_category(category, offset, limit))
-        .collect::<Result<Vec<_>, _>>()?;
-    Ok(response)
+    // 注意：不能先 `result.clone()` 再替换 categories —— 那会把全部分类的
+    // 完整文件列表（可能十几万条）复制一遍后立刻丢弃，分页反而比分页更贵。
+    Ok(DeepJunkScanResult {
+        scan_mode: result.scan_mode.clone(),
+        scan_id: result.scan_id.clone(),
+        categories: result
+            .categories
+            .iter()
+            .map(|category| page_category(category, offset, limit))
+            .collect::<Result<Vec<_>, _>>()?,
+        total_size: result.total_size,
+        total_file_count: result.total_file_count,
+        scan_duration_ms: result.scan_duration_ms,
+        scan_timestamp: result.scan_timestamp,
+        drives: result.drives.clone(),
+        outer_stages: result.outer_stages.clone(),
+        emit_wait_ms: result.emit_wait_ms,
+    })
 }
 
 fn page_category(
@@ -453,12 +471,20 @@ fn page_category(
     offset: usize,
     limit: usize,
 ) -> Result<CategoryScanResult, String> {
-    let mut page = category.clone();
     let start = offset.min(category.files.len());
     let end = start.saturating_add(limit).min(category.files.len());
-    page.files = category.files[start..end].to_vec();
-    page.has_more = end < category.file_count;
-    Ok(page)
+    Ok(CategoryScanResult {
+        category: category.category.clone(),
+        display_name: category.display_name.clone(),
+        description: category.description.clone(),
+        risk_level: category.risk_level,
+        system_managed: category.system_managed,
+        // 同样只复制这一页，不先克隆整类
+        files: category.files[start..end].to_vec(),
+        total_size: category.total_size,
+        file_count: category.file_count,
+        has_more: end < category.file_count,
+    })
 }
 
 #[cfg(windows)]

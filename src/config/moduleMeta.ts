@@ -25,6 +25,7 @@ export type AppModuleId =
   | 'big-files'
   | 'social-clean'
   | 'ai-tool-cleanup'
+  | 'dev-cache'
   | 'system-slim'
   | 'driver-cleanup'
   | 'leftovers'
@@ -48,6 +49,9 @@ export const APP_MODULE_META: AppModuleMeta[] = [
   { id: 'social-clean', label: 'socialClean', icon: MessageCircle },
   // AI 工具清理和社交专清同属「清理」组：都是按工具聚合、可勾选删除的形态。
   { id: 'ai-tool-cleanup', label: 'aiToolCleanup', icon: Bot },
+  // 开发空间：工具链缓存 + 多版本残留。和 AI 工具清理同属「清理」组，
+  // 差别是它盯的是编译器/包管理器这类开发工具链，而不是 AI 客户端。
+  { id: 'dev-cache', label: 'devCache', icon: Package },
   { id: 'system-slim', label: 'systemSlim', icon: Layers },
   { id: 'driver-cleanup', label: 'driverCleanup', icon: Cpu },
   { id: 'leftovers', label: 'leftovers', icon: Package },

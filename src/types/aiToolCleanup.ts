@@ -5,6 +5,8 @@
  * 分组按工具来：用户先看到"哪个工具占了多少"，再决定删哪一项。
  */
 
+import type { LinkInfo } from './devCache';
+
 /** 单个缓存目录 */
 export interface AiCacheEntry {
   /** 目录名，如 "Cache" / "code cache" */
@@ -12,6 +14,13 @@ export interface AiCacheEntry {
   path: string;
   size: number;
   fileCount: number;
+  /**
+   * 路径经过 junction / symlink 时才有值。
+   *
+   * 用 FolderMove 把 `.workbuddy` 这类目录搬到别的盘之后，原地留下链接，
+   * 扫描统计的是真实文件，但路径还写着 `C:\...` —— 有值时界面要显示 `link.resolved`。
+   */
+  link?: LinkInfo;
 }
 
 /** 一个工具的汇总 */

@@ -12,6 +12,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
+    "build:portable": "tauri build --no-bundle",
     "preview": "vite preview",
     "tauri": "tauri",
     "check:i18n": "node scripts/check-i18n-keys.mjs",

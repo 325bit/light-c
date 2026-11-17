@@ -4,6 +4,8 @@
 
 use serde::Serialize;
 
+use crate::scanner::reparse::LinkInfo;
+
 /// 单个缓存目录的统计结果。
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -13,6 +15,11 @@ pub struct AiCacheEntry {
     pub path: String,
     pub size: u64,
     pub file_count: usize,
+    /// 这条路径上有没有 junction / symlink（用 FolderMove 之类把目录搬到别的盘之后，
+    /// 原地留下的是链接）。有值时界面要同时显示**真实落点**，否则用户看到 `C:\...`
+    /// 会以为自己 C 盘被占了这么多。没有链接时不序列化，省得前端到处判空对象。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub link: Option<LinkInfo>,
 }
 
 /// 缓存目录里的单个文件，供明细弹窗按需拉取。

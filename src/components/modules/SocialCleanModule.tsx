@@ -1,13 +1,15 @@
 import { useAiModuleBridge } from '../ai/useAiModuleBridge';
+/** 稳定的可删判断：目录树按它决定哪些文件能勾选，每次渲染换新函数会让整棵树的集合重算 */
+const isFileDeletable = (file: SocialFileEntry) => file.deletable;
+
 // ============================================================================
 // 社交软件清理模块组件 - 带风险分级
 // 支持智能路径溯源和文件类型深度分类
 // ============================================================================
 
-import { useState, useCallback, useRef, useMemo, memo, useEffect } from 'react';
+import { useState, useCallback, useRef, useMemo, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { createPortal } from 'react-dom';
-import { useVirtualizer } from '@tanstack/react-virtual';
 import { AnimatePresence, motion } from 'framer-motion';
 import {
   MessageCircle,
@@ -20,7 +22,6 @@ import {
   CheckCircle2,
   FolderOpen,
   X,
-  File,
   ExternalLink,
   Database,
   AlertTriangle,
@@ -30,6 +31,7 @@ import {
   Clock
 } from 'lucide-react';
 import { ModuleCard } from '../ModuleCard';
+import { FileTreeList } from '../FileTreeList';
 import { ModuleDeleteProgress } from '../ModuleDeleteProgress';
 import { ModuleOperationToolbar } from '../ModuleOperationToolbar';
 import { ModuleScanProgress } from '../ModuleScanProgress';
@@ -738,17 +740,18 @@ export function SocialCleanModule({ isPageActive = true }: ModuleRenderProps) {
                           exit={{ height: 0, opacity: 0 }}
                           transition={{ duration: 0.24, ease: [0.22, 1, 0.36, 1] }}
                         >
-                          <div className="max-h-48 overflow-auto">
-                            {category.files.slice(0, 20).map((file, index) => (
-                              <FileRow
-                                key={file.path}
-                                index={index}
-                                file={file}
-                                isSelected={selectedPaths.has(file.path)}
-                                onToggle={() => toggleFile(file)}
-                              />
-                            ))}
-                          </div>
+                          {/* 目录树：同一目录下的缓存文件折叠成一行，勾文件夹就整批选中 */}
+                          <FileTreeList
+                            files={category.files.slice(0, 20)}
+                            selectedPaths={selectedPaths}
+                            onSetSelection={setSelectionForPaths}
+                            onToggleFile={(file) => toggleFile(file)}
+                            isSelectable={isFileDeletable}
+                            height={192}
+                            rowHeight={44}
+                            renderFileMeta={(file) => <SocialFileMeta file={file} />}
+                            renderFileActions={(file) => <SocialFileActions file={file} />}
+                          />
                           {category.files.length > 20 && (
                             <button
                               onClick={(e) => { e.stopPropagation(); setFileModalData({ categoryId: category.id, name: moduleT(`social.category.${category.id}.name`) }); }}
@@ -884,13 +887,6 @@ function SocialDeleteConfirmModal({
   );
 }
 
-interface FileRowProps {
-  index: number;
-  file: SocialFileEntry;
-  isSelected: boolean;
-  onToggle: () => void;
-}
-
 // 风险文案由稳定的风险枚举驱动，避免直接展示后端返回的中文文本。
 function getSocialRiskLabel(translate: (key: string) => string, level: RiskLevel): string {
   return translate(`social.risk.${level}`);
@@ -900,91 +896,48 @@ function getSocialRiskTooltip(translate: (key: string) => string, level: RiskLev
   return translate(`social.risk.${level}Tip`);
 }
 
-function FileRow({ index, file, isSelected, onToggle }: FileRowProps) {
-  const { t } = useTranslation('common');
+/** 目录树行内的附加信息：来源应用 + 风险等级。树行本身只渲染名称与大小。 */
+function SocialFileMeta({ file }: { file: SocialFileEntry }) {
   const { t: moduleT } = useTranslation('modules');
   const riskConfig = riskLevelConfig[file.risk_level];
   const RiskIcon = riskConfig.icon;
-  const isCritical = file.risk_level === 'critical';
-  
-  // 不再逐行画分隔线：卡片本身有外框、分类之间也有分隔，再给每条数据加线会非常密
-  //（Evan 反馈"数据行分割是边框…太密集了"）。改用略大的行高 + 悬停底色来区隔。
-  // 这是组件类名的改动，所以**所有外观模式下都生效**，不只是液态玻璃。
+
   return (
-    <div
-      className={`px-4 py-2.5 flex items-center gap-2 text-xs hover:bg-[var(--bg-hover)] transition-colors
-        ${isCritical ? 'bg-red-500/5 cursor-not-allowed' : 'cursor-pointer'}
-        ${isSelected && !isCritical ? 'bg-emerald-500/5' : ''}`}
-      onClick={() => !isCritical && onToggle()}
-    >
-      {/* 复选框 */}
-      <div 
-        className={`w-3.5 h-3.5 rounded border-2 flex items-center justify-center shrink-0 transition-colors
-          ${isCritical 
-            ? 'soft-danger border-2' 
-            : isSelected 
-              ? 'bg-emerald-500 border-emerald-500' 
-              : 'border-[var(--fg-faint)]'
-          }`}
-        title={isCritical ? getSocialRiskTooltip(moduleT, file.risk_level) : undefined}
-      >
-        {isCritical ? (
-          <X className="w-2 h-2 text-red-500" />
-        ) : isSelected && (
-          <svg className="w-2 h-2 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
-            <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-          </svg>
-        )}
-      </div>
-      
-      {/* 序号 */}
-      <span className="w-5 text-center text-[var(--fg-faint)]">{index + 1}</span>
-      
-      {/* 风险等级图标 */}
-      <div 
-        className={`p-0.5 rounded ${riskConfig.bgColor}`}
+    <div className="flex shrink-0 items-center gap-1.5">
+      <span
+        className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[0.71rem] ${riskConfig.bgColor} ${riskConfig.color}`}
         title={getSocialRiskTooltip(moduleT, file.risk_level)}
       >
-        <RiskIcon className={`w-3 h-3 ${riskConfig.color}`} />
-      </div>
-      
-      {/* 应用名称 */}
-      <span className="px-2 py-0.5 rounded bg-[var(--bg-hover)] text-[var(--fg-muted)] shrink-0 text-[0.79rem]">
-        {getSourceLabel(getSourceKey(file.app_name), moduleT)}
-      </span>
-      
-      {/* 文件路径 */}
-      <span className="flex-1 truncate text-[var(--fg-secondary)]" title={file.path}>
-        {file.path}
-      </span>
-      
-      {/* 风险标签 */}
-      <span className={`px-2 py-0.5 rounded text-[0.79rem] font-medium ${riskConfig.bgColor} ${riskConfig.color}`}>
+        <RiskIcon className="h-3 w-3" />
         {getSocialRiskLabel(moduleT, file.risk_level)}
       </span>
-      
-      {/* 文件大小 */}
-      <span className={`font-medium shrink-0 tabular-nums ${isCritical ? 'text-red-600' : 'text-[var(--text-primary)]'}`}>
-        {formatSize(file.size)}
+      <span className="hidden shrink-0 rounded bg-[var(--bg-hover)] px-2 py-0.5 text-[0.71rem] text-[var(--fg-muted)] sm:inline">
+        {getSourceLabel(getSourceKey(file.app_name), moduleT)}
       </span>
-      
-      {/* 操作按钮 */}
-      <div className="flex items-center gap-0.5 shrink-0">
-        <button 
-          onClick={(e) => { e.stopPropagation(); openInFolder(file.path); }} 
-          className="p-1 hover:bg-[var(--bg-elevated)] rounded transition text-[var(--fg-muted)] hover:text-emerald-600" 
-          title={t('openInFolder')}
-        >
-          <FolderOpen className="w-3 h-3" />
-        </button>
-        <button 
-          onClick={(e) => { e.stopPropagation(); openFile(file.path); }} 
-          className="p-1 hover:bg-[var(--bg-elevated)] rounded transition text-[var(--fg-muted)] hover:text-emerald-600" 
-          title={t('openFile')}
-        >
-          <ExternalLink className="w-3 h-3" />
-        </button>
-      </div>
+    </div>
+  );
+}
+
+/** 目录树行尾操作：打开所在文件夹 / 打开文件 */
+function SocialFileActions({ file }: { file: SocialFileEntry }) {
+  const { t } = useTranslation('common');
+
+  return (
+    <div className="flex shrink-0 items-center gap-0.5">
+      <button
+        onClick={(event) => { event.stopPropagation(); openInFolder(file.path); }}
+        className="rounded p-1 text-[var(--fg-muted)] transition hover:bg-[var(--bg-elevated)] hover:text-emerald-600"
+        title={t('openInFolder')}
+      >
+        <FolderOpen className="h-3.5 w-3.5" />
+      </button>
+      <button
+        onClick={(event) => { event.stopPropagation(); openFile(file.path); }}
+        className="rounded p-1 text-[var(--fg-muted)] transition hover:bg-[var(--bg-elevated)] hover:text-emerald-600"
+        title={t('openFile')}
+      >
+        <ExternalLink className="h-3.5 w-3.5" />
+      </button>
     </div>
   );
 }
@@ -1024,7 +977,6 @@ function FileListModal({
   onClose,
 }: FileListModalProps) {
   const { t: moduleT } = useTranslation('modules');
-  const parentRef = useRef<HTMLDivElement>(null);
   /** 当前筛选的来源 key 集合，空集合代表「全部」 */
   const [activeSources, setActiveSources] = useState<Set<string>>(new Set());
 
@@ -1064,21 +1016,6 @@ function FileListModal({
     }
     return files.filter(file => activeSources.has(getSourceKey(file.app_name)));
   }, [files, activeSources]);
-
-  const virtualizer = useVirtualizer({
-    count: visibleFiles.length,
-    getScrollElement: () => parentRef.current,
-    estimateSize: () => 44,
-    overscan: 20,
-  });
-
-  // 切换来源后列表长度变化，旧滚动位置可能落到新内容高度之外导致空白，统一回到顶部。
-  // 弹窗关闭时 portal 内容已卸载、parentRef 为空，这里必须判空避免对空实例调用。
-  useEffect(() => {
-    if (parentRef.current) {
-      virtualizer.scrollToOffset(0);
-    }
-  }, [activeSources]); // eslint-disable-line react-hooks/exhaustive-deps
 
   /** 当前筛选下可删除的文件路径 */
   const visibleDeletablePaths = useMemo(
@@ -1209,44 +1146,25 @@ function FileListModal({
                 {` (${visibleDeletablePaths.length.toLocaleString()})`}
               </button>
             </div>
-            <div className="px-6 py-2 bg-[var(--bg-hover)] border-b border-[var(--border-color)] flex items-center gap-4 text-xs font-medium text-[var(--text-muted)] shrink-0">
-              <span className="w-8"></span>
-              <span className="w-8 text-center">#</span>
-              <span className="w-6"></span>
-              <span className="w-16">{moduleT('social.source')}</span>
-              <span className="flex-1">{moduleT('social.path')}</span>
-              <span className="w-20">{moduleT('social.riskHeader')}</span>
-              <span className="w-20 text-right">{moduleT('social.size')}</span>
-              <span className="w-16"></span>
-            </div>
-            <div ref={parentRef} className="flex-1 overflow-auto">
+            {/* 列头行随平铺列表一起撤掉：目录树每行自带层级与汇总，
+                再摆一条固定列头反而对不上（目录行没有风险标签、大小列的含义也不同）。 */}
+            <div className="min-h-0 flex-1 px-4">
               {visibleFiles.length === 0 ? (
-                <div className="h-full flex items-center justify-center text-xs text-[var(--fg-muted)]">
+                <div className="flex h-full items-center justify-center text-xs text-[var(--fg-muted)]">
                   {moduleT('social.emptyDesc')}
                 </div>
               ) : (
-                <div style={{ height: `${virtualizer.getTotalSize()}px`, width: '100%', position: 'relative' }}>
-                  {virtualizer.getVirtualItems().map((virtualRow) => {
-                    const file = visibleFiles[virtualRow.index];
-                    return (
-                      <VirtualFileRow
-                        key={file.path}
-                        index={virtualRow.index}
-                        file={file}
-                        isSelected={selectedPaths.has(file.path)}
-                        onToggle={() => onToggleFile(file)}
-                        style={{
-                          position: 'absolute',
-                          top: 0,
-                          left: 0,
-                          width: '100%',
-                          height: `${virtualRow.size}px`,
-                          transform: `translateY(${virtualRow.start}px)`,
-                        }}
-                      />
-                    );
-                  })}
-                </div>
+                <FileTreeList
+                  files={visibleFiles}
+                  selectedPaths={selectedPaths}
+                  onSetSelection={onSetSelectionForPaths}
+                  onToggleFile={(file) => onToggleFile(file)}
+                  isSelectable={isFileDeletable}
+                  height={Math.round(Math.min(560, Math.max(260, window.innerHeight * 0.45)))}
+                  rowHeight={44}
+                  renderFileMeta={(file) => <SocialFileMeta file={file} />}
+                  renderFileActions={(file) => <SocialFileActions file={file} />}
+                />
               )}
             </div>
 
@@ -1286,103 +1204,5 @@ function FileListModal({
 // ============================================================================
 // 虚拟文件行组件
 // ============================================================================
-
-interface VirtualFileRowProps {
-  index: number;
-  file: SocialFileEntry;
-  isSelected: boolean;
-  onToggle: () => void;
-  style: React.CSSProperties;
-}
-
-const VirtualFileRow = memo(function VirtualFileRow({ index, file, isSelected, onToggle, style }: VirtualFileRowProps) {
-  const { t } = useTranslation('common');
-  const { t: moduleT } = useTranslation('modules');
-  const riskConfig = riskLevelConfig[file.risk_level];
-  const RiskIcon = riskConfig.icon;
-  const isCritical = file.risk_level === 'critical';
-  
-  const canToggle = !isCritical;
-
-  return (
-    <div
-      style={style}
-      // 整行可点击切换勾选：先前只有复选框本身能点，行内大片区域点了没反应。
-      // 行尾两个操作按钮各自 stopPropagation，它们的优先级高于"点行勾选"。
-      onClick={() => canToggle && onToggle()}
-      className={`px-6 flex items-center gap-4 text-xs hover:bg-[var(--bg-hover)] transition-colors
-        ${canToggle ? 'cursor-pointer' : ''}
-        ${isCritical ? 'bg-red-500/5' : ''}`}
-    >
-      {/* 复选框：只负责展示，点击交给整行统一处理。
-          这里**不能再挂 onClick** —— 否则点击复选框时自身的处理 + 冒泡到行的处理
-          会各跑一次，勾选紧接着又被取消，表现为"点了没反应"。 */}
-      <div
-        className={`w-4 h-4 rounded border-2 flex items-center justify-center shrink-0 transition-colors
-          ${isCritical
-            ? 'soft-danger border-2 cursor-not-allowed'
-            : isSelected
-              ? 'bg-emerald-500 border-emerald-500'
-              : 'border-[var(--fg-faint)]'
-          }`}
-        title={isCritical ? getSocialRiskTooltip(moduleT, file.risk_level) : undefined}
-      >
-        {isCritical ? (
-          <X className="w-2.5 h-2.5 text-red-500" />
-        ) : isSelected && (
-          <svg className="w-2.5 h-2.5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
-            <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-          </svg>
-        )}
-      </div>
-      
-      <span className="w-8 text-center text-[var(--fg-faint)]">{index + 1}</span>
-      
-      {/* 风险图标 */}
-      <div 
-        className={`p-1 rounded ${riskConfig.bgColor}`}
-        title={getSocialRiskTooltip(moduleT, file.risk_level)}
-      >
-        <RiskIcon className={`w-3.5 h-3.5 ${riskConfig.color}`} />
-      </div>
-      
-      <span className="w-16 px-2 py-0.5 rounded bg-[var(--bg-hover)] text-[var(--fg-muted)] text-center truncate">
-        {getSourceLabel(getSourceKey(file.app_name), moduleT)}
-      </span>
-      
-      <div className="flex-1 min-w-0 flex items-center gap-2">
-        <File className="w-3.5 h-3.5 text-[var(--fg-faint)] shrink-0" />
-        <span className="truncate text-[var(--fg-secondary)]" title={file.path}>{file.path}</span>
-      </div>
-      
-      {/* 风险标签 */}
-      <span className={`w-20 px-1.5 py-0.5 rounded text-[0.64rem] font-medium text-center ${riskConfig.bgColor} ${riskConfig.color}`}>
-        {getSocialRiskLabel(moduleT, file.risk_level)}
-      </span>
-      
-      <span className={`w-20 text-right font-medium tabular-nums ${isCritical ? 'text-red-600' : 'text-emerald-600'}`}>
-        {formatSize(file.size)}
-      </span>
-      
-      <div className="w-16 flex items-center justify-end gap-0.5 shrink-0">
-        {/* 两个操作按钮阻止冒泡：点它们只执行自身动作，不触发整行的勾选切换 */}
-        <button
-          onClick={(event) => { event.stopPropagation(); openInFolder(file.path); }}
-          className="p-1.5 hover:bg-[var(--bg-elevated)] rounded transition text-[var(--fg-muted)] hover:text-emerald-600"
-          title={t('openInFolder')}
-        >
-          <FolderOpen className="w-3.5 h-3.5" />
-        </button>
-        <button
-          onClick={(event) => { event.stopPropagation(); openFile(file.path); }}
-          className="p-1.5 hover:bg-[var(--bg-elevated)] rounded transition text-[var(--fg-muted)] hover:text-emerald-600"
-          title={t('openFile')}
-        >
-          <ExternalLink className="w-3.5 h-3.5" />
-        </button>
-      </div>
-    </div>
-  );
-});
 
 export default SocialCleanModule;

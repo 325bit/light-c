@@ -8,6 +8,10 @@
   "selectAllDeepTitle": "當前頁全部選中；執行清理時會包含這些分類的完整掃描結果",
   "searchQuery": "Windows 檔案 {{path}} 可以刪除嗎",
   "confirmTitle": "確認清理",
+  "viewAllTitle": "{{name}} · 全部檔案",
+  "viewAllSummary": "共 {{count}} 個檔案 · {{size}}",
+  "viewAllSelected": "已選取 {{count}} 個 · {{size}}",
+  "viewAllNone": "尚未選取任何檔案",
   "confirmDesc": "您即將刪除 {{count}} 個檔案，預計釋放 {{size}} 空間。此操作不可撤銷。",
   "scanStages": {
     "quick": "檢查已知垃圾目錄",

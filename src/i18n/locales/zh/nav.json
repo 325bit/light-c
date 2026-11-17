@@ -6,6 +6,8 @@
   "socialClean": "社交软件清理",
   "aiToolCleanup": "AI 工具清理",
   "aiToolCleanupDesc": "统计 AI 客户端和编程助手留下的缓存目录。",
+  "devCache": "开发空间清理",
+  "devCacheDesc": "清理开发工具链缓存与同一软件并排留下的旧版本目录",
   "socialCleanDesc": "清理微信、QQ、钉钉、飞书等软件的缓存文件",
   "systemSlim": "系统瘦身",
   "systemSlimDesc": "通过调整系统配置，释放数 GB 的磁盘空间",

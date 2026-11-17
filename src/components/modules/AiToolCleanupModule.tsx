@@ -16,6 +16,7 @@ import { EmptyState } from '../EmptyState';
 import { ConfirmDialog } from '../ConfirmDialog';
 import { AiCacheFileModal } from './AiCacheFileModal';
 import { ModuleOperationToolbar } from '../ModuleOperationToolbar';
+import { LinkBadge, displayPathOf } from '../LinkBadge';
 import { ModuleDeleteProgress } from '../ModuleDeleteProgress';
 import { ModuleScanProgress } from '../ModuleScanProgress';
 import { deleteAiToolCaches, scanAiToolCaches } from '../../api/aiToolCleanup';
@@ -115,7 +116,9 @@ export function AiToolCleanupModule({ isPageActive = true }: ModuleRenderProps) 
           .slice(offset, offset + limit)
           .map(
             (row) =>
-              `${row.entry.path}  ${formatSize(row.entry.size)}  （${row.toolName} · ${row.entry.name} · ${row.entry.fileCount} 个文件）`,
+              `${row.entry.path}  ${formatSize(row.entry.size)}  （${row.toolName} · ${row.entry.name} · ${row.entry.fileCount} 个文件）` +
+              // 搬迁过的目录必须点明实体位置，否则助手会照着 C 盘路径瞎解释
+              (row.entry.link ? `  [${row.entry.link.kind} → 实际位置 ${row.entry.link.resolved}]` : ''),
           ),
       };
     },
@@ -140,13 +143,18 @@ export function AiToolCleanupModule({ isPageActive = true }: ModuleRenderProps) 
         `工具：${row.toolName}`,
         `目录：${row.entry.name}`,
         `路径：${row.entry.path}`,
+        row.entry.link
+          ? `链接：${row.entry.link.linkPath} 是${row.entry.link.kind === 'junction' ? '目录联接' : '符号链接'}，指向 ${row.entry.link.target}；实体在 ${row.entry.link.resolved}（占用记在那边，不是原盘符）`
+          : '',
         `占用：${formatSize(row.entry.size)}（${row.entry.fileCount} 个文件）`,
         '性质：客户端自己生成的缓存，删掉后工具下次运行会重新生成，不影响已装扩展、设置和登录状态。',
         siblings.length > 0
           ? `同一工具下还有 ${siblings.length} 个可清理目录，合计 ${formatSize(siblingSize)}。`
           : '同一工具下没有别的可清理目录。',
         '删除方式：不进回收站、不可恢复；工具正在运行时可能因文件被占用而删不掉。',
-      ].join('\n');
+      ]
+        .filter(Boolean)
+        .join('\n');
     },
     summary: () => {
       // 没扫过返回 null，助手会如实说"还没有数据"，而不是编一段
@@ -445,11 +453,24 @@ export function AiToolCleanupModule({ isPageActive = true }: ModuleRenderProps) 
                           <span className="w-40 shrink-0 truncate font-medium text-[var(--text-secondary)]">
                             {entry.name}
                           </span>
+                          {/* 搬迁过的目录：路径还写着 C:\...，但实体在别的盘。
+                              不标出来，用户会以为空间记在 C 盘上。 */}
                           <span
                             className="min-w-0 flex-1 truncate text-[var(--text-muted)]"
-                            title={entry.path}
+                            title={
+                              entry.link
+                                ? `${entry.path}\n${entry.link.linkPath} → ${entry.link.target}`
+                                : entry.path
+                            }
                           >
-                            {entry.path}
+                            {entry.link && <LinkBadge link={entry.link} />}
+                            <span
+                              className={
+                                entry.link ? 'text-[var(--text-secondary)]' : undefined
+                              }
+                            >
+                              {displayPathOf(entry.path, entry.link)}
+                            </span>
                           </span>
                           <span className="w-20 shrink-0 text-right tabular-nums text-[var(--text-muted)]">
                             {formatSize(entry.size)}

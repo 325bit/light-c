@@ -8,6 +8,10 @@
   "selectAllDeepTitle": "現在のページを全選択。クリーン時にこれらのカテゴリのスキャン結果全体が対象になります",
   "searchQuery": "Windows ファイル {{path}} は削除できますか",
   "confirmTitle": "クリーンの確認",
+  "viewAllTitle": "{{name}} · すべてのファイル",
+  "viewAllSummary": "{{count}} 件 · {{size}}",
+  "viewAllSelected": "{{count}} 件選択中 · {{size}}",
+  "viewAllNone": "まだ選択されていません",
   "confirmDesc": "{{count}} 個のファイルを削除し、約 {{size}} を解放しようとしています。この操作は元に戻せません。",
   "scanStages": {
     "quick": "既知のジャンクディレクトリを確認中",

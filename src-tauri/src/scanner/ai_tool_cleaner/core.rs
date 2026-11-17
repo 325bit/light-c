@@ -214,11 +214,16 @@ impl AiToolScanner {
             if is_cleanable_name(&name, extra_names) {
                 let (size, file_count) = Self::measure_dir(&child.path());
                 if file_count > 0 {
+                    // 顺着路径往上找链接：用户可能用 FolderMove 把 `.workbuddy`
+                    // 整体搬到了 D 盘，这里扫到的是 `.workbuddy\logs`，
+                    // 光看路径会以为占用记在 C 盘上
+                    let link = crate::scanner::reparse::analyze(&child.path());
                     entries.push(AiCacheEntry {
                         name,
                         path: child.path().to_string_lossy().to_string(),
                         size,
                         file_count,
+                        link,
                     });
                 }
                 continue;

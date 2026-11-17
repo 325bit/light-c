@@ -122,6 +122,9 @@ pub fn run() {
             // 永久删除（深度清理）
             delete_leftovers_permanent,
             check_leftover_safety,
+            // 开发缓存与版本残留（对齐 cscan 的扫描面）
+            scan_dev_cache,
+            delete_dev_cache_paths,
             // 系统信息
             get_system_info,
             get_distribution_channel,

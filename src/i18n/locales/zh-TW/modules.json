@@ -241,18 +241,8 @@
         "warning": "關閉休眠會禁用 Windows 快速啟動和休眠功能。",
         "enable": "開啟休眠", "disable": "關閉休眠", "action": "關閉休眠"
       },
-      "winsxs": {
-        "name": "Windows 元件儲存",
-        "description": "清理已被替代的元件版本和臨時元件資料。",
-        "warning": "清理後通常無法回滾到已被替代的元件版本。",
-        "action": "清理元件"
-      },
-      "winsxs_resetbase": {
-        "name": "深度清理（ResetBase）",
-        "description": "移除所有被取代的舊元件版本，包括一般清理為了保留回溯能力而沒有刪除的部分。",
-        "warning": "會一併刪除系統更新的回溯版本：執行後，目前安裝的 Windows 更新將無法解除安裝。",
-        "action": "深度清理"
-      },
+      "winsxs": {"name": "Windows 元件儲存", "description": "呼叫 Windows 官方的元件清理命令，刪除 WinSxS 裡被新版本取代的舊元件副本與快取暫存資料。", "warning": "清理後通常無法回滾到已被替代的元件版本。", "action": "清理元件", "scopeTitle": "這次會刪掉什麼", "scopeSuperseded": "被新版本取代的舊元件副本：每次系統更新後留下的上一版系統檔案，只用於回溯，日常執行用不到", "scopeCache": "元件儲存的快取與暫存資料：更新封裝解開後的殘留、安裝或修復過程中產生的暫存副本", "scopeKeep": "不會更動：正在使用的系統元件、已安裝的程式與更新本身、個人檔案。清理後可正常開機與繼續更新。", "breakdownTitle": "可回收空間的組成（DISM 分析）", "breakdownBackups": "備份與已停用功能（被取代的舊元件）", "breakdownCache": "快取與暫存資料", "graceHint": "剛安裝完的更新還在回溯寬限期內，其舊元件暫不計入可回收量，過一段時間再清理才能回收。"},
+      "winsxs_resetbase": {"name": "深度清理（ResetBase）", "description": "在一般清理的基礎上再執行 ResetBase：把所有被取代的舊元件版本連同回溯基準一起刪除。", "warning": "會一併刪除系統更新的回溯版本：執行後，目前安裝的 Windows 更新將無法解除安裝。", "action": "深度清理", "scopeTitle": "深度清理會多刪什麼", "scopeExtra": "連同一般清理會保留的回溯副本一起刪除：包含仍處於寬限期內的舊元件，以及系統更新的回溯基準", "scopeKeep": "不會更動：正在使用的系統元件與已安裝的程式；但清理後已安裝的 Windows 更新將無法解除安裝。"},
       "pagefile": {
         "name": "虛擬記憶體",
         "description": "開啟 Windows 設定以調整分頁檔案位置。",
@@ -706,5 +696,50 @@
       "columnPath": "檔案路徑",
       "columnSize": "大小",
       "openFolder": "在資料夾中開啟"
+    },
+    "devCache": {
+      "idleTitle": "掃描開發空間",
+      "idleDesc": "統計 NuGet / Cargo / Gradle / npm 等套件管理器快取、IDE 索引快取，以及同一軟體並排留下的舊版本目錄。",
+      "scan": "開始掃描",
+      "scanning": "正在掃描開發空間…",
+      "scanningDesc": "並行走訪十幾處工具鏈快取與版本目錄，快取量大時可能需要十幾秒。",
+      "emptyTitle": "沒有發現可清理的內容",
+      "emptyDesc": "可能是這些工具還沒安裝，或者快取目錄結構與預期不同。",
+      "clearedTitle": "開發快取已清理乾淨",
+      "rescan": "重新掃描",
+      "summary": "{{dirs}} 個目錄 · {{files}} 個檔案",
+      "statTotal": "總計佔用",
+      "statSafe": "可直接清理",
+      "statVersion": "舊版本可回收",
+      "skipped": "有 {{count}} 處因權限不足或被佔用而跳過，實際佔用可能更大。",
+      "tabCache": "工具快取",
+      "tabVersion": "多版本殘留",
+      "tabEmpty": "這個分類目前沒有內容。",
+      "riskConfirm": "會遺失資料",
+      "riskReadonly": "唯讀",
+      "currentTag": "目前使用中",
+      "versionFiles": "{{count}} 個檔案",
+      "versionSummary": "{{count}} 個版本 · 可回收 {{size}}",
+      "deletedTitle": "已刪除 {{count}} 個目錄",
+      "deletedDesc": "釋放 {{size}}。",
+      "deleteFailed": "刪除失敗",
+      "deleteFailedDesc": "這些目錄正被 IDE 或建置程序佔用，關閉後重新掃描再試一次。",
+      "deletePartialTitle": "已刪除 {{success}} 個，{{failed}} 個未刪除",
+      "deletePartialDesc": "沒刪掉的多半是程式還開著、檔案被佔用；關閉對應程式後重新掃描再試一次。",
+      "selectAll": "全選",
+      "deselectAll": "取消全選",
+      "delete": "刪除選取",
+      "confirmTitle": "確認刪除 {{count}} 個目錄？",
+      "confirmDesc": "共 {{size}}，刪除後不會進入資源回收筒。",
+      "confirmWarning": "標示「會遺失資料」的項目刪除後需要重新下載或重新設定（例如模擬器映像、工作區狀態、本機模型）。",
+      "deleting": "正在刪除目錄…",
+      "deletingDesc": "已選 {{count}} 項",
+      "openFolder": "在資料夾中開啟"
+    },
+    "link": {
+      "symlink": "符號連結",
+      "junction": "目錄聯結",
+      "realPath": "實際位置",
+      "tooltip": "{{from}} 是指向 {{to}} 的連結，實際佔用記在 {{resolved}}。"
     }
 }

@@ -15,6 +15,7 @@ import { ModuleOperationToolbar } from '../ModuleOperationToolbar';
 import { ModuleScanProgress } from '../ModuleScanProgress';
 import { StopScanButton } from '../ui/StopScanButton';
 import { CategoryCard } from '../CategoryCard';
+import { JunkFileTreeModal } from './JunkFileTreeModal';
 import { AdminRequiredHint } from '../AdminRequiredHint';
 import { ScanSummary } from '../ScanSummary';
 import { ScanTimingPopover, type TimingGroup } from '../ScanTimingPopover';
@@ -57,17 +58,19 @@ function loadDeepScanPreference(): boolean {
   }
 }
 
-function mergeDeepCategoryPage(result: ScanResult, page: CategoryScanResult): ScanResult {
+
+/** 「查看全部文件」每次向后台要多少条：2 万条约 4 MB，几万条的分类两三次就能取完 */
+const VIEW_ALL_PAGE_SIZE = 20000;
+
+/** 用一整个分类替换掉结果里的同名分类（「查看全部文件」拿回完整数据后用） */
+function replaceCategory<T extends { categories: CategoryScanResult[] }>(
+  result: T,
+  category: CategoryScanResult,
+): T {
   return {
     ...result,
-    categories: result.categories.map((category) => (
-      category.display_name === page.display_name
-        ? {
-          ...category,
-          files: [...category.files, ...page.files],
-          has_more: page.has_more,
-        }
-        : category
+    categories: result.categories.map((item) => (
+      item.display_name === category.display_name ? category : item
     )),
   };
 }
@@ -298,7 +301,9 @@ export function JunkCleanModule({ isPageActive = true }: ModuleRenderProps) {
       };
     },
   });
-  const [loadingDeepCategory, setLoadingDeepCategory] = useState<string | null>(null);
+  // 「查看全部文件」：正在取全部分页的分类名，以及弹窗当前展示的分类名
+  const [loadingAllCategory, setLoadingAllCategory] = useState<string | null>(null);
+  const [viewAllCategoryName, setViewAllCategoryName] = useState<string | null>(null);
   const scanningRef = useRef(false);
   const cancelRequestedRef = useRef(false);
   // 这里原来按「阶段序号」估算一个扫描百分比：后端并不上报进度总量
@@ -623,6 +628,26 @@ export function JunkCleanModule({ isPageActive = true }: ModuleRenderProps) {
     });
   }, []);
 
+  /**
+   * 目录树批量勾选：勾一个目录就把该目录下所有文件一起提交。
+   *
+   * 中文说明：不走 toggleFileSelection —— 目录下几百个文件逐条 setState 会让
+   * 每次点击都触发几十次状态更新；这里一次性合并成一次变更。
+   * 注意只动 selectedPaths，不碰 selectedCategoryNames：那是"整类已选"，
+   * 代表连未加载的分页也要删，目录级勾选没有这个语义。
+   */
+  const setSelectionForPaths = useCallback((paths: string[], selected: boolean) => {
+    if (paths.length === 0) return;
+    setSelectedPaths((previous) => {
+      const next = new Set(previous);
+      for (const path of paths) {
+        if (selected) next.add(path);
+        else next.delete(path);
+      }
+      return next;
+    });
+  }, []);
+
   // 切换分类选中状态
   const toggleCategorySelection = useCallback((categoryName: string, files: FileInfo[], selected: boolean) => {
     setSelectedCategoryNames((previous) => {
@@ -682,34 +707,69 @@ export function JunkCleanModule({ isPageActive = true }: ModuleRenderProps) {
     updateModuleState('junk', { status: 'idle', error: null, fileCount: 0, totalSize: 0 });
   }, [updateModuleState]);
 
-  const handleLoadMoreDeepCategory = useCallback(async (categoryName: string) => {
-    if (scanMode !== 'deep' || !deepScanResult || loadingDeepCategory) return;
+  /**
+   * 打开「查看全部文件」。
+   *
+   * 中文说明：深度扫描每个分类首屏只取 500 条，卡片里那块窗口也装不下几万个文件，
+   * 让用户一页页点「加载更多」既慢又容易误判"分类里就这么点东西"。
+   * 这里点开后一次性把剩余分页取完（每批 2 万条，通常 2 次就够），
+   * 取到的数据同时写回模块状态 —— 弹窗、卡片里的树、勾选统计三处口径保持一致。
+   */
+  const handleViewAllFiles = useCallback(async (categoryName: string) => {
+    if (loadingAllCategory) return;
     const category = scanResult?.categories.find((item) => item.display_name === categoryName);
-    if (!category || !category.has_more) return;
+    if (!category) return;
 
-    setLoadingDeepCategory(categoryName);
+    // 快速扫描本来就是完整列表，直接开弹窗
+    if (scanMode !== 'deep' || !deepScanResult || !category.has_more) {
+      setViewAllCategoryName(categoryName);
+      return;
+    }
+
+    setLoadingAllCategory(categoryName);
     try {
-      const page = await getDeepJunkCategoryPage(
-        deepScanResult.scan_id,
-        categoryName,
-        category.files.length,
-      );
-      setScanResult((previous) => previous ? mergeDeepCategoryPage(previous, page) : previous);
-      setDeepScanResult((previous) => previous ? mergeDeepCategoryPage(previous, page) as DeepJunkScanResult : previous);
+      let merged = category;
+      // 理论上 has_more 会随页数推进清零；这里仍留硬上限，避免异常数据把界面卡在这里
+      for (let round = 0; round < 20 && merged.has_more; round += 1) {
+        const page = await getDeepJunkCategoryPage(
+          deepScanResult.scan_id,
+          categoryName,
+          merged.files.length,
+          VIEW_ALL_PAGE_SIZE,
+        );
+        if (page.files.length === 0) break;
+        merged = {
+          ...merged,
+          files: [...merged.files, ...page.files],
+          has_more: page.has_more,
+        };
+      }
+      const completed = merged;
+      setScanResult((previous) => previous ? replaceCategory(previous, completed) : previous);
+      setDeepScanResult((previous) => previous
+        ? replaceCategory(previous, completed) as DeepJunkScanResult
+        : previous);
       if (selectedCategoryNames.has(categoryName)) {
-        // 整类已选中时，后续加载的分页也必须自动加入选择，避免用户滚动加载后意外漏删。
+        // 整类已选中：补进来的文件也要一起勾上，否则「整类已选」名不副实
         setSelectedPaths((previous) => {
           const next = new Set(previous);
-          page.files.forEach((file) => next.add(file.path));
+          completed.files.forEach((file) => next.add(file.path));
           return next;
         });
       }
+      setViewAllCategoryName(categoryName);
     } catch (error) {
       showToast({ type: 'warning', title: t('toast.loadDeepPageFailed'), description: String(error) });
     } finally {
-      setLoadingDeepCategory(null);
+      setLoadingAllCategory(null);
     }
-  }, [deepScanResult, loadingDeepCategory, scanMode, scanResult, selectedCategoryNames, showToast]);
+  }, [deepScanResult, loadingAllCategory, scanMode, scanResult, selectedCategoryNames, showToast, t]);
+
+  // 弹窗里的分类从模块状态里取，删除/重新扫描后会自动跟着更新或消失
+  const viewAllCategory = viewAllCategoryName
+    ? scanResult?.categories.find((item) => item.display_name === viewAllCategoryName) ?? null
+    : null;
+
   // 由当前模块控制可见性，避免跨模块共用显示条件。
   const shouldShowOperationToolbar = isPageActive;
   // 底部操作条只在"有可删结果"时出现；删除中、以及清理完只剩结果卡时都没有它。
@@ -777,6 +837,20 @@ export function JunkCleanModule({ isPageActive = true }: ModuleRenderProps) {
 
   return (
     <>
+      {/* 查看全部文件：深扫分类只取了首屏，完整目录树放在弹窗里看 */}
+      <JunkFileTreeModal
+        category={isDeleting ? null : viewAllCategory}
+        selectedPaths={selectedPaths}
+        onToggleFile={toggleFileSelection}
+        onSetSelectionForPaths={setSelectionForPaths}
+        onSearchFile={handleSearchFile}
+        onRequestDelete={() => {
+          setViewAllCategoryName(null);
+          setShowDeleteConfirm(true);
+        }}
+        onClose={() => setViewAllCategoryName(null)}
+      />
+
       {/* 删除确认弹窗 */}
       <ConfirmDialog
         isOpen={showDeleteConfirm}
@@ -938,10 +1012,11 @@ export function JunkCleanModule({ isPageActive = true }: ModuleRenderProps) {
                     selectedPaths={selectedPaths}
                     onToggleFile={toggleFileSelection}
                     onToggleCategory={toggleCategorySelection}
+                    onSetSelectionForPaths={setSelectionForPaths}
                     onSearchFile={handleSearchFile}
                     hasMore={scanMode === 'deep' && category.has_more === true}
-                    onLoadMore={() => handleLoadMoreDeepCategory(category.display_name)}
-                    isLoadingMore={loadingDeepCategory === category.display_name}
+                    onViewAllFiles={() => handleViewAllFiles(category.display_name)}
+                    isLoadingAll={loadingAllCategory === category.display_name}
                   />
                 ))}
 

@@ -6,6 +6,8 @@
   "socialClean": "社交軟體清理",
   "aiToolCleanup": "AI 工具清理",
   "aiToolCleanupDesc": "統計 AI 用戶端與編程助手留下的快取目錄。",
+  "devCache": "開發空間清理",
+  "devCacheDesc": "清理開發工具鏈快取，以及同一軟體並排留下的舊版本目錄",
   "socialCleanDesc": "清理微信、QQ、釘釘、飛書等軟體的快取檔案",
   "systemSlim": "系統瘦身",
   "systemSlimDesc": "透過調整系統配置，釋放數 GB 的磁碟空間",

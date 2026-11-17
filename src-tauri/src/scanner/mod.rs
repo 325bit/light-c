@@ -15,10 +15,13 @@ mod leftovers;
 mod recycle_bin;
 mod registry;
 mod registry_scoring;
+pub(crate) mod reparse;
 mod scan_engine;
 pub(crate) mod shell_icons;
 mod ai_tool_cleaner;
 mod social_scanner;
+// [dev-cache] 开发空间清理：工具链缓存 + 多版本残留（补齐 light-c 原有模块未覆盖的部分）
+pub(crate) mod dev_cache;
 
 pub use categories::*;
 pub use context_menu::*;
@@ -30,3 +33,5 @@ pub use scan_engine::*;
 pub use shell_icons::*;
 pub use ai_tool_cleaner::*;
 pub use social_scanner::*;
+// [dev-cache]
+pub use dev_cache::*;

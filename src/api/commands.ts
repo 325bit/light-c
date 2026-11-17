@@ -280,6 +280,23 @@ export interface SlimItemStatus {
   action_text: string;
   /** 该项仍在后台分析（目前只有 WinSxS 两项会为 true），分析结束后由事件补推 */
   analyzing: boolean;
+  /**
+   * 组件存储的可回收构成（只有 winsxs 一项会带上）。
+   *
+   * 中文说明：`size` 只给总数，看不出 6.9 GB 里有多少是被取代的旧组件、
+   * 多少是缓存临时数据；这两项直接来自 DISM 分析，用来在界面上分解释。
+   */
+  breakdown?: WinsxsBreakdown;
+}
+
+/** DISM 分析给出的可回收组件构成 */
+export interface WinsxsBreakdown {
+  /** 备份和已禁用功能：被取代、暂时保留用于回滚的旧组件副本 */
+  backups: number;
+  /** 缓存和临时数据 */
+  cache: number;
+  /** 可回收组件包数量 */
+  packages: number;
 }
 
 /** 绯荤粺鐦﹁韩鐘舵€佹眹鎬?*/

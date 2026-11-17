@@ -8,6 +8,10 @@
   "selectAllDeepTitle": "Select the current page; cleanup will include the full scan results for these categories",
   "searchQuery": "Can the Windows file {{path}} be deleted",
   "confirmTitle": "Confirm Cleanup",
+  "viewAllTitle": "{{name}} · All files",
+  "viewAllSummary": "{{count}} files · {{size}}",
+  "viewAllSelected": "{{count}} selected · {{size}}",
+  "viewAllNone": "Nothing selected yet",
   "confirmDesc": "You are about to delete {{count}} files, freeing approximately {{size}}. This action cannot be undone.",
   "scanStages": {
     "quick": "Checking known junk directories",

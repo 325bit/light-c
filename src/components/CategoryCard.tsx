@@ -3,22 +3,20 @@
 // 使用虚拟列表优化大量文件的渲染性能
 // ============================================================================
 
-import { useState, useRef, useMemo, memo, useCallback } from 'react';
-import { useVirtualizer } from '@tanstack/react-virtual';
+import { useState, useMemo, useCallback } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import {
   ChevronDown,
   Folder,
-  File,
   AlertTriangle,
   FolderOpen,
   ExternalLink,
   Search,
 } from 'lucide-react';
 import { openInFolder, openFile, openRecycleBin, openDiskCleanup } from '../api/commands';
-import { stripWindowsDevicePrefix } from '../utils/searchEngine';
 import type { CategoryScanResult, FileInfo } from '../types';
 import { formatSize } from '../utils/format';
+import { FileTreeList } from './FileTreeList';
 import { useTranslation } from 'react-i18next';
 
 // 微信风格风险等级样式配置
@@ -52,10 +50,13 @@ interface CategoryCardProps {
   selectedPaths: Set<string>;
   onToggleFile: (path: string) => void;
   onToggleCategory: (categoryName: string, files: FileInfo[], selected: boolean) => void;
+  /** 目录级批量勾选：一次提交一批路径（勾文件夹就靠它，不必逐条 toggle） */
+  onSetSelectionForPaths: (paths: string[], selected: boolean) => void;
   onSearchFile: (file: FileInfo) => void;
+  /** 深扫分类只取了第一页：给出「查看全部文件」入口，点开在弹窗里看完整目录树 */
   hasMore?: boolean;
-  onLoadMore?: () => void;
-  isLoadingMore?: boolean;
+  onViewAllFiles?: () => void;
+  isLoadingAll?: boolean;
 }
 
 /**
@@ -66,17 +67,17 @@ export function CategoryCard({
   selectedPaths,
   onToggleFile,
   onToggleCategory,
+  onSetSelectionForPaths,
   onSearchFile,
   hasMore = false,
-  onLoadMore,
-  isLoadingMore = false,
+  onViewAllFiles,
+  isLoadingAll = false,
 }: CategoryCardProps) {
   const { t: commonT } = useTranslation('common');
   const { t } = useTranslation('junkClean');
   const categoryName = t(`categories.${category.category}.name`, { defaultValue: category.display_name });
   const categoryDescription = t(`categories.${category.category}.description`, { defaultValue: category.description });
   const [expanded, setExpanded] = useState(false);
-  const parentRef = useRef<HTMLDivElement>(null);
 
   // 使用useMemo缓存计算结果，避免重复计算
   const { selectedCount, selectedSize, isAllSelected, isPartialSelected } = useMemo(() => {
@@ -96,18 +97,14 @@ export function CategoryCard({
     };
   }, [category.files, selectedPaths]);
 
-  // 虚拟列表配置
-  const virtualizer = useVirtualizer({
-    count: category.files.length,
-    getScrollElement: () => parentRef.current,
-    estimateSize: () => 44, // 每行高度
-    overscan: 10, // 预渲染数量
-  });
-
   // 由系统托管的分类（旧版 Windows 安装）：应用内删不掉，也不该由应用删 ——
   // 删了用户就失去回退旧版本的能力。这里统一拦掉勾选，只保留
   // 「看占用大小 + 引导到系统磁盘清理」两条路径。
   const isSystemManaged = category.system_managed === true;
+
+  // 稳定引用：FileTreeList 内部按它判断"哪些文件可勾选"，
+  // 每次渲染换一个新函数会让整棵树的可勾选集合重算一遍。
+  const isSelectable = useCallback(() => !isSystemManaged, [isSystemManaged]);
 
   const handleCategoryToggle = useCallback(() => {
     if (isSystemManaged) return;
@@ -117,6 +114,20 @@ export function CategoryCard({
   const handleExpand = useCallback(() => {
     setExpanded(prev => !prev);
   }, []);
+
+  /**
+   * 目录树勾选。
+   *
+   * 中文说明：勾中的是「整类全部文件」时必须走原来的分类选择逻辑 —— 深扫模式下
+   * 它还会记住"整类已选"，删除时连未加载的分页一起删；勾子目录只动对应那批路径。
+   */
+  const handleSetSelection = useCallback((paths: string[], selected: boolean) => {
+    if (paths.length === category.files.length) {
+      onToggleCategory(category.display_name, category.files, selected);
+      return;
+    }
+    onSetSelectionForPaths(paths, selected);
+  }, [category.display_name, category.files, onSetSelectionForPaths, onToggleCategory]);
 
   if (category.files.length === 0) return null;
 
@@ -217,41 +228,67 @@ export function CategoryCard({
               </div>
             )}
 
-            {/* 虚拟列表容器 */}
-            <div ref={parentRef} className="h-64 overflow-auto bg-[var(--bg-main)]">
-              <div style={{ height: `${virtualizer.getTotalSize()}px`, width: '100%', position: 'relative' }}>
-                {virtualizer.getVirtualItems().map((virtualRow) => {
-                  const file = category.files[virtualRow.index];
-                  const isSelected = selectedPaths.has(file.path);
-                  return (
-                      <VirtualFileItem
-                        key={file.path}
-                        file={file}
-                        selected={isSelected}
-                        selectable={!isSystemManaged}
-                        onToggle={() => onToggleFile(file.path)}
-                        onSearch={() => onSearchFile(file)}
-                      style={{
-                        position: 'absolute',
-                        top: 0,
-                        left: 0,
-                        width: '100%',
-                        height: `${virtualRow.size}px`,
-                        transform: `translateY(${virtualRow.start}px)`,
-                      }}
-                    />
-                  );
-                })}
-              </div>
-            </div>
-            {hasMore && onLoadMore && (
-              <div className="px-5 py-2.5 border-t border-[var(--border-color)] flex justify-center">
+            {/* 目录树：按路径折叠成文件管理器那样的层级，
+                勾目录 = 批量选中该目录下所有文件（逐个勾太麻烦）。
+                高度沿用原来的 256px，内部自带虚拟滚动。 */}
+            <FileTreeList
+              files={category.files}
+              selectedPaths={selectedPaths}
+              onSetSelection={handleSetSelection}
+              onToggleFile={(file) => onToggleFile(file.path)}
+              isSelectable={isSelectable}
+              disabled={isSystemManaged}
+              getFileTitle={(file) => file.name}
+              height={256}
+              rowHeight={44}
+              renderFileActions={(file) => (
+                <div className="flex shrink-0 items-center gap-1">
+                  <button
+                    onClick={(event) => { event.stopPropagation(); onSearchFile(file); }}
+                    className="rounded-lg p-1.5 text-[var(--text-muted)] transition hover:bg-[var(--bg-active)] hover:text-[var(--brand-green)]"
+                    title={commonT('searchDeletionAdvice')}
+                  >
+                    <Search className="h-4 w-4" />
+                  </button>
+                  <button
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      if (file.category === 'RecycleBin') openRecycleBin();
+                      else openInFolder(file.path);
+                    }}
+                    className="rounded-lg p-1.5 text-[var(--text-muted)] transition hover:bg-[var(--bg-active)] hover:text-[var(--brand-green)]"
+                    title={file.category === 'RecycleBin' ? commonT('openRecycleBin') : commonT('openInFolder')}
+                  >
+                    <FolderOpen className="h-4 w-4" />
+                  </button>
+                  <button
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      if (file.category === 'RecycleBin') openRecycleBin();
+                      else openFile(file.path);
+                    }}
+                    className="rounded-lg p-1.5 text-[var(--text-muted)] transition hover:bg-[var(--bg-active)] hover:text-[var(--brand-green)]"
+                    title={file.category === 'RecycleBin' ? commonT('openRecycleBin') : commonT('openFile')}
+                  >
+                    <ExternalLink className="h-4 w-4" />
+                  </button>
+                </div>
+              )}
+            />
+            {/* 不再让用户一页页点「加载更多」：统一成一个「查看全部文件」入口，
+                完整目录树放到弹窗里看 —— 卡片内这块 256px 的窗口本来就装不下
+                几千上万个文件，深扫的首屏 500 条也一样翻不动。 */}
+            {onViewAllFiles && (hasMore || category.files.length > 50) && (
+              <div className="border-t border-[var(--border-color)] px-5 py-2.5">
                 <button
-                  onClick={onLoadMore}
-                  disabled={isLoadingMore}
-                  className="text-xs text-[var(--brand-green)] hover:text-[var(--brand-green-hover)] disabled:text-[var(--text-faint)] transition"
+                  onClick={onViewAllFiles}
+                  disabled={isLoadingAll}
+                  className="flex w-full items-center justify-center gap-1.5 rounded-lg py-1.5 text-[0.86rem] font-medium text-[var(--brand-green)] transition hover:bg-[var(--brand-green-10)] disabled:text-[var(--text-faint)]"
                 >
-                  {isLoadingMore ? commonT('loading') : commonT('loadMore', { shown: category.files.length.toLocaleString(), total: category.file_count.toLocaleString() })}
+                  {isLoadingAll
+                    ? commonT('loadingAllFiles')
+                    : commonT('viewAllFiles', { count: category.file_count.toLocaleString() })}
+                  {!isLoadingAll && <span aria-hidden>→</span>}
                 </button>
               </div>
             )}
@@ -261,106 +298,3 @@ export function CategoryCard({
     </div>
   );
 }
-
-// ============================================================================
-// 虚拟文件项组件 - 使用memo优化
-// ============================================================================
-interface VirtualFileItemProps {
-  file: FileInfo;
-  selected: boolean;
-  /** 该项是否可勾选。系统托管的分类整片不可选，行也不显示可点光标。 */
-  selectable?: boolean;
-  onToggle: () => void;
-  onSearch: () => void;
-  style: React.CSSProperties;
-}
-
-const VirtualFileItem = memo(function VirtualFileItem({ file, selected, selectable = true, onToggle, onSearch, style }: VirtualFileItemProps) {
-  const { t } = useTranslation('common');
-  // 回收站的真实删除路径是隐藏的 $R 文件，界面展示元数据中的原始文件名，避免与 Explorer 看到的内容脱节。
-  const displayPath = file.category === 'RecycleBin'
-    ? file.name
-    : stripWindowsDevicePrefix(file.path);
-  const displayTitle = file.category === 'RecycleBin' && file.original_path
-    ? t('originalLocation', { path: stripWindowsDevicePrefix(file.original_path) })
-    : displayPath;
-
-  return (
-    <div
-      style={style}
-      className={`px-5 flex items-center gap-4 transition-colors
-        ${selectable ? 'cursor-pointer' : 'cursor-default'}
-        ${selected ? 'bg-[var(--brand-green-10)]' : 'hover:bg-[var(--bg-hover)]'}`}
-      onClick={() => { if (selectable) onToggle(); }}
-    >
-      {/* 复选框 - 微信绿 */}
-      <div className={`w-4 h-4 rounded border flex items-center justify-center
-        ${selected ? 'bg-[var(--brand-green)] border-[var(--brand-green)]' : 'border-[var(--text-faint)]'}`}>
-        {selected && (
-          <svg className="w-3 h-3 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
-            <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-          </svg>
-        )}
-      </div>
-
-      {/* 文件图标 */}
-      <div className="text-[var(--text-faint)]">
-        {file.is_dir ? <Folder className="w-4 h-4" /> : <File className="w-4 h-4" />}
-      </div>
-
-      {/* 文件路径 */}
-      <div className="flex-1 min-w-0">
-        <p className="text-[0.93rem] text-[var(--text-secondary)] truncate" title={displayTitle}>
-          {displayPath}
-        </p>
-      </div>
-
-      {/* 文件大小 */}
-      <div className="text-[0.93rem] text-[var(--text-muted)] tabular-nums">
-        {formatSize(file.size)}
-      </div>
-
-      {/* 操作按钮 */}
-      <div className="flex items-center gap-1 shrink-0">
-        <button
-          onClick={(e) => {
-            e.stopPropagation();
-            onSearch();
-          }}
-          className="p-1.5 hover:bg-[var(--bg-active)] rounded-lg transition text-[var(--text-muted)] hover:text-[var(--brand-green)]"
-          title={t('searchDeletionAdvice')}
-        >
-          <Search className="w-4 h-4" />
-        </button>
-        <button
-          onClick={(e) => {
-            e.stopPropagation();
-            if (file.category === 'RecycleBin') {
-              openRecycleBin();
-            } else {
-              openInFolder(file.path);
-            }
-          }}
-          className="p-1.5 hover:bg-[var(--bg-active)] rounded-lg transition text-[var(--text-muted)] hover:text-[var(--brand-green)]"
-          title={file.category === 'RecycleBin' ? t('openRecycleBin') : t('openInFolder')}
-        >
-          <FolderOpen className="w-4 h-4" />
-        </button>
-        <button
-          onClick={(e) => {
-            e.stopPropagation();
-            if (file.category === 'RecycleBin') {
-              openRecycleBin();
-            } else {
-              openFile(file.path);
-            }
-          }}
-          className="p-1.5 hover:bg-[var(--bg-active)] rounded-lg transition text-[var(--text-muted)] hover:text-[var(--brand-green)]"
-          title={file.category === 'RecycleBin' ? t('openRecycleBin') : t('openFile')}
-        >
-          <ExternalLink className="w-4 h-4" />
-        </button>
-      </div>
-    </div>
-  );
-});

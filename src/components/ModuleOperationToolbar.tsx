@@ -1,7 +1,7 @@
 import { type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 
-export type ModuleOperationToolbarId = 'junk' | 'bigFiles' | 'social' | 'context' | 'aiTools' | 'leftovers';
+export type ModuleOperationToolbarId = 'junk' | 'bigFiles' | 'social' | 'context' | 'aiTools' | 'devCache' | 'leftovers';
 
 interface ModuleOperationToolbarProps {
   moduleId: ModuleOperationToolbarId;

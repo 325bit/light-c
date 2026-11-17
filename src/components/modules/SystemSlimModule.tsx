@@ -202,6 +202,10 @@ export function SystemSlimModule({ isPageActive = true }: ModuleRenderProps) {
         `名称：${item.name}`,
         `说明：${item.description}`,
         `可释放：${item.size > 0 ? formatSize(item.size) : '未统计'}`,
+        // 构成明细要一起给：只报一个总数，模型也只能跟着含糊其辞
+        item.breakdown
+          ? `可回收构成：被取代的旧组件副本 ${formatSize(item.breakdown.backups)}、缓存与临时数据 ${formatSize(item.breakdown.cache)}`
+          : '',
         `当前状态：${item.status_text}`,
         item.warning ? `⚠️ 风险提示：${item.warning}` : '',
         item.actionable
@@ -217,6 +221,21 @@ export function SystemSlimModule({ isPageActive = true }: ModuleRenderProps) {
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   // 正在执行的瘦身操作进度：DISM 清理可能持续数分钟，必须有阶段与百分比反馈。
   const [operationProgress, setOperationProgress] = useState<SlimOperationProgress | null>(null);
+  /*
+    已用时间不能只靠后端推。DISM 只在百分比前进时才发进度事件，而它经常在同一个
+    百分比上停留很久（真机实测「10%」停了几十秒），那段时间里一条事件都没有，
+    "已用 0s" 就跟着冻住 —— 用户看到的就是"卡死了"。这里用本地时钟自增兜底，
+    后端事件到达时取两者较大值，既不会倒退也不会停。
+  */
+  const progressStartedAtRef = useRef(0);
+  const [clockNow, setClockNow] = useState(0);
+  const progressRunning = operationProgress !== null && actionLoading !== null;
+  useEffect(() => {
+    if (!progressRunning) return;
+    setClockNow(Date.now());
+    const timer = window.setInterval(() => setClockNow(Date.now()), 500);
+    return () => window.clearInterval(timer);
+  }, [progressRunning]);
   const [showAdminWarning, setShowAdminWarning] = useState(true);
   // 基线压缩不可撤销，点击后先二次确认再执行。
   const [pendingConfirmItem, setPendingConfirmItem] = useState<SlimItemStatus | null>(null);
@@ -449,6 +468,9 @@ export function SystemSlimModule({ isPageActive = true }: ModuleRenderProps) {
     }
 
     setActionLoading(item.id);
+    // 记下起点：本地时钟从这一刻算起，DISM 安静几十秒也不会让"已用"停住。
+    progressStartedAtRef.current = Date.now();
+    setClockNow(Date.now());
     // 记录操作前的体积，操作完成后用真实差值告诉用户"实际释放了多少"，而不是只报估算值。
     const sizeBefore = status?.items.find((current) => current.id === item.id)?.size ?? 0;
     // 先用本地状态兜底，避免后端首条进度到达前出现"点了没反应"的空窗。
@@ -532,6 +554,15 @@ export function SystemSlimModule({ isPageActive = true }: ModuleRenderProps) {
   const isActionBusy = actionLoading !== null;
   // 分析刚开始 -> 禁用；分析已经拖过兜底时间 -> 放开，避免按钮和僵死进程互相等死。
   const isAnalyzingLocked = isAnalyzingWinsxs && !analyzeTimedOut;
+
+  // 展示用的已用时间：后端报的和本地时钟哪个大用哪个
+  // （后端在收尾阶段会精确一次，本地时钟负责两帧之间的连续性）。
+  const elapsedMs = Math.max(
+    operationProgress?.elapsed_ms ?? 0,
+    progressStartedAtRef.current > 0 && clockNow > 0
+      ? clockNow - progressStartedAtRef.current
+      : 0,
+  );
 
   if (!isPageActive && !actionLoading) {
     return null;
@@ -695,6 +726,63 @@ export function SystemSlimModule({ isPageActive = true }: ModuleRenderProps) {
                           </p>
                         )}
 
+                        {/* 清理范围明细：只写一句"清理已被替代的组件版本"，用户扫出 6.9 GB
+                            也不知道到底要删什么、会不会删到正在用的东西。这里把范围、
+                            不碰的东西、以及 DISM 给出的构成分开列出来。 */}
+                        {(item.id === 'winsxs' || item.id === 'winsxs_resetbase') && (
+                          <div className="mt-2 rounded-lg border border-[var(--border-default)] bg-[var(--bg-hover)]/40 px-2.5 py-2">
+                            <p className="text-[0.71rem] font-medium text-[var(--fg-secondary)]">
+                              {moduleT(`systemSlim.items.${item.id}.scopeTitle`)}
+                            </p>
+                            <ul className="mt-1 space-y-1">
+                              {(item.id === 'winsxs'
+                                ? ['scopeSuperseded', 'scopeCache']
+                                : ['scopeExtra']
+                              ).map((scopeKey) => (
+                                <li key={scopeKey} className="flex gap-1.5">
+                                  <span className="mt-[0.42rem] h-1 w-1 shrink-0 rounded-full bg-amber-500" />
+                                  <span className="text-[0.71rem] leading-relaxed text-[var(--fg-muted)]">
+                                    {moduleT(`systemSlim.items.${item.id}.${scopeKey}`)}
+                                  </span>
+                                </li>
+                              ))}
+                            </ul>
+
+                            {/* DISM 分析给出的构成：把总数拆成「旧组件副本」与「缓存临时数据」 */}
+                            {item.id === 'winsxs' &&
+                              item.breakdown &&
+                              (item.breakdown.backups > 0 || item.breakdown.cache > 0) && (
+                                <div className="mt-1.5 border-t border-dashed border-[var(--border-default)] pt-1.5">
+                                  <p className="text-[0.71rem] font-medium text-[var(--fg-secondary)]">
+                                    {moduleT('systemSlim.items.winsxs.breakdownTitle')}
+                                  </p>
+                                  <div className="mt-1 space-y-0.5">
+                                    <div className="flex items-baseline justify-between gap-3 text-[0.71rem]">
+                                      <span className="text-[var(--fg-muted)]">
+                                        {moduleT('systemSlim.items.winsxs.breakdownBackups')}
+                                      </span>
+                                      <span className="shrink-0 tabular-nums text-[var(--fg-secondary)]">
+                                        {formatSize(item.breakdown.backups)}
+                                      </span>
+                                    </div>
+                                    <div className="flex items-baseline justify-between gap-3 text-[0.71rem]">
+                                      <span className="text-[var(--fg-muted)]">
+                                        {moduleT('systemSlim.items.winsxs.breakdownCache')}
+                                      </span>
+                                      <span className="shrink-0 tabular-nums text-[var(--fg-secondary)]">
+                                        {formatSize(item.breakdown.cache)}
+                                      </span>
+                                    </div>
+                                  </div>
+                                </div>
+                              )}
+
+                            <p className="mt-1.5 border-t border-dashed border-[var(--border-default)] pt-1.5 text-[0.71rem] leading-relaxed text-[var(--fg-muted)]">
+                              {moduleT(`systemSlim.items.${item.id}.scopeKeep`)}
+                            </p>
+                          </div>
+                        )}
+
                         {/* 风险提示 */}
                         <div className="mt-2 flex items-start gap-1.5 bg-amber-500/5 rounded-lg px-2 py-1.5">
                           <AlertTriangle className="w-3 h-3 text-amber-500 shrink-0 mt-0.5" />
@@ -729,7 +817,7 @@ export function SystemSlimModule({ isPageActive = true }: ModuleRenderProps) {
                             <div className="flex items-center justify-between gap-2 text-[0.79rem] text-emerald-700 dark:text-emerald-400">
                               <span className="truncate">{operationProgress.message}</span>
                               <span className="shrink-0 tabular-nums">
-                                {operationProgress.percent > 0 ? `${operationProgress.percent}%` : formatElapsed(operationProgress.elapsed_ms)}
+                                {operationProgress.percent > 0 ? `${operationProgress.percent}%` : formatElapsed(elapsedMs)}
                               </span>
                             </div>
                             <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-[var(--bg-hover)]">
@@ -740,7 +828,7 @@ export function SystemSlimModule({ isPageActive = true }: ModuleRenderProps) {
                             </div>
                             <p className="mt-1.5 flex items-center gap-1 text-[0.71rem] text-[var(--fg-muted)]">
                               <ShieldAlert className="h-3 w-3 shrink-0 text-amber-500" />
-                              {moduleT('systemSlim.progressElapsed', { time: formatElapsed(operationProgress.elapsed_ms) })} · {moduleT('systemSlim.progressDoNotClose')}
+                              {moduleT('systemSlim.progressElapsed', { time: formatElapsed(elapsedMs) })} · {moduleT('systemSlim.progressDoNotClose')}
                             </p>
                           </div>
                         )}
