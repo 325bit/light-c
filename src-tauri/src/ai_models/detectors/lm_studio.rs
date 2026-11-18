@@ -18,12 +18,7 @@ impl ModelDetector for LmStudioDetector {
         if let Some(home_dir) = user_home_dir() {
             candidate_roots.push(home_dir.join(".lmstudio").join("models"));
             // Default model directory for 0.2.x and earlier; after upgrading, models in the old directory still occupy space.
-            candidate_roots.push(
-                home_dir
-                    .join(".cache")
-                    .join("lm-studio")
-                    .join("models"),
-            );
+            candidate_roots.push(home_dir.join(".cache").join("lm-studio").join("models"));
         }
 
         let mut models = Vec::new();

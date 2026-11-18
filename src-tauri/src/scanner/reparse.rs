@@ -226,8 +226,8 @@ mod tests {
         if !is_reparse_point(&link) {
             return;
         }
-        let info = analyze(&link.join("logs"))
-            .expect("`.workbuddy` 是重解析点，但 analyze() 没识别出来");
+        let info =
+            analyze(&link.join("logs")).expect("`.workbuddy` 是重解析点，但 analyze() 没识别出来");
         assert!(!info.link_path.is_empty());
         assert!(!info.target.is_empty());
         assert!(!info.resolved.is_empty());

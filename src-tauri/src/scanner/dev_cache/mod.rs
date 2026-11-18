@@ -27,9 +27,7 @@ mod types;
 // Export names carry a module prefix: `scanner/mod.rs` `pub use`s each submodule into the same level,
 // naming them plainly `scan` / `delete` would collide with same-named symbols elsewhere.
 pub use delete::delete as delete_dev_cache_paths;
-pub use measure::{
-    scan as scan_dev_cache, scan_other_app_caches, scan_version_leftovers,
-};
+pub use measure::{scan as scan_dev_cache, scan_other_app_caches, scan_version_leftovers};
 // Only the result types are needed across modules (the commands layer); other structs can just reference each other within the submodule;
 // re-exporting all of them would trigger unused_imports warnings.
 pub use types::{DevCacheDeleteResult, DevCacheScanResult, VersionLeftoverScanResult};
@@ -93,19 +91,10 @@ mod tests {
     /// was left with three parts after stripping the prefix and judged "not a version directory", so the whole GitHub Desktop group went undetected.
     #[test]
     fn github_desktop_versions() {
-        assert!(has_version_form(
-            "app-3.6.11",
-            &VersionPattern::AppPrefix
-        ));
+        assert!(has_version_form("app-3.6.11", &VersionPattern::AppPrefix));
         // Windows directory names are case-insensitive; recognize prefixes with different casing too
-        assert!(has_version_form(
-            "App-3.6.11",
-            &VersionPattern::AppPrefix
-        ));
-        assert!(has_version_form(
-            "app-3.6.11.1",
-            &VersionPattern::AppPrefix
-        ));
+        assert!(has_version_form("App-3.6.11", &VersionPattern::AppPrefix));
+        assert!(has_version_form("app-3.6.11.1", &VersionPattern::AppPrefix));
         // Reject anything without a prefix: sibling directories like `packages` also exist,
         // loosening to "anything that looks like a version number counts" would misjudge them
         assert!(!has_version_form("3.6.11", &VersionPattern::AppPrefix));
@@ -191,7 +180,11 @@ mod tests {
 
         // Structural invariants: at most one "current version" per group, and the reclaimable amount must be less than the total
         for group in &versions.groups {
-            let current = group.entries.iter().filter(|entry| entry.is_current).count();
+            let current = group
+                .entries
+                .iter()
+                .filter(|entry| entry.is_current)
+                .count();
             assert!(current <= 1, "{} 出现 {} 个当前版本", group.name, current);
             assert!(group.reclaimable_size <= group.total_size);
         }

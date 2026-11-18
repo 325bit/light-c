@@ -177,7 +177,10 @@ fn resolve_handler_dll(entry_key: &RegKey, key_name: &str) -> Option<String> {
 
     let hives = [
         (RegKey::predef(HKEY_CURRENT_USER), r"Software\Classes\CLSID"),
-        (RegKey::predef(HKEY_LOCAL_MACHINE), r"SOFTWARE\Classes\CLSID"),
+        (
+            RegKey::predef(HKEY_LOCAL_MACHINE),
+            r"SOFTWARE\Classes\CLSID",
+        ),
     ];
     for (hive, prefix) in hives {
         let path = format!(r"{}\{}\InprocServer32", prefix, clsid);
@@ -212,8 +215,7 @@ fn resolve_bare_module(name: &str) -> Option<String> {
         return Some(name.to_string());
     }
 
-    let system_root =
-        std::env::var("SystemRoot").unwrap_or_else(|_| String::from(r"C:\Windows"));
+    let system_root = std::env::var("SystemRoot").unwrap_or_else(|_| String::from(r"C:\Windows"));
     let root = Path::new(&system_root);
     let system_dirs = [
         root.join("System32").join(name),
@@ -857,7 +859,8 @@ fn delete_single_entry(req: &ContextMenuDeleteRequest) -> Result<(), String> {
             .open_subkey_with_flags(subpath, KEY_READ)
             .map_err(|error| format!("无法读取条目 {}: {}", subpath, error))?;
         match resolve_handler_dll(&entry_key, key_name) {
-            Some(dll) if !Path::new(&dll).exists() => { /* DLL is gone, so it's a leftover — allow deletion */ }
+            Some(dll) if !Path::new(&dll).exists() => { /* DLL is gone, so it's a leftover — allow deletion */
+            }
             Some(dll) => {
                 return Err(format!("处理器程序仍然存在（{}），不允许删除", dll));
             }
@@ -986,9 +989,8 @@ mod tests {
 
     #[test]
     fn extracts_quoted_path_with_spaces() {
-        let extracted = ContextMenuScanner::extract_exe_path(
-            r#""C:\Program Files\App\app.exe" "%1""#,
-        );
+        let extracted =
+            ContextMenuScanner::extract_exe_path(r#""C:\Program Files\App\app.exe" "%1""#);
         assert_eq!(extracted.as_deref(), Some(r"C:\Program Files\App\app.exe"));
     }
 
@@ -1029,7 +1031,11 @@ mod tests {
         // `cmd.exe /c ...` is resolved via system directories; once resolved it is Ok, not Unknown
         let extracted = ContextMenuScanner::extract_exe_path(r"cmd.exe /c dir");
         let path = extracted.expect("cmd.exe 应该能落到系统目录");
-        assert!(Path::new(&path).exists(), "解析出的路径应真实存在: {}", path);
+        assert!(
+            Path::new(&path).exists(),
+            "解析出的路径应真实存在: {}",
+            path
+        );
     }
 
     #[test]
@@ -1044,7 +1050,9 @@ mod tests {
     #[test]
     fn recognizes_clsid_shapes() {
         assert!(looks_like_clsid("{90AA3A4E-1CBA-4233-B8BB-535773D48449}"));
-        assert!(looks_like_clsid("  {f81e9010-6ea4-11ce-a7ff-00aa003ca9f6}  "));
+        assert!(looks_like_clsid(
+            "  {f81e9010-6ea4-11ce-a7ff-00aa003ca9f6}  "
+        ));
         // Friendly names, empty strings, and wrong lengths do not count
         assert!(!looks_like_clsid("TortoiseSVN"));
         assert!(!looks_like_clsid("{90AA3A4E-1CBA}"));
@@ -1067,9 +1075,7 @@ mod tests {
     #[test]
     fn only_deletes_paths_inside_known_context_menu_locations() {
         // Allowed: scan location + one key name
-        assert!(is_deletable_subpath(
-            r"software\classes\*\shell\myapp"
-        ));
+        assert!(is_deletable_subpath(r"software\classes\*\shell\myapp"));
         assert!(is_deletable_subpath(
             r"software\classes\directory\shellex\contextmenuhandlers\tortoisesvn"
         ));

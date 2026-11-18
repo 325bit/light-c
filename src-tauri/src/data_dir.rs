@@ -310,11 +310,7 @@ fn load_or_create() -> PathBuf {
         // A custom data directory is explicitly chosen by the user; if not writable, only warn, don't move the user's data without permission.
         let allow_fallback = !is_legacy_default
             || path_compare_key(&configured_data_dir) == path_compare_key(&default);
-        let resolved = ensure_writable_data_dir(
-            configured_data_dir,
-            channel,
-            allow_fallback,
-        );
+        let resolved = ensure_writable_data_dir(configured_data_dir, channel, allow_fallback);
         if let Err(error) = save_config_inner(&resolved) {
             log::warn!("保存数据目录配置失败: {}", error);
         }
@@ -372,8 +368,8 @@ fn ensure_writable_data_dir(
     }
 
     // In the extreme case where even AppData isn't writable, keep the preferred directory so later write failures expose the real reason.
-    let Some(fallback) = app_data_fallback_dir()
-        .filter(|candidate| probe_writable_directory(candidate).is_ok())
+    let Some(fallback) =
+        app_data_fallback_dir().filter(|candidate| probe_writable_directory(candidate).is_ok())
     else {
         log::warn!(
             "便携目录与备用目录均不可写，继续使用: {}",
@@ -610,10 +606,7 @@ fn read_migration_state(path: &Path) -> Option<MigrationState> {
     serde_json::from_str(&json).ok()
 }
 
-fn write_migration_state(
-    path: &Path,
-    state: &MigrationState,
-) -> Result<(), String> {
+fn write_migration_state(path: &Path, state: &MigrationState) -> Result<(), String> {
     let Some(parent) = path.parent() else {
         return Err(format!("迁移状态路径无效: {}", path.display()));
     };
@@ -926,11 +919,12 @@ pub fn log_storage_diagnostics() {
         .map(|path| path.to_string_lossy().to_string())
         .unwrap_or_else(|_| "(无法确定)".to_string());
     // Explain whether the current data directory "follows the program directory" or is "a custom directory the user set in settings".
-    let directory_source = if path_compare_key(&active_directory) == path_compare_key(Path::new(&default_directory)) {
-        "默认（跟随发行模式）"
-    } else {
-        "自定义（配置文件中记录，可能在别的磁盘）"
-    };
+    let directory_source =
+        if path_compare_key(&active_directory) == path_compare_key(Path::new(&default_directory)) {
+            "默认（跟随发行模式）"
+        } else {
+            "自定义（配置文件中记录，可能在别的磁盘）"
+        };
 
     log::info!(
         "存储诊断: 发行模式={:?} | 程序={} | 配置文件={} | 数据目录={} [{}] | 界面数据目录={}",
@@ -1082,8 +1076,12 @@ pub fn get_storage_write_diagnostic() -> StorageWriteDiagnostic {
     let active_writable = probe_writable_directory(&active_directory).is_ok();
     // Only "expected dir not writable + actually using the AppData dir" counts as a fallback. A custom data directory
     // or other paths in old config must not be misreported as "writing to C drive again".
-    let active_is_app_data = app_local_root_dir()
-        .is_some_and(|root| is_same_or_child_path(&path_compare_key(&active_directory), &path_compare_key(&root)));
+    let active_is_app_data = app_local_root_dir().is_some_and(|root| {
+        is_same_or_child_path(
+            &path_compare_key(&active_directory),
+            &path_compare_key(&root),
+        )
+    });
     let fell_back = preferred_error.is_some()
         && !path_compare_key(&active_directory).eq(&path_compare_key(&preferred_directory))
         && active_is_app_data;
@@ -1175,7 +1173,9 @@ fn build_ai_session_item() -> ClearableDataItem {
         file_count,
         size,
         // This is content the user chatted themselves, not a cache; the warning must make clear it's "unrecoverable"
-        warning: Some("对话记录属于个人数据，删除后无法恢复。服务商与密钥等配置不受影响。".to_string()),
+        warning: Some(
+            "对话记录属于个人数据，删除后无法恢复。服务商与密钥等配置不受影响。".to_string(),
+        ),
     }
 }
 
@@ -1745,7 +1745,12 @@ mod tests {
         let leftovers = fs::read_dir(&root)
             .expect("读取测试目录失败")
             .filter_map(Result::ok)
-            .filter(|entry| entry.file_name().to_string_lossy().starts_with(".lightc-write-probe-"))
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".lightc-write-probe-")
+            })
             .count();
         assert_eq!(leftovers, 0, "写入探针必须在检测后删除自身");
 
@@ -1788,7 +1793,10 @@ mod tests {
                 path_compare_key(Path::new(&diagnostic.preferred_data_directory)),
                 path_compare_key(&get_default_dir())
             );
-            assert_eq!(diagnostic.preferred_writable, !diagnostic.fell_back_to_app_data);
+            assert_eq!(
+                diagnostic.preferred_writable,
+                !diagnostic.fell_back_to_app_data
+            );
             if diagnostic.fell_back_to_app_data {
                 assert!(diagnostic.reason.is_some(), "回落时必须给出可展示原因");
             }
@@ -2004,7 +2012,10 @@ mod tests {
     #[test]
     fn migrates_legacy_registry_backups_once() {
         let root = unique_temp_root("lightc-legacy-registry-migration");
-        let legacy_source = root.join("Documents").join("LightC").join("RegistryBackups");
+        let legacy_source = root
+            .join("Documents")
+            .join("LightC")
+            .join("RegistryBackups");
         let data_dir = root.join("data");
         fs::create_dir_all(&legacy_source).expect("创建旧备份目录失败");
         fs::write(
@@ -2041,7 +2052,9 @@ mod tests {
         fs::remove_file(destination.join("lightc_registry_backup_20260101_000000.reg")).unwrap();
         migrate_legacy_registry_backups_from(&legacy_source, &data_dir);
         assert_eq!(
-            fs::read_dir(&destination).map(|entries| entries.count()).unwrap_or(0),
+            fs::read_dir(&destination)
+                .map(|entries| entries.count())
+                .unwrap_or(0),
             0
         );
 
@@ -2069,7 +2082,10 @@ mod tests {
             .is_file());
         assert!(!legacy_source.exists(), "空掉的旧备份目录应被删除");
         assert!(!legacy_root.exists(), "空掉的 Documents\\LightC 也应被删除");
-        assert!(root.join("Documents").is_dir(), "只删空目录，不动 Documents 本身");
+        assert!(
+            root.join("Documents").is_dir(),
+            "只删空目录，不动 Documents 本身"
+        );
 
         let _ = fs::remove_dir_all(&root);
     }
@@ -2081,9 +2097,13 @@ mod tests {
         let context_dir = root.join("reg_backups");
         let registry_dir = context_dir.join("registry");
         fs::create_dir_all(&registry_dir).expect("创建备份目录失败");
-        fs::write(context_dir.join("HKCR_all_20260101_000000.reg"), "context").expect("写入备份失败");
-        fs::write(registry_dir.join("lightc_registry_backup_20260101_000000.reg"), "registry")
+        fs::write(context_dir.join("HKCR_all_20260101_000000.reg"), "context")
             .expect("写入备份失败");
+        fs::write(
+            registry_dir.join("lightc_registry_backup_20260101_000000.reg"),
+            "registry",
+        )
+        .expect("写入备份失败");
 
         let parent_definition = CLEARABLE_DATA_DEFINITIONS
             .iter()

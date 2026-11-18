@@ -490,7 +490,7 @@ impl EnhancedDeleteEngine {
         Self {
             cluster_size,
             cluster_sizes: Mutex::new(HashMap::new()),
-            enable_reboot_delete: true,   // enabled by default, handles occupied files
+            enable_reboot_delete: true, // enabled by default, handles occupied files
             enable_take_ownership: false, // disabled by default, icacls calls are slow
         }
     }

@@ -137,7 +137,10 @@ impl StreamDecoder {
                     return;
                 };
                 for fragment in calls {
-                    let index = fragment.get("index").and_then(|item| item.as_u64()).unwrap_or(0) as usize;
+                    let index = fragment
+                        .get("index")
+                        .and_then(|item| item.as_u64())
+                        .unwrap_or(0) as usize;
                     let entry = self.partial_tools.entry(index).or_default();
                     if let Some(id) = fragment.get("id").and_then(|item| item.as_str()) {
                         entry.id = id.to_string();
@@ -146,7 +149,8 @@ impl StreamDecoder {
                         if let Some(name) = function.get("name").and_then(|item| item.as_str()) {
                             entry.name.push_str(name);
                         }
-                        if let Some(args) = function.get("arguments").and_then(|item| item.as_str()) {
+                        if let Some(args) = function.get("arguments").and_then(|item| item.as_str())
+                        {
                             entry.arguments.push_str(args);
                         }
                     }
@@ -171,9 +175,16 @@ impl StreamDecoder {
                         }
                     }
                 } else if let Some(delta) = value.get("delta") {
-                    if delta.get("type").and_then(|item| item.as_str()) == Some("input_json_delta") {
-                        if let Some(partial) = delta.get("partial_json").and_then(|item| item.as_str()) {
-                            self.partial_tools.entry(index).or_default().arguments.push_str(partial);
+                    if delta.get("type").and_then(|item| item.as_str()) == Some("input_json_delta")
+                    {
+                        if let Some(partial) =
+                            delta.get("partial_json").and_then(|item| item.as_str())
+                        {
+                            self.partial_tools
+                                .entry(index)
+                                .or_default()
+                                .arguments
+                                .push_str(partial);
                         }
                     }
                 }
@@ -196,7 +207,8 @@ impl StreamDecoder {
             .map(|(_, call)| AiToolCall {
                 call_id: call.id,
                 name: call.name,
-                arguments: serde_json::from_str(&call.arguments).unwrap_or_else(|_| serde_json::json!({})),
+                arguments: serde_json::from_str(&call.arguments)
+                    .unwrap_or_else(|_| serde_json::json!({})),
             })
             .collect()
     }
@@ -240,7 +252,12 @@ impl StreamDecoder {
 
 /// OpenAI-compatible: choices[0].delta.content
 fn parse_openai_delta(value: &serde_json::Value) -> Option<String> {
-    let text = value.get("choices")?.get(0)?.get("delta")?.get("content")?.as_str()?;
+    let text = value
+        .get("choices")?
+        .get(0)?
+        .get("delta")?
+        .get("content")?
+        .as_str()?;
     if text.is_empty() {
         None
     } else {
@@ -339,7 +356,11 @@ mod tests {
         assert_eq!(calls[0].call_id, "call_1");
         // The reassembled arguments must yield the id when parsed
         assert_eq!(
-            calls[0].arguments.get("ids").and_then(|v| v.as_array()).map(|a| a.len()),
+            calls[0]
+                .arguments
+                .get("ids")
+                .and_then(|v| v.as_array())
+                .map(|a| a.len()),
             Some(1)
         );
     }
@@ -355,7 +376,12 @@ mod tests {
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].name, "propose_delete");
         assert_eq!(
-            calls[0].arguments.get("ids").and_then(|v| v.as_array()).and_then(|a| a.first()).and_then(|v| v.as_str()),
+            calls[0]
+                .arguments
+                .get("ids")
+                .and_then(|v| v.as_array())
+                .and_then(|a| a.first())
+                .and_then(|v| v.as_str()),
             Some("WindowsTemp")
         );
     }
@@ -380,7 +406,9 @@ mod tests {
     #[test]
     fn finish_flushes_a_trailing_line_without_newline() {
         let mut decoder = StreamDecoder::new(AiProtocol::OpenAi);
-        assert!(decoder.push("data: {\"choices\":[{\"delta\":{\"content\":\"尾\"}}]}").is_empty());
+        assert!(decoder
+            .push("data: {\"choices\":[{\"delta\":{\"content\":\"尾\"}}]}")
+            .is_empty());
         assert_eq!(decoder.finish(), vec!["尾".to_string()]);
     }
 
@@ -398,7 +426,10 @@ mod tests {
             + 1;
 
         let mut decoder = StreamDecoder::new(AiProtocol::OpenAi);
-        assert!(decoder.push_bytes(&bytes[..split]).is_empty(), "半行不该产出增量");
+        assert!(
+            decoder.push_bytes(&bytes[..split]).is_empty(),
+            "半行不该产出增量"
+        );
         assert_eq!(decoder.push_bytes(&bytes[split..]), vec!["好".to_string()]);
     }
 
@@ -420,7 +451,11 @@ mod tests {
              data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"再判断用途\"}}]}\n\
              data: {\"choices\":[{\"delta\":{\"content\":\"这是缓存目录。\"}}]}\n",
         );
-        assert_eq!(deltas, vec!["这是缓存目录。".to_string()], "思维链不该混进正文");
+        assert_eq!(
+            deltas,
+            vec!["这是缓存目录。".to_string()],
+            "思维链不该混进正文"
+        );
         assert_eq!(decoder.take_reasoning(), "先看路径再判断用途");
         assert_eq!(decoder.take_reasoning(), "", "取过一次就空了");
     }

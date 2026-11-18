@@ -37,7 +37,11 @@ impl SocialScanner {
     }
 
     /// Scan the NTQQ account directory structure (one account subdirectory under nt_qq).
-    pub(super) fn scan_ntqq_account_directory(&self, account_dir: &Path, paths: &mut Vec<SocialAppPath>) {
+    pub(super) fn scan_ntqq_account_directory(
+        &self,
+        account_dir: &Path,
+        paths: &mut Vec<SocialAppPath>,
+    ) {
         // nt_data directory - media files
         let nt_data = account_dir.join("nt_data");
         if nt_data.is_dir() {
@@ -54,7 +58,14 @@ impl SocialScanner {
             // Emoji, avatars, and other business caches (NONE)
             self.add_named_subdirectories(
                 &nt_data,
-                &["Emoji", "PokeFace", "Skin", "ntnnModel", "onlineStatus", "msf"],
+                &[
+                    "Emoji",
+                    "PokeFace",
+                    "Skin",
+                    "ntnnModel",
+                    "onlineStatus",
+                    "msf",
+                ],
                 "NTQQ",
                 FileCategory::TempCache,
                 false,
@@ -359,11 +370,26 @@ mod tests {
                 .any(|p| p.path.ends_with(suffix) && p.category == category)
         };
 
-        assert!(found("Emoji", FileCategory::TempCache), "global/nt_data/Emoji 应被收录");
-        assert!(found("Log", FileCategory::TempCache), "global/nt_data/Log 应被收录");
-        assert!(found("nt_temp", FileCategory::TempCache), "global/nt_temp 应被收录");
-        assert!(found("nt_db", FileCategory::ChatDatabase), "global/nt_db 应为聊天记录");
-        assert!(found("Pic", FileCategory::ImageVideo), "账号目录媒体仍应被收录");
+        assert!(
+            found("Emoji", FileCategory::TempCache),
+            "global/nt_data/Emoji 应被收录"
+        );
+        assert!(
+            found("Log", FileCategory::TempCache),
+            "global/nt_data/Log 应被收录"
+        );
+        assert!(
+            found("nt_temp", FileCategory::TempCache),
+            "global/nt_temp 应被收录"
+        );
+        assert!(
+            found("nt_db", FileCategory::ChatDatabase),
+            "global/nt_db 应为聊天记录"
+        );
+        assert!(
+            found("Pic", FileCategory::ImageVideo),
+            "账号目录媒体仍应被收录"
+        );
 
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -390,7 +416,9 @@ mod tests {
         let mut from_root = Vec::new();
         scanner.scan_ntqq_directory(&root, &mut from_root);
         let found = |paths: &Vec<SocialAppPath>, suffix: &str, category: FileCategory| {
-            paths.iter().any(|p| p.path.ends_with(suffix) && p.category == category)
+            paths
+                .iter()
+                .any(|p| p.path.ends_with(suffix) && p.category == category)
         };
         assert!(
             found(&from_root, "Pic", FileCategory::ImageVideo),

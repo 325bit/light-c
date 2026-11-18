@@ -66,9 +66,9 @@ pub fn sessions_root() -> PathBuf {
 fn is_safe_segment(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= 64
-        && value
-            .chars()
-            .all(|character| character.is_ascii_lowercase() || character.is_ascii_digit() || character == '-')
+        && value.chars().all(|character| {
+            character.is_ascii_lowercase() || character.is_ascii_digit() || character == '-'
+        })
 }
 
 /// Validate date: must be a strict YYYY-MM-DD.
@@ -90,18 +90,25 @@ fn session_file(module_id: &str, date: &str) -> Result<PathBuf, String> {
     if !is_safe_date(date) {
         return Err(format!("非法的日期格式（应为 YYYY-MM-DD）: {}", date));
     }
-    Ok(sessions_root().join(module_id).join(format!("{}.jsonl", date)))
+    Ok(sessions_root()
+        .join(module_id)
+        .join(format!("{}.jsonl", date)))
 }
 
 /// Append one message. Creates the directory automatically if it doesn't exist.
-pub fn append_message(module_id: &str, date: &str, message: AiSessionMessage) -> Result<(), String> {
+pub fn append_message(
+    module_id: &str,
+    date: &str,
+    message: AiSessionMessage,
+) -> Result<(), String> {
     let path = session_file(module_id, date)?;
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
             .map_err(|error| format!("创建会话目录失败 {}: {}", parent.display(), error))?;
     }
 
-    let line = serde_json::to_string(&message).map_err(|error| format!("序列化会话消息失败: {}", error))?;
+    let line = serde_json::to_string(&message)
+        .map_err(|error| format!("序列化会话消息失败: {}", error))?;
     let mut file = fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -130,7 +137,12 @@ pub fn load_session(module_id: &str, date: &str) -> Result<Vec<AiSessionMessage>
         }
         match serde_json::from_str::<AiSessionMessage>(line) {
             Ok(message) => messages.push(message),
-            Err(error) => log::warn!("跳过损坏的会话记录 {} 第 {} 行: {}", path.display(), index + 1, error),
+            Err(error) => log::warn!(
+                "跳过损坏的会话记录 {} 第 {} 行: {}",
+                path.display(),
+                index + 1,
+                error
+            ),
         }
     }
     Ok(messages)
@@ -143,7 +155,8 @@ pub fn clear_session(module_id: &str, date: &str) -> Result<(), String> {
     if !path.exists() {
         return Ok(());
     }
-    fs::remove_file(&path).map_err(|error| format!("删除会话文件失败 {}: {}", path.display(), error))
+    fs::remove_file(&path)
+        .map_err(|error| format!("删除会话文件失败 {}: {}", path.display(), error))
 }
 
 /// Result of a range read.
@@ -193,7 +206,10 @@ pub fn load_session_range(
 
     let directory = sessions_root().join(module_id);
     if !directory.is_dir() {
-        return Ok(AiSessionPage { messages: Vec::new(), has_more: false });
+        return Ok(AiSessionPage {
+            messages: Vec::new(),
+            has_more: false,
+        });
     }
 
     let names = fs::read_dir(&directory)
@@ -226,7 +242,10 @@ pub fn load_session_range(
         has_more = true;
     }
 
-    Ok(AiSessionPage { messages: collected, has_more })
+    Ok(AiSessionPage {
+        messages: collected,
+        has_more,
+    })
 }
 
 /// Clear a module's sessions for **all dates** (the UI's "Clear conversation").
@@ -272,7 +291,11 @@ mod tests {
     fn session_file_is_built_under_the_module_directory() {
         let path = session_file("junk-clean", "2026-10-14").expect("合法输入应通过");
         let text = path.to_string_lossy().replace('\\', "/");
-        assert!(text.ends_with("ai/sessions/junk-clean/2026-10-14.jsonl"), "实际得到 {}", text);
+        assert!(
+            text.ends_with("ai/sessions/junk-clean/2026-10-14.jsonl"),
+            "实际得到 {}",
+            text
+        );
     }
 
     #[test]

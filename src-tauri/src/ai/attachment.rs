@@ -64,7 +64,8 @@ pub fn save_attachment(data_base64: &str, media_type: &str) -> Result<String, St
     let name = format!("ai-attach-{}-{}.jpg", stamp, next_sequence());
 
     let path = attachment_path(&name)?;
-    fs::write(&path, bytes).map_err(|error| format!("写入附件失败 {}: {}", path.display(), error))?;
+    fs::write(&path, bytes)
+        .map_err(|error| format!("写入附件失败 {}: {}", path.display(), error))?;
     Ok(name)
 }
 
@@ -75,7 +76,8 @@ pub fn read_attachment(name: &str) -> Result<String, String> {
     if !path.is_file() {
         return Ok(String::new());
     }
-    let bytes = fs::read(&path).map_err(|error| format!("读取附件失败 {}: {}", path.display(), error))?;
+    let bytes =
+        fs::read(&path).map_err(|error| format!("读取附件失败 {}: {}", path.display(), error))?;
     Ok(format!("data:image/jpeg;base64,{}", base64_encode(&bytes)))
 }
 
@@ -152,7 +154,12 @@ mod tests {
     #[test]
     fn base64_round_trips() {
         // Boundaries of length 1/2/3 must all be correct (the position of padding = differs)
-        for raw in [b"a".as_slice(), b"ab".as_slice(), b"abc".as_slice(), b"abcd".as_slice()] {
+        for raw in [
+            b"a".as_slice(),
+            b"ab".as_slice(),
+            b"abc".as_slice(),
+            b"abcd".as_slice(),
+        ] {
             let encoded = base64_encode(raw);
             assert_eq!(base64_decode(&encoded).unwrap(), raw, "编码 {}", encoded);
         }

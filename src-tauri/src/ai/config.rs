@@ -79,7 +79,11 @@ impl AiStoredConfig {
             .profiles
             .iter()
             .position(|profile| profile.id == self.active_profile_id)
-            .or(if self.profiles.is_empty() { None } else { Some(0) })?;
+            .or(if self.profiles.is_empty() {
+                None
+            } else {
+                Some(0)
+            })?;
         self.profiles.get_mut(target)
     }
 }
@@ -289,9 +293,8 @@ fn dpapi_protect(plain: &[u8]) -> Option<Vec<u8>> {
     if ok == 0 {
         return None;
     }
-    let encrypted = unsafe {
-        std::slice::from_raw_parts(output.pbData, output.cbData as usize).to_vec()
-    };
+    let encrypted =
+        unsafe { std::slice::from_raw_parts(output.pbData, output.cbData as usize).to_vec() };
     unsafe {
         LocalFree(output.pbData as LPVOID);
     }
@@ -327,9 +330,8 @@ fn dpapi_unprotect(encrypted: &[u8]) -> Option<Vec<u8>> {
     if ok == 0 {
         return None;
     }
-    let plain = unsafe {
-        std::slice::from_raw_parts(output.pbData, output.cbData as usize).to_vec()
-    };
+    let plain =
+        unsafe { std::slice::from_raw_parts(output.pbData, output.cbData as usize).to_vec() };
     unsafe {
         LocalFree(output.pbData as LPVOID);
     }
@@ -372,7 +374,11 @@ fn read_config_raw() -> AiStoredConfig {
         Err(error) => {
             // ⚠️ File present but unreadable (locked / permissions / bad disk) **must not be silently treated as "no config"**:
             // users see "all my keys are gone" with no clue to diagnose.
-            log::warn!("读取 AI 配置失败，已回退默认值 {}: {}", path.display(), error);
+            log::warn!(
+                "读取 AI 配置失败，已回退默认值 {}: {}",
+                path.display(),
+                error
+            );
             return AiStoredConfig::default();
         }
     };
@@ -385,7 +391,11 @@ fn read_config_raw() -> AiStoredConfig {
 
     if value.get("profiles").is_some() {
         return serde_json::from_value(value).unwrap_or_else(|error| {
-            log::warn!("AI 配置解析失败，已回退默认值: {} ({})", path.display(), error);
+            log::warn!(
+                "AI 配置解析失败，已回退默认值: {} ({})",
+                path.display(),
+                error
+            );
             AiStoredConfig::default()
         });
     }
@@ -467,8 +477,13 @@ fn validate_profile(mut profile: AiProfile) -> Result<AiProfile, String> {
     }
     // Empty endpoint is **legal** (means use the preset default), but if provided it must be http(s)
     let base_url = profile.base_url.trim();
-    if !base_url.is_empty() && !(base_url.starts_with("http://") || base_url.starts_with("https://")) {
-        return Err(format!("接口地址必须以 http:// 或 https:// 开头: {}", base_url));
+    if !base_url.is_empty()
+        && !(base_url.starts_with("http://") || base_url.starts_with("https://"))
+    {
+        return Err(format!(
+            "接口地址必须以 http:// 或 https:// 开头: {}",
+            base_url
+        ));
     }
     Ok(profile)
 }
@@ -485,7 +500,11 @@ fn next_profile_id(config: &AiStoredConfig) -> String {
     let mut suffix = 2;
     loop {
         let candidate = format!("{}_{}", base, suffix);
-        if !config.profiles.iter().any(|profile| profile.id == candidate) {
+        if !config
+            .profiles
+            .iter()
+            .any(|profile| profile.id == candidate)
+        {
             return candidate;
         }
         suffix += 1;
@@ -531,7 +550,11 @@ pub fn upsert_profile(profile: AiProfile) -> Result<AiStoredConfig, String> {
     let _guard = lock_config();
     let profile = validate_profile(profile)?;
     let mut config = read_config();
-    match config.profiles.iter_mut().find(|item| item.id == profile.id) {
+    match config
+        .profiles
+        .iter_mut()
+        .find(|item| item.id == profile.id)
+    {
         Some(existing) => merge_profile_update(existing, profile),
         None => {
             let mut created = profile;
@@ -588,7 +611,11 @@ pub fn delete_profile(profile_id: &str) -> Result<AiStoredConfig, String> {
 pub fn set_active_profile(profile_id: &str) -> Result<AiStoredConfig, String> {
     let _guard = lock_config();
     let mut config = read_config();
-    if !config.profiles.iter().any(|profile| profile.id == profile_id) {
+    if !config
+        .profiles
+        .iter()
+        .any(|profile| profile.id == profile_id)
+    {
         return Err(format!("要切换的服务商配置不存在: {}", profile_id));
     }
     config.active_profile_id = profile_id.to_string();
@@ -707,7 +734,11 @@ mod tests {
         });
         let second = next_profile_id(&config);
         assert_ne!(first, second, "同一秒内第二份档案拿到了相同 id");
-        assert!(second.starts_with(&first), "冲突时应带后缀，实际 {}", second);
+        assert!(
+            second.starts_with(&first),
+            "冲突时应带后缀，实际 {}",
+            second
+        );
     }
 
     /// Switching models in place in the panel saves the profile again; the frontend form does not include models,
@@ -738,7 +769,10 @@ mod tests {
         assert_eq!(existing.api_key, "sk-secret");
         assert_eq!(
             existing.models,
-            vec![String::from("deepseek-flash"), String::from("deepseek-v4-pro")]
+            vec![
+                String::from("deepseek-flash"),
+                String::from("deepseek-v4-pro")
+            ]
         );
         assert_eq!(existing.models_fetched_at, 1_760_000_000);
     }

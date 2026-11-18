@@ -417,7 +417,10 @@ impl SocialScanner {
     ///
     /// See the `dir_cache` notes: the fallback search ranges of WeChat and QQ overlap completely,
     /// the second search hits the cache and produces virtually no IO.
-    pub(super) fn read_subdirectories_cached(&self, dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    pub(super) fn read_subdirectories_cached(
+        &self,
+        dir: &std::path::Path,
+    ) -> Vec<std::path::PathBuf> {
         if let Ok(cache) = self.dir_cache.lock() {
             if let Some(hit) = cache.get(dir) {
                 return hit.clone();
@@ -631,7 +634,10 @@ impl SocialScanner {
         // After sorting by depth from deep to shallow, child paths get their own category first and parent paths then skip duplicate files.
         let mut ordered_paths: Vec<_> = app_paths.iter().collect();
         ordered_paths.sort_by(|a, b| {
-            b.path.components().count().cmp(&a.path.components().count())
+            b.path
+                .components()
+                .count()
+                .cmp(&a.path.components().count())
         });
 
         let mut scanned_files = HashSet::new();
@@ -698,7 +704,8 @@ impl SocialScanner {
         scanned_files: &mut HashSet<String>,
         scanned_roots: &[PathBuf],
     ) -> (usize, usize) {
-        let walked = self.collect_directory_entries(path, app_name, base_category, 0, scanned_roots);
+        let walked =
+            self.collect_directory_entries(path, app_name, base_category, 0, scanned_roots);
         let mut counted_files = 0usize;
 
         for file_entry in walked.entries {
@@ -988,8 +995,7 @@ impl SocialScanner {
             "ai", "apk", "exe", "msi",
         ];
 
-        if DOCUMENT_EXTENSIONS.contains(&ext.as_str())
-            && !Self::is_program_resource_path(&path_str)
+        if DOCUMENT_EXTENSIONS.contains(&ext.as_str()) && !Self::is_program_resource_path(&path_str)
         {
             return (FileCategory::FileTransfer, RiskLevel::Medium);
         }

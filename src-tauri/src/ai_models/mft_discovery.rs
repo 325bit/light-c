@@ -29,30 +29,33 @@ where
 
     // The $MFT of each drive is independent; serially the total time is the sum of all drives, in parallel it equals the slowest drive.
     // Each drive's stage timings go into its own Vec and are merged by spawn order at the end, keeping the UI order stable.
-    let per_drive: Vec<(char, Result<Vec<(String, ModelItem)>, String>, Vec<AiModelPhaseDuration>)> =
-        std::thread::scope(|scope| {
-            let handles: Vec<_> = drives
-                .iter()
-                .map(|&drive_letter| {
-                    scope.spawn(move || {
-                        let mut phases = Vec::new();
-                        let outcome = scan_drive_for_model_candidates(
-                            drive_letter,
-                            covered_roots,
-                            scan_started_at,
-                            progress,
-                            &mut phases,
-                        );
-                        (drive_letter, outcome, phases)
-                    })
+    let per_drive: Vec<(
+        char,
+        Result<Vec<(String, ModelItem)>, String>,
+        Vec<AiModelPhaseDuration>,
+    )> = std::thread::scope(|scope| {
+        let handles: Vec<_> = drives
+            .iter()
+            .map(|&drive_letter| {
+                scope.spawn(move || {
+                    let mut phases = Vec::new();
+                    let outcome = scan_drive_for_model_candidates(
+                        drive_letter,
+                        covered_roots,
+                        scan_started_at,
+                        progress,
+                        &mut phases,
+                    );
+                    (drive_letter, outcome, phases)
                 })
-                .collect();
+            })
+            .collect();
 
-            handles
-                .into_iter()
-                .filter_map(|handle| handle.join().ok())
-                .collect()
-        });
+        handles
+            .into_iter()
+            .filter_map(|handle| handle.join().ok())
+            .collect()
+    });
 
     let mut grouped_models: HashMap<String, Vec<ModelItem>> = HashMap::new();
     let mut warnings = Vec::new();
@@ -344,11 +347,7 @@ fn model_extension_threshold(file_name: &str) -> Option<u64> {
     mft_model_min_size(file_name)
 }
 
-fn infer_source_name(
-    path: &Path,
-    path_key: &str,
-    covered_keys: &[CoveredRootKey<'_>],
-) -> String {
+fn infer_source_name(path: &Path, path_key: &str, covered_keys: &[CoveredRootKey<'_>]) -> String {
     if let Some(source_name) = covered_source_for_key(path_key, covered_keys) {
         return source_name.to_string();
     }
@@ -552,7 +551,10 @@ mod tests {
 
         // A path containing `\checkpoints\` would normally be pushed to ComfyUI, but ownership must follow the coverage record
         assert_eq!(
-            covered_source_for_key(r"d:\comfyui\models\checkpoints\a.safetensors", &covered_keys),
+            covered_source_for_key(
+                r"d:\comfyui\models\checkpoints\a.safetensors",
+                &covered_keys
+            ),
             Some("ComfyUI")
         );
         assert_eq!(

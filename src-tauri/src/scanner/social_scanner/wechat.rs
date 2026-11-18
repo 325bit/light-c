@@ -218,10 +218,7 @@ impl SocialScanner {
 
     /// New WeChat 4.x account directory signature: database in db_storage, messages and media in msg.
     pub(super) fn looks_like_wechat4_account(path: &Path) -> bool {
-        matches!(
-            Self::wechat_account_kind(path),
-            Some(WechatAccountKind::V4)
-        )
+        matches!(Self::wechat_account_kind(path), Some(WechatAccountKind::V4))
     }
 
     /// Determine whether a subdirectory is a scannable WeChat account directory, filtering out empty directories from newly created or migrating accounts.
@@ -312,7 +309,14 @@ impl SocialScanner {
         // Business cache for mini programs, favorites, emoji, etc. (NONE)
         self.add_named_subdirectories(
             &account_dir.join("business"),
-            &["emoticon", "favorite", "xweb", "xeditor", "InputTemp", "migrate"],
+            &[
+                "emoticon",
+                "favorite",
+                "xweb",
+                "xeditor",
+                "InputTemp",
+                "migrate",
+            ],
             "微信",
             FileCategory::TempCache,
             is_custom,
@@ -531,7 +535,16 @@ impl SocialScanner {
         // Common storage locations (including drive roots, covering cases where data is placed directly on D: or E:).
         // Deliberately do not use the whole drive root as a deep-search starting point: drilling down by name on C: would enter system directories such as Windows,
         // which is slow and pointless; custom data directories are basically structured as "drive root -> a user-created directory -> WeChat data directory".
-        let common_locations = ["", "Users", "Data", "Documents", "data", "software", "Programs", "downloads"];
+        let common_locations = [
+            "",
+            "Users",
+            "Data",
+            "Documents",
+            "data",
+            "software",
+            "Programs",
+            "downloads",
+        ];
 
         for drive in &self.available_drives {
             for location in &common_locations {
@@ -605,7 +618,12 @@ impl SocialScanner {
     /// ⚠️ Traversal goes through `read_subdirectories_cached` rather than `walkdir`:
     /// WeChat's and QQ's fallback searches overlap completely, so on the second search these directories are already cached,
     /// producing almost no IO. Depth semantics match walkdir's `max_depth` (base is level 0).
-    pub(super) fn find_directory_by_name(&self, base: &Path, name: &str, max_depth: usize) -> Option<PathBuf> {
+    pub(super) fn find_directory_by_name(
+        &self,
+        base: &Path,
+        name: &str,
+        max_depth: usize,
+    ) -> Option<PathBuf> {
         const MAX_CHECKED_DIRS: usize = 20_000;
         let mut checked = 0usize;
         let mut frontier: Vec<(PathBuf, usize)> = vec![(base.to_path_buf(), 0)];
@@ -614,7 +632,11 @@ impl SocialScanner {
             checked += 1;
             // Directory indexing itself has a cost; limiting the check count prevents long stalls in huge directories
             if checked > MAX_CHECKED_DIRS {
-                debug!("目录检查数量超限，停止在 {} 内查找 {}", base.display(), name);
+                debug!(
+                    "目录检查数量超限，停止在 {} 内查找 {}",
+                    base.display(),
+                    name
+                );
                 return None;
             }
 
@@ -830,7 +852,9 @@ mod tests {
         assert!(found("cache", FileCategory::TempCache));
         assert!(found("RWTemp", FileCategory::ImageVideo));
         assert!(found("sns", FileCategory::MomentsCache));
-        assert!(!paths.iter().any(|p| p.path.to_string_lossy().contains("Backup")));
+        assert!(!paths
+            .iter()
+            .any(|p| p.path.to_string_lossy().contains("Backup")));
 
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -863,16 +887,22 @@ mod tests {
         let category = root.join("聊天记录");
 
         assert!(
-            scanner.find_directory_by_name(&category, "Tencent Files", 2).is_some(),
+            scanner
+                .find_directory_by_name(&category, "Tencent Files", 2)
+                .is_some(),
             "分类目录下的 Tencent Files 应能找到"
         );
         assert!(
-            scanner.find_directory_by_name(&category, "xwechat_files", 2).is_some(),
+            scanner
+                .find_directory_by_name(&category, "xwechat_files", 2)
+                .is_some(),
             "分类目录下的 xwechat_files 应能找到"
         );
         // Drilling only 1 level truly cannot find it - proving this test really guards the depth rather than passing by chance
         assert!(
-            scanner.find_directory_by_name(&category, "Tencent Files", 1).is_none(),
+            scanner
+                .find_directory_by_name(&category, "Tencent Files", 1)
+                .is_none(),
             "深度 1 不应命中，否则用例失去意义"
         );
 

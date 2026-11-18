@@ -2,6 +2,7 @@
 // Scanner module - responsible for scanning junk files in the Windows system
 // ============================================================================
 
+mod ai_tool_cleaner;
 pub(crate) mod big_files;
 pub(crate) mod big_files_engine;
 mod categories;
@@ -18,11 +19,11 @@ mod registry_scoring;
 pub(crate) mod reparse;
 mod scan_engine;
 pub(crate) mod shell_icons;
-mod ai_tool_cleaner;
 mod social_scanner;
 // [dev-cache] Dev cache cleanup + the multi-version leftover scan (shown on the "leftover & cache" page)
 pub(crate) mod dev_cache;
 
+pub use ai_tool_cleaner::*;
 pub use categories::*;
 pub use context_menu::*;
 pub use file_info::*;
@@ -31,7 +32,6 @@ pub use leftovers::*;
 pub use registry::*;
 pub use scan_engine::*;
 pub use shell_icons::*;
-pub use ai_tool_cleaner::*;
 pub use social_scanner::*;
 // [dev-cache]
 pub use dev_cache::*;

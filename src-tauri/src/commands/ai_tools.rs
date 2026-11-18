@@ -2,7 +2,7 @@
 // AI tool cleanup commands
 // ============================================================================
 
-use crate::scanner::{AiCacheDeleteResult, AiCacheFileList, AiToolScanner, AiToolScanResult};
+use crate::scanner::{AiCacheDeleteResult, AiCacheFileList, AiToolScanResult, AiToolScanner};
 use log::info;
 
 /// Scans caches of various AI tools. Scanning traverses directories, so run it in the blocking thread pool to avoid freezing the UI.

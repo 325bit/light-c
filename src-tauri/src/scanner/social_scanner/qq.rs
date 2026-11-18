@@ -380,7 +380,15 @@ impl SocialScanner {
 
         // Includes "" (drive root): custom save locations basically always look like this — `D:\QQ\Tencent Files`.
         // System directories are skipped below, so Windows / Program Files won't be scanned.
-        let common_locations = ["", "Users", "Documents", "Data", "software", "Programs", "downloads"];
+        let common_locations = [
+            "",
+            "Users",
+            "Documents",
+            "Data",
+            "software",
+            "Programs",
+            "downloads",
+        ];
 
         for drive in &self.available_drives {
             for location in &common_locations {
@@ -596,7 +604,10 @@ mod tests {
         assert!(found("Image", FileCategory::ImageVideo));
         assert!(found("FileRecv", FileCategory::FileTransfer));
         assert!(found("Msg2", FileCategory::ChatDatabase));
-        assert!(found("Pic", FileCategory::ImageVideo), "嵌套 nt_qq 数据应被解析");
+        assert!(
+            found("Pic", FileCategory::ImageVideo),
+            "嵌套 nt_qq 数据应被解析"
+        );
 
         let _ = std::fs::remove_dir_all(&root);
     }

@@ -352,10 +352,8 @@ fn build_navigation_info(
     let system_by_clsid = SYSTEM_CLSIDS
         .iter()
         .any(|item| item.eq_ignore_ascii_case(clsid));
-    let system_by_source = source_path
-        .as_deref()
-        .is_some_and(is_system_component_path)
-        && known_application.is_none();
+    let system_by_source =
+        source_path.as_deref().is_some_and(is_system_component_path) && known_application.is_none();
     let is_system_protected = system_by_clsid || system_by_source;
     if is_system_protected || application_name.is_none() {
         return Ok(None);
@@ -1084,11 +1082,13 @@ fn create_backup(
 }
 
 /// The navigation pane only backs up the CLSID node and the pinned value, avoiding mistaking the entire CLSID registration info for removable objects.
-fn remove_navigation_entry(
-    target: &ShellIconTarget,
-) -> Result<ShellIconOperationResult, String> {
+fn remove_navigation_entry(target: &ShellIconTarget) -> Result<ShellIconOperationResult, String> {
     let context = target_context(target)?;
-    let key = open_target_key(target, context, KEY_READ | KEY_SET_VALUE | context.view_flags)?;
+    let key = open_target_key(
+        target,
+        context,
+        KEY_READ | KEY_SET_VALUE | context.view_flags,
+    )?;
     let info = build_navigation_info_from_key(&key, target)?;
     if info.is_system_protected || info.risk_level == "unknown" {
         return Err("该节点无法确认是第三方导航窗格入口，已阻止操作".to_string());
@@ -1107,7 +1107,10 @@ fn remove_navigation_entry(
     }
     let message = match restart_explorer() {
         Ok(()) => "导航窗格入口已移除，已刷新 Explorer".to_string(),
-        Err(error) => format!("导航窗格入口已移除，但 Explorer 刷新失败，请手动刷新：{}", error),
+        Err(error) => format!(
+            "导航窗格入口已移除，但 Explorer 刷新失败，请手动刷新：{}",
+            error
+        ),
     };
     Ok(ShellIconOperationResult {
         success: true,
@@ -1117,13 +1120,15 @@ fn remove_navigation_entry(
     })
 }
 
-fn restore_navigation_entry(
-    target: &ShellIconTarget,
-) -> Result<ShellIconOperationResult, String> {
+fn restore_navigation_entry(target: &ShellIconTarget) -> Result<ShellIconOperationResult, String> {
     let context = target_context(target)?;
     let backup = find_latest_backup(target)?
         .ok_or_else(|| "未找到该导航窗格入口的注册表备份".to_string())?;
-    let key = open_target_key(target, context, KEY_READ | KEY_SET_VALUE | context.view_flags)?;
+    let key = open_target_key(
+        target,
+        context,
+        KEY_READ | KEY_SET_VALUE | context.view_flags,
+    )?;
     let pin_value = backup
         .navigation_pin_value
         .ok_or_else(|| "导航窗格备份缺少固定状态，无法恢复".to_string())?;
@@ -1137,7 +1142,10 @@ fn restore_navigation_entry(
     }
     let message = match restart_explorer() {
         Ok(()) => "导航窗格入口已恢复，已刷新 Explorer".to_string(),
-        Err(error) => format!("导航窗格入口已恢复，但 Explorer 刷新失败，请手动刷新：{}", error),
+        Err(error) => format!(
+            "导航窗格入口已恢复，但 Explorer 刷新失败，请手动刷新：{}",
+            error
+        ),
     };
     Ok(ShellIconOperationResult {
         success: true,
@@ -1156,9 +1164,10 @@ fn create_navigation_backup(
     let directory = backup_dir();
     fs::create_dir_all(&directory).map_err(|error| format!("创建备份目录失败: {}", error))?;
     let canonical_path = directory.join(format!("shell_icon_{}.reg", backup_stem(target)));
-    if let Some(existing) = find_backups(target)?.into_iter().find(|backup| {
-        Path::new(&backup.backup_path).is_file()
-    }) {
+    if let Some(existing) = find_backups(target)?
+        .into_iter()
+        .find(|backup| Path::new(&backup.backup_path).is_file())
+    {
         return consolidate_navigation_backup(target, context, &existing, pin_value);
     }
     export_registry_key(target, &canonical_path)?;
@@ -1197,10 +1206,7 @@ fn consolidate_navigation_backup(
     Ok(canonical)
 }
 
-fn write_backup_metadata(
-    backup_path: &Path,
-    metadata: &ShellIconBackup,
-) -> Result<(), String> {
+fn write_backup_metadata(backup_path: &Path, metadata: &ShellIconBackup) -> Result<(), String> {
     let json = serde_json::to_string_pretty(metadata)
         .map_err(|error| format!("序列化备份信息失败: {}", error))?;
     fs::write(backup_path.with_extension("json"), json)

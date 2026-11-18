@@ -8,6 +8,7 @@
 
 mod ai;
 mod ai_models;
+mod ai_tools;
 mod app;
 pub mod data;
 mod delete;
@@ -22,7 +23,6 @@ mod logger_cmd;
 mod registry;
 mod scan;
 mod shell_icons;
-mod ai_tools;
 mod social;
 mod system;
 pub(crate) mod tools;
@@ -31,6 +31,7 @@ mod verify;
 // Public types (for the frontend and other modules)
 pub use ai::*;
 pub use ai_models::*;
+pub use ai_tools::*;
 pub use app::*;
 pub use data::*;
 pub use delete::*;
@@ -45,7 +46,6 @@ pub use logger_cmd::*;
 pub use registry::*;
 pub use scan::*;
 pub use shell_icons::*;
-pub use ai_tools::*;
 pub use social::*;
 pub use system::*;
 pub use tools::*;

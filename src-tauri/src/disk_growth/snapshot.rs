@@ -139,7 +139,11 @@ impl FileDetailOrder {
                 file_name_of(right.diff_path()),
             ),
         };
-        let primary = if self.desc { ascending.reverse() } else { ascending };
+        let primary = if self.desc {
+            ascending.reverse()
+        } else {
+            ascending
+        };
         primary.then_with(|| left.diff_path().cmp(right.diff_path()))
     }
 }
@@ -641,7 +645,8 @@ impl SubtreeDiffCollector {
             return;
         }
         let order = self.order;
-        self.entries.sort_by(|left, right| order.compare(left, right));
+        self.entries
+            .sort_by(|left, right| order.compare(left, right));
         self.sorted = true;
     }
 

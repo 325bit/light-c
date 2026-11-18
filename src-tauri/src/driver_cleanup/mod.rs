@@ -215,8 +215,7 @@ pub fn delete(published_names: Vec<String>) -> Result<DriverDeleteResult, String
         // Use only /force: old driver packages (Outranked) are still referenced by the device driver match list, and pnputil without
         // /force refuses to delete them; when /uninstall is used together with /force, /force is ignored, and
         // /uninstall fails because "the INF is still installed for a device". No active devices were confirmed before deletion, so /force is safe.
-        let command_result =
-            run_pnputil(&["/delete-driver", published_name.as_str(), "/force"]);
+        let command_result = run_pnputil(&["/delete-driver", published_name.as_str(), "/force"]);
         let (command_success, output_text) = match command_result {
             Ok(output) => (output.status_success, format_command_output(&output.output)),
             Err(error) => (false, error),

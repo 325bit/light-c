@@ -441,7 +441,11 @@ mod tests {
     #[test]
     fn test_category_files_are_sorted_by_size_desc() {
         let mut result = CategoryScanResult::new(JunkCategory::WindowsTemp);
-        for (name, size) in [("small.tmp", 10_u64), ("large.tmp", 4096), ("medium.tmp", 512)] {
+        for (name, size) in [
+            ("small.tmp", 10_u64),
+            ("large.tmp", 4096),
+            ("medium.tmp", 512),
+        ] {
             result.add_file(FileInfo::new(
                 format!(r"C:\Users\Test\AppData\Local\Temp\{}", name),
                 name.to_string(),
@@ -454,7 +458,11 @@ mod tests {
 
         result.sort_files_by_size_desc();
 
-        let sizes = result.files.iter().map(|file| file.size).collect::<Vec<_>>();
+        let sizes = result
+            .files
+            .iter()
+            .map(|file| file.size)
+            .collect::<Vec<_>>();
         assert_eq!(sizes, vec![4096, 512, 10]);
         // Sorting only changes display order, not the category statistics.
         assert_eq!(result.file_count, 3);

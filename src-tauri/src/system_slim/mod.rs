@@ -443,8 +443,7 @@ fn build_winsxs_items(
     failure: Option<&str>,
 ) -> Vec<SlimItemStatus> {
     let can_estimate = analyze_result.analysis_succeeded;
-    let has_reclaimable =
-        analyze_result.reclaimable_size > 0 || analyze_result.cleanup_recommended;
+    let has_reclaimable = analyze_result.reclaimable_size > 0 || analyze_result.cleanup_recommended;
 
     let status_text = if !can_estimate {
         if analyzing {
@@ -470,17 +469,16 @@ fn build_winsxs_items(
 
     // Only show details when sub-items are actually parsed: some DISM versions report only a total, and hard-splitting a zero out of it
     // would make the UI show "backup 0 B, cache = everything", which is more misleading than showing nothing.
-    let breakdown = if can_estimate
-        && (analyze_result.backups_size > 0 || analyze_result.cache_size > 0)
-    {
-        Some(WinsxsBreakdown {
-            backups: analyze_result.backups_size,
-            cache: analyze_result.cache_size,
-            packages: analyze_result.reclaimable_packages,
-        })
-    } else {
-        None
-    };
+    let breakdown =
+        if can_estimate && (analyze_result.backups_size > 0 || analyze_result.cache_size > 0) {
+            Some(WinsxsBreakdown {
+                backups: analyze_result.backups_size,
+                cache: analyze_result.cache_size,
+                packages: analyze_result.reclaimable_packages,
+            })
+        } else {
+            None
+        };
 
     vec![
         SlimItemStatus {
@@ -1356,7 +1354,11 @@ async fn run_hibernation_toggle(window: &Window, enable: bool) -> Result<String,
 
     let started_at = std::time::Instant::now();
     let item_id = "hibernation";
-    let item_label = if enable { "开启休眠" } else { "关闭休眠" };
+    let item_label = if enable {
+        "开启休眠"
+    } else {
+        "关闭休眠"
+    };
 
     emit_slim_progress(
         window,
@@ -1436,7 +1438,11 @@ async fn run_hibernation_toggle(window: &Window, enable: bool) -> Result<String,
             window,
             item_id,
             "done",
-            if enable { "休眠已开启" } else { "休眠已关闭" },
+            if enable {
+                "休眠已开启"
+            } else {
+                "休眠已关闭"
+            },
             100,
             "done",
             started_at,
@@ -1486,7 +1492,11 @@ async fn run_winsxs_cleanup(window: &Window, reset_base: bool) -> Result<String,
         terminate_previous_dism_process();
 
         let started_at = std::time::Instant::now();
-        let item_id = if reset_base { "winsxs_resetbase" } else { "winsxs" };
+        let item_id = if reset_base {
+            "winsxs_resetbase"
+        } else {
+            "winsxs"
+        };
         // DISM cleanup can take from tens of seconds to over ten minutes; the first progress message must say "this step is slow", otherwise users will think it is stuck.
         emit_slim_progress(
             window,
@@ -1695,10 +1705,9 @@ fn get_wsearch_service_state() -> SearchServiceState {
         // Registry startup type: 4 = disabled; when disabled, the rebuild interface cannot be invoked via COM
         let start_disabled = {
             use winreg::{enums::*, RegKey};
-            if let Ok(key) = RegKey::predef(HKEY_LOCAL_MACHINE).open_subkey_with_flags(
-                r"SYSTEM\CurrentControlSet\Services\WSearch",
-                KEY_READ,
-            ) {
+            if let Ok(key) = RegKey::predef(HKEY_LOCAL_MACHINE)
+                .open_subkey_with_flags(r"SYSTEM\CurrentControlSet\Services\WSearch", KEY_READ)
+            {
                 key.get_value::<u32, _>("Start")
                     .map(|v| v == 4)
                     .unwrap_or(false)
@@ -1710,7 +1719,11 @@ fn get_wsearch_service_state() -> SearchServiceState {
             return SearchServiceState::Disabled;
         }
 
-        let scm = OpenSCManagerW(std::ptr::null_mut(), std::ptr::null_mut(), SC_MANAGER_CONNECT);
+        let scm = OpenSCManagerW(
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            SC_MANAGER_CONNECT,
+        );
         if scm.is_null() {
             return SearchServiceState::NotInstalled;
         }
@@ -1799,8 +1812,9 @@ fn get_search_index_status() -> SlimItemStatus {
         description:
             "Windows 搜索索引数据库（Windows.db）异常膨胀时，重建可释放数 GB 空间，重建在后台进行"
                 .to_string(),
-        warning: "重建期间搜索结果可能不完整，重建需数小时且会重新索引全部文件；膨胀问题可能再次出现"
-            .to_string(),
+        warning:
+            "重建期间搜索结果可能不完整，重建需数小时且会重新索引全部文件；膨胀问题可能再次出现"
+                .to_string(),
         status_text,
         enabled: false,
         size: db_size,
@@ -1825,7 +1839,7 @@ pub fn rebuild_search_index() -> Result<String, String> {
             CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_ALL, COINIT_MULTITHREADED,
         };
         use windows::Win32::System::Search::{
-            CatalogPausedReason, CatalogStatus, CSearchManager, ISearchManager,
+            CSearchManager, CatalogPausedReason, CatalogStatus, ISearchManager,
             CATALOG_STATUS_FULL_CRAWL, CATALOG_STATUS_RECOVERING,
         };
 
@@ -1868,13 +1882,13 @@ pub fn rebuild_search_index() -> Result<String, String> {
         }
 
         match rebuild_result {
-            Ok(()) if already_rebuilding => {
-                Err("搜索索引正在重建中，请稍后再试".to_string())
-            }
+            Ok(()) if already_rebuilding => Err("搜索索引正在重建中，请稍后再试".to_string()),
             Ok(()) => {
                 info!("搜索索引重建已启动");
-                Ok("已开始重建 Windows 搜索索引，重建在后台进行，完成后搜索结果将恢复正常"
-                    .to_string())
+                Ok(
+                    "已开始重建 Windows 搜索索引，重建在后台进行，完成后搜索结果将恢复正常"
+                        .to_string(),
+                )
             }
             Err(e) => Err(format!(
                 "重建索引失败: {}（请确认 Windows Search 服务已启用）",
@@ -1896,11 +1910,20 @@ mod tests {
     #[test]
     fn parses_dism_progress_percentages() {
         // DISM output looks like "[==========35.5%==========          ]"; we must be able to extract the percentage.
-        assert_eq!(parse_dism_progress("[==========35.5%==========          ]"), Some(35));
-        assert_eq!(parse_dism_progress("[===========================85.0%==================        ]"), Some(85));
+        assert_eq!(
+            parse_dism_progress("[==========35.5%==========          ]"),
+            Some(35)
+        );
+        assert_eq!(
+            parse_dism_progress("[===========================85.0%==================        ]"),
+            Some(85)
+        );
         assert_eq!(parse_dism_progress("[100.0%]"), Some(100));
         // Lines without a percentage (ordinary logs) must not be mistaken for progress.
-        assert_eq!(parse_dism_progress("Deployment Image Servicing and Management tool"), None);
+        assert_eq!(
+            parse_dism_progress("Deployment Image Servicing and Management tool"),
+            None
+        );
         assert_eq!(parse_dism_progress(""), None);
     }
 
@@ -1916,7 +1939,11 @@ mod tests {
                 seen.push(pct);
             }
         });
-        assert_eq!(seen, vec![10, 35, 60], "每个 \\r 重绘都应被当成一次进度更新");
+        assert_eq!(
+            seen,
+            vec![10, 35, 60],
+            "每个 \\r 重绘都应被当成一次进度更新"
+        );
     }
 
     #[test]
@@ -1997,7 +2024,10 @@ mod tests {
 
         // Do not display it past the disk TTL, to avoid treating a days-old conclusion as current
         let too_old = 1_000 + WINSXS_DISK_CACHE_TTL_SECS + 1;
-        assert!(parse_disk_cache(&json, too_old).is_none(), "过期缓存应被丢弃");
+        assert!(
+            parse_disk_cache(&json, too_old).is_none(),
+            "过期缓存应被丢弃"
+        );
 
         // A failed-analysis result is rejected even if just written
         let failed = serialize_disk_cache(WinsxsAnalyzeResult::default(), 1_000).unwrap();
@@ -2064,7 +2094,10 @@ mod tests {
         let result = parse_winsxs_analyze_output(chinese);
         assert!(result.analysis_succeeded);
         assert_eq!(result.reclaimable_packages, 2);
-        assert!(result.cleanup_recommended, "「建议执行组件存储清理 : 是」必须判为建议清理");
+        assert!(
+            result.cleanup_recommended,
+            "「建议执行组件存储清理 : 是」必须判为建议清理"
+        );
     }
 
     #[test]
@@ -2092,7 +2125,10 @@ mod tests {
         let result = parse_winsxs_analyze_output(chinese);
         assert_eq!(result.backups_size, 2 * 1024 * 1024 * 1024);
         assert_eq!(result.cache_size, 256 * 1024 * 1024);
-        assert_eq!(result.reclaimable_size, result.backups_size + result.cache_size);
+        assert_eq!(
+            result.reclaimable_size,
+            result.backups_size + result.cache_size
+        );
     }
 
     #[test]
@@ -2123,7 +2159,14 @@ mod tests {
         };
         let json = serde_json::to_value(&progress).expect("进度结构应可序列化");
         // The frontend depends on these field names; changing them would break the progress bar, so they are locked here.
-        for key in ["item_id", "phase", "message", "percent", "status", "elapsed_ms"] {
+        for key in [
+            "item_id",
+            "phase",
+            "message",
+            "percent",
+            "status",
+            "elapsed_ms",
+        ] {
             assert!(json.get(key).is_some(), "缺少字段: {}", key);
         }
     }

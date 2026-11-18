@@ -550,7 +550,8 @@ fn parse_record_info(record: &[u8], mft_id: u64) -> Option<MftRecordInfo> {
             }
             // $FILE_NAME: parent directory reference + file name. Hard links produce multiple entries; skip 8.3 short names
             0x30 => {
-                if let Some((parent_id, name, namespace)) = parse_file_name_attribute(record, offset)
+                if let Some((parent_id, name, namespace)) =
+                    parse_file_name_attribute(record, offset)
                 {
                     let should_replace = match &name_entry {
                         None => true,
@@ -613,7 +614,11 @@ fn parse_file_name_attribute(record: &[u8], attribute_offset: usize) -> Option<(
         .chunks_exact(2)
         .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
         .collect();
-    Some((parent_reference, String::from_utf16_lossy(&units), namespace))
+    Some((
+        parent_reference,
+        String::from_utf16_lossy(&units),
+        namespace,
+    ))
 }
 
 fn parse_standard_info(record: &[u8], attribute_offset: usize) -> Option<(i64, u32)> {

@@ -132,10 +132,7 @@ fn find_portable_comfyui_roots(drive_root: &Path) -> Vec<PathBuf> {
 
     let mut roots = Vec::new();
     for entry in entries.filter_map(Result::ok) {
-        let is_dir = entry
-            .file_type()
-            .map(|kind| kind.is_dir())
-            .unwrap_or(false);
+        let is_dir = entry.file_type().map(|kind| kind.is_dir()).unwrap_or(false);
         if !is_dir {
             continue;
         }
@@ -167,7 +164,10 @@ fn collect_comfyui_models(models_root: &Path) -> Vec<ModelItem> {
         }
 
         // ComfyUI's subdirectories are asset types themselves; putting them in the name reduces the user's comprehension cost.
-        models.extend(collect_prefixed_model_files(&model_type_dir, directory_name));
+        models.extend(collect_prefixed_model_files(
+            &model_type_dir,
+            directory_name,
+        ));
     }
 
     models

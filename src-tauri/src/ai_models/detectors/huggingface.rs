@@ -51,11 +51,12 @@ impl ModelDetector for HuggingFaceDetector {
             .sum();
 
         DetectorOutput {
-            source: source_from_models("HuggingFace", source_path.unwrap_or_default(), models)
-                .map(|source| crate::ai_models::types::AssetSource {
+            source: source_from_models("HuggingFace", source_path.unwrap_or_default(), models).map(
+                |source| crate::ai_models::types::AssetSource {
                     total_size: total_size.max(source.total_size),
                     ..source
-                }),
+                },
+            ),
             warnings: Vec::new(),
         }
     }
@@ -231,7 +232,9 @@ mod tests {
     #[test]
     fn counts_symlinked_model_weights_from_blobs() {
         let root = fixture("symlink");
-        let model_dir = root.join("hub").join("models--Systran--faster-whisper-base");
+        let model_dir = root
+            .join("hub")
+            .join("models--Systran--faster-whisper-base");
         let blobs_dir = model_dir.join("blobs");
         let snapshot_dir = model_dir
             .join("snapshots")
@@ -279,7 +282,10 @@ mod tests {
         let model_dir = root.join("hub").join("models--org--model");
         std::fs::create_dir_all(model_dir.join("snapshots").join("v1")).unwrap();
         std::fs::write(
-            model_dir.join("snapshots").join("v1").join("pytorch_model.bin"),
+            model_dir
+                .join("snapshots")
+                .join("v1")
+                .join("pytorch_model.bin"),
             vec![0u8; 4096],
         )
         .unwrap();

@@ -132,7 +132,10 @@ fn path_traversal_is_rejected() {
         .join("..")
         .join("..")
         .join("logs");
-    assert!(!scanner.is_managed_cache_dir(&escaped), "带 `..` 的路径必须拒绝");
+    assert!(
+        !scanner.is_managed_cache_dir(&escaped),
+        "带 `..` 的路径必须拒绝"
+    );
 
     // The root directory itself must never be deleted
     assert!(!scanner.is_managed_cache_dir(&root));
@@ -201,11 +204,18 @@ fn doubao_layout_separates_cache_from_sandbox_runtime() {
     fs::write(default.join("Cache").join("a.bin"), vec![0u8; 2048]).unwrap();
     fs::write(default.join("GPUCache").join("g.bin"), vec![0u8; 512]).unwrap();
     fs::write(
-        user_data.join("sandbox_runtime").join("downloads").join("runtime.tar"),
+        user_data
+            .join("sandbox_runtime")
+            .join("downloads")
+            .join("runtime.tar"),
         vec![0u8; 4096],
     )
     .unwrap();
-    fs::write(user_data.join("gecko_cache").join("gecko2.db"), vec![0u8; 1024]).unwrap();
+    fs::write(
+        user_data.join("gecko_cache").join("gecko2.db"),
+        vec![0u8; 1024],
+    )
+    .unwrap();
 
     let scanner = AiToolScanner::new();
 

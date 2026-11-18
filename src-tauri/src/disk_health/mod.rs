@@ -439,7 +439,11 @@ fn sanitize_powershell_error(raw: &str) -> String {
             break;
         }
     }
-    let text = if collected.trim().is_empty() { text } else { collected };
+    let text = if collected.trim().is_empty() {
+        text
+    } else {
+        collected
+    };
 
     // Restore CLIXML XML entities and _xHHHH_ style escapes (e.g. _x000D__x000A_ means a newline), then collapse whitespace.
     text.replace("&lt;", "<")
@@ -792,7 +796,11 @@ mod tests {
         let long = "X".repeat(500);
         let hint = describe_storage_query_failure(&long);
         // 180 characters plus prefix/suffix; leave a little margin.
-        assert!(hint.chars().count() < 220, "未知错误应限长: {}", hint.chars().count());
+        assert!(
+            hint.chars().count() < 220,
+            "未知错误应限长: {}",
+            hint.chars().count()
+        );
         assert!(hint.ends_with('…'), "截断应有省略号");
     }
 }

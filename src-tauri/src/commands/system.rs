@@ -35,8 +35,8 @@ pub fn relaunch_as_admin(app: tauri::AppHandle) -> Result<bool, String> {
         return Ok(false);
     }
 
-    let exe_path = std::env::current_exe()
-        .map_err(|error| format!("无法定位当前程序路径: {}", error))?;
+    let exe_path =
+        std::env::current_exe().map_err(|error| format!("无法定位当前程序路径: {}", error))?;
 
     #[cfg(target_os = "windows")]
     {

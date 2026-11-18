@@ -82,8 +82,7 @@ pub fn scan_via_mft(
 
     // ---------- Accumulate file sizes ----------
     let stage_start = Instant::now();
-    let (mut stats_by_dir, fallback, file_count) =
-        accumulate_file_stats(&records, &directories);
+    let (mut stats_by_dir, fallback, file_count) = accumulate_file_stats(&records, &directories);
     let fallback_count = fallback.len();
     progress_cb(MftScanProgress {
         stage: "metadata",
@@ -110,7 +109,11 @@ pub fn scan_via_mft(
         stage_elapsed_ms: 0,
         detail: String::new(),
     });
-    propagate_to_ancestors(&directories, directory_index.deepest_depth, &mut stats_by_dir);
+    propagate_to_ancestors(
+        &directories,
+        directory_index.deepest_depth,
+        &mut stats_by_dir,
+    );
     // The directory index is no longer useful now; move paths out directly instead of cloning again
     let folder_map = into_folder_map(directories, &mut stats_by_dir);
     progress_cb(MftScanProgress {
@@ -262,11 +265,7 @@ fn build_directory_index(
 fn accumulate_file_stats<'a>(
     entries: &'a [mft_core::MftRecordInfo],
     directories: &HashMap<u64, DirectoryInfo>,
-) -> (
-    HashMap<u64, DirectoryStats>,
-    Vec<(u64, &'a str)>,
-    usize,
-) {
+) -> (HashMap<u64, DirectoryStats>, Vec<(u64, &'a str)>, usize) {
     let mut stats_by_dir: HashMap<u64, DirectoryStats> = HashMap::with_capacity(directories.len());
     let mut fallback: Vec<(u64, &str)> = Vec::new();
     let mut file_count = 0usize;
@@ -462,11 +461,7 @@ mod tests {
         assert_eq!(file_count, 5, "a/b/empty/no-data/c 五个文件，orphan 不算");
         assert_eq!(fallback, vec![(30u64, "no-data.bin")]);
 
-        propagate_to_ancestors(
-            &index.directories,
-            index.deepest_depth,
-            &mut stats_by_dir,
-        );
+        propagate_to_ancestors(&index.directories, index.deepest_depth, &mut stats_by_dir);
         let folder_map = into_folder_map(index.directories, &mut stats_by_dir);
 
         let evan = &folder_map[&PathBuf::from("C://Users//Evan")];

@@ -258,9 +258,8 @@ fn merge_sources_by_name(sources: Vec<AssetSource>) -> Vec<AssetSource> {
             existing_source.model_count = existing_source.models.len();
             // Sources with the same name may come from different roots (e.g. Ollama installed on two drives), total is the sum of their real usage.
             // Likewise must not recompute as "sum of merged model sizes", see dedupe_models_by_path for the reason.
-            existing_source.total_size = existing_source
-                .total_size
-                .saturating_add(source.total_size);
+            existing_source.total_size =
+                existing_source.total_size.saturating_add(source.total_size);
         } else {
             for model in &source.models {
                 let key = model_identity_key(&source.name, &model.name, &model.path);
@@ -313,7 +312,12 @@ mod tests {
     use crate::ai_models::types::ModelItem;
 
     /// Create a source where "the total is less than the per-model sum": simulate shared weights of Ollama / HuggingFace.
-    fn shared_blob_source(name: &str, root: &str, models: &[(&str, u64)], total_size: u64) -> AssetSource {
+    fn shared_blob_source(
+        name: &str,
+        root: &str,
+        models: &[(&str, u64)],
+        total_size: u64,
+    ) -> AssetSource {
         AssetSource {
             name: name.to_string(),
             path: PathBuf::from(root),

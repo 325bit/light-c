@@ -11,7 +11,7 @@ use super::presets::{find_preset, AiProtocol};
 use super::stream::StreamDecoder;
 use super::tools::{
     anthropic_tools, extract_inline_tool_calls, openai_tools, parse_tool_calls, AiToolCall,
-    TOOL_READ_ITEM_DETAIL, TOOL_READ_ITEMS,
+    TOOL_READ_ITEMS, TOOL_READ_ITEM_DETAIL,
 };
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
@@ -496,8 +496,7 @@ fn opencode_session_header<'a>(
         .split(':')
         .next()?
         .to_ascii_lowercase();
-    (host == "opencode.ai" || host.ends_with(".opencode.ai"))
-        .then_some(("x-opencode-session", id))
+    (host == "opencode.ai" || host.ends_with(".opencode.ai")).then_some(("x-opencode-session", id))
 }
 
 /// Add auth headers to a request; when the key is empty, **return it unchanged with no auth header**.
@@ -640,7 +639,11 @@ async fn send_with_reasoning_fallback(
         return Ok(retry);
     }
     let retry_text = retry.text().await.unwrap_or_default();
-    Err(describe_http_error(retry_status, &retry_text, api_key.is_empty()))
+    Err(describe_http_error(
+        retry_status,
+        &retry_text,
+        api_key.is_empty(),
+    ))
 }
 
 /// Read-only tool names: **always allowed**, no requirement that they were "declared this round".
@@ -764,9 +767,15 @@ pub async fn chat_once(request: AiChatRequest) -> Result<AiChatReply, String> {
     let client = http_client(CHAT_TIMEOUT_SECS, &base_url)?;
     let body = build_request_body(&request, protocol, &model, false);
     // Sending and non-2xx handling both happen inside (including "drop reasoning_effort and retry once if rejected")
-    let response =
-        send_with_reasoning_fallback(&client, protocol, &base_url, &api_key, request.session_id.as_deref(), &body)
-            .await?;
+    let response = send_with_reasoning_fallback(
+        &client,
+        protocol,
+        &base_url,
+        &api_key,
+        request.session_id.as_deref(),
+        &body,
+    )
+    .await?;
 
     let text = response
         .text()
@@ -955,7 +964,10 @@ mod tests {
         .build()
         .expect("构造请求失败");
         assert_eq!(
-            openai.headers().get("authorization").map(|v| v.to_str().unwrap()),
+            openai
+                .headers()
+                .get("authorization")
+                .map(|v| v.to_str().unwrap()),
             Some("Bearer sk-test")
         );
 
@@ -967,7 +979,10 @@ mod tests {
         .build()
         .expect("构造请求失败");
         assert_eq!(
-            anthropic.headers().get("x-api-key").map(|v| v.to_str().unwrap()),
+            anthropic
+                .headers()
+                .get("x-api-key")
+                .map(|v| v.to_str().unwrap()),
             Some("sk-ant")
         );
     }
@@ -998,8 +1013,14 @@ mod tests {
             opencode_session_header("https://opencode.ai.evil.com/v1", session),
             None
         );
-        assert_eq!(opencode_session_header("https://api.deepseek.com", session), None);
-        assert_eq!(opencode_session_header("https://opencode.ai/inference/go", None), None);
+        assert_eq!(
+            opencode_session_header("https://api.deepseek.com", session),
+            None
+        );
+        assert_eq!(
+            opencode_session_header("https://opencode.ai/inference/go", None),
+            None
+        );
         assert_eq!(
             opencode_session_header("https://opencode.ai/inference/go", Some("  ")),
             None
@@ -1074,14 +1095,18 @@ mod tests {
         };
 
         let openai = build_openai_body(&request, "m");
-        let parts = openai["messages"][0]["content"].as_array().expect("应为分片数组");
+        let parts = openai["messages"][0]["content"]
+            .as_array()
+            .expect("应为分片数组");
         assert_eq!(parts.len(), 2);
         assert_eq!(parts[0]["type"], "text");
         assert_eq!(parts[1]["type"], "image_url");
         assert_eq!(parts[1]["image_url"]["url"], "data:image/jpeg;base64,AAAA");
 
         let anthropic = build_anthropic_body(&request, "m");
-        let parts = anthropic["messages"][0]["content"].as_array().expect("应为分片数组");
+        let parts = anthropic["messages"][0]["content"]
+            .as_array()
+            .expect("应为分片数组");
         assert_eq!(parts[1]["type"], "image");
         assert_eq!(parts[1]["source"]["media_type"], "image/jpeg");
         assert_eq!(parts[1]["source"]["data"], "AAAA");
@@ -1102,8 +1127,14 @@ mod tests {
             tools: Vec::new(),
             session_id: None,
         };
-        assert_eq!(build_openai_body(&request, "m")["messages"][0]["content"], "你好");
-        assert_eq!(build_anthropic_body(&request, "m")["messages"][0]["content"], "你好");
+        assert_eq!(
+            build_openai_body(&request, "m")["messages"][0]["content"],
+            "你好"
+        );
+        assert_eq!(
+            build_anthropic_body(&request, "m")["messages"][0]["content"],
+            "你好"
+        );
     }
 
     #[test]
@@ -1112,8 +1143,16 @@ mod tests {
         // A real 503 was exactly like this: only the message line was useful.
         let body = r#"{"error":{"message":"Service is too busy. We advise users to temporarily switch to alternative LLM API service providers.","type":"service_unavailable_error","code":"service_unavailable_error"}}"#;
         let text = describe_http_error(503, body, false);
-        assert!(text.contains("Service is too busy"), "应保留服务商的原文：{}", text);
-        assert!(!text.contains("request_id"), "不该把整坨 JSON 带出来：{}", text);
+        assert!(
+            text.contains("Service is too busy"),
+            "应保留服务商的原文：{}",
+            text
+        );
+        assert!(
+            !text.contains("request_id"),
+            "不该把整坨 JSON 带出来：{}",
+            text
+        );
         // 5xx must make clear "it is a provider-side problem", otherwise users keep changing settings
         assert!(text.contains("服务商暂时不可用"), "{}", text);
     }
@@ -1121,14 +1160,20 @@ mod tests {
     #[test]
     fn error_extraction_falls_back_gracefully() {
         // Not JSON: fall back to raw text, never return an empty string
-        assert_eq!(extract_error_message("plain gateway error"), "plain gateway error");
+        assert_eq!(
+            extract_error_message("plain gateway error"),
+            "plain gateway error"
+        );
         // Only a code, no message
         assert_eq!(
             extract_error_message(r#"{"error":{"code":"rate_limited"}}"#),
             "错误代码：rate_limited"
         );
         // Top-level message
-        assert_eq!(extract_error_message(r#"{"message":"bad request"}"#), "bad request");
+        assert_eq!(
+            extract_error_message(r#"{"message":"bad request"}"#),
+            "bad request"
+        );
     }
 
     #[test]
@@ -1177,7 +1222,9 @@ mod tests {
         assert!(error_blames_reasoning_effort(
             "{\"error\":{\"message\":\"Unrecognized request argument supplied: reasoning_effort\"}}"
         ));
-        assert!(error_blames_reasoning_effort("unknown parameter: REASONING_EFFORT"));
+        assert!(error_blames_reasoning_effort(
+            "unknown parameter: REASONING_EFFORT"
+        ));
         assert!(!error_blames_reasoning_effort(
             "{\"error\":{\"message\":\"Model Not Exist\"}}"
         ));
@@ -1210,9 +1257,14 @@ mod tests {
         };
         let body = build_openai_body(&request, "test-model");
         let messages = body["messages"].as_array().expect("messages 应是数组");
-        assert!(messages[0].get("reasoning_content").is_none(), "system 不该带");
+        assert!(
+            messages[0].get("reasoning_content").is_none(),
+            "system 不该带"
+        );
         assert_eq!(
-            messages[1].get("reasoning_content").and_then(|value| value.as_str()),
+            messages[1]
+                .get("reasoning_content")
+                .and_then(|value| value.as_str()),
             Some("当时的思考")
         );
     }

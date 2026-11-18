@@ -63,7 +63,10 @@ pub async fn scan_junk_files(request: Option<ScanRequest>) -> Result<ScanResult,
 
 /// Performs a deep junk scan across all fixed partitions, preferring MFT for NTFS.
 #[tauri::command]
-pub async fn scan_deep_junk_files(window: Window, max_depth: Option<u32>) -> Result<deep_junk::DeepJunkScanResult, String> {
+pub async fn scan_deep_junk_files(
+    window: Window,
+    max_depth: Option<u32>,
+) -> Result<deep_junk::DeepJunkScanResult, String> {
     info!("开始深度扫描垃圾文件");
     deep_junk::reset_cancelled();
     // The recursion depth is passed from the settings page. It must be written before spawn_blocking —

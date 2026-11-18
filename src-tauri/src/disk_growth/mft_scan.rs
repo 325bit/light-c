@@ -18,7 +18,6 @@ use std::time::{Instant, UNIX_EPOCH};
 use winapi::um::fileapi::GetDriveTypeW;
 use winapi::um::winbase::DRIVE_FIXED;
 
-
 use crate::scanner::big_files_engine::mft_core;
 
 const DEFAULT_MAX_DEPTH: u8 = 4;
@@ -295,7 +294,10 @@ fn build_directory_index(entries: &[RawEntry], drive_root: &str) -> HashMap<u64,
         if entry.mft_id == 0 || !entry.is_dir {
             continue;
         }
-        children.entry(entry.parent_id).or_default().push(index as u32);
+        children
+            .entry(entry.parent_id)
+            .or_default()
+            .push(index as u32);
     }
 
     let mut directories: HashMap<u64, DirectoryInfo> = HashMap::with_capacity(children.len() + 1);
@@ -632,10 +634,19 @@ mod tests {
         let collection = collect_file_sizes(records, &|_| {}, &started);
 
         assert_eq!(collection.records.len(), 2, "空文件应该被丢掉");
-        assert_eq!(collection.mft_size_count, 1, "只有带 $DATA 的非空记录算 MFT 来源");
-        assert_eq!(collection.metadata_fallback_count, 1, "只有缺 $DATA 的记录才回退");
+        assert_eq!(
+            collection.mft_size_count, 1,
+            "只有带 $DATA 的非空记录算 MFT 来源"
+        );
+        assert_eq!(
+            collection.metadata_fallback_count, 1,
+            "只有缺 $DATA 的记录才回退"
+        );
         let sizes: Vec<u64> = collection.records.iter().map(|item| item.size).collect();
-        assert!(sizes.contains(&4096) && sizes.contains(&128), "大小不对: {sizes:?}");
+        assert!(
+            sizes.contains(&4096) && sizes.contains(&128),
+            "大小不对: {sizes:?}"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }

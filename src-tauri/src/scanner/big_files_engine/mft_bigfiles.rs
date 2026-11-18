@@ -61,21 +61,18 @@ pub fn scan_top_files_via_mft(
         drive_letter, top_n
     );
 
-    let progress = |stage: &str,
-                    message: &str,
-                    processed: usize,
-                    found_count: usize,
-                    detail: String| {
-        info!("[MFT-BigFiles] {}: {}", message, processed);
-        progress_cb(MftBigFileProgress {
-            stage: stage.to_string(),
-            message: message.to_string(),
-            processed,
-            found_count,
-            elapsed_ms: t0.elapsed().as_millis() as u64,
-            detail,
-        });
-    };
+    let progress =
+        |stage: &str, message: &str, processed: usize, found_count: usize, detail: String| {
+            info!("[MFT-BigFiles] {}: {}", message, processed);
+            progress_cb(MftBigFileProgress {
+                stage: stage.to_string(),
+                message: message.to_string(),
+                processed,
+                found_count,
+                elapsed_ms: t0.elapsed().as_millis() as u64,
+                detail,
+            });
+        };
 
     // ---------- Step 1: read $MFT in one pass (names / parent-child / size / time) ----------
     let mft_started = Instant::now();
@@ -132,10 +129,8 @@ pub fn scan_top_files_via_mft(
     }
 
     // (size, record number, modified time), ordered by size descending
-    let mut candidates: Vec<(u64, u64, i64)> = pool
-        .into_iter()
-        .map(|Reverse(found)| found)
-        .collect();
+    let mut candidates: Vec<(u64, u64, i64)> =
+        pool.into_iter().map(|Reverse(found)| found).collect();
     candidates.sort_unstable_by(|left, right| right.0.cmp(&left.0));
 
     let candidate_ids: HashSet<u64> = candidates.iter().map(|item| item.1).collect();
@@ -160,7 +155,11 @@ pub fn scan_top_files_via_mft(
         "正在重建候选文件路径",
         candidate_ids.len(),
         paths.len(),
-        format!("候选 {} 个，解析出 {} 条路径", candidate_ids.len(), paths.len()),
+        format!(
+            "候选 {} 个，解析出 {} 条路径",
+            candidate_ids.len(),
+            paths.len()
+        ),
     );
 
     // Once paths are obtained the records are no longer needed; release them early (1.2M records with names take hundreds of MB)

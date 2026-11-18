@@ -75,10 +75,12 @@ pub struct Env {
 
 impl Env {
     pub fn detect() -> Self {
-        let user_profile = var("USERPROFILE").unwrap_or_else(|| PathBuf::from(r"C:\__no_such_user__"));
-        let local_appdata = var("LOCALAPPDATA")
-            .unwrap_or_else(|| user_profile.join("AppData").join("Local"));
-        let appdata = var("APPDATA").unwrap_or_else(|| user_profile.join("AppData").join("Roaming"));
+        let user_profile =
+            var("USERPROFILE").unwrap_or_else(|| PathBuf::from(r"C:\__no_such_user__"));
+        let local_appdata =
+            var("LOCALAPPDATA").unwrap_or_else(|| user_profile.join("AppData").join("Local"));
+        let appdata =
+            var("APPDATA").unwrap_or_else(|| user_profile.join("AppData").join("Roaming"));
         let program_data = var("PROGRAMDATA").unwrap_or_else(|| PathBuf::from(r"C:\ProgramData"));
         let program_files_x86 = var("ProgramFiles(x86)")
             .or_else(|| var("ProgramFiles"))
@@ -344,7 +346,9 @@ pub fn targets(env: &Env) -> Vec<TargetSpec> {
         "NVIDIA 驱动下载缓存",
         "驱动装完就没用的安装包，删了不影响已装驱动",
         DevRisk::Cache,
-        env.program_data.join("NVIDIA Corporation").join("Downloader"),
+        env.program_data
+            .join("NVIDIA Corporation")
+            .join("Downloader"),
     );
     add(
         "nvidia-app-ota",
@@ -379,7 +383,10 @@ pub fn targets(env: &Env) -> Vec<TargetSpec> {
         "Epic 启动器网页缓存",
         "webcache，删了商店页重新加载",
         DevRisk::Cache,
-        local.join("EpicGamesLauncher").join("Saved").join("webcache"),
+        local
+            .join("EpicGamesLauncher")
+            .join("Saved")
+            .join("webcache"),
     );
     add(
         "overwolf",
@@ -435,8 +442,7 @@ pub fn targets(env: &Env) -> Vec<TargetSpec> {
         "AstrBot 启动器",
         "实例配置，删了机器人实例需要重建",
         DevRisk::Confirm,
-        local
-            .join("com.github.raven95676.astrbot-launcher"),
+        local.join("com.github.raven95676.astrbot-launcher"),
     );
     add(
         "onedrive",

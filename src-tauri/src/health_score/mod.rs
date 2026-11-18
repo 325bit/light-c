@@ -235,13 +235,20 @@ mod tests {
     #[test]
     fn disk_score_root_normalizes_drive_letter() {
         let separator = std::path::MAIN_SEPARATOR;
-        let system_root = format!("{}:{}", crate::system_info::system_drive_letter(), separator);
+        let system_root = format!(
+            "{}:{}",
+            crate::system_info::system_drive_letter(),
+            separator
+        );
 
         assert_eq!(disk_score_root(None), system_root);
         assert_eq!(disk_score_root(Some("")), system_root);
         assert_eq!(disk_score_root(Some("123")), system_root);
         assert_eq!(disk_score_root(Some("D:")), format!("D:{}", separator));
         assert_eq!(disk_score_root(Some("d")), format!("D:{}", separator));
-        assert_eq!(disk_score_root(Some("E:/Users")), format!("E:{}", separator));
+        assert_eq!(
+            disk_score_root(Some("E:/Users")),
+            format!("E:{}", separator)
+        );
     }
 }

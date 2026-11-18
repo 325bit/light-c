@@ -138,7 +138,8 @@ fn scan_targets(keep: impl Fn(&str) -> bool) -> DevCacheScanResult {
         .collect();
 
     // Targets are independent of each other; measure in parallel and the slowest one determines total time
-    let measured: Vec<(u64, usize, usize)> = specs.par_iter().map(|spec| measure(&spec.path)).collect();
+    let measured: Vec<(u64, usize, usize)> =
+        specs.par_iter().map(|spec| measure(&spec.path)).collect();
 
     let mut skipped = 0usize;
     let mut entries: Vec<DevCacheEntry> = specs
@@ -309,11 +310,7 @@ pub(super) fn resolve_current(
 ) -> (Option<String>, String) {
     let fallback = versions.first().map(|(name, _)| name.clone());
 
-    let Some(probed) = spec
-        .current_probe
-        .as_ref()
-        .and_then(probe_current_version)
-    else {
+    let Some(probed) = spec.current_probe.as_ref().and_then(probe_current_version) else {
         return (fallback, "未读到注册表，按版本号最高推断".to_string());
     };
 
@@ -347,10 +344,8 @@ fn scan_one_version_group(spec: &VersionSpec) -> Option<(VersionGroup, usize)> {
 
     let (current, current_reason) = resolve_current(spec, &versions);
 
-    let measured: Vec<(u64, usize, usize)> = versions
-        .par_iter()
-        .map(|(_, path)| measure(path))
-        .collect();
+    let measured: Vec<(u64, usize, usize)> =
+        versions.par_iter().map(|(_, path)| measure(path)).collect();
     let skipped: usize = measured.iter().map(|(_, _, skip)| *skip).sum();
 
     let entries: Vec<VersionEntry> = versions

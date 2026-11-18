@@ -178,7 +178,9 @@ fn path_compare_key(path: &Path) -> String {
 const INSTALL_REGISTRY_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\LightC";
 
 fn installed_application_directory() -> Result<Option<PathBuf>, String> {
-    use winreg::enums::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_READ, KEY_WOW64_32KEY, KEY_WOW64_64KEY};
+    use winreg::enums::{
+        HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_READ, KEY_WOW64_32KEY, KEY_WOW64_64KEY,
+    };
     use winreg::RegKey;
 
     // Check both 32/64-bit registry views: the installer writes according to its own bitness, and users may reinstall with a different bitness.
@@ -495,8 +497,7 @@ mod tests {
         fs::create_dir_all(&portable_root).unwrap();
         fs::write(portable_root.join(PORTABLE_MANIFEST_FILE), "invalid").unwrap();
 
-        let channel =
-            resolve_distribution_channel(&portable_root.join("LightC.exe"), || Ok(None));
+        let channel = resolve_distribution_channel(&portable_root.join("LightC.exe"), || Ok(None));
         assert_eq!(channel, DistributionChannel::Portable);
 
         let _ = fs::remove_dir_all(installer_root);
@@ -568,9 +569,7 @@ mod tests {
         let registered = root.clone();
 
         assert_eq!(
-            resolve_distribution_channel(&version_dir.join("LightC.exe"), || Ok(Some(
-                registered
-            ))),
+            resolve_distribution_channel(&version_dir.join("LightC.exe"), || Ok(Some(registered))),
             DistributionChannel::Installer
         );
 
@@ -660,8 +659,9 @@ mod tests {
         fs::write(portable_root.join("LightC.exe"), b"stub").unwrap();
         let registered = install_root.clone();
 
-        let channel =
-            resolve_distribution_channel(&portable_root.join("LightC.exe"), || Ok(Some(registered)));
+        let channel = resolve_distribution_channel(&portable_root.join("LightC.exe"), || {
+            Ok(Some(registered))
+        });
 
         assert_eq!(channel, DistributionChannel::Portable);
         let _ = fs::remove_dir_all(install_root);
@@ -701,8 +701,8 @@ mod tests {
         repair_portable_marker_for(&executable_path);
 
         assert!(root.join(PORTABLE_MARKER_FILE).is_file());
-        let manifest_content = fs::read_to_string(root.join(PORTABLE_MANIFEST_FILE))
-            .expect("manifest 应被补齐");
+        let manifest_content =
+            fs::read_to_string(root.join(PORTABLE_MANIFEST_FILE)).expect("manifest 应被补齐");
         let manifest: serde_json::Value =
             serde_json::from_str(&manifest_content).expect("补齐的 manifest 必须是合法 JSON");
         assert_eq!(manifest["mode"], "portable");
