@@ -21,13 +21,8 @@ import {
   FolderOpen,
   HardDrive,
   Loader2,
-  Minus,
-  Search,
   X,
   ChevronRight,
-  Sparkles,
-  TrendingDown,
-  TrendingUp,
   Download,
 } from 'lucide-react';
 import { ModuleScanProgress } from '../ModuleScanProgress';
@@ -53,7 +48,6 @@ import {
   openInFolder,
   scanDiskGrowth,
   saveDiskGrowthHtml,
-  type DiskGrowthAnalyzeEntry,
   type DiskGrowthDetailEntry,
   type DiskGrowthDirectoryDetailsResponse,
   type DiskGrowthEntry,
@@ -65,20 +59,14 @@ import {
 import { formatSize } from '../../utils/format';
 import { useToast } from '../Toast';
 import { buildDiskGrowthHtml } from '../../utils/diskGrowthHtml';
+import {
+  buildPathTitle,
+  formatDiff,
+  getGrowthStyle,
+  normalizeDiskPath,
+} from '../../utils/growthFormat';
+import { GrowthResultList } from './GrowthResultList';
 import type { ModuleRenderProps } from './moduleProps';
-
-function simplifyPath(path: string): string {
-  const normalized = path.replace(/\\/g, '/');
-  const parts = normalized.split('/').filter(Boolean);
-  if (parts.length <= 3) return normalized;
-  return `.../${parts.slice(-3).join('/')}`;
-}
-
-function formatDiff(diff: number): string {
-  const sign = diff >= 0 ? '+' : '-';
-  return `${sign}${formatSize(Math.abs(diff))}`;
-}
-
 
 function getPhaseLabel(stage: string): string {
   return i18n.t(`scanStages.${stage}`, {
@@ -95,34 +83,6 @@ function formatDuration(ms?: number): string {
 
 function formatPreviousScanTime(scanSummary: DiskGrowthScanResponse): string {
   return scanSummary.previous_scan_time || i18n.t('diskGrowth.noHistory', { ns: 'modules' });
-}
-
-function formatModifiedTime(timestamp?: number | null, compact = false): string {
-  if (!timestamp) return '-';
-  const normalizedTimestamp = timestamp < 10_000_000_000 ? timestamp * 1000 : timestamp;
-  const date = new Date(normalizedTimestamp);
-  if (Number.isNaN(date.getTime())) return '-';
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, '0');
-  const day = String(date.getDate()).padStart(2, '0');
-  const hours = String(date.getHours()).padStart(2, '0');
-  const minutes = String(date.getMinutes()).padStart(2, '0');
-  return compact ? `${month}-${day} ${hours}:${minutes}` : `${year}-${month}-${day} ${hours}:${minutes}`;
-}
-
-function buildPathTitle(path: string, modified?: number | null, extraLine?: string): string {
-  const lines = [path];
-  if (extraLine) lines.push(extraLine);
-  const modifiedText = formatModifiedTime(modified);
-  if (modifiedText !== '-') {
-    // title supports line breaks; when the path is very long, put the real modification time on its own line so key info is not drowned out by the path.
-    lines.push(i18n.t('diskGrowth.modifiedTimeTitle', { ns: 'modules', time: modifiedText }));
-  }
-  return lines.join('\n');
-}
-
-function normalizeDiskPath(path: string): string {
-  return path.replace(/\\/g, '/').replace(/\/+$/g, '').toLowerCase();
 }
 
 /**
@@ -174,23 +134,6 @@ function buildChildGrowthEntry(parent: DiskGrowthEntry, path: string): DiskGrowt
     suggestion: i18n.t('diskGrowth.growthSuggestion', { ns: 'modules' }),
     details: [],
   };
-}
-
-function getGrowthStyle(level: DiskGrowthEntry['level']) {
-  switch (level) {
-    case 'significant':
-      return { icon: TrendingUp, color: 'text-red-500', label: i18n.t('diskGrowth.level.significant', { ns: 'modules' }) };
-    case 'fast':
-      return { icon: TrendingUp, color: 'text-orange-500', label: i18n.t('diskGrowth.level.fast', { ns: 'modules' }) };
-    case 'minor':
-      return { icon: TrendingUp, color: 'text-amber-500', label: i18n.t('diskGrowth.level.minor', { ns: 'modules' }) };
-    case 'decreased':
-      return { icon: TrendingDown, color: 'text-green-500', label: i18n.t('diskGrowth.level.decreased', { ns: 'modules' }) };
-    case 'new':
-      return { icon: Sparkles, color: 'text-blue-500', label: i18n.t('diskGrowth.level.new', { ns: 'modules' }) };
-    default:
-      return { icon: Minus, color: 'text-[var(--text-faint)]', label: i18n.t('diskGrowth.level.stable', { ns: 'modules' }) };
-  }
 }
 
 function SummaryCards({
@@ -250,7 +193,6 @@ function SummaryCards({
         <div className="col-span-4 flex items-center gap-3 text-[0.86rem] text-[var(--text-muted)] min-w-0 overflow-hidden whitespace-nowrap">
           <span className="text-red-500">{moduleT('diskGrowth.increased', { size: formatSize(scanSummary.analyze.increased_size ?? 0) })}</span>
           <span className="text-green-500">{moduleT('diskGrowth.decreased', { size: formatSize(scanSummary.analyze.decreased_size ?? 0) })}</span>
-          <span className="truncate">{moduleT('diskGrowth.sorted')}</span>
         </div>
       )}
     </div>
@@ -336,124 +278,6 @@ function DiskGrowthDiagnostics({
         </div>
       </div>
 
-    </div>
-  );
-}
-
-function entryFromGrowth(growth: DiskGrowthEntry): DiskGrowthAnalyzeEntry {
-  return {
-    path: growth.path,
-    size: growth.new_size,
-    category: '变化目录',
-    modified: growth.modified,
-    risk: 'safe',
-    action: 'ignore',
-    reason: growth.explanation,
-    suggestion: growth.suggestion,
-    matched_rule_id: null,
-    tags: [],
-  };
-}
-
-function ChangeRow({
-  entry,
-  growth,
-  onOpenFolder,
-  onSearchPath,
-  onShowDetails,
-}: {
-  entry: DiskGrowthAnalyzeEntry;
-  growth: DiskGrowthEntry | null;
-  onOpenFolder: (path: string) => void;
-  onSearchPath: (path: string) => void;
-  onShowDetails: (growth: DiskGrowthEntry) => void;
-}) {
-  const { t: moduleT } = useTranslation('modules');
-  const style = growth ? getGrowthStyle(growth.level) : getGrowthStyle('stable');
-  const Icon = style.icon;
-  const diff = growth?.diff ?? 0;
-  const modified = growth?.modified ?? entry.modified;
-  const modifiedTimeLabel = formatModifiedTime(modified, true);
-  const modifiedTimeTitle = formatModifiedTime(modified);
-  const rowTitle = buildPathTitle(entry.path, modified, growth?.explanation ?? entry.reason);
-
-  return (
-    <div className="flex items-center gap-3 px-4 py-2.5 hover:bg-[var(--bg-hover)] transition-colors group">
-      <div
-        className={`w-1.5 h-8 rounded-full shrink-0 ${
-          diff > 0 ? 'bg-red-400' : diff < 0 ? 'bg-green-400' : 'bg-gray-300'
-        }`}
-      />
-
-      <div className="flex-1 min-w-0">
-        <p
-          className="text-[0.93rem] text-[var(--text-primary)] truncate cursor-pointer hover:text-[var(--brand-green)] transition-colors"
-          title={rowTitle}
-          onClick={() => onOpenFolder(entry.path)}
-        >
-          {simplifyPath(entry.path)}
-        </p>
-        <p className="text-[0.79rem] text-[var(--text-faint)] mt-0.5 truncate">
-          {growth?.explanation ?? entry.reason}
-        </p>
-      </div>
-
-      <span
-        className="w-20 text-center text-[0.79rem] text-[var(--text-muted)] tabular-nums shrink-0"
-        title={modifiedTimeTitle === '-'
-          ? moduleT('diskGrowth.modifiedTimeMissing')
-          : moduleT('diskGrowth.modifiedTimeTitle', { time: modifiedTimeTitle })}
-      >
-        {modifiedTimeLabel}
-      </span>
-
-      <span className={`flex items-center gap-1 w-24 justify-end text-[0.86rem] shrink-0 ${style.color}`}>
-        <Icon className="w-3.5 h-3.5" />
-        {style.label}
-      </span>
-
-      <span className="text-[0.93rem] font-medium text-[var(--text-primary)] tabular-nums w-20 text-right shrink-0">
-        {formatSize(entry.size)}
-      </span>
-
-      <button
-        onClick={() => growth && onShowDetails(growth)}
-        disabled={!growth}
-        className={`flex w-24 shrink-0 items-center justify-end gap-1 text-[0.93rem] font-medium tabular-nums ${style.color} ${
-          growth ? 'hover:underline underline-offset-4 cursor-pointer' : 'cursor-default'
-        }`}
-        title={growth ? moduleT('diskGrowth.viewDetails') : undefined}
-      >
-        {diff === 0 ? '-' : formatDiff(diff)}
-        {/* Previously the underline appeared only on hover, giving no hint that this column opens details,
-            so add a persistent arrow hint. The animation is very light: nudge 3px right, play 3 times, then stop
-            (see .hint-nudge in App.css) so it does not keep moving across a list of dozens of rows. */}
-        {growth && <ChevronRight className="hint-nudge h-3 w-3 shrink-0" aria-hidden="true" />}
-      </button>
-
-      {/* Action buttons: **always visible** (previously shown only on hover, so users did not know they existed),
-          and leave some breathing room from the "change + arrow" on the left - sitting together looks cramped. */}
-      <div className="flex shrink-0 items-center justify-end gap-1 pl-2">
-        <button
-          onClick={() => onSearchPath(entry.path)}
-          className="p-1.5 rounded-lg text-[var(--text-muted)] hover:bg-[var(--brand-green-10)] hover:text-[var(--brand-green)] transition"
-          title={moduleT('diskGrowth.searchPath')}
-        >
-          <Search className="w-4 h-4" />
-        </button>
-        {/* Quick ask: a grown directory is only a "change", not necessarily deletable; the question makes clear it asks about purpose */}
-        <AiAskButton
-          question={buildItemQuestion(entry.path, 'folder')}
-          className="inline-flex h-7 w-7 items-center justify-center"
-        />
-        <button
-          onClick={() => onOpenFolder(entry.path)}
-          className="p-1.5 rounded-lg text-[var(--text-muted)] hover:bg-[var(--brand-green-10)] hover:text-[var(--brand-green)] transition"
-          title={moduleT('diskGrowth.openFolder')}
-        >
-          <FolderOpen className="w-4 h-4" />
-        </button>
-      </div>
     </div>
   );
 }
@@ -891,7 +715,6 @@ export function DiskGrowthModule({ isPageActive = true }: ModuleRenderProps) {
   // Admin status uses the shared hook: AdminRequiredHint has already probed once, reuse that cache here
   const isAdmin = useAdminPrivilege();
   const [error, setError] = useState<string | null>(null);
-  const [showAll, setShowAll] = useState(false);
   const [detailEntry, setDetailEntry] = useState<DiskGrowthEntry | null>(null);
   const { drives, error: drivesError } = useLocalDrives();
   const [selectedDriveLetter, setSelectedDriveLetter] = useState('C:');
@@ -901,7 +724,6 @@ export function DiskGrowthModule({ isPageActive = true }: ModuleRenderProps) {
   const resetCurrentDriveResult = useCallback(() => {
     setScanSummary(null);
     setGrowthReport(null);
-    setShowAll(false);
     setDetailEntry(null);
     setError(null);
     updateModuleState('diskGrowth', { status: 'idle', error: null, fileCount: 0, totalSize: 0, progress: 0 });
@@ -940,7 +762,6 @@ export function DiskGrowthModule({ isPageActive = true }: ModuleRenderProps) {
     setError(null);
     setScanSummary(null);
     setGrowthReport(null);
-    setShowAll(false);
     setDetailEntry(null);
 
     try {
@@ -1111,20 +932,25 @@ export function DiskGrowthModule({ isPageActive = true }: ModuleRenderProps) {
     }
   }, [growthReport, moduleT, scanSummary, showToast]);
 
-  const growthMap = useMemo(() => {
-    const map = new Map<string, DiskGrowthEntry>();
-    for (const entry of growthReport?.entries ?? []) {
-      map.set(entry.path.toLowerCase().replace(/\\/g, '/'), entry);
-    }
-    return map;
-  }, [growthReport]);
-
-  const entries = growthReport?.entries.length
-    ? growthReport.entries.map(entryFromGrowth)
-    : scanSummary?.analyze.entries ?? [];
+  // Change mode feeds the tree list straight from the backend entries. A first scan
+  // has no diffs at all; its usage baseline is converted into zero-diff entries so the
+  // folder tree and "sort by current size" still work there.
+  const listEntries = useMemo<DiskGrowthEntry[]>(() => {
+    if (growthReport && growthReport.entries.length > 0) return growthReport.entries;
+    return (scanSummary?.analyze.entries ?? []).map((entry) => ({
+      path: entry.path,
+      old_size: entry.size,
+      new_size: entry.size,
+      diff: 0,
+      diff_percent: 0,
+      modified: entry.modified,
+      level: 'stable' as const,
+      explanation: entry.reason,
+      suggestion: entry.suggestion,
+      details: [],
+    }));
+  }, [growthReport, scanSummary]);
   const resultMode = growthReport?.entries.length ? 'change' : 'usage';
-  const displayedEntries = showAll ? entries : entries.slice(0, 20);
-  const hasMore = entries.length > displayedEntries.length;
   const driveSelector = (
     <div className="flex items-center gap-2 shrink-0" onClick={(event) => event.stopPropagation()}>
       <DriveSelect
@@ -1218,7 +1044,7 @@ export function DiskGrowthModule({ isPageActive = true }: ModuleRenderProps) {
           <DiagnosticBanner report={growthReport} />
 
           <div className="flex items-center justify-between">
-            <p className="text-[0.93rem] text-[var(--text-muted)]">{moduleT('diskGrowth.resultCount', { count: entries.length })}</p>
+            <p className="text-[0.93rem] text-[var(--text-muted)]">{moduleT('diskGrowth.resultCount', { count: listEntries.length })}</p>
             <div className="flex items-center gap-3">
               <button
                 onClick={handleExportHtml}
@@ -1237,56 +1063,26 @@ export function DiskGrowthModule({ isPageActive = true }: ModuleRenderProps) {
             maxEntries={settings.diskGrowthMaxEntries}
           />
 
-          <div className="glass-list bg-[var(--bg-main)] rounded-xl overflow-hidden">
-            <div className="flex items-center gap-3 px-4 py-2 border-b border-[var(--border-color)] text-[0.79rem] text-[var(--text-faint)] uppercase tracking-wider">
-              <div className="w-1.5 shrink-0" />
-              <div className="flex-1">{moduleT('diskGrowth.path')}</div>
-              <div className="w-20 shrink-0 text-center">{moduleT('diskGrowth.changeTime')}</div>
-              <div className="w-24 shrink-0 text-right">{moduleT('diskGrowth.changeLevel')}</div>
-              <div className="w-20 shrink-0 text-right">{moduleT('diskGrowth.currentSizeHeader')}</div>
-              {/* Leave a spacer at the end as wide as the data-column arrow, otherwise numbers indent one extra step past the header's right edge and columns misalign */}
-              <div className="flex w-24 shrink-0 items-center justify-end gap-1">
-                {moduleT('diskGrowth.differenceHeader')}
-                <span className="h-3 w-3 shrink-0" aria-hidden="true" />
-              </div>
-              <div className="w-16 shrink-0" />
+          {listEntries.length === 0 ? (
+            <div className="glass-list bg-[var(--bg-main)] rounded-xl overflow-hidden p-4">
+              <EmptyState
+                icon={HardDrive}
+                title={moduleT('diskGrowth.firstSnapshot')}
+                description={moduleT('diskGrowth.firstSnapshotDesc')}
+                tone="success"
+                compact
+              />
             </div>
-
-            {displayedEntries.map((entry) => {
-              const normalizedPath = entry.path.toLowerCase().replace(/\\/g, '/');
-              return (
-                <ChangeRow
-                  key={entry.path}
-                  entry={entry}
-                  growth={growthMap.get(normalizedPath) ?? null}
-                  onOpenFolder={handleOpenFolder}
-                  onSearchPath={handleSearchPath}
-                  onShowDetails={handleShowDetails}
-                />
-              );
-            })}
-
-            {hasMore && (
-              <button
-                onClick={() => setShowAll(true)}
-                className="w-full py-3 text-center text-[0.93rem] text-[var(--brand-green)] hover:bg-[var(--bg-hover)] transition-colors"
-              >
-                {moduleT('diskGrowth.showAll', { count: entries.length })}
-              </button>
-            )}
-
-            {entries.length === 0 && (
-              <div className="p-4">
-                <EmptyState
-                  icon={HardDrive}
-                  title={moduleT('diskGrowth.firstSnapshot')}
-                  description={moduleT('diskGrowth.firstSnapshotDesc')}
-                  tone="success"
-                  compact
-                />
-              </div>
-            )}
-          </div>
+          ) : (
+            <GrowthResultList
+              entries={listEntries}
+              driveLetter={scanSummary.drive_letter}
+              hasDiff={resultMode === 'change'}
+              onOpenFolder={handleOpenFolder}
+              onSearchPath={handleSearchPath}
+              onShowDetails={handleShowDetails}
+            />
+          )}
         </div>
       )}
       <AnimatePresence>
