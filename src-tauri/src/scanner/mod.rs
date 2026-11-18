@@ -13,7 +13,7 @@ mod hotspot;
 pub(crate) mod hotspot_engine;
 pub(crate) mod leftover_whitelist;
 mod leftovers;
-mod recycle_bin;
+pub(crate) mod recycle_bin;
 mod registry;
 mod registry_scoring;
 pub(crate) mod reparse;

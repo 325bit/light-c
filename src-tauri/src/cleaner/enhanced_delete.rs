@@ -44,11 +44,6 @@ pub(crate) mod windows_api {
     pub const FILE_ATTRIBUTE_HIDDEN: u32 = 0x00000002;
     pub const FILE_ATTRIBUTE_SYSTEM: u32 = 0x00000004;
 
-    // SHEmptyRecycleBin flags
-    pub const SHERB_NOCONFIRMATION: u32 = 0x00000001;
-    pub const SHERB_NOPROGRESSUI: u32 = 0x00000002;
-    pub const SHERB_NOSOUND: u32 = 0x00000004;
-
     #[link(name = "kernel32")]
     extern "system" {
         /// Mark a file for deletion on reboot
@@ -84,20 +79,6 @@ pub(crate) mod windows_api {
             lpNumberOfFreeClusters: *mut u32,
             lpTotalNumberOfClusters: *mut u32,
         ) -> i32;
-    }
-
-    #[link(name = "shell32")]
-    extern "system" {
-        /// Empty the recycle bin (Windows Shell API)
-        ///
-        /// # Parameters
-        /// - hwnd: parent window handle, usually null
-        /// - pszRootPath: drive root path; null means empty the recycle bin of all drives
-        /// - dwFlags: control flags, combining SHERB_NOCONFIRMATION | SHERB_NOPROGRESSUI | SHERB_NOSOUND
-        ///
-        /// # Return value
-        /// S_OK (0) means success; otherwise an HRESULT error code
-        pub fn SHEmptyRecycleBinW(hwnd: *const u16, pszRootPath: *const u16, dwFlags: u32) -> i32;
     }
 
     /// Convert a Rust string to a Windows wide string
@@ -189,43 +170,6 @@ pub(crate) mod windows_api {
                 Some(sectors_per_cluster * bytes_per_sector)
             } else {
                 None
-            }
-        }
-    }
-
-    /// Empty the recycle bin using the Windows Shell API
-    ///
-    /// This is the correct way to empty the recycle bin and works without SYSTEM privileges.
-    /// Directly deleting files under C:\$Recycle.Bin is rejected by the system (requires SYSTEM privileges)
-    /// and leaves metadata leftovers; SHEmptyRecycleBinW follows the standard Shell flow.
-    ///
-    /// # Parameters
-    /// - drive_root: empty the recycle bin of a specific drive; pass None to empty all drives
-    pub fn empty_recycle_bin(drive_root: Option<&str>) -> Result<(), String> {
-        let root_wide: Vec<u16>;
-        let root_ptr: *const u16;
-
-        if let Some(root) = drive_root {
-            root_wide = to_wide_string(root);
-            root_ptr = root_wide.as_ptr();
-        } else {
-            root_ptr = std::ptr::null();
-        }
-
-        let flags = SHERB_NOCONFIRMATION | SHERB_NOPROGRESSUI | SHERB_NOSOUND;
-
-        // HRESULT whitelist:
-        // S_OK (0) — emptied successfully
-        // E_INVALIDARG (0x80070057) — recycle bin was already empty, also treated as success
-        const S_OK: i32 = 0;
-        const E_INVALIDARG: i32 = -2147024809i32;
-
-        unsafe {
-            let hresult = SHEmptyRecycleBinW(std::ptr::null(), root_ptr, flags);
-            if hresult == S_OK || hresult == E_INVALIDARG {
-                Ok(())
-            } else {
-                Err(format!("清空回收站失败，HRESULT: 0x{:08X}", hresult as u32))
             }
         }
     }
@@ -603,8 +547,11 @@ impl EnhancedDeleteEngine {
 
         info!("增强删除引擎：开始删除 {} 个文件", paths.len());
 
-        // Separate recycle bin paths: recycle bin files should be emptied via the Shell API, not deleted one by one
-        // Directly deleting files under $Recycle.Bin requires SYSTEM privileges; SHEmptyRecycleBinW is the standard way
+        // Separate recycle bin paths: they are deleted entry by entry, not via SHEmptyRecycleBinW.
+        // H1 fix: SHEmptyRecycleBinW empties an entire volume — selecting 3 entries wiped every
+        // other item on that drive, silently and unrecoverably. The scanner only surfaces entries
+        // under the current user's own SID folder, where the owning user holds Full Control, so
+        // removing the $R/$I pair directly needs no SYSTEM privileges.
         // C1 fix: normalize first, so `C:/...` or `\\?\...` recycle entries are still classified correctly.
         let (recycle_paths, normal_paths): (Vec<&String>, Vec<&String>) =
             paths.iter().partition(|p| {
@@ -613,14 +560,15 @@ impl EnhancedDeleteEngine {
                     .contains("\\$recycle.bin")
             });
 
-        // Recycle bin files cannot be deleted individually; call the Shell API per drive so one bad volume does not drag down the others.
+        // Recycle entries are deleted one by one so a bad volume or a foreign-SID entry cannot
+        // drag the others down.
         if !recycle_paths.is_empty() {
             info!(
-                "检测到 {} 个回收站条目，按盘符调用 Shell API 清空",
+                "检测到 {} 个回收站条目，按条目删除 $R/$I 对",
                 recycle_paths.len()
             );
 
-            // Sizes must be read before running the Shell API, because after a successful empty the paths no longer exist and would report 0 bytes.
+            // Sizes must be read before deletion, because afterwards the paths no longer exist and would report 0 bytes.
             let mut recycle_by_drive: BTreeMap<String, Vec<(String, u64, u64)>> = BTreeMap::new();
             for path in &recycle_paths {
                 let logical_size = self.get_file_size(Path::new(path));
@@ -653,13 +601,10 @@ impl EnhancedDeleteEngine {
                 ));
             }
 
-            for (drive_root, entries) in recycle_by_drive {
-                // Save the count first, because later branches consume the full entries.
-                let processed_in_drive = entries.len();
-                match windows_api::empty_recycle_bin(Some(&drive_root)) {
-                    Ok(_) => {
-                        info!("Shell API 清空回收站成功: {}", drive_root);
-                        for (path, logical_size, physical_size) in entries {
+            for (_drive_root, entries) in recycle_by_drive {
+                for (path, logical_size, physical_size) in entries {
+                    match delete_recycle_entry(&path) {
+                        Ok(()) => {
                             result.success_count += 1;
                             result.freed_logical_size += logical_size;
                             result.freed_physical_size += physical_size;
@@ -672,10 +617,8 @@ impl EnhancedDeleteEngine {
                                 marked_for_reboot: false,
                             });
                         }
-                    }
-                    Err(error) => {
-                        warn!("Shell API 清空回收站失败 ({}): {}", drive_root, error);
-                        for (path, logical_size, physical_size) in entries {
+                        Err(error) => {
+                            warn!("回收站条目删除失败: {}", error);
                             result.failed_count += 1;
                             result.skipped_size += physical_size;
                             result.file_results.push(FileDeleteResult {
@@ -683,17 +626,13 @@ impl EnhancedDeleteEngine {
                                 success: false,
                                 logical_size,
                                 physical_size,
-                                failure_reason: Some(DeleteFailureReason::Other(format!(
-                                    "清空回收站失败 ({}): {}",
-                                    drive_root, error
-                                ))),
+                                failure_reason: Some(DeleteFailureReason::Other(error)),
                                 marked_for_reboot: false,
                             });
                         }
                     }
+                    processed_count += 1;
                 }
-                // The Shell API works per volume; advance progress once a volume is done, instead of emitting an event for every recycle bin entry.
-                processed_count += processed_in_drive;
                 emit_progress(processed_count, &result);
             }
         }
@@ -1080,6 +1019,86 @@ fn recycle_drive_root(path: &str) -> Option<String> {
     Some(format!("{}:\\", (bytes[0] as char).to_ascii_uppercase()))
 }
 
+/// Case-insensitive `strip_prefix` that never panics on a non-char boundary.
+fn strip_ascii_prefix<'a>(text: &'a str, prefix: &str) -> Option<&'a str> {
+    let head = text.get(..prefix.len())?;
+    if head.eq_ignore_ascii_case(prefix) {
+        Some(&text[prefix.len()..])
+    } else {
+        None
+    }
+}
+
+/// Derive the $I metadata twin of a recycle bin entry from its $R data path.
+///
+/// A recycle bin entry is a pair sharing one suffix: `$R<suffix>` holds the data,
+/// `$I<suffix>` holds the size / original-path / deletion-time metadata the Recycle Bin
+/// UI displays. Deleting only one half leaves either invisible data or a phantom entry.
+fn recycle_entry_twin_path(path: &str) -> Option<String> {
+    let file_path = Path::new(path);
+    let parent = file_path.parent()?;
+    let file_name = file_path.file_name()?.to_string_lossy();
+    let suffix = strip_ascii_prefix(&file_name, "$R")?;
+    if suffix.is_empty() {
+        return None;
+    }
+    Some(
+        parent
+            .join(format!("$I{}", suffix))
+            .to_string_lossy()
+            .into_owned(),
+    )
+}
+
+/// Delete one recycle bin entry: the $R data blob plus its $I metadata twin.
+///
+/// H1 audit fix. The previous flow grouped the selected paths per drive and called
+/// `SHEmptyRecycleBinW`, whose semantics are "empty the whole volume" — selecting 3
+/// entries wiped every other item on that drive, silently and unrecoverably. The
+/// scanner only surfaces entries under the current user's own SID folder, where the
+/// owning user holds Full Control, so removing the pair directly needs no SYSTEM
+/// privileges and leaves nothing behind for Explorer to display.
+///
+/// Guards, in order: `path_guard` rejects traversal and empty input;
+/// `is_current_user_entry_path` pins the target to the current user's own recycle
+/// data; the $I twin must live in the same directory. A tampered frontend therefore
+/// cannot aim this at arbitrary files or at another account's entries.
+fn delete_recycle_entry(path: &str) -> Result<(), String> {
+    let file_path = Path::new(path);
+    crate::path_guard::validate_deletable(file_path)?;
+    if !crate::scanner::recycle_bin::is_current_user_entry_path(path) {
+        return Err(format!(
+            "路径不是当前用户的回收站数据文件，已拒绝: {}",
+            path
+        ));
+    }
+    let metadata_path = recycle_entry_twin_path(path)
+        .ok_or_else(|| format!("路径不是 $R 回收站条目，已拒绝删除: {}", path))?;
+
+    // Clear hidden/system/read-only attributes first: $Recycle.Bin contents carry the
+    // hidden bit, and std::fs removal refuses read-only files.
+    let _ = windows_api::remove_protection_attributes(path);
+    if file_path.is_dir() {
+        fs::remove_dir_all(file_path)
+            .map_err(|error| format!("删除回收站数据目录失败: {}", error))?;
+    } else {
+        fs::remove_file(file_path).map_err(|error| format!("删除回收站数据文件失败: {}", error))?;
+    }
+
+    // The data blob is gone; remove the metadata so Explorer stops showing the entry.
+    // Deleting the data first means a metadata failure can never hide live data — worst
+    // case is a phantom entry, reported honestly as a failure here.
+    let _ = windows_api::remove_protection_attributes(&metadata_path);
+    fs::remove_file(&metadata_path).map_err(|error| {
+        format!(
+            "回收站数据已删除但元数据清理失败 ({}): {}",
+            metadata_path, error
+        )
+    })?;
+
+    Ok(())
+}
+
 /// Extract the partition root directory from a normal file path, for reading cluster size per volume.
 fn drive_root(path: &Path) -> Option<String> {
     let path = path.to_string_lossy();
@@ -1200,5 +1219,44 @@ mod tests {
             Some("D:\\".to_string())
         );
         assert_eq!(recycle_drive_root(r"not-a-windows-path"), None);
+    }
+
+    #[test]
+    fn test_recycle_entry_twin_path() {
+        // H1: an entry is a $R data blob + a $I metadata twin sharing one suffix
+        assert_eq!(
+            recycle_entry_twin_path(r"D:\$Recycle.Bin\S-1-5-21\$R00000001").as_deref(),
+            Some(r"D:\$Recycle.Bin\S-1-5-21\$I00000001")
+        );
+        // NTFS is case-insensitive: a lowercase $r name still maps to the $I twin
+        assert_eq!(
+            recycle_entry_twin_path(r"D:\$Recycle.Bin\S-1-5-21\$r00000001").as_deref(),
+            Some(r"D:\$Recycle.Bin\S-1-5-21\$I00000001")
+        );
+        // Anything that is not an $R file has no twin
+        assert_eq!(recycle_entry_twin_path(r"C:\Temp\notes.txt"), None);
+        assert_eq!(
+            recycle_entry_twin_path(r"D:\$Recycle.Bin\S-1-5-21\$I00000001"),
+            None
+        );
+        // A bare "$R" without the mandatory suffix is not an entry either
+        assert_eq!(
+            recycle_entry_twin_path(r"D:\$Recycle.Bin\S-1-5-21\$R"),
+            None
+        );
+    }
+
+    #[test]
+    fn test_recycle_entry_deletion_guards() {
+        // H1 guards: a tampered frontend cannot aim the per-entry deletion at arbitrary files.
+        // Traversal input is rejected by path_guard before anything is touched.
+        assert!(
+            delete_recycle_entry(r"C:\$Recycle.Bin\S-1-5-21\..\..\Windows\System32\config")
+                .is_err()
+        );
+        // An arbitrary user file is not a current-user recycle data entry.
+        assert!(delete_recycle_entry(r"C:\Temp\definitely-not-recycle.txt").is_err());
+        // A recycle-bin path without the $R prefix (e.g. the $I metadata itself) is rejected.
+        assert!(delete_recycle_entry(r"C:\$Recycle.Bin\S-1-5-21\$I00000001").is_err());
     }
 }
