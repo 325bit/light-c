@@ -804,14 +804,18 @@ fn run_dism_analyze(handle: Option<&AppHandle>) -> Result<(Vec<u8>, Vec<u8>, boo
             Ok(Some(_)) => break,
             Ok(None) => {}
             Err(error) => {
-                let _ = child.kill();
+                // H2: killing only cmd.exe would leave dism.exe holding the stdout pipe,
+                // so the joins below would hang; reap the whole tree instead.
+                kill_process_tree(child.id());
                 return Err(format!("等待 DISM 结束失败: {}", error));
             }
         }
 
         if std::time::Instant::now() >= deadline {
-            // analyzecomponentstore is read-only, so killing it leaves no half-finished component store
-            let _ = child.kill();
+            // analyzecomponentstore is read-only, so killing it leaves no half-finished component store.
+            // H2: Child::kill() only terminates the cmd.exe shell — the surviving dism.exe keeps the
+            // stdout pipe open and stdout_thread.join() below would block forever. Kill the whole tree.
+            kill_process_tree(child.id());
             timed_out = true;
             break;
         }
@@ -1281,6 +1285,29 @@ fn terminate_running_analysis() {
         .creation_flags(0x08000000)
         .output();
     warn!("清理开始前结束了正在进行的 WinSxS 分析进程 (pid {})", pid);
+}
+
+/// Kill a process and its whole child tree (H2 audit fix).
+///
+/// The analyze DISM runs as `cmd /C dism.exe`, so the direct child is cmd.exe and
+/// dism.exe is a grandchild. `Child::kill()` terminates only cmd.exe: the surviving
+/// dism.exe keeps the stdout pipe write end open, the reader thread blocks in `read()`
+/// forever, and the `stdout_thread.join()` right after the kill hangs — the timeout
+/// meant to prevent hangs *caused* one. `taskkill /T /F` reaps the entire tree so both
+/// pipes close and the joins return.
+///
+/// Safe for /analyzecomponentstore, which is read-only. Do NOT reuse this on the
+/// /resetbase cleanup writer: force-killing DISM midway through modifying the component
+/// store can leave an intermediate state needing a system rollback (see the
+/// `cleanup_orphan_dism_process` doc for the full rationale).
+fn kill_process_tree(pid: u32) {
+    use std::os::windows::process::CommandExt;
+    use std::process::Command;
+
+    let _ = Command::new("taskkill.exe")
+        .args(["/PID", &pid.to_string(), "/T", "/F"])
+        .creation_flags(0x08000000)
+        .output();
 }
 
 #[cfg(not(target_os = "windows"))]
