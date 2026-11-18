@@ -941,7 +941,12 @@ pub fn log_storage_diagnostics() {
 
 /// Get the current data directory path
 pub fn get_data_dir() -> PathBuf {
-    DATA_DIR_CACHE.read().unwrap().clone()
+    // Recover from poisoning instead of unwrapping: a panic elsewhere while holding this lock
+    // must not take down the whole process through every get_data_dir() caller.
+    DATA_DIR_CACHE
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone()
 }
 
 /// Backup directory for registry-redundancy cleanups.
@@ -1145,7 +1150,9 @@ pub fn set_data_dir(new_path: &Path) -> Result<(), String> {
     // Update the cache and persist
     let path_buf = new_path.to_path_buf();
     save_config_inner(&path_buf)?;
-    *DATA_DIR_CACHE.write().unwrap() = path_buf;
+    *DATA_DIR_CACHE
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = path_buf;
 
     log::info!("数据目录已更改为: {}", new_path.display());
     Ok(())

@@ -7,7 +7,7 @@ use log::{debug, info};
 use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::thread;
 use std::time::Instant;
 use walkdir::WalkDir;
@@ -72,7 +72,11 @@ impl ScanEngine {
                     category_result.human_readable_total_size()
                 );
 
-                let mut results = results_clone.lock().unwrap();
+                // Poisoned locks here mean a sibling thread panicked while holding the mutex;
+                // recovering the guarded data is safe now that the panicking thread has exited.
+                let mut results = results_clone
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner);
                 results.push(category_result);
             });
             handles.push(handle);
@@ -85,7 +89,9 @@ impl ScanEngine {
 
         // Aggregate the results
         let mut result = ScanResult::new();
-        let category_results = results.lock().unwrap();
+        let mut category_results = results
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         for category_result in category_results.iter() {
             result.add_category_result(category_result.clone());
         }
