@@ -15,6 +15,7 @@ import type {
   DeleteRequest,
   LargeFileEntry,
 } from '../types';
+import { errorHint, errorText, type ErrorCode } from './errors';
 
 export type DistributionChannel = 'installer' | 'portable';
 export type VerifyIntegrityStatus =
@@ -869,34 +870,47 @@ export async function checkAdminForPath(path: string): Promise<boolean> {
 }
 
 /**
- * Gets a user-friendly description of the failure reason. */
+ * Gets a user-friendly description of the failure reason.
+ *
+ * Text comes from the `errors` namespace, keyed by the code the backend sent —
+ * this module must not keep its own copy of the copy. It did before: the texts
+ * drifted from the Rust side, and the safety-check helper ended up mojibake.
+ */
 export function getFailureReasonMessage(reason: DeleteFailureReason | null): string {
   if (!reason) return '';
-  switch (reason) {
-    case 'NotFound': return '文件不存在';
-    case 'PermissionDenied': return '权限不足';
-    case 'FileLocked': return '文件被系统占用';
-    case 'SystemProtected': return '系统保护文件';
-    case 'OutOfScope': return '不在清理范围内';
-    case 'MarkedForReboot': return '已标记重启后删除';
-    // Other carries the raw error the backend hit at each layer (e.g. os error 5), shown only in tooltips;
-    // the list uniformly shows the brief "Deletion failed" to avoid bothering users with verbose system errors.
-    default: return '删除失败';
-  }
+  return errorText({ code: failureReasonCode(reason), message: '' });
 }
 
 /**
- * Gets the detailed hint for a failure reason (used in tooltips) */
+ * Gets the detailed hint for a failure reason (used in tooltips)
+ *
+ * `Other` carries the raw OS error from the backend. It is untranslatable, so it
+ * is shown verbatim instead of being mapped to a generic sentence.
+ */
 export function getFailureReasonTooltip(reason: DeleteFailureReason | null): string {
   if (!reason) return '';
+  if (typeof reason === 'object' && 'Other' in reason) return reason.Other;
+  const code = failureReasonCode(reason);
+  return errorHint({ code, message: '' }) ?? errorText({ code, message: '' });
+}
+
+/** Per-file failure reason → closed error code. Never branch on the text. */
+function failureReasonCode(reason: DeleteFailureReason): ErrorCode {
   switch (reason) {
-    case 'NotFound': return '该文件可能已被其他程序删除';
-    case 'PermissionDenied': return '需要管理员权限才能删除此文件';
-    case 'FileLocked': return '文件正在被系统或其他程序使用，将在重启后删除';
-    case 'SystemProtected': return '这是系统关键文件，删除可能导致系统不稳定';
-    case 'OutOfScope': return '该文件不在安全清理范围内';
-    case 'MarkedForReboot': return '文件已标记，将在下次重启时自动删除';
-    default: return typeof reason === 'object' && 'Other' in reason ? reason.Other : '未知错误';
+    case 'NotFound':
+      return 'not_found';
+    case 'PermissionDenied':
+      return 'permission_denied';
+    case 'FileLocked':
+      return 'target_in_use';
+    case 'SystemProtected':
+      return 'protected';
+    case 'OutOfScope':
+      return 'invalid_path';
+    case 'MarkedForReboot':
+      return 'target_in_use';
+    default:
+      return 'internal';
   }
 }
 
@@ -921,8 +935,10 @@ export interface LeftoverPermanentDeleteDetail {
   deleted_files: number;
   /** Space released (bytes) */
   freed_size: number;
-  /** Failure reason */
+  /** Failure reason (raw text; show only in tooltips) */
   failure_reason: string | null;
+  /** Machine-readable failure category; switch on this, never on `failure_reason` */
+  failure_code?: ErrorCode | null;
   /** Whether it is marked for deletion on reboot */
   marked_for_reboot: boolean;
   /** Whether manual review is required */
@@ -976,30 +992,6 @@ export async function deleteLeftoversPermanent(
  * Performs a safety check on a single path. * You can call this API to check whether a path is safe before the user confirms deletion. * @param path Folder path to check */
 export async function checkLeftoverSafety(path: string): Promise<SafetyCheckResult> {
   return invoke<SafetyCheckResult>('check_leftover_safety', { path });
-}
-
-/**
- * Gets a user-friendly description of the safety check result
- */
-export function getSafetyCheckMessage(result: SafetyCheckResult): string {
-  if (result === 'Safe') return '瀹夊叏';
-  if (typeof result === 'object') {
-    if ('FoundInRegistry' in result) {
-      return `娉ㄥ唽琛ㄤ腑瀛樺湪鍖归厤: ${result.FoundInRegistry.matched_field} = ${result.FoundInRegistry.matched_value}`;
-    }
-    if ('ContainsExecutables' in result) {
-      const files = result.ContainsExecutables.files;
-      const count = files.length;
-      const preview = files.slice(0, 3).join(', ');
-      return count > 3 
-        ? `包含 ${count} 个可执行文件: ${preview} 等`
-        : `鍖呭惈鍙墽琛屾枃浠? ${preview}`;
-    }
-    if ('InProtectedPath' in result) {
-      return `绯荤粺淇濇姢璺緞: ${result.InProtectedPath.reason}`;
-    }
-  }
-  return '未知状态';
 }
 
 /**

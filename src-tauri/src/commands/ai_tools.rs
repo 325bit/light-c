@@ -2,12 +2,13 @@
 // AI tool cleanup commands
 // ============================================================================
 
+use crate::error::AppError;
 use crate::scanner::{AiCacheDeleteResult, AiCacheFileList, AiToolScanResult, AiToolScanner};
 use log::info;
 
 /// Scans caches of various AI tools. Scanning traverses directories, so run it in the blocking thread pool to avoid freezing the UI.
 #[tauri::command]
-pub async fn scan_ai_tool_caches() -> Result<AiToolScanResult, String> {
+pub async fn scan_ai_tool_caches() -> Result<AiToolScanResult, AppError> {
     info!("开始扫描 AI 工具缓存");
 
     let result = tokio::task::spawn_blocking(|| {
@@ -33,7 +34,7 @@ pub async fn scan_ai_tool_caches() -> Result<AiToolScanResult, String> {
 /// The return value must include a failure list: cache files are often in use while tools run, so returning only a success count would make the UI
 /// show "deleted N items" while the actual usage has not dropped at all.
 #[tauri::command]
-pub async fn delete_ai_tool_caches(paths: Vec<String>) -> Result<AiCacheDeleteResult, String> {
+pub async fn delete_ai_tool_caches(paths: Vec<String>) -> Result<AiCacheDeleteResult, AppError> {
     if paths.is_empty() {
         return Ok(AiCacheDeleteResult {
             deleted: 0,
@@ -61,7 +62,7 @@ pub async fn delete_ai_tool_caches(paths: Vec<String>) -> Result<AiCacheDeleteRe
 ///
 /// Path ownership must also be validated here: although this endpoint is read-only, the frontend should not use it to traverse arbitrary directories.
 #[tauri::command]
-pub async fn list_ai_cache_files(path: String) -> Result<AiCacheFileList, String> {
+pub async fn list_ai_cache_files(path: String) -> Result<AiCacheFileList, AppError> {
     let target = std::path::PathBuf::from(&path);
     let listing = tokio::task::spawn_blocking(move || {
         let scanner = AiToolScanner::new();

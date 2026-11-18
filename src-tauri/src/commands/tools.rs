@@ -2,6 +2,7 @@
 // System tool commands (formatting, opening system settings, etc.)
 // ============================================================================
 
+use crate::error::{AppError, ErrorCode};
 use log::info;
 
 /// Format a file size
@@ -12,7 +13,7 @@ pub fn format_size(bytes: u64) -> String {
 
 /// Open the Windows Disk Cleanup tool
 #[tauri::command]
-pub fn open_disk_cleanup() -> Result<(), String> {
+pub fn open_disk_cleanup() -> Result<(), AppError> {
     info!("打开Windows磁盘清理工具");
 
     #[cfg(target_os = "windows")]
@@ -32,7 +33,7 @@ pub fn open_disk_cleanup() -> Result<(), String> {
 
     #[cfg(not(target_os = "windows"))]
     {
-        Err("此功能仅支持Windows系统".to_string())
+        Err(AppError::new(ErrorCode::Unsupported))
     }
 }
 
@@ -40,7 +41,7 @@ pub fn open_disk_cleanup() -> Result<(), String> {
 /// - If it is a directory, drill into it directly
 /// - If it is a file, open its containing directory and select the file
 #[tauri::command]
-pub fn open_in_folder(path: String) -> Result<(), String> {
+pub fn open_in_folder(path: String) -> Result<(), AppError> {
     info!("打开路径: {}", path);
 
     #[cfg(target_os = "windows")]
@@ -69,13 +70,13 @@ pub fn open_in_folder(path: String) -> Result<(), String> {
 
     #[cfg(not(target_os = "windows"))]
     {
-        Err("此功能仅支持Windows系统".to_string())
+        Err(AppError::new(ErrorCode::Unsupported))
     }
 }
 
 /// Open a file directly (using the system default program)
 #[tauri::command]
-pub fn open_file(app: tauri::AppHandle, path: String) -> Result<(), String> {
+pub fn open_file(app: tauri::AppHandle, path: String) -> Result<(), AppError> {
     info!("打开文件: {}", path);
 
     #[cfg(target_os = "windows")]
@@ -90,19 +91,19 @@ pub fn open_file(app: tauri::AppHandle, path: String) -> Result<(), String> {
         let windows_path = path.replace('/', "\\");
         app.opener()
             .open_path(windows_path, None::<&str>)
-            .map_err(|e| format!("无法打开文件: {}", e))
+            .map_err(|e| AppError::new(ErrorCode::ExternalFailed).detail(e.to_string()))
     }
 
     #[cfg(not(target_os = "windows"))]
     {
         let _ = app;
-        Err("此功能仅支持Windows系统".to_string())
+        Err(AppError::new(ErrorCode::Unsupported))
     }
 }
 
 /// Open the Windows Recycle Bin view, not the physical `$Recycle.Bin` internal directory.
 #[tauri::command]
-pub fn open_recycle_bin() -> Result<(), String> {
+pub fn open_recycle_bin() -> Result<(), AppError> {
     info!("打开系统回收站");
 
     #[cfg(target_os = "windows")]
@@ -116,13 +117,13 @@ pub fn open_recycle_bin() -> Result<(), String> {
 
     #[cfg(not(target_os = "windows"))]
     {
-        Err("此功能仅支持Windows系统".to_string())
+        Err(AppError::new(ErrorCode::Unsupported))
     }
 }
 
 /// Open Task Manager's Startup apps page
 #[tauri::command]
-pub fn open_startup_manager() -> Result<(), String> {
+pub fn open_startup_manager() -> Result<(), AppError> {
     info!("打开启动项管理器");
 
     #[cfg(target_os = "windows")]
@@ -141,7 +142,7 @@ pub fn open_startup_manager() -> Result<(), String> {
 
 /// Open the Windows Storage Sense settings page
 #[tauri::command]
-pub fn open_storage_settings() -> Result<(), String> {
+pub fn open_storage_settings() -> Result<(), AppError> {
     info!("打开存储感知设置");
 
     #[cfg(target_os = "windows")]

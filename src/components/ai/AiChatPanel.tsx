@@ -24,6 +24,7 @@ import { renderMarkdown } from './renderMarkdown';
 import { usePanelSize } from './usePanelSize';
 import { BetaBadge } from '../BetaBadge';
 import { formatSize } from '../../utils/format';
+import { errorText } from '../../api/errors';
 
 /**
  * Display text for a message's date (used for the date separator after cross-day loading).
@@ -160,7 +161,7 @@ export function AiChatPanel({
         compressed.push(await compressImage(file));
       } catch (error) {
         // Handle one by one: one failure shouldn't discard the rest
-        setAttachError(error instanceof Error ? error.message : String(error));
+        setAttachError(errorText(error));
       }
     }
     if (compressed.length > 0) {

@@ -2,6 +2,7 @@
 // Data directory management commands
 // ============================================================================
 
+use crate::error::{AppError, ErrorCode};
 use std::fs;
 use std::path::{Path, PathBuf};
 use tauri::Manager;
@@ -46,7 +47,7 @@ fn current_wallpaper_path() -> Option<PathBuf> {
 
 /// Get the current data directory path
 #[tauri::command]
-pub fn get_data_directory() -> Result<String, String> {
+pub fn get_data_directory() -> Result<String, AppError> {
     Ok(crate::data_dir::get_data_dir()
         .to_string_lossy()
         .to_string())
@@ -66,13 +67,13 @@ pub fn get_storage_write_diagnostic() -> crate::data_dir::StorageWriteDiagnostic
 
 /// Retry migration of old AppData data for portable builds; source data is always preserved.
 #[tauri::command]
-pub fn migrate_legacy_portable_data() -> Result<crate::data_dir::StorageLocationInfo, String> {
-    crate::data_dir::migrate_legacy_portable_data()
+pub fn migrate_legacy_portable_data() -> Result<crate::data_dir::StorageLocationInfo, AppError> {
+    crate::data_dir::migrate_legacy_portable_data().map_err(AppError::from)
 }
 
 /// Set the data directory and migrate data
 #[tauri::command]
-pub fn set_data_directory(path: String) -> Result<String, String> {
+pub fn set_data_directory(path: String) -> Result<String, AppError> {
     let new_path = std::path::Path::new(&path);
     crate::data_dir::set_data_dir(new_path)?;
     Ok(format!(
@@ -83,20 +84,20 @@ pub fn set_data_directory(path: String) -> Result<String, String> {
 
 /// Clear local data whitelist entries; module-specific logs and backups are managed by the data directory's unified cleanup list.
 #[tauri::command]
-pub fn clear_local_data() -> Result<(usize, u64), String> {
-    crate::data_dir::clear_local_data()
+pub fn clear_local_data() -> Result<(usize, u64), AppError> {
+    crate::data_dir::clear_local_data().map_err(AppError::from)
 }
 
 #[tauri::command]
-pub fn list_clearable_data_items() -> Result<Vec<crate::data_dir::ClearableDataItem>, String> {
-    crate::data_dir::list_clearable_data_items()
+pub fn list_clearable_data_items() -> Result<Vec<crate::data_dir::ClearableDataItem>, AppError> {
+    crate::data_dir::list_clearable_data_items().map_err(AppError::from)
 }
 
 #[tauri::command]
 pub fn clear_selected_local_data(
     item_ids: Vec<String>,
-) -> Result<crate::data_dir::ClearLocalDataResult, String> {
-    crate::data_dir::clear_selected_local_data(&item_ids)
+) -> Result<crate::data_dir::ClearLocalDataResult, AppError> {
+    crate::data_dir::clear_selected_local_data(&item_ids).map_err(AppError::from)
 }
 
 /// At startup, add installed wallpapers to the asset protocol whitelist.
@@ -117,7 +118,7 @@ pub fn authorize_wallpaper(app: &tauri::AppHandle) {
 /// the user closes the dialog; the callback wakes this command through a oneshot
 /// channel instead, leaving the executor free while the dialog is open.
 #[tauri::command]
-pub async fn pick_wallpaper_dialog(app: tauri::AppHandle) -> Result<Option<String>, String> {
+pub async fn pick_wallpaper_dialog(app: tauri::AppHandle) -> Result<Option<String>, AppError> {
     use tauri_plugin_dialog::DialogExt;
 
     let (sender, receiver) = tokio::sync::oneshot::channel::<Option<String>>();
@@ -134,15 +135,16 @@ pub async fn pick_wallpaper_dialog(app: tauri::AppHandle) -> Result<Option<Strin
     receiver
         .await
         .map_err(|error| format!("文件对话框回调通道已关闭: {}", error))
+        .map_err(AppError::from)
 }
 
 /// Install a wallpaper: validate file → copy to data directory → clear wallpaper with old extension.
 /// Return an asset:// relative path for the frontend to build convertFileSrc.
 #[tauri::command]
-pub fn install_wallpaper(app: tauri::AppHandle, source: String) -> Result<String, String> {
+pub fn install_wallpaper(app: tauri::AppHandle, source: String) -> Result<String, AppError> {
     let source_path = Path::new(&source);
     if !source_path.is_file() {
-        return Err("选中的文件不存在".to_string());
+        return Err(AppError::new(ErrorCode::NotFound).arg("path", &source));
     }
 
     let extension = source_path
@@ -151,12 +153,12 @@ pub fn install_wallpaper(app: tauri::AppHandle, source: String) -> Result<String
         .map(|value| value.to_ascii_lowercase())
         .unwrap_or_default();
     if !WALLPAPER_EXTENSIONS.contains(&extension.as_str()) {
-        return Err(format!("不支持的图片格式：{}", extension));
+        return Err(AppError::new(ErrorCode::Unsupported).arg("extension", extension));
     }
 
     let metadata = fs::metadata(source_path).map_err(|error| format!("读取图片失败：{}", error))?;
     if metadata.len() > WALLPAPER_MAX_BYTES {
-        return Err("图片不能超过 20MB".to_string());
+        return Err(AppError::new(ErrorCode::TooLarge).detail("wallpaper must be <= 20 MB"));
     }
 
     let data_dir = crate::data_dir::get_data_dir();
@@ -182,7 +184,7 @@ pub fn install_wallpaper(app: tauri::AppHandle, source: String) -> Result<String
 
 /// Clear the wallpaper: only delete the wallpaper file we installed in the data directory, do not touch other user data.
 #[tauri::command]
-pub fn clear_wallpaper() -> Result<(), String> {
+pub fn clear_wallpaper() -> Result<(), AppError> {
     for path in existing_wallpaper_paths() {
         fs::remove_file(&path).map_err(|error| format!("删除壁纸失败：{}", error))?;
     }
@@ -203,7 +205,7 @@ pub fn get_wallpaper_path() -> String {
 /// for the same reason as `pick_wallpaper_dialog` — the blocking variant parks
 /// an async executor thread for as long as the dialog stays open.
 #[tauri::command]
-pub async fn pick_folder_dialog(app: tauri::AppHandle) -> Result<Option<String>, String> {
+pub async fn pick_folder_dialog(app: tauri::AppHandle) -> Result<Option<String>, AppError> {
     use tauri_plugin_dialog::DialogExt;
 
     let (sender, receiver) = tokio::sync::oneshot::channel::<Option<String>>();
@@ -217,4 +219,5 @@ pub async fn pick_folder_dialog(app: tauri::AppHandle) -> Result<Option<String>,
     receiver
         .await
         .map_err(|error| format!("文件夹对话框回调通道已关闭: {}", error))
+        .map_err(AppError::from)
 }

@@ -42,6 +42,7 @@ import {
 import { formatSize } from '../../utils/format';
 import { openSearchUrl } from '../../utils/searchEngine';
 import type { ModuleRenderProps } from './moduleProps';
+import { errorText } from '../../api/errors';
 
 const DEEP_DISCOVERY_STORAGE_KEY = 'lightc.aiModels.deepDiscovery';
 const LARGE_MODEL_THRESHOLD = 20 * 1024 * 1024 * 1024;
@@ -228,8 +229,8 @@ export function AiModelsModule({ isPageActive = true }: ModuleRenderProps) {
         });
       }
     } catch (error) {
-      updateModuleState('aiModels', { status: 'error', error: String(error) });
-      showToast({ type: 'error', title: moduleT('aiModels.analysisFailed'), description: String(error) });
+      updateModuleState('aiModels', { status: 'error', error: errorText(error) });
+      showToast({ type: 'error', title: moduleT('aiModels.analysisFailed'), description: errorText(error) });
     } finally {
       scanningRef.current = false;
     }
@@ -270,7 +271,7 @@ export function AiModelsModule({ isPageActive = true }: ModuleRenderProps) {
       // Search using the model file name the user understands, avoiding ComfyUI internal type directories in the query that would lower relevance.
       await openSearchUrl(`${displayName.title} AI 模型`);
     } catch (error) {
-      showToast({ type: 'error', title: moduleT('aiModels.openSearchFailed'), description: String(error) });
+      showToast({ type: 'error', title: moduleT('aiModels.openSearchFailed'), description: errorText(error) });
     }
   }, [showToast]);
 
@@ -306,7 +307,7 @@ export function AiModelsModule({ isPageActive = true }: ModuleRenderProps) {
         description: `${model.name} · ${moduleT('aiModels.released', { size: formatSize(detail.logical_size) })}`,
       });
     } catch (error) {
-      showToast({ type: 'error', title: moduleT('aiModels.deleteFailed'), description: String(error) });
+      showToast({ type: 'error', title: moduleT('aiModels.deleteFailed'), description: errorText(error) });
     } finally {
       setDeletingModelPath(null);
     }

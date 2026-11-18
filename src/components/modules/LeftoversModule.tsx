@@ -39,13 +39,42 @@ import {
   type PermanentDeleteResult,
   type CleanupLogEntryInput,
   type LeftoverWhitelistEntry,
-  getSafetyCheckMessage,
+  type SafetyCheckResult,
 } from '../../api/commands';
 import { scanOtherAppCaches, scanVersionLeftovers } from '../../api/devCache';
 import type { DevCacheScanResult, VersionLeftoverScanResult } from '../../types/devCache';
 import { formatSize } from '../../utils/format';
 import { openSearchUrl } from '../../utils/searchEngine';
 import type { ModuleRenderProps } from './moduleProps';
+import { errorText } from '../../api/errors';
+
+/**
+ * Human-readable description of a safety check result.
+ *
+ * Lives here rather than in `api/commands.ts`: the text is UI copy, and that module
+ * has no access to the translation function. The previous copy there had been
+ * mojibake for a while (`安全` → `瀹夊叏`) precisely because it sat outside i18n.
+ */
+function safetyCheckText(result: SafetyCheckResult, t: (key: string, options?: Record<string, unknown>) => string): string {
+  if (result === 'Safe') return t('leftoversExtra.safetySafe');
+  if ('FoundInRegistry' in result) {
+    return t('leftoversExtra.safetyRegistryMatch', {
+      field: result.FoundInRegistry.matched_field,
+      value: result.FoundInRegistry.matched_value,
+    });
+  }
+  if ('ContainsExecutables' in result) {
+    const files = result.ContainsExecutables.files;
+    return t('leftoversExtra.safetyExecutables', {
+      fileCount: files.length,
+      preview: files.slice(0, 3).join(', '),
+    });
+  }
+  if ('InProtectedPath' in result) {
+    return t('leftoversExtra.safetyProtectedPath', { reason: result.InProtectedPath.reason });
+  }
+  return t('leftoversExtra.safetyUnknown');
+}
 
 // ============================================================================
 // Component implementation
@@ -245,7 +274,7 @@ export function LeftoversModule({ isPageActive = true }: ModuleRenderProps) {
       setWhitelistError(null);
     } catch (error) {
       // The whitelist is part of the deletion safety boundary; on load failure, show an explicit notice so users do not assume protection is active.
-      setWhitelistError(String(error));
+      setWhitelistError(errorText(error));
     }
   }, []);
 
@@ -287,7 +316,7 @@ export function LeftoversModule({ isPageActive = true }: ModuleRenderProps) {
         Failures to add must be visible to users: previously only whitelistError was written, and that text was shown only in the whitelist management modal,
         the confirmation closed as usual, so users would think protection was active. Now show a toast and refetch the list.
       */
-      const message = String(error);
+      const message = errorText(error);
       setWhitelistError(message);
       showToast({
         type: 'error',
@@ -312,7 +341,7 @@ export function LeftoversModule({ isPageActive = true }: ModuleRenderProps) {
       showToast({
         type: 'error',
         title: t('openSearchFailed'),
-        description: String(error),
+        description: errorText(error),
       });
     }
   }, [moduleT, showToast, t]);
@@ -324,7 +353,7 @@ export function LeftoversModule({ isPageActive = true }: ModuleRenderProps) {
       setWhitelistEntries((entries) => entries.filter((entry) => !isSamePath(entry.path, path)));
       setWhitelistError(null);
     } catch (error) {
-      setWhitelistError(String(error));
+      setWhitelistError(errorText(error));
       // Refetch on deletion failure so the UI does not show "removed" while the file is still there.
       await loadWhitelist();
     } finally {
@@ -670,7 +699,7 @@ export function LeftoversModule({ isPageActive = true }: ModuleRenderProps) {
       showToast({
         type: 'error',
         title: moduleT('leftoversExtra.nothingDeleted'),
-        description: String(error),
+        description: errorText(error),
         duration: DELETE_TOAST_DURATION_MS,
       });
     }
@@ -717,10 +746,15 @@ export function LeftoversModule({ isPageActive = true }: ModuleRenderProps) {
         const errorMessages: string[] = [];
         result.details.forEach(d => {
           if (!d.success && d.failure_reason) {
-            errorMessages.push(`${d.path}: ${d.failure_reason}`);
+            // Prefer the machine-readable code so the message follows the UI language
+            // instead of leaking the raw OS text.
+            const reason = d.failure_code
+              ? errorText({ code: d.failure_code, message: d.failure_reason })
+              : d.failure_reason;
+            errorMessages.push(`${d.path}: ${reason}`);
           }
           if (d.needs_manual_review) {
-            errorMessages.push(`${d.path}: ${getSafetyCheckMessage(d.safety_check)}`);
+            errorMessages.push(`${d.path}: ${safetyCheckText(d.safety_check, moduleT)}`);
           }
         });
         if (errorMessages.length > 0) {
@@ -1638,20 +1672,15 @@ function DeepCleanResultModal({
 
   // Get a friendly description of the failure reason
   const getFailureReason = (detail: typeof result.details[0]): string => {
+    // The backend sends a code now; switch on it instead of pattern-matching the
+    // OS text (that used to break silently whenever the wording changed).
+    if (detail.failure_code) {
+      return errorText({ code: detail.failure_code, message: detail.failure_reason ?? '' });
+    }
     if (detail.failure_reason) {
-      // Simplify common error messages
-      if (detail.failure_reason.includes('拒绝访问') || detail.failure_reason.includes('Access is denied')) {
-        return moduleT('leftoversExtra.permissionDenied');
-      }
-      if (detail.failure_reason.includes('正由另一个进程使用') || detail.failure_reason.includes('being used')) {
-        return moduleT('leftoversExtra.fileLocked');
-      }
-      if (detail.failure_reason.includes('找不到') || detail.failure_reason.includes('not find')) {
-        return moduleT('leftoversExtra.fileMissing');
-      }
       return detail.failure_reason;
     }
-    return getSafetyCheckMessage(detail.safety_check);
+    return safetyCheckText(detail.safety_check, moduleT);
   };
 
   // Get the folder name

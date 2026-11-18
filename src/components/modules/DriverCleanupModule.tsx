@@ -29,6 +29,7 @@ import { formatSize } from '../../utils/format';
 import { useAiModuleBridge } from '../ai/useAiModuleBridge';
 import { AiAskButton } from '../ai/AiAskButton';
 import type { ModuleRenderProps } from './moduleProps';
+import { errorText } from '../../api/errors';
 
 function findScrollParent(element: HTMLElement): HTMLElement | null {
   let parent = element.parentElement;
@@ -360,7 +361,7 @@ export function DriverCleanupModule({ isPageActive = true }: ModuleRenderProps) 
         totalSize: 0,
       });
     } catch (error) {
-      updateModuleState('driverCleanup', { status: 'error', error: String(error) });
+      updateModuleState('driverCleanup', { status: 'error', error: errorText(error) });
     } finally {
       setLoading(false);
     }
@@ -407,7 +408,7 @@ export function DriverCleanupModule({ isPageActive = true }: ModuleRenderProps) 
       // Use only the simplified vendor, driver name and version, to avoid the date field interfering with search results.
       await openSearchUrl(getDriverSearchQuery(packageInfo));
     } catch (error) {
-      showToast({ title: t('openSearchFailed'), description: String(error), type: 'error' });
+      showToast({ title: t('openSearchFailed'), description: errorText(error), type: 'error' });
     }
   }, [showToast]);
 
@@ -436,7 +437,7 @@ export function DriverCleanupModule({ isPageActive = true }: ModuleRenderProps) 
       setSelectedNames(new Set());
       await loadDrivers();
     } catch (error) {
-      showToast({ title: moduleT('driverCleanup.failed'), description: String(error), type: 'error' });
+      showToast({ title: moduleT('driverCleanup.failed'), description: errorText(error), type: 'error' });
     } finally {
       setDeleting(false);
     }
@@ -457,7 +458,7 @@ export function DriverCleanupModule({ isPageActive = true }: ModuleRenderProps) 
       }
       await loadDrivers();
     } catch (error) {
-      showToast({ title: moduleT('driverUi.restoreFailed'), description: String(error), type: 'error' });
+      showToast({ title: moduleT('driverUi.restoreFailed'), description: errorText(error), type: 'error' });
     } finally {
       setRestoring(false);
     }
@@ -577,7 +578,7 @@ export function DriverCleanupModule({ isPageActive = true }: ModuleRenderProps) 
                 </button>
                 <button title={moduleT('driverUi.openBackup')} onClick={() => {
                     void openDriverBackupDir().catch((error) => {
-                      showToast({ title: moduleT('driverUi.openBackupFailed'), description: String(error), type: 'error' });
+                      showToast({ title: moduleT('driverUi.openBackupFailed'), description: errorText(error), type: 'error' });
                     });
                   }} className="inline-flex items-center justify-center gap-1 rounded-lg border border-[var(--brand-green-20)] px-2 py-1 text-xs font-medium text-[var(--brand-green)] hover:bg-[var(--brand-green-10)]">
                   <FolderOpen className="h-3.5 w-3.5" />{moduleT('driverUi.backup')}
@@ -676,7 +677,7 @@ export function DriverCleanupModule({ isPageActive = true }: ModuleRenderProps) 
                                 event.stopPropagation();
                                 if (!packageInfo.driver_store_path) return;
                                 void openInFolder(packageInfo.driver_store_path).catch((error) => {
-                                  showToast({ title: moduleT('driverUi.openFolderFailed'), description: String(error), type: 'error' });
+                                  showToast({ title: moduleT('driverUi.openFolderFailed'), description: errorText(error), type: 'error' });
                                 });
                               }}
                               className="inline-flex h-7 w-7 items-center justify-center rounded-lg text-[var(--text-muted)] transition-colors hover:bg-[var(--brand-green-10)] hover:text-[var(--brand-green)] disabled:cursor-not-allowed disabled:opacity-40"

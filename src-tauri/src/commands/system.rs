@@ -2,6 +2,7 @@
 // System-related commands (system slim + health score + system info)
 // ============================================================================
 
+use crate::error::{AppError, ErrorCode};
 use log::info;
 use tauri::Window;
 
@@ -29,7 +30,7 @@ pub fn check_admin_privilege() -> bool {
 /// returns `false` meaning the user cancelled UAC (or it was already admin, no restart needed).
 /// Cancellation is a normal choice, not treated as failure, and callers should not show an error prompt.
 #[tauri::command]
-pub fn relaunch_as_admin(app: tauri::AppHandle) -> Result<bool, String> {
+pub fn relaunch_as_admin(app: tauri::AppHandle) -> Result<bool, AppError> {
     if crate::system_slim::check_admin() {
         // Already admin: no need for the caller to restart
         return Ok(false);
@@ -78,13 +79,15 @@ pub fn relaunch_as_admin(app: tauri::AppHandle) -> Result<bool, String> {
                 info!("用户取消了管理员权限请求（错误码 {}）", code);
                 return Ok(false);
             }
-            return Err(format!("请求管理员权限失败（ShellExecute 返回 {}）", code));
+            return Err(AppError::new(ErrorCode::ExternalFailed)
+                .detail(format!("ShellExecuteW returned {code}"))
+                .arg("code", code.to_string()));
         }
         info!("已启动管理员实例，准备退出当前进程");
     }
 
     #[cfg(not(target_os = "windows"))]
-    return Err("只有 Windows 需要提权重启".to_string());
+    return Err(AppError::new(ErrorCode::Unsupported));
 
     // Two instances running at once would compete for the same log and config files, so the old process must step aside.
     // The 300ms delay leaves an initialization window for the new instance — it reads config immediately on startup and would read a half-written file if it hit the old process mid-write.
@@ -114,42 +117,51 @@ pub async fn get_system_slim_status(
 
 /// Disable hibernation (async + progress push)
 #[tauri::command]
-pub async fn disable_hibernation(window: Window) -> Result<String, String> {
-    crate::system_slim::disable_hibernation_with_progress(&window).await
+pub async fn disable_hibernation(window: Window) -> Result<String, AppError> {
+    crate::system_slim::disable_hibernation_with_progress(&window)
+        .await
+        .map_err(AppError::from)
 }
 
 /// Enable hibernation (async + progress push)
 #[tauri::command]
-pub async fn enable_hibernation(window: Window) -> Result<String, String> {
-    crate::system_slim::enable_hibernation_with_progress(&window).await
+pub async fn enable_hibernation(window: Window) -> Result<String, AppError> {
+    crate::system_slim::enable_hibernation_with_progress(&window)
+        .await
+        .map_err(AppError::from)
 }
 
 /// Clean the WinSxS component store
 #[tauri::command]
-pub async fn cleanup_winsxs(window: Window) -> Result<String, String> {
-    crate::system_slim::cleanup_winsxs(&window).await
+pub async fn cleanup_winsxs(window: Window) -> Result<String, AppError> {
+    crate::system_slim::cleanup_winsxs(&window)
+        .await
+        .map_err(AppError::from)
 }
 
 /// Deep-clean the WinSxS component baseline
 #[tauri::command]
-pub async fn cleanup_winsxs_resetbase(window: Window) -> Result<String, String> {
-    crate::system_slim::cleanup_winsxs_resetbase(&window).await
+pub async fn cleanup_winsxs_resetbase(window: Window) -> Result<String, AppError> {
+    crate::system_slim::cleanup_winsxs_resetbase(&window)
+        .await
+        .map_err(AppError::from)
 }
 
 /// Open system virtual memory settings
 #[tauri::command]
-pub fn open_virtual_memory_settings() -> Result<(), String> {
-    crate::system_slim::open_virtual_memory_settings()
+pub fn open_virtual_memory_settings() -> Result<(), AppError> {
+    crate::system_slim::open_virtual_memory_settings().map_err(AppError::from)
 }
 
 /// Rebuild the Windows Search index
 #[tauri::command]
-pub async fn rebuild_search_index() -> Result<String, String> {
+pub async fn rebuild_search_index() -> Result<String, AppError> {
     // Put the COM call on a blocking thread: if the search service is abnormal, CoCreateInstance may hang,
     // and a synchronous command would tie up this IPC thread as well.
     tokio::task::spawn_blocking(crate::system_slim::rebuild_search_index)
         .await
         .map_err(|e| format!("任务执行失败: {}", e))?
+        .map_err(AppError::from)
 }
 
 // ============================================================================
@@ -169,7 +181,7 @@ pub fn get_health_score(drive_letter: Option<String>) -> HealthScoreResult {
 
 /// Get system information
 #[tauri::command]
-pub async fn get_system_info() -> Result<SystemInfo, String> {
+pub async fn get_system_info() -> Result<SystemInfo, AppError> {
     info!("获取系统信息");
-    crate::system_info::gather()
+    crate::system_info::gather().map_err(AppError::from)
 }

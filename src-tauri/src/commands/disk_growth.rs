@@ -5,6 +5,7 @@
 // avoiding occupying Tauri's async runtime threads and slowing down frontend IPC responses.
 // ============================================================================
 
+use crate::error::{AppError, ErrorCode};
 use log::info;
 use std::path::PathBuf;
 use tauri::{AppHandle, Emitter};
@@ -24,12 +25,13 @@ pub async fn get_disk_growth_file_details(
     // Omitted = the natural direction of `sort` (names A→Z, sizes largest first)
     desc: Option<bool>,
     drive_letter: Option<String>,
-) -> Result<crate::disk_growth::DiskGrowthFileDetailsResponse, String> {
+) -> Result<crate::disk_growth::DiskGrowthFileDetailsResponse, AppError> {
     tokio::task::spawn_blocking(move || {
         crate::disk_growth::get_file_change_details(path, offset, limit, sort, desc, drive_letter)
     })
     .await
     .map_err(|error| format!("读取文件级变化明细失败: {}", error))?
+    .map_err(AppError::from)
 }
 
 #[tauri::command]
@@ -38,12 +40,13 @@ pub async fn get_disk_growth_directory_details(
     offset: Option<usize>,
     limit: Option<usize>,
     drive_letter: Option<String>,
-) -> Result<crate::disk_growth::DiskGrowthDirectoryDetailsResponse, String> {
+) -> Result<crate::disk_growth::DiskGrowthDirectoryDetailsResponse, AppError> {
     tokio::task::spawn_blocking(move || {
         crate::disk_growth::get_directory_change_details(path, offset, limit, drive_letter)
     })
     .await
     .map_err(|error| format!("读取目录级变化明细失败: {}", error))?
+    .map_err(AppError::from)
 }
 
 #[tauri::command]
@@ -51,12 +54,13 @@ pub async fn get_disk_growth_export_tree(
     paths: Vec<String>,
     max_depth: Option<usize>,
     drive_letter: Option<String>,
-) -> Result<crate::disk_growth::DiskGrowthExportTreeResponse, String> {
+) -> Result<crate::disk_growth::DiskGrowthExportTreeResponse, AppError> {
     tokio::task::spawn_blocking(move || {
         crate::disk_growth::get_export_directory_tree(paths, max_depth, drive_letter)
     })
     .await
     .map_err(|error| format!("读取 HTML 导出目录明细失败: {}", error))?
+    .map_err(AppError::from)
 }
 
 /// Write the disk space change analysis HTML via the system save dialog.
@@ -67,12 +71,12 @@ pub async fn save_disk_growth_html(
     content: String,
     default_file_name: String,
     dialog_title: String,
-) -> Result<Option<String>, String> {
+) -> Result<Option<String>, AppError> {
     use std::fs;
     use tauri_plugin_dialog::DialogExt;
 
     if content.is_empty() {
-        return Err("导出的 HTML 内容为空".to_string());
+        return Err(AppError::new(ErrorCode::InvalidArgument));
     }
 
     let selected_path = app
@@ -113,7 +117,7 @@ pub async fn scan_disk_growth(
     app_handle: AppHandle,
     max_change_entries: Option<usize>,
     drive_letter: Option<String>,
-) -> Result<crate::disk_growth::DiskScanAndAnalyzeResponse, String> {
+) -> Result<crate::disk_growth::DiskScanAndAnalyzeResponse, AppError> {
     let log_drive = drive_letter.as_deref().unwrap_or("系统盘").to_string();
     info!("开始执行 {} 全盘空间变化分析", log_drive);
     crate::scan_cancel::reset(crate::scan_cancel::ScanKind::DiskGrowth);

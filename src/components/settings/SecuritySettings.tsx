@@ -9,6 +9,7 @@ import { getOfficialDownloadConfig, type OfficialDownloadConfig } from '../../ut
 import { LIGHTC_DEFAULT_DOWNLOAD_CONFIG, LIGHTC_OFFICIAL_WEBSITE_URL } from '../../config/officialLinks';
 import { verifyIntegrity, type VerifyIntegrityResult } from '../../api/commands';
 import { useTranslation } from 'react-i18next';
+import { errorText } from '../../api/errors';
 
 export function SecuritySettings() {
   const { t } = useTranslation('settings');
@@ -49,7 +50,7 @@ export function SecuritySettings() {
         status: 'network_error',
         version: '',
         channel: '',
-        message: `${t('security.networkDesc')}: ${String(error)}`,
+        message: `${t('security.networkDesc')}: ${errorText(error)}`,
         official_url: 'https://github.com/Chunyu33/light-c/releases',
       });
     } finally {

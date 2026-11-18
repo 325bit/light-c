@@ -2,6 +2,7 @@
 // Large directory analysis and drill-down commands
 // ============================================================================
 
+use crate::error::{AppError, ErrorCode};
 use log::info;
 use serde::{Deserialize, Serialize};
 
@@ -30,7 +31,7 @@ pub async fn scan_hotspot(
     size_threshold_mb: Option<u64>,
     ignore_system_dirs: Option<bool>,
     drive_letter: Option<String>,
-) -> Result<crate::scanner::HotspotScanResult, String> {
+) -> Result<crate::scanner::HotspotScanResult, AppError> {
     use crate::scanner::HotspotScanner;
 
     let is_full_scan = full_scan.unwrap_or(false);
@@ -87,7 +88,7 @@ pub async fn scan_hotspot(
         }
     }
 
-    result
+    result.map_err(AppError::from)
 }
 
 fn normalize_hotspot_drive_letter(value: Option<&str>) -> Result<char, String> {
@@ -107,7 +108,7 @@ fn normalize_hotspot_drive_letter(value: Option<&str>) -> Result<char, String> {
 
 /// Single-level path drill-down scan
 #[tauri::command]
-pub async fn scan_path_direct(path: String) -> Result<crate::scanner::HotspotScanResult, String> {
+pub async fn scan_path_direct(path: String) -> Result<crate::scanner::HotspotScanResult, AppError> {
     use crate::scanner::HotspotScanner;
 
     info!("路径钻取扫描: {}", path);
@@ -129,12 +130,12 @@ pub async fn scan_path_direct(path: String) -> Result<crate::scanner::HotspotSca
         }
     }
 
-    result
+    result.map_err(AppError::from)
 }
 
 /// Clear directory contents (keeping the root directory)
 #[tauri::command]
-pub async fn cleanup_directory_contents(path: String) -> Result<CleanupDirectoryResult, String> {
+pub async fn cleanup_directory_contents(path: String) -> Result<CleanupDirectoryResult, AppError> {
     use std::fs;
     use walkdir::WalkDir;
 
@@ -143,10 +144,10 @@ pub async fn cleanup_directory_contents(path: String) -> Result<CleanupDirectory
     let target_path = std::path::PathBuf::from(&path);
 
     if !target_path.exists() {
-        return Err(format!("目录不存在: {}", path));
+        return Err(AppError::new(ErrorCode::NotFound).arg("path", &path));
     }
     if !target_path.is_dir() {
-        return Err(format!("路径不是目录: {}", path));
+        return Err(AppError::new(ErrorCode::InvalidArgument).arg("path", &path));
     }
 
     let result = tokio::task::spawn_blocking(move || {

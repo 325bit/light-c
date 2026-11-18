@@ -46,6 +46,7 @@ import type {
 } from '../../types';
 import { useAiModuleBridge } from '../ai/useAiModuleBridge';
 import type { ModuleRenderProps } from './moduleProps';
+import { errorText } from '../../api/errors';
 
 const DEEP_SCAN_STORAGE_KEY = 'lightc.junkClean.deepScan';
 
@@ -378,7 +379,7 @@ export function JunkCleanModule({ isPageActive = true }: ModuleRenderProps) {
       if (disposed) dispose();
       else unlisten = dispose;
     }).catch((error) => {
-      if (!disposed) showToast({ type: 'warning', title: t('toast.listenDeleteProgressFailed'), description: String(error) });
+      if (!disposed) showToast({ type: 'warning', title: t('toast.listenDeleteProgressFailed'), description: errorText(error) });
     });
 
     return () => {
@@ -451,7 +452,7 @@ export function JunkCleanModule({ isPageActive = true }: ModuleRenderProps) {
       showToast({ type: 'info', title: t('toast.scanStopped'), description: t('toast.scanStoppedDesc') });
     } catch (error) {
       cancelRequestedRef.current = false;
-      showToast({ type: 'error', title: t('toast.stopScanFailed'), description: String(error) });
+      showToast({ type: 'error', title: t('toast.stopScanFailed'), description: errorText(error) });
     }
   }, [scanMode, showToast, t]);
 
@@ -610,7 +611,7 @@ export function JunkCleanModule({ isPageActive = true }: ModuleRenderProps) {
       await openSearchUrl(t('searchQuery', { path: searchPath }));
     } catch (error) {
       console.error('搜索文件用途失败:', error);
-      showToast({ type: 'error', title: t('toast.openSearchFailed'), description: String(error) });
+      showToast({ type: 'error', title: t('toast.openSearchFailed'), description: errorText(error) });
     }
   }, [showToast, t]);
 
@@ -759,7 +760,7 @@ export function JunkCleanModule({ isPageActive = true }: ModuleRenderProps) {
       }
       setViewAllCategoryName(categoryName);
     } catch (error) {
-      showToast({ type: 'warning', title: t('toast.loadDeepPageFailed'), description: String(error) });
+      showToast({ type: 'warning', title: t('toast.loadDeepPageFailed'), description: errorText(error) });
     } finally {
       setLoadingAllCategory(null);
     }

@@ -40,6 +40,7 @@ use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use walkdir::WalkDir;
 
+use crate::error::ErrorCode;
 use crate::scanner::leftover_whitelist::{self, LeftoverWhitelistEntry};
 
 #[cfg(windows)]
@@ -70,6 +71,19 @@ impl SafetyCheckResult {
         matches!(self, SafetyCheckResult::Safe)
     }
 
+    /// Machine-readable category for the frontend. Every failing check is a
+    /// protection rule, so they all map to `Protected` — the distinction that
+    /// matters to the UI is carried by the variant itself, which is already
+    /// serialized alongside.
+    pub fn error_code(&self) -> Option<ErrorCode> {
+        match self {
+            SafetyCheckResult::Safe => None,
+            SafetyCheckResult::FoundInRegistry { .. }
+            | SafetyCheckResult::ContainsExecutables { .. }
+            | SafetyCheckResult::InProtectedPath { .. } => Some(ErrorCode::Protected),
+        }
+    }
+
     pub fn display_message(&self) -> String {
         match self {
             SafetyCheckResult::Safe => "安全".to_string(),
@@ -95,6 +109,34 @@ impl SafetyCheckResult {
     }
 }
 
+/// Classify a raw deletion failure message.
+///
+/// This is the one place where sniffing the OS text is legitimate: the string
+/// comes straight from `remove_dir_all` / `icacls`, before anyone formatted it
+/// for a human. Everywhere else the UI must switch on `failure_code` instead.
+fn classify_delete_failure(message: &str) -> ErrorCode {
+    let lower = message.to_ascii_lowercase();
+    if lower.contains("access is denied")
+        || message.contains("拒绝访问")
+        || lower.contains("os error 5")
+    {
+        ErrorCode::PermissionDenied
+    } else if lower.contains("being used")
+        || message.contains("占用")
+        || lower.contains("os error 32")
+    {
+        ErrorCode::TargetInUse
+    } else if lower.contains("not find")
+        || message.contains("找不到")
+        || lower.contains("os error 2")
+        || lower.contains("os error 3")
+    {
+        ErrorCode::NotFound
+    } else {
+        ErrorCode::Internal
+    }
+}
+
 /// Deletion result for a single leftover
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LeftoverDeleteResult {
@@ -106,8 +148,12 @@ pub struct LeftoverDeleteResult {
     pub deleted_files: u32,
     /// Space freed (bytes)
     pub freed_size: u64,
-    /// Failure reason
+    /// Failure reason (free-form text, shown in tooltips and logs)
     pub failure_reason: Option<String>,
+    /// Machine-readable failure category, so the UI never has to sniff `failure_reason` text.
+    /// `None` on success; absent from the wire when `None` keeps old payloads compatible.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure_code: Option<ErrorCode>,
     /// Whether it is marked for deletion on reboot
     pub marked_for_reboot: bool,
     /// Whether manual review is required
@@ -230,7 +276,9 @@ impl PermanentDeleteEngine {
         // The protected-path matching below works on the literal string while
         // remove_dir_all resolves `..`, so a traversal path must never get here.
         if let Err(error) = crate::path_guard::validate_deletable(path) {
-            return SafetyCheckResult::InProtectedPath { reason: error };
+            return SafetyCheckResult::InProtectedPath {
+                reason: error.to_string(),
+            };
         }
 
         // If the protection rules cannot be loaded, reject by default, so a config problem cannot weaken the permanent-delete safety boundary.
@@ -434,6 +482,7 @@ impl PermanentDeleteEngine {
                             deleted_files: 0,
                             freed_size: 0,
                             failure_reason: Some(safety_check.display_message()),
+                            failure_code: safety_check.error_code(),
                             marked_for_reboot: false,
                             needs_manual_review: true,
                             safety_check,
@@ -449,6 +498,7 @@ impl PermanentDeleteEngine {
                             deleted_files: 0,
                             freed_size: 0,
                             failure_reason: Some(safety_check.display_message()),
+                            failure_code: safety_check.error_code(),
                             marked_for_reboot: false,
                             needs_manual_review: false,
                             safety_check,
@@ -510,6 +560,7 @@ impl PermanentDeleteEngine {
                     deleted_files: file_count,
                     freed_size: total_size,
                     failure_reason: None,
+                    failure_code: None,
                     marked_for_reboot: false,
                     needs_manual_review: false,
                     safety_check: SafetyCheckResult::Safe,
@@ -527,6 +578,7 @@ impl PermanentDeleteEngine {
                             deleted_files: 0,
                             freed_size: 0,
                             failure_reason: Some("已标记为重启后删除".to_string()),
+                            failure_code: Some(ErrorCode::TargetInUse),
                             marked_for_reboot: true,
                             needs_manual_review: false,
                             safety_check: SafetyCheckResult::Safe,
@@ -540,6 +592,7 @@ impl PermanentDeleteEngine {
                     deleted_files: 0,
                     freed_size: 0,
                     failure_reason: Some(format!("删除失败: {}", e)),
+                    failure_code: Some(classify_delete_failure(&e)),
                     marked_for_reboot: false,
                     needs_manual_review: false,
                     safety_check: SafetyCheckResult::Safe,
@@ -656,6 +709,48 @@ impl Default for PermanentDeleteEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn raw_os_failures_map_to_actionable_codes() {
+        // `failure_code` is what the UI switches on, so the classification of the
+        // raw OS text has to stay stable even when the wording differs by locale.
+        assert_eq!(
+            classify_delete_failure("拒绝访问。 (os error 5)"),
+            ErrorCode::PermissionDenied
+        );
+        assert_eq!(
+            classify_delete_failure("Access is denied. (os error 5)"),
+            ErrorCode::PermissionDenied
+        );
+        assert_eq!(
+            classify_delete_failure("另一个程序正在使用此文件 (os error 32)"),
+            ErrorCode::TargetInUse
+        );
+        assert_eq!(
+            classify_delete_failure("系统找不到指定的文件。 (os error 2)"),
+            ErrorCode::NotFound
+        );
+        assert_eq!(classify_delete_failure("boom"), ErrorCode::Internal);
+    }
+
+    #[test]
+    fn safety_failures_carry_the_protected_code() {
+        assert_eq!(SafetyCheckResult::Safe.error_code(), None);
+        assert_eq!(
+            SafetyCheckResult::InProtectedPath {
+                reason: "system path".to_string()
+            }
+            .error_code(),
+            Some(ErrorCode::Protected)
+        );
+        assert_eq!(
+            SafetyCheckResult::ContainsExecutables {
+                files: vec!["a.exe".to_string()]
+            }
+            .error_code(),
+            Some(ErrorCode::Protected)
+        );
+    }
 
     #[test]
     fn user_whitelist_blocks_permanent_deletion_before_other_checks() {

@@ -2,6 +2,7 @@
 // Registry and context-menu cleanup commands
 // ============================================================================
 
+use crate::error::AppError;
 use crate::scanner::{
     RegistryBackup, RegistryDeleteResult, RegistryEntry, RegistryScanResult, RegistryScanner,
 };
@@ -13,7 +14,7 @@ use log::info;
 
 /// Scan registry junk
 #[tauri::command]
-pub async fn scan_registry_redundancy() -> Result<RegistryScanResult, String> {
+pub async fn scan_registry_redundancy() -> Result<RegistryScanResult, AppError> {
     info!("开始扫描注册表冗余...");
 
     let result = tokio::task::spawn_blocking(|| {
@@ -32,7 +33,7 @@ pub async fn scan_registry_redundancy() -> Result<RegistryScanResult, String> {
 #[tauri::command]
 pub async fn delete_registry_entries(
     entries: Vec<RegistryEntry>,
-) -> Result<RegistryDeleteResult, String> {
+) -> Result<RegistryDeleteResult, AppError> {
     info!("开始删除 {} 个注册表条目...", entries.len());
 
     let backup_dir = crate::data_dir::registry_backup_dir();
@@ -79,7 +80,7 @@ pub async fn delete_registry_entries(
 
 /// Open the registry backup directory
 #[tauri::command]
-pub async fn open_registry_backup_dir() -> Result<(), String> {
+pub async fn open_registry_backup_dir() -> Result<(), AppError> {
     let backup_dir = crate::data_dir::registry_backup_dir();
 
     std::fs::create_dir_all(&backup_dir).map_err(|e| format!("创建备份目录失败: {}", e))?;
@@ -101,7 +102,7 @@ pub async fn open_registry_backup_dir() -> Result<(), String> {
 
 /// Scan context-menu entries in the Windows registry
 #[tauri::command]
-pub async fn scan_context_menu() -> Result<crate::scanner::ContextMenuScanResult, String> {
+pub async fn scan_context_menu() -> Result<crate::scanner::ContextMenuScanResult, AppError> {
     use crate::scanner::ContextMenuScanner;
 
     info!("开始扫描右键菜单注册表条目");
@@ -127,7 +128,7 @@ pub async fn scan_context_menu() -> Result<crate::scanner::ContextMenuScanResult
 #[tauri::command]
 pub async fn delete_context_menu_entries(
     entries: Vec<crate::scanner::ContextMenuDeleteRequest>,
-) -> Result<crate::scanner::ContextMenuDeleteResult, String> {
+) -> Result<crate::scanner::ContextMenuDeleteResult, AppError> {
     use crate::scanner::delete_context_menu_entries as do_delete;
 
     info!("开始删除 {} 个右键菜单条目", entries.len());
@@ -149,7 +150,7 @@ pub async fn delete_context_menu_entries(
 /// The only way to recover after an accidental deletion is the `.reg` files in here — users must be able to find them,
 /// rather than hearing "backed up" and then having to hunt through AppData themselves.
 #[tauri::command]
-pub async fn open_context_menu_backup_dir() -> Result<(), String> {
+pub async fn open_context_menu_backup_dir() -> Result<(), AppError> {
     let backup_dir = crate::scanner::context_menu_backup_dir();
     std::fs::create_dir_all(&backup_dir).map_err(|e| format!("创建备份目录失败: {}", e))?;
 

@@ -2,6 +2,7 @@
 // Dev space cleanup commands
 // ============================================================================
 
+use crate::error::AppError;
 use crate::scanner::{
     delete_dev_cache_paths as run_delete, scan_dev_cache as run_scan,
     scan_other_app_caches as run_other_scan, scan_version_leftovers as run_version_scan,
@@ -17,7 +18,7 @@ use log::info;
 /// and other software caches (`scan_other_app_caches`) moved to the "leftover & cache" page, so each page only pays for
 /// the directories it displays.
 #[tauri::command]
-pub async fn scan_dev_cache() -> Result<DevCacheScanResult, String> {
+pub async fn scan_dev_cache() -> Result<DevCacheScanResult, AppError> {
     info!("开始扫描开发缓存");
 
     let result = tokio::task::spawn_blocking(run_scan)
@@ -37,7 +38,7 @@ pub async fn scan_dev_cache() -> Result<DevCacheScanResult, String> {
 /// These are the downloaded driver installers / launcher web caches that garbage cleanup and driver cleanup both
 /// ignore. Same result shape as `scan_dev_cache` so the frontend reuses one type and one renderer.
 #[tauri::command]
-pub async fn scan_other_app_caches() -> Result<DevCacheScanResult, String> {
+pub async fn scan_other_app_caches() -> Result<DevCacheScanResult, AppError> {
     info!("开始扫描其它软件缓存");
 
     let result = tokio::task::spawn_blocking(run_other_scan)
@@ -57,7 +58,7 @@ pub async fn scan_other_app_caches() -> Result<DevCacheScanResult, String> {
 ///
 /// Same blocking-pool treatment as the cache scan: each version directory is measured recursively and Edge alone can hold several GB.
 #[tauri::command]
-pub async fn scan_version_leftovers() -> Result<VersionLeftoverScanResult, String> {
+pub async fn scan_version_leftovers() -> Result<VersionLeftoverScanResult, AppError> {
     info!("开始扫描多版本残留");
 
     let result = tokio::task::spawn_blocking(run_version_scan)
@@ -81,7 +82,7 @@ pub async fn scan_version_leftovers() -> Result<VersionLeftoverScanResult, Strin
 /// The return value must include `failed`: files are often in use while IDE/build processes run, so deletion may partially fail,
 /// reporting only the success count would make the UI show "all deleted" while actual usage has not dropped.
 #[tauri::command]
-pub async fn delete_dev_cache_paths(paths: Vec<String>) -> Result<DevCacheDeleteResult, String> {
+pub async fn delete_dev_cache_paths(paths: Vec<String>) -> Result<DevCacheDeleteResult, AppError> {
     if paths.is_empty() {
         return Ok(DevCacheDeleteResult {
             deleted: 0,

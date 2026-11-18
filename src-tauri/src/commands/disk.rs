@@ -2,6 +2,7 @@
 // Disk info commands
 // ============================================================================
 
+use crate::error::{AppError, ErrorCode};
 use log::info;
 use serde::Serialize;
 
@@ -32,7 +33,7 @@ pub struct LocalDriveInfo {
 
 /// Get disk info for drive C
 #[tauri::command]
-pub fn get_disk_info() -> Result<DiskInfo, String> {
+pub fn get_disk_info() -> Result<DiskInfo, AppError> {
     info!("获取磁盘信息");
 
     #[cfg(target_os = "windows")]
@@ -51,13 +52,13 @@ pub fn get_disk_info() -> Result<DiskInfo, String> {
 
     #[cfg(not(target_os = "windows"))]
     {
-        Err("此功能仅支持Windows系统".to_string())
+        Err(AppError::new(ErrorCode::Unsupported))
     }
 }
 
 /// Get the list of fixed disk partitions on this machine.
 #[tauri::command]
-pub fn get_local_drives() -> Result<Vec<LocalDriveInfo>, String> {
+pub fn get_local_drives() -> Result<Vec<LocalDriveInfo>, AppError> {
     info!("获取本机固定磁盘分区列表");
 
     #[cfg(target_os = "windows")]
@@ -81,18 +82,18 @@ pub fn get_local_drives() -> Result<Vec<LocalDriveInfo>, String> {
 
     #[cfg(not(target_os = "windows"))]
     {
-        Err("此功能仅支持Windows系统".to_string())
+        Err(AppError::new(ErrorCode::Unsupported))
     }
 }
 
 #[cfg(target_os = "windows")]
-fn query_drive_info(letter: char) -> Result<LocalDriveInfo, String> {
+fn query_drive_info(letter: char) -> Result<LocalDriveInfo, AppError> {
     use winapi::um::fileapi::GetDiskFreeSpaceExW;
     use winapi::um::winnt::ULARGE_INTEGER;
 
     let normalized_letter = letter.to_ascii_uppercase();
     if !normalized_letter.is_ascii_alphabetic() {
-        return Err(format!("无效的磁盘盘符: {}", letter));
+        return Err(AppError::new(ErrorCode::InvalidArgument).arg("letter", letter.to_string()));
     }
 
     let root = format!("{}:\\", normalized_letter);
@@ -110,7 +111,9 @@ fn query_drive_info(letter: char) -> Result<LocalDriveInfo, String> {
         )
     };
     if result == 0 {
-        return Err(format!("无法获取 {} 磁盘容量信息", root));
+        return Err(AppError::new(ErrorCode::ExternalFailed)
+            .detail("GetDiskFreeSpaceExW returned 0")
+            .arg("drive", root));
     }
 
     let (volume_name, file_system) = query_volume_labels(&wide_root);

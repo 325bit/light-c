@@ -22,6 +22,8 @@
 
 use std::path::{Component, Path};
 
+use crate::error::{AppError, ErrorCode};
+
 /// Whether the path contains `.` or `..` components.
 ///
 /// On Windows, `Path::components()` already treats `/` as a separator, so
@@ -37,15 +39,17 @@ pub fn has_relative_components(path: &Path) -> bool {
 /// Returns `Err` when the path is empty or contains relative components, so a
 /// tampered frontend cannot smuggle a `..` traversal past the engines' own
 /// prefix checks. Call this as the first step of every delete entry point.
-pub fn validate_deletable(path: &Path) -> Result<(), String> {
+///
+/// The error is typed (`invalid_path`) so the command layer can surface a real
+/// code over IPC instead of a sentence the UI would have to pattern-match.
+pub fn validate_deletable(path: &Path) -> Result<(), AppError> {
     if path.as_os_str().is_empty() {
-        return Err("路径为空，已拒绝删除".to_string());
+        return Err(AppError::new(ErrorCode::InvalidPath).detail("path is empty"));
     }
     if has_relative_components(path) {
-        return Err(format!(
-            "路径包含相对组件（. 或 ..），已拒绝删除: {}",
-            path.to_string_lossy()
-        ));
+        return Err(AppError::new(ErrorCode::InvalidPath)
+            .detail("path contains a relative component (`.` or `..`)")
+            .arg("path", path.to_string_lossy()));
     }
     Ok(())
 }
@@ -123,5 +127,20 @@ mod tests {
             r"C:\Windows\System32\foo.dll"
         );
         assert_eq!(normalize(Path::new("C:/")), r"C:\");
+    }
+
+    #[test]
+    fn rejection_carries_the_invalid_path_code() {
+        // The command layer re-validates through this function and forwards the error
+        // over IPC, so the code has to be machine-readable — the UI branches on it.
+        let error = validate_deletable(Path::new(r"C:\Temp\..\Windows")).unwrap_err();
+        assert_eq!(error.code, crate::error::ErrorCode::InvalidPath);
+        assert!(
+            error.detail.is_some(),
+            "detail must explain why it was refused"
+        );
+
+        let empty = validate_deletable(Path::new("")).unwrap_err();
+        assert_eq!(empty.code, crate::error::ErrorCode::InvalidPath);
     }
 }

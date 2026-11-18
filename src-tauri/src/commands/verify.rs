@@ -2,6 +2,7 @@
 // File integrity verification commands
 // ============================================================================
 
+use crate::error::AppError;
 use crate::runtime::{detect_distribution_channel, DistributionChannel};
 use base64::Engine;
 use minisign_verify::{PublicKey, Signature};
@@ -276,11 +277,13 @@ fn normalize_signature_text(signature_text: &str) -> Result<String, VerifyError>
     }
 }
 
-fn decode_base64_text(base64_text: &str) -> Result<String, String> {
+fn decode_base64_text(base64_text: &str) -> Result<String, AppError> {
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(base64_text.trim())
         .map_err(|error| error.to_string())?;
-    String::from_utf8(bytes).map_err(|error| error.to_string())
+    String::from_utf8(bytes)
+        .map_err(|error| error.to_string())
+        .map_err(AppError::from)
 }
 
 fn current_channel_label() -> String {

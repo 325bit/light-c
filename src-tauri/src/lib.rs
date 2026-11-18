@@ -12,6 +12,7 @@ mod data_dir;
 mod disk_growth;
 mod disk_health;
 mod driver_cleanup;
+mod error;
 mod health_score;
 mod logger;
 mod path_guard;

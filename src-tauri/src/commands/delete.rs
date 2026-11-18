@@ -6,6 +6,7 @@ use crate::cleaner::{
     DeleteEngine, EnhancedDeleteEngine, EnhancedDeleteProgress, EnhancedDeleteResult,
     PermanentDeleteEngine, PermanentDeleteResult, SafetyCheckResult,
 };
+use crate::error::{AppError, ErrorCode};
 use crate::scanner::{deep_junk, DeleteResult};
 use log::info;
 use serde::Deserialize;
@@ -41,10 +42,24 @@ pub struct DeleteRequest {
     pub paths: Vec<String>,
 }
 
+/// Re-validate every path at the IPC boundary before any engine is touched.
+///
+/// The engines validate too, but their per-file result type carries plain text, so
+/// a traversal attempt would arrive at the UI as an untyped `internal` message.
+/// Validating here keeps the `invalid_path` code intact, which is what lets the UI
+/// say "outside the allowed scope" instead of a generic failure.
+fn ensure_paths_deletable(paths: &[String]) -> Result<(), AppError> {
+    for path in paths {
+        crate::path_guard::validate_deletable(std::path::Path::new(path))?;
+    }
+    Ok(())
+}
+
 /// Deletes the specified files
 #[tauri::command]
-pub async fn delete_files(request: DeleteRequest) -> Result<DeleteResult, String> {
+pub async fn delete_files(request: DeleteRequest) -> Result<DeleteResult, AppError> {
     info!("开始删除 {} 个文件", request.paths.len());
+    ensure_paths_deletable(&request.paths)?;
 
     let result = tokio::task::spawn_blocking(move || {
         let engine = DeleteEngine::new();
@@ -66,8 +81,9 @@ pub async fn delete_files(request: DeleteRequest) -> Result<DeleteResult, String
 pub async fn enhanced_delete_files(
     app: AppHandle,
     paths: Vec<String>,
-) -> Result<EnhancedDeleteResult, String> {
+) -> Result<EnhancedDeleteResult, AppError> {
     info!("增强删除: 开始删除 {} 个文件", paths.len());
+    ensure_paths_deletable(&paths)?;
     emit_delete_preparing(&app, paths.len());
 
     let progress_app = app.clone();
@@ -99,7 +115,7 @@ pub async fn delete_deep_junk_files(
     scan_id: Option<String>,
     category_names: Option<Vec<String>>,
     excluded_paths: Option<Vec<String>>,
-) -> Result<EnhancedDeleteResult, String> {
+) -> Result<EnhancedDeleteResult, AppError> {
     let category_names = category_names.unwrap_or_default();
     let excluded_paths = excluded_paths.unwrap_or_default();
     let mut degraded_warning = None;
@@ -130,10 +146,7 @@ pub async fn delete_deep_junk_files(
         .iter()
         .find(|path| !deep_junk::is_deep_junk_path(path))
     {
-        return Err(format!(
-            "深度清理安全校验失败，拒绝删除路径: {}",
-            invalid_path
-        ));
+        return Err(AppError::new(ErrorCode::InvalidPath).arg("path", invalid_path.as_str()));
     }
 
     info!("深度垃圾清理: 开始删除 {} 个文件", paths.len());
@@ -165,14 +178,14 @@ pub async fn delete_deep_junk_files(
 
 /// Gets a file's physical size (aligned to clusters)
 #[tauri::command]
-pub async fn get_physical_size(logical_size: u64) -> Result<u64, String> {
+pub async fn get_physical_size(logical_size: u64) -> Result<u64, AppError> {
     let engine = EnhancedDeleteEngine::new();
     Ok(engine.calculate_physical_size(logical_size))
 }
 
 /// Checks whether administrator privileges are needed
 #[tauri::command]
-pub async fn check_admin_for_path(path: String) -> Result<bool, String> {
+pub async fn check_admin_for_path(path: String) -> Result<bool, AppError> {
     let path_lower = path.to_lowercase();
 
     let admin_required_paths = [
@@ -197,13 +210,14 @@ pub async fn delete_leftovers_permanent(
     // Whether to allow "directories containing executable files". Default false;
     // only true when the user explicitly clicked "Force Delete" in the result popup (whitelist and system-directory protection still apply).
     allow_executables: Option<bool>,
-) -> Result<PermanentDeleteResult, String> {
+) -> Result<PermanentDeleteResult, AppError> {
     let allow_executables = allow_executables.unwrap_or(false);
     info!(
         "永久删除: 开始深度清理 {} 个卸载残留文件夹（放行可执行文件: {}）",
         paths.len(),
         allow_executables
     );
+    ensure_paths_deletable(&paths)?;
 
     let result = tokio::task::spawn_blocking(move || {
         let engine = PermanentDeleteEngine::new();
@@ -226,7 +240,7 @@ pub async fn delete_leftovers_permanent(
 
 /// Performs a safety check on a single path
 #[tauri::command]
-pub async fn check_leftover_safety(path: String) -> Result<SafetyCheckResult, String> {
+pub async fn check_leftover_safety(path: String) -> Result<SafetyCheckResult, AppError> {
     let result = tokio::task::spawn_blocking(move || {
         let engine = PermanentDeleteEngine::new();
         let path = std::path::Path::new(&path);

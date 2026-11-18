@@ -26,6 +26,7 @@ import { openInFolder, pickFolderDialog } from '../../api/commands';
 import { notifyAiConfigChanged, subscribeAiConfig } from '../ai/aiConfigSignal';
 import { ConfirmDialog } from '../ConfirmDialog';
 import type { AiProviderPreset, AiPublicConfig } from '../../types/ai';
+import { errorText } from '../../api/errors';
 
 /** Unified settings row: title and description on the left, control on the right.
  *
@@ -151,7 +152,7 @@ export function AiSettings() {
             .catch(() => undefined);
         }
       } catch (error) {
-        if (!cancelled) setErrorMessage(String(error));
+        if (!cancelled) setErrorMessage(errorText(error));
       } finally {
         if (!cancelled) setLoaded(true);
       }
@@ -230,7 +231,7 @@ export function AiSettings() {
       setIsEditing(false); // Saving completes it: collapse the edit area, back to the read-only list
       showToast({ type: 'success', title: t('aiAssistant.saved') });
     } catch (error) {
-      setErrorMessage(String(error));
+      setErrorMessage(errorText(error));
     } finally {
       setIsSaving(false);
     }
@@ -255,7 +256,7 @@ export function AiSettings() {
         description: t('aiAssistant.testOkDesc', { count: models.length }),
       });
     } catch (error) {
-      setErrorMessage(String(error));
+      setErrorMessage(errorText(error));
     } finally {
       setIsTesting(false);
     }
@@ -351,7 +352,7 @@ export function AiSettings() {
       try {
         applyConfig(await setActiveAiProfile(profileId));
       } catch (error) {
-        setErrorMessage(String(error));
+        setErrorMessage(errorText(error));
       }
     },
     [activeId, applyConfig],
@@ -385,7 +386,7 @@ export function AiSettings() {
       try {
         applyConfig(await deleteAiProfile(profileId));
       } catch (error) {
-        setErrorMessage(String(error));
+        setErrorMessage(errorText(error));
       }
     },
     [applyConfig],
@@ -404,7 +405,7 @@ export function AiSettings() {
       setApiKey('');
       showToast({ type: 'success', title: t('aiAssistant.removeKeyDone') });
     } catch (error) {
-      setErrorMessage(String(error));
+      setErrorMessage(errorText(error));
     } finally {
       setIsSaving(false);
     }
@@ -444,7 +445,7 @@ export function AiSettings() {
     try {
       await openInFolder(target);
     } catch (error) {
-      setErrorMessage(String(error));
+      setErrorMessage(errorText(error));
     }
   }, [saved]);
 
@@ -459,7 +460,7 @@ export function AiSettings() {
         if (folder === null) return; // User cancelled
         applyConfig(await setAiDataDir(folder));
       } catch (error) {
-        setErrorMessage(String(error));
+        setErrorMessage(errorText(error));
       }
     },
     [applyConfig],

@@ -36,6 +36,7 @@ import { clearAiAsk, useAiAskRequest } from './aiAsk';
 import { notifyAiConfigChanged, subscribeAiConfig } from './aiConfigSignal';
 import { useToast } from '../Toast';
 import type { AttachedImage } from './imageAttach';
+import { errorText, rawErrorText } from '../../api/errors';
 
 /** Only keep the most recent few rounds of conversation: older content is handled by the rolling summary. */
 const MAX_HISTORY_MESSAGES = 16;
@@ -204,7 +205,7 @@ export function AiAssistant({ activeModuleId }: AiAssistantProps) {
         notifyAiConfigChanged();
       } catch (error) {
         // Write-back failure must be visible: the dropdown looks switched but it didn't take effect
-        setErrorMessage(t('switchModelFailed', { message: String(error) }));
+        setErrorMessage(t('switchModelFailed', { message: errorText(error) }));
       }
     },
     [activeProfile, aiConfig, t],
@@ -349,7 +350,7 @@ export function AiAssistant({ activeModuleId }: AiAssistantProps) {
     } catch (error) {
       // Failure must also be clearly explained to the user, rather than the card vanishing as if nothing happened
       if (activeModuleIdRef.current === moduleId) {
-        setDeleteResult({ deletedCount: 0, failures: [{ name: '', reason: String(error) }] });
+        setDeleteResult({ deletedCount: 0, failures: [{ name: '', reason: errorText(error) }] });
       } else {
         console.error('执行删除失败（用户已切走模块）:', error);
       }
@@ -598,7 +599,7 @@ export function AiAssistant({ activeModuleId }: AiAssistantProps) {
           } catch (error) {
             // Fallback: if we still hit the 400 requiring reasoning_content return, drop tools and retry once
             //(requests without tools aren't subject to that rule). Retry only once, no nesting.
-            if (roundTools.length === 0 || !/reasoning_content/i.test(String(error))) throw error;
+            if (roundTools.length === 0 || !/reasoning_content/i.test(rawErrorText(error))) throw error;
             console.warn('服务端要求回传思维链，本轮改为不带工具重试:', error);
             roundTools = [];
             reply = await callModel(roundTools);
@@ -667,7 +668,7 @@ export function AiAssistant({ activeModuleId }: AiAssistantProps) {
         // On failure, keep the user input in history for easy retry; show the error separately, don't mix into conversation text.
         // If the user has switched away, don't surface the error onto other modules (this round's record stays in the module at initiation).
         if (activeModuleIdRef.current === moduleId) {
-          setErrorMessage(String(error));
+          setErrorMessage(errorText(error));
         } else {
           console.error('AI 请求失败（用户已切走模块）:', error);
         }

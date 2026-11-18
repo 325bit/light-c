@@ -1185,7 +1185,7 @@ fn recycle_entry_twin_path(path: &str) -> Option<String> {
 /// cannot aim this at arbitrary files or at another account's entries.
 fn delete_recycle_entry(path: &str) -> Result<(), String> {
     let file_path = Path::new(path);
-    crate::path_guard::validate_deletable(file_path)?;
+    crate::path_guard::validate_deletable(file_path).map_err(|error| error.to_string())?;
     if !crate::scanner::recycle_bin::is_current_user_entry_path(path) {
         return Err(format!(
             "路径不是当前用户的回收站数据文件，已拒绝: {}",

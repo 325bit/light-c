@@ -127,7 +127,9 @@ impl DeleteEngine {
         // C1 fix, gate 0: reject `..` / `.` traversal up front. The engines' own checks are
         // literal-string based while the OS resolves `..`, so a traversal path must never
         // reach any deletion API, regardless of what the prefix checks decide.
-        crate::path_guard::validate_deletable(file_path)?;
+        // The per-file result type still carries text, so the typed code is flattened here;
+        // the command layer re-validates and keeps the code (see commands::delete).
+        crate::path_guard::validate_deletable(file_path).map_err(|error| error.to_string())?;
 
         // Check whether the path exists
         if !file_path.exists() {

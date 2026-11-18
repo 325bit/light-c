@@ -7,6 +7,7 @@
 
 import { create } from 'zustand';
 import { getDiskHealth, type DiskHealthInfo, type DiskVolumeInfo } from '../api/commands';
+import { errorText } from '../api/errors';
 
 const MAX_DISK_COUNT = 128;
 const MAX_VOLUME_COUNT_PER_DISK = 512;
@@ -94,7 +95,7 @@ function normalizeDiskSnapshot(value: unknown): DiskHealthInfo[] {
 }
 
 function getErrorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+  return errorText(error);
 }
 
 export const useDiskInfoStore = create<DiskInfoStoreState>((set, get) => ({

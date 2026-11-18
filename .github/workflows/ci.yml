@@ -11,6 +11,8 @@
 #   cargo test --lib    unit tests
 #   cargo deny check    licenses / advisories / bans / sources
 #   cargo machete       unused dependencies
+#   node scripts/check-error-contract.mjs
+#                       error-code contract: locale parity + no raw String(error)
 # ============================================================================
 
 name: CI
@@ -84,6 +86,20 @@ jobs:
       - name: cargo test --lib
         working-directory: src-tauri
         run: cargo test --lib
+
+  frontend-contract:
+    name: Error contract
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # No `npm install`: the script only uses node built-ins, so this job stays fast.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: locale parity + no raw String(error)
+        run: node scripts/check-error-contract.mjs
 
   supply-chain:
     name: Dependency supply chain

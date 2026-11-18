@@ -5,6 +5,7 @@ use crate::ai_models::{
 use crate::cleaner::{
     DeleteFailureReason, EnhancedDeleteEngine, EnhancedDeleteResult, FileDeleteResult,
 };
+use crate::error::{AppError, ErrorCode};
 use std::path::Path;
 use tauri::{AppHandle, Emitter};
 use walkdir::WalkDir;
@@ -13,7 +14,7 @@ use walkdir::WalkDir;
 pub async fn scan_ai_model_assets(
     app_handle: AppHandle,
     enable_deep_discovery: Option<bool>,
-) -> Result<AiModelScanResult, String> {
+) -> Result<AiModelScanResult, AppError> {
     let deep_discovery = enable_deep_discovery.unwrap_or(false);
 
     tokio::task::spawn_blocking(move || {
@@ -24,11 +25,12 @@ pub async fn scan_ai_model_assets(
     })
     .await
     .map_err(|error| format!("AI 资产扫描任务异常：{}", error))
+    .map_err(AppError::from)
 }
 
 /// Delete a single AI model (a model file or a .mlpackage model package directory); the path is restricted to supported model formats.
 #[tauri::command]
-pub async fn delete_ai_model(path: String) -> Result<EnhancedDeleteResult, String> {
+pub async fn delete_ai_model(path: String) -> Result<EnhancedDeleteResult, AppError> {
     tokio::task::spawn_blocking(move || {
         let model_path = Path::new(path.trim());
 
@@ -36,16 +38,22 @@ pub async fn delete_ai_model(path: String) -> Result<EnhancedDeleteResult, Strin
         // otherwise users could see the size but have no way to clean it.
         if model_path.is_dir() {
             if !is_model_package_directory(model_path) {
-                return Err("当前目录不是可删除的 AI 模型包".to_string());
+                return Err(
+                    AppError::new(ErrorCode::Unsupported).arg("path", model_path.to_string_lossy())
+                );
             }
             return delete_model_package(model_path);
         }
 
         if !model_path.is_file() {
-            return Err("模型文件不存在，或当前路径不是普通文件".to_string());
+            return Err(
+                AppError::new(ErrorCode::NotFound).arg("path", model_path.to_string_lossy())
+            );
         }
         if !is_supported_model_extension(model_path) {
-            return Err("当前文件格式不在 AI 模型删除范围内".to_string());
+            return Err(
+                AppError::new(ErrorCode::Unsupported).arg("path", model_path.to_string_lossy())
+            );
         }
 
         // If the model file is locked, fail directly instead of scheduling deletion on reboot without explicit consent.
@@ -55,14 +63,15 @@ pub async fn delete_ai_model(path: String) -> Result<EnhancedDeleteResult, Strin
         Ok(result)
     })
     .await
-    .map_err(|error| format!("AI 模型删除任务异常：{}", error))?
+    .map_err(|error| format!("AI 模型删除任务异常：{}", error))
+    .map_err(AppError::from)?
 }
 
 /// Delete a .mlpackage model package directory.
 ///
 /// Measure the size before deletion (the path no longer exists afterwards); on failure give a locatable reason,
 /// and keep the return structure identical to single-file deletion so the frontend need not distinguish the two model types.
-fn delete_model_package(model_path: &Path) -> Result<EnhancedDeleteResult, String> {
+fn delete_model_package(model_path: &Path) -> Result<EnhancedDeleteResult, AppError> {
     let logical_size = directory_logical_size(model_path);
 
     let mut result = EnhancedDeleteResult::new();

@@ -25,6 +25,7 @@ import { openInFolder, recordCleanupAction, type CleanupLogEntryInput } from '..
 import { deleteDevCachePaths } from '../../api/devCache';
 import type { VersionGroup } from '../../types/devCache';
 import { formatSize } from '../../utils/format';
+import { errorText } from '../../api/errors';
 
 export interface VersionLeftoverSectionProps {
   groups: VersionGroup[];
@@ -172,7 +173,7 @@ export function VersionLeftoverSection({
       showToast({
         type: 'error',
         title: t('leftoversVersion.deleteFailed'),
-        description: String(error),
+        description: errorText(error),
       });
     } finally {
       setDeleting(false);

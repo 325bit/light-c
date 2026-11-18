@@ -15,6 +15,7 @@ import { formatSize } from '../../utils/format';
 import { getStoredSearchEngine, SEARCH_ENGINE_CHANGED_EVENT, SEARCH_ENGINE_OPTIONS, setStoredSearchEngine, type SearchEngine } from '../../utils/searchEngine';
 import { ClearLocalDataDialog } from './ClearLocalDataDialog';
 import { FONT_SIZE_CONFIGS, FONT_SIZE_OPTIONS, THEME_OPTIONS } from './constants';
+import { errorText } from '../../api/errors';
 
 const LANGUAGE_OPTIONS: { value: Language; labelKey: string }[] = [
   { value: 'zh', labelKey: 'language.zh' },
@@ -50,7 +51,7 @@ export function GeneralSettings({ mode, setMode }: { mode: ThemeMode; setMode: (
     try {
       await wallpaper.choose();
     } catch (error) {
-      showToast({ type: 'error', title: t('wallpaper.pickFailed'), description: String(error) });
+      showToast({ type: 'error', title: t('wallpaper.pickFailed'), description: errorText(error) });
     }
   };
 
@@ -58,7 +59,7 @@ export function GeneralSettings({ mode, setMode }: { mode: ThemeMode; setMode: (
     try {
       await wallpaper.remove();
     } catch (error) {
-      showToast({ type: 'error', title: t('wallpaper.removeFailed'), description: String(error) });
+      showToast({ type: 'error', title: t('wallpaper.removeFailed'), description: errorText(error) });
     }
   };
 
@@ -110,7 +111,7 @@ export function GeneralSettings({ mode, setMode }: { mode: ThemeMode; setMode: (
       showToast({
         type: 'error',
         title: t('dataDir.openFailed', { label }),
-        description: String(error),
+        description: errorText(error),
       });
     }
   };
@@ -140,7 +141,7 @@ export function GeneralSettings({ mode, setMode }: { mode: ThemeMode; setMode: (
       showToast({
         type: 'error',
         title: t('dataDir.changeDirFailed'),
-        description: String(error),
+        description: errorText(error),
       });
     } finally {
       setIsChangingDir(false);
@@ -162,7 +163,7 @@ export function GeneralSettings({ mode, setMode }: { mode: ThemeMode; setMode: (
       showToast({
         type: 'error',
         title: t('dataDir.migrateFailed'),
-        description: String(error),
+        description: errorText(error),
       });
     } finally {
       setIsMigratingLegacyData(false);
@@ -184,7 +185,7 @@ export function GeneralSettings({ mode, setMode }: { mode: ThemeMode; setMode: (
       showToast({
         type: 'error',
         title: t('dataDir.readItemsFailed'),
-        description: String(error),
+        description: errorText(error),
       });
     } finally {
       setIsClearing(false);
@@ -235,7 +236,7 @@ export function GeneralSettings({ mode, setMode }: { mode: ThemeMode; setMode: (
       showToast({
         type: 'error',
         title: t('dataDir.clearFailed'),
-        description: String(error),
+        description: errorText(error),
       });
     } finally {
       setIsClearing(false);

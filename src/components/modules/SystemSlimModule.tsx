@@ -40,6 +40,7 @@ import {
 } from '../../api/commands';
 import { formatSize } from '../../utils/format';
 import type { ModuleRenderProps } from './moduleProps';
+import { errorText } from '../../api/errors';
 
 // ============================================================================
 // Configuration
@@ -440,7 +441,7 @@ export function SystemSlimModule({ isPageActive = true }: ModuleRenderProps) {
       });
     } catch (error) {
       console.error('加载系统瘦身状态失败:', error);
-      updateModuleState('system', { status: 'error', error: String(error) });
+      updateModuleState('system', { status: 'error', error: errorText(error) });
     } finally {
       setLoading(false);
     }
@@ -526,7 +527,7 @@ export function SystemSlimModule({ isPageActive = true }: ModuleRenderProps) {
         triggerHealthRefresh();
       }
     } catch (error) {
-      showToast({ title: moduleT('systemSlim.operationFailed'), description: String(error), type: 'error' });
+      showToast({ title: moduleT('systemSlim.operationFailed'), description: errorText(error), type: 'error' });
     } finally {
       setActionLoading(null);
       // Remove the progress view as soon as the operation ends: success is reported by a toast, failure by an error toast.

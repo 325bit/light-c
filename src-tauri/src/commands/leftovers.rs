@@ -2,6 +2,7 @@
 // Uninstall leftover scanning and deletion commands
 // ============================================================================
 
+use crate::error::AppError;
 use crate::scanner::leftover_whitelist::{self, LeftoverWhitelistEntry};
 use crate::scanner::{LeftoverScanResult, LeftoverScanner};
 use log::info;
@@ -10,7 +11,7 @@ use log::info;
 #[tauri::command]
 pub async fn scan_uninstall_leftovers(
     deep_scan: Option<bool>,
-) -> Result<LeftoverScanResult, String> {
+) -> Result<LeftoverScanResult, AppError> {
     let is_deep = deep_scan.unwrap_or(false);
     info!("开始扫描卸载残留... 深度扫描: {}", is_deep);
 
@@ -34,7 +35,7 @@ pub async fn scan_uninstall_leftovers(
 #[tauri::command]
 pub async fn delete_leftover_folders(
     paths: Vec<String>,
-) -> Result<crate::scanner::LeftoverDeleteResult, String> {
+) -> Result<crate::scanner::LeftoverDeleteResult, AppError> {
     info!("开始删除 {} 个卸载残留文件夹...", paths.len());
 
     let result = tokio::task::spawn_blocking(move || crate::scanner::delete_folders(paths))
@@ -52,24 +53,29 @@ pub async fn delete_leftover_folders(
 
 /// Gets the uninstall leftover paths manually protected by the user.
 #[tauri::command]
-pub async fn list_leftover_whitelist() -> Result<Vec<LeftoverWhitelistEntry>, String> {
+pub async fn list_leftover_whitelist() -> Result<Vec<LeftoverWhitelistEntry>, AppError> {
     tokio::task::spawn_blocking(leftover_whitelist::list_entries)
         .await
         .map_err(|error| format!("读取卸载残留白名单任务失败: {}", error))?
+        .map_err(AppError::from)
 }
 
 /// Adds the current scan result to the whitelist; subsequent scans and deletions re-validate this protection rule.
 #[tauri::command]
-pub async fn add_leftover_whitelist_entry(path: String) -> Result<LeftoverWhitelistEntry, String> {
+pub async fn add_leftover_whitelist_entry(
+    path: String,
+) -> Result<LeftoverWhitelistEntry, AppError> {
     tokio::task::spawn_blocking(move || leftover_whitelist::add_entry(&path))
         .await
         .map_err(|error| format!("添加卸载残留白名单任务失败: {}", error))?
+        .map_err(AppError::from)
 }
 
 /// Removes a user-configured path protection.
 #[tauri::command]
-pub async fn remove_leftover_whitelist_entry(path: String) -> Result<(), String> {
+pub async fn remove_leftover_whitelist_entry(path: String) -> Result<(), AppError> {
     tokio::task::spawn_blocking(move || leftover_whitelist::remove_entry(&path))
         .await
         .map_err(|error| format!("移除卸载残留白名单任务失败: {}", error))?
+        .map_err(AppError::from)
 }

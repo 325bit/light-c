@@ -24,6 +24,7 @@ import { getDistributionChannel, type DistributionChannel } from '../api/command
 import { getOfficialDownloadConfig } from '../utils/downloadConfig';
 import { LIGHTC_DEFAULT_DOWNLOAD_CONFIG, LIGHTC_OFFICIAL_WEBSITE_URL } from '../config/officialLinks';
 import { useTranslation } from 'react-i18next';
+import { errorText } from '../api/errors';
 
 // ============================================================================
 // Type definitions
@@ -46,7 +47,7 @@ interface UpdateModalProps {
 // ============================================================================
 
 function getErrorMessage(error: unknown, translate: (key: string) => string): string {
-  const errorStr = error instanceof Error ? error.message : String(error);
+  const errorStr = errorText(error);
   
   // Network-related errors
   if (errorStr.includes('network') || errorStr.includes('fetch') || errorStr.includes('connect')) {

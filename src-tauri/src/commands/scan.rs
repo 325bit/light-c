@@ -2,6 +2,7 @@
 // Junk scan and large-file scan commands
 // ============================================================================
 
+use crate::error::{AppError, ErrorCode};
 use crate::scanner::{
     big_files, deep_junk, CategoryScanResult, JunkCategory, ScanEngine, ScanResult,
 };
@@ -25,7 +26,7 @@ pub struct CategoryInfo {
 
 /// Performs a junk file scan
 #[tauri::command]
-pub async fn scan_junk_files(request: Option<ScanRequest>) -> Result<ScanResult, String> {
+pub async fn scan_junk_files(request: Option<ScanRequest>) -> Result<ScanResult, AppError> {
     info!("开始扫描垃圾文件");
 
     let result = tokio::task::spawn_blocking(move || {
@@ -66,7 +67,7 @@ pub async fn scan_junk_files(request: Option<ScanRequest>) -> Result<ScanResult,
 pub async fn scan_deep_junk_files(
     window: Window,
     max_depth: Option<u32>,
-) -> Result<deep_junk::DeepJunkScanResult, String> {
+) -> Result<deep_junk::DeepJunkScanResult, AppError> {
     info!("开始深度扫描垃圾文件");
     deep_junk::reset_cancelled();
     // The recursion depth is passed from the settings page. It must be written before spawn_blocking —
@@ -77,7 +78,7 @@ pub async fn scan_deep_junk_files(
         .await
         .map_err(|error| format!("深度扫描任务异常: {}", error))??;
 
-    deep_junk::create_session(result)
+    deep_junk::create_session(result).map_err(AppError::from)
 }
 
 /// Gets the paginated files of a deep-scan category.
@@ -87,8 +88,9 @@ pub fn get_deep_junk_category_page(
     category_name: String,
     offset: usize,
     limit: Option<usize>,
-) -> Result<CategoryScanResult, String> {
+) -> Result<CategoryScanResult, AppError> {
     deep_junk::get_category_page(&scan_id, &category_name, offset, limit.unwrap_or(500))
+        .map_err(AppError::from)
 }
 
 /// Cancels the running deep junk scan.
@@ -100,7 +102,7 @@ pub fn cancel_deep_junk_scan() {
 
 /// Scans a single category
 #[tauri::command]
-pub async fn scan_category(category_name: String) -> Result<CategoryScanResult, String> {
+pub async fn scan_category(category_name: String) -> Result<CategoryScanResult, AppError> {
     info!("扫描分类: {}", category_name);
 
     let result = tokio::task::spawn_blocking(move || -> Result<CategoryScanResult, String> {
@@ -137,7 +139,7 @@ pub async fn scan_large_files(
     window: Window,
     top_n: Option<usize>,
     drive_letter: Option<String>,
-) -> Result<Vec<big_files::LargeFileEntry>, String> {
+) -> Result<Vec<big_files::LargeFileEntry>, AppError> {
     big_files::reset_cancelled();
     let window = window.clone();
     // The large-file list is rendered directly in the frontend, so the command layer clamps the count to keep abnormal config from making the UI and scan pressure spiral.
@@ -146,6 +148,7 @@ pub async fn scan_large_files(
     tokio::task::spawn_blocking(move || big_files::scan(&window, top_n, drive_letter))
         .await
         .map_err(|e| format!("扫描任务异常: {}", e))?
+        .map_err(AppError::from)
 }
 
 /// Cancels the large-file scan
@@ -154,7 +157,7 @@ pub fn cancel_large_file_scan() {
     big_files::cancel();
 }
 
-fn normalize_large_file_drive_letter(value: Option<&str>) -> Result<char, String> {
+fn normalize_large_file_drive_letter(value: Option<&str>) -> Result<char, AppError> {
     // The frontend only passes a drive letter, but we still do a fallback check here to prevent paths or special characters when the command is called manually.
     let raw = value
         .and_then(|text| text.chars().find(|ch| ch.is_ascii_alphabetic()))
@@ -168,7 +171,7 @@ fn normalize_large_file_drive_letter(value: Option<&str>) -> Result<char, String
 
     let root = format!("{}:\\", raw);
     if !std::path::Path::new(&root).is_dir() {
-        return Err(format!("磁盘不存在或不可访问: {}", root));
+        return Err(AppError::new(ErrorCode::NotFound).arg("drive", root));
     }
 
     Ok(raw)

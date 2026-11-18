@@ -33,6 +33,7 @@ import { formatSize, formatDate, getRiskLevelColor, getRiskLevelBgColor, getRisk
 import { openSearchUrl } from '../../utils/searchEngine';
 import type { LargeFileEntry, LargeFileScanProgress } from '../../types';
 import type { ModuleRenderProps } from './moduleProps';
+import { errorText } from '../../api/errors';
 
 // The backend currently returns fixed source labels; map only known enums and do not display unknown values, to avoid mistranslating real file info.
 function getLocalizedSourceLabel(sourceLabel: string, translate: (key: string) => string): string {
@@ -132,7 +133,7 @@ export function BigFilesModule({ isPageActive = true }: ModuleRenderProps) {
       await navigator.clipboard.writeText(path);
       showToast({ type: 'success', title: t('copyFilePathSuccess') });
     } catch (error) {
-      showToast({ type: 'error', title: t('copyFilePathFailed'), description: String(error) });
+      showToast({ type: 'error', title: t('copyFilePathFailed'), description: errorText(error) });
     }
   }, [showToast, t]);
   const [scanStage, setScanStage] = useState('');

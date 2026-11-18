@@ -36,6 +36,7 @@ import {
 } from '../../api/commands';
 import { useModuleDashboard } from '../../contexts/DashboardContext';
 import type { ModuleRenderProps } from './moduleProps';
+import { errorText } from '../../api/errors';
 
 type PendingAction = { target: ShellIconTarget; mode: 'remove' | 'lock' | 'restore' };
 
@@ -215,7 +216,7 @@ export function ShellIconModule({ isPageActive = true }: ModuleRenderProps) {
       setEntries(result);
       updateModuleState('shellIcons', { status: 'done', fileCount: result.length, totalSize: 0 });
     } catch (error) {
-      updateModuleState('shellIcons', { status: 'error', error: String(error) });
+      updateModuleState('shellIcons', { status: 'error', error: errorText(error) });
     }
   }, [updateModuleState]);
 
@@ -243,7 +244,7 @@ export function ShellIconModule({ isPageActive = true }: ModuleRenderProps) {
       showToast({ type: 'success', title: moduleT('shellIcons.actionCompleted'), description: result.message });
       await scan();
     } catch (error) {
-      showToast({ type: 'error', title: moduleT('shellIcons.actionFailed'), description: String(error) });
+      showToast({ type: 'error', title: moduleT('shellIcons.actionFailed'), description: errorText(error) });
     } finally {
       setBusyTarget(null);
       setPendingAction(null);
@@ -289,14 +290,14 @@ export function ShellIconModule({ isPageActive = true }: ModuleRenderProps) {
               <div className="glass-block flex flex-wrap items-center justify-between gap-2 rounded-xl border border-[var(--border-color)] bg-[var(--bg-main)] p-3">
                 <div className="flex flex-wrap gap-2 text-xs text-[var(--text-muted)]"><span className="inline-flex items-center gap-1"><Shield className="h-3.5 w-3.5 text-[var(--color-warning)]" />{moduleT('shellIcons.protectedHint')}</span><span className="inline-flex items-center gap-1"><CheckCircle2 className="h-3.5 w-3.5 text-[var(--brand-green)]" />{moduleT('shellIcons.backupHint')}</span></div>
                 <div className="flex gap-2">
-                  <button type="button" disabled={isOpeningBackup} onClick={() => { setIsOpeningBackup(true); void openShellIconBackupDir().catch(error => showToast({ type: 'error', title: moduleT('shellIcons.openBackupFailed'), description: String(error) })).finally(() => setIsOpeningBackup(false)); }} className="inline-flex items-center gap-1 rounded-lg border border-[var(--border-color)] px-2.5 py-1.5 text-xs text-[var(--text-muted)] hover:bg-[var(--bg-hover)] disabled:opacity-50"><FolderOpen className="h-3.5 w-3.5" />{moduleT('shellIcons.backupDir')}</button>
-                  <button type="button" onClick={() => void openShellIconLog().catch(error => showToast({ type: 'error', title: moduleT('shellIcons.openLogFailed'), description: String(error) }))} className="inline-flex items-center gap-1 rounded-lg border border-[var(--border-color)] px-2.5 py-1.5 text-xs text-[var(--text-muted)] hover:bg-[var(--bg-hover)]"><FileText className="h-3.5 w-3.5" />{moduleT('shellIcons.operationLog')}</button>
-                  <button type="button" onClick={() => void restartExplorer().then(() => showToast({ type: 'success', title: moduleT('shellIcons.explorerRefreshed'), description: moduleT('shellIcons.explorerRefreshedDesc') })).catch(error => showToast({ type: 'error', title: moduleT('shellIcons.refreshFailed'), description: String(error) }))} className="inline-flex items-center gap-1 rounded-lg border border-[var(--brand-green-20)] px-2.5 py-1.5 text-xs text-[var(--brand-green)] hover:bg-[var(--brand-green-10)]"><RefreshCw className="h-3.5 w-3.5" />{moduleT('shellIcons.refresh')}</button>
+                  <button type="button" disabled={isOpeningBackup} onClick={() => { setIsOpeningBackup(true); void openShellIconBackupDir().catch(error => showToast({ type: 'error', title: moduleT('shellIcons.openBackupFailed'), description: errorText(error) })).finally(() => setIsOpeningBackup(false)); }} className="inline-flex items-center gap-1 rounded-lg border border-[var(--border-color)] px-2.5 py-1.5 text-xs text-[var(--text-muted)] hover:bg-[var(--bg-hover)] disabled:opacity-50"><FolderOpen className="h-3.5 w-3.5" />{moduleT('shellIcons.backupDir')}</button>
+                  <button type="button" onClick={() => void openShellIconLog().catch(error => showToast({ type: 'error', title: moduleT('shellIcons.openLogFailed'), description: errorText(error) }))} className="inline-flex items-center gap-1 rounded-lg border border-[var(--border-color)] px-2.5 py-1.5 text-xs text-[var(--text-muted)] hover:bg-[var(--bg-hover)]"><FileText className="h-3.5 w-3.5" />{moduleT('shellIcons.operationLog')}</button>
+                  <button type="button" onClick={() => void restartExplorer().then(() => showToast({ type: 'success', title: moduleT('shellIcons.explorerRefreshed'), description: moduleT('shellIcons.explorerRefreshedDesc') })).catch(error => showToast({ type: 'error', title: moduleT('shellIcons.refreshFailed'), description: errorText(error) }))} className="inline-flex items-center gap-1 rounded-lg border border-[var(--brand-green-20)] px-2.5 py-1.5 text-xs text-[var(--brand-green)] hover:bg-[var(--brand-green-10)]"><RefreshCw className="h-3.5 w-3.5" />{moduleT('shellIcons.refresh')}</button>
                 </div>
               </div>
               {entries.length === 0 ? <EmptyState icon={CheckCircle2} title={t('noThirdPartyShellIcons')} description={t('noShellIconsDescription')} tone="success" compact /> : <div className="space-y-4">
-                {myComputerEntries.length > 0 && <ShellEntrySection title={moduleT('shellIcons.myComputer')} entries={myComputerEntries} busy={busyTarget !== null} onAction={setPendingAction} onOpenRegistry={(target) => { void openShellIconRegistry(target).catch(error => showToast({ type: 'error', title: t('registryLocationFailed'), description: String(error) })); }} />}
-                {navigationEntries.length > 0 && <ShellEntrySection title={moduleT('shellIcons.navigationPane')} entries={navigationEntries} busy={busyTarget !== null} onAction={setPendingAction} onOpenRegistry={(target) => { void openShellIconRegistry(target).catch(error => showToast({ type: 'error', title: t('registryLocationFailed'), description: String(error) })); }} />}
+                {myComputerEntries.length > 0 && <ShellEntrySection title={moduleT('shellIcons.myComputer')} entries={myComputerEntries} busy={busyTarget !== null} onAction={setPendingAction} onOpenRegistry={(target) => { void openShellIconRegistry(target).catch(error => showToast({ type: 'error', title: t('registryLocationFailed'), description: errorText(error) })); }} />}
+                {navigationEntries.length > 0 && <ShellEntrySection title={moduleT('shellIcons.navigationPane')} entries={navigationEntries} busy={busyTarget !== null} onAction={setPendingAction} onOpenRegistry={(target) => { void openShellIconRegistry(target).catch(error => showToast({ type: 'error', title: t('registryLocationFailed'), description: errorText(error) })); }} />}
               </div>}
             </>
           )}

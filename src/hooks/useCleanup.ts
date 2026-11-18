@@ -7,6 +7,7 @@ import { useState, useCallback, useEffect } from 'react';
 import type { ScanResult, DeleteResult, AppStatus, FileInfo } from '../types';
 import { scanJunkFiles, deleteFiles, getDiskInfo } from '../api/commands';
 import type { DiskInfo } from '../types';
+import { errorText } from '../api/errors';
 
 /** Return type of the hook */
 interface UseCleanupReturn {
@@ -62,7 +63,7 @@ export function useCleanup(): UseCleanupReturn {
       setDiskInfo(info);
     } catch (err) {
       console.error('获取磁盘信息失败:', err);
-      setError(`获取磁盘信息失败: ${err}`);
+      setError(`获取磁盘信息失败: ${errorText(err)}`);
     }
   }, []);
 
@@ -99,7 +100,7 @@ export function useCleanup(): UseCleanupReturn {
       setSelectedPaths(defaultSelected);
     } catch (err) {
       console.error('扫描失败:', err);
-      setError(`扫描失败: ${err}`);
+      setError(`扫描失败: ${errorText(err)}`);
     } finally {
       setStatus('idle');
     }
@@ -156,7 +157,7 @@ export function useCleanup(): UseCleanupReturn {
       await refreshDiskInfo();
     } catch (err) {
       console.error('删除失败:', err);
-      setError(`删除失败: ${err}`);
+      setError(`删除失败: ${errorText(err)}`);
     } finally {
       setStatus('idle');
     }

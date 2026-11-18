@@ -2,12 +2,13 @@
 // Social software dedicated-cleanup command
 // ============================================================================
 
+use crate::error::AppError;
 use crate::scanner::{SocialScanResult, SocialScanner};
 use log::info;
 
 /// Scans social software caches (with risk grading)
 #[tauri::command]
-pub async fn scan_social_cache() -> Result<SocialScanResult, String> {
+pub async fn scan_social_cache() -> Result<SocialScanResult, AppError> {
     info!("开始扫描社交软件缓存（带风险分级）");
 
     let result = tokio::task::spawn_blocking(|| {

@@ -27,6 +27,7 @@ import { openInFolder, recordCleanupAction, type CleanupLogEntryInput } from '..
 import { deleteDevCachePaths } from '../../api/devCache';
 import type { DevCacheGroup } from '../../types/devCache';
 import { formatSize } from '../../utils/format';
+import { errorText } from '../../api/errors';
 
 export interface OtherAppCacheSectionProps {
   groups: DevCacheGroup[];
@@ -174,7 +175,7 @@ export function OtherAppCacheSection({
       showToast({
         type: 'error',
         title: t('leftoversOtherCache.deleteFailed'),
-        description: String(error),
+        description: errorText(error),
       });
     } finally {
       setDeleting(false);
