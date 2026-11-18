@@ -56,7 +56,7 @@ pub fn add_entry(path: &str) -> Result<LeftoverWhitelistEntry, String> {
 
     if let Some(entry) = entries
         .iter()
-        .find(|entry| normalize_string_path_for_compare(&entry.path) == normalize_string_path_for_compare(&normalized_path))
+        .find(|entry| comparison_key(&entry.path) == comparison_key(&normalized_path))
     {
         return Ok(entry.clone());
     }
@@ -78,10 +78,10 @@ pub fn remove_entry(path: &str) -> Result<(), String> {
     let store_path = whitelist_file_path();
     let mut entries = load_entries_from(&store_path)?;
     let previous_len = entries.len();
-    // Use the same comparison rules as contains_path: paths returned by the frontend may carry a `\\?\` prefix or differ in case,
+    // Use the same comparison rules as contains_path: paths returned by the frontend may carry a `\\?\` prefix, be 8.3 short names, or differ in case,
     // comparing raw strings directly would cause "deleted in the UI but still in the file".
-    let target = normalize_string_path_for_compare(path);
-    entries.retain(|entry| normalize_string_path_for_compare(&entry.path) != target);
+    let target = comparison_key(path);
+    entries.retain(|entry| comparison_key(&entry.path) != target);
 
     if entries.len() != previous_len {
         save_entries_to(&store_path, &entries)?;
@@ -91,9 +91,9 @@ pub fn remove_entry(path: &str) -> Result<(), String> {
 
 /// Path matching uses case-insensitive directory boundaries, preventing `App` from wrongly matching `AppData`.
 pub fn contains_path(entries: &[LeftoverWhitelistEntry], candidate: &Path) -> bool {
-    let candidate_path = normalize_path_for_compare(candidate);
+    let candidate_path = comparison_key(&candidate.to_string_lossy());
     entries.iter().any(|entry| {
-        let protected_path = normalize_string_path_for_compare(&entry.path);
+        let protected_path = comparison_key(&entry.path);
         candidate_path == protected_path
             || candidate_path
                 .strip_prefix(&protected_path)
@@ -139,7 +139,9 @@ fn normalize_existing_path(path: &str) -> Result<String, String> {
 }
 
 fn normalize_path_for_storage(path: &Path) -> String {
-    trim_trailing_separator(strip_extended_length_prefix(&path.to_string_lossy().replace('/', "\\")))
+    trim_trailing_separator(strip_extended_length_prefix(
+        &path.to_string_lossy().replace('/', "\\"),
+    ))
 }
 
 fn normalize_path_for_compare(path: &Path) -> String {
@@ -148,6 +150,58 @@ fn normalize_path_for_compare(path: &Path) -> String {
 
 fn normalize_string_path_for_compare(path: &str) -> String {
     trim_trailing_separator(strip_extended_length_prefix(&path.replace('/', "\\"))).to_lowercase()
+}
+
+/// 判断路径里是否可能出现 8.3 短名。
+///
+/// 短名一定带 `~`（如 `PASSAC~1`）；反过来长名里也可能合法出现 `~`（`~` 是合法文件名字符），
+/// 那种情况只会多付一次 canonicalize，不会误判，所以这个判断可以放宽。
+fn may_contain_short_name(path: &str) -> bool {
+    path.contains('~')
+}
+
+/// 比较用的路径键：能拿到真实长名就用长名，拿不到就退回字面量规范化。
+///
+/// 为什么必须做这一步：写入侧 `normalize_existing_path` 会 `fs::canonicalize`，得到的是
+/// 文件系统记录的长名；而扫描侧的路径可能来自环境变量，是 8.3 短名——长用户名或中文
+/// 用户名机器上 `%TEMP%` 就是 `C:\Users\PASSAC~1\...`。两侧拼写永远不等，白名单会静默
+/// 失效，而它是永久删除前唯一由用户控制的防线。
+///
+/// 成本控制：canonicalize 单次实测约 50µs，对每个候选文件都调用的话，一万个文件就是半秒，
+/// 与这个工具「快」的定位冲突。所以只在路径里出现 `~`（短名的必要特征）时才付这个开销，
+/// 常规长名路径仍然走纯字符串比较，热路径开销不变。
+fn comparison_key(path: &str) -> String {
+    if !may_contain_short_name(path) {
+        return normalize_string_path_for_compare(path);
+    }
+    canonicalize_longest_existing_prefix(Path::new(path))
+        .unwrap_or_else(|| normalize_string_path_for_compare(path))
+}
+
+/// 把路径里「最长的已存在祖先」换成真实长名，不存在的尾部原样拼回去。
+///
+/// 为什么不能直接 canonicalize 整条路径：删除候选里很多条目已经不存在（这正是要清理的对象），
+/// canonicalize 对不存在的路径直接失败；而白名单必须能拦住「已存在父目录 + 待删子项」这种组合，
+/// 否则用户保护了 `SomeApp`，`SomeApp\cache` 却因为不存在而绕过保护。
+fn canonicalize_longest_existing_prefix(path: &Path) -> Option<String> {
+    let mut missing_suffix: Vec<String> = Vec::new();
+    let mut current = path;
+    loop {
+        if let Ok(canonical) = fs::canonicalize(current) {
+            // 祖先部分直接取比较键（已去前缀、已小写），再把缺失的尾部按同样规则拼回去
+            let mut resolved = normalize_path_for_compare(&canonical);
+            for part in missing_suffix.iter().rev() {
+                if !resolved.ends_with('\\') {
+                    resolved.push('\\');
+                }
+                resolved.push_str(&part.to_lowercase());
+            }
+            return Some(resolved);
+        }
+        // 逐级往上退，直到某个祖先存在为止；退到盘符根仍失败则放弃（交给调用方回退字面量比较）
+        missing_suffix.push(current.file_name()?.to_string_lossy().to_string());
+        current = current.parent()?;
+    }
 }
 
 /// Strip the Windows extended-length path prefix (`\\?\` and `\\.\`).
@@ -236,7 +290,43 @@ mod tests {
             "带 \\\\?\\ 前缀的入库路径必须能匹配扫描路径"
         );
         assert!(contains_path(&entries, &scanned_directory.join("cache")));
-        assert!(!contains_path(&entries, &root.join("AppData").join("Local").join("OtherApp")));
+        assert!(!contains_path(
+            &entries,
+            &root.join("AppData").join("Local").join("OtherApp")
+        ));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn path_with_tilde_still_matches_its_canonical_form() {
+        // 目录名里带 `~` 会走 comparison_key 的 canonicalize 分支（`~` 是 8.3 短名的特征，
+        // 但也是合法文件名字符）。这里要保证：走慢分支之后，同一路径的不同拼写仍然判为同一条。
+        let root = std::env::temp_dir().join(format!(
+            "lightc~whitelist-{}-{}",
+            std::process::id(),
+            Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        ));
+        let protected = root.join("Some~App");
+        fs::create_dir_all(&protected).expect("创建测试目录失败");
+
+        let canonical = fs::canonicalize(&protected).expect("canonicalize 失败");
+        let entries = vec![LeftoverWhitelistEntry {
+            path: normalize_path_for_storage(&canonical),
+            added_at: "2026-01-01T00:00:00Z".to_string(),
+        }];
+
+        // 字面拼写（含 `~`）与 canonical 拼写必须都命中，子路径同样命中
+        assert!(
+            contains_path(&entries, &protected),
+            "含 ~ 的字面路径必须命中"
+        );
+        assert!(
+            contains_path(&entries, &canonical),
+            "canonical 拼写必须命中"
+        );
+        assert!(contains_path(&entries, &protected.join("cache")));
+        assert!(!contains_path(&entries, &root.join("Other~App")));
 
         let _ = fs::remove_dir_all(root);
     }

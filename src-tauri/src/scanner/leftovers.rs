@@ -118,9 +118,8 @@ static RE_VERSION_FOLDER: Lazy<Regex> = Lazy::new(|| Regex::new(r"^v?\d+(\.\d+){
 /// These folders hold "downloaded/unpacked new versions" and are no longer needed after the program updates. Worst case if deleted:
 /// the next update simply downloads them again - this is the only category here where we can tell the user exactly "what the consequence is",
 /// so it is worth marking separately (`DetectionCategory::UpdaterCache`) instead of lumping it into "high confidence".
-static RE_UPDATER_DIR: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"(^|[-_. ])(updater|update)([-_. ]|$)|updater$").unwrap()
-});
+static RE_UPDATER_DIR: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"(^|[-_. ])(updater|update)([-_. ]|$)|updater$").unwrap());
 
 /// The app's own cache/log directories.
 ///
@@ -819,6 +818,41 @@ fn should_descend_for_disks(name_lower: &str, depth: usize) -> bool {
     true
 }
 
+/// 从 InstallLocation 推断文件夹名。纯函数，便于用固定输入测试（不读本机注册表）。
+///
+/// 只取两级：末级目录名，以及倒数第二级（排除 Program Files 这类公共父目录）。
+/// **不从 DisplayName 切词**——切出来的短词元会撞上无关目录，这是历史上误判的主要来源。
+fn infer_folder_names(install_location: Option<&str>) -> Vec<String> {
+    let Some(location) = install_location else {
+        return Vec::new();
+    };
+    let location_path = Path::new(location);
+    let mut inferred = Vec::new();
+
+    // a. 末级目录名：应用自己的目录，最可靠
+    if let Some(folder) = location_path.file_name() {
+        let name = folder.to_string_lossy().to_lowercase();
+        if !name.is_empty() {
+            inferred.push(name);
+        }
+    }
+
+    // b. 倒数第二级目录名：对应「厂商\产品」结构。必须排除公共父目录，
+    //    否则装在 Program Files 下的每个应用都会把 "program files" 记成文件夹名。
+    if let Some(parent) = location_path.parent() {
+        if let Some(vendor) = parent.file_name() {
+            let vendor_name = vendor.to_string_lossy().to_lowercase();
+            if !vendor_name.is_empty() && !EXCLUDED_PARENT_DIRS.contains(&vendor_name.as_str()) {
+                inferred.push(vendor_name);
+            }
+        }
+    }
+
+    inferred.sort();
+    inferred.dedup();
+    inferred
+}
+
 impl InstalledAppMap {
     /// Build the installed-app map from the registry
     ///
@@ -870,32 +904,7 @@ impl InstalledAppMap {
                         }
 
                         // Infer folder names only from InstallLocation, do not split DisplayName tokens
-                        let mut inferred = Vec::new();
-
-                        if let Some(ref loc) = install_location {
-                            let loc_path = Path::new(loc);
-                            // a. last-level directory name
-                            if let Some(folder) = loc_path.file_name() {
-                                let name = folder.to_string_lossy().to_lowercase();
-                                if !name.is_empty() {
-                                    inferred.push(name);
-                                }
-                            }
-                            // b. second-to-last directory name (excluding common parent directories)
-                            if let Some(parent) = loc_path.parent() {
-                                if let Some(vendor) = parent.file_name() {
-                                    let v = vendor.to_string_lossy().to_lowercase();
-                                    if !v.is_empty() && !EXCLUDED_PARENT_DIRS.contains(&v.as_str())
-                                    {
-                                        inferred.push(v);
-                                    }
-                                }
-                            }
-                        }
-
-                        // Deduplicate
-                        inferred.sort();
-                        inferred.dedup();
+                        let inferred = infer_folder_names(install_location.as_deref());
 
                         let app_idx = apps.len();
                         for name in &inferred {
@@ -1009,11 +1018,9 @@ impl InstalledAppMap {
     ///
     /// This is the most direct evidence of an "uninstall leftover": the app was once installed and is now gone from the registry.
     fn uninstalled_app_for_name(&self, folder_name_lower: &str) -> Option<&str> {
-        if let Some(name) = name_tokens(folder_name_lower).find_map(|token| {
-            self.uninstalled_tokens
-                .get(token)
-                .map(|name| name.as_str())
-        }) {
+        if let Some(name) = name_tokens(folder_name_lower)
+            .find_map(|token| self.uninstalled_tokens.get(token).map(|name| name.as_str()))
+        {
             return Some(name);
         }
 
@@ -1311,10 +1318,7 @@ impl LeftoverScanner {
 
                         // +0.35 App's own cache/log directory: deleting it is regenerated on next program run
                         if is_cache_dir {
-                            ctx.add(
-                                0.35,
-                                "缓存或日志目录（删除后程序会自行重新生成）".into(),
-                            );
+                            ctx.add(0.35, "缓存或日志目录（删除后程序会自行重新生成）".into());
                         }
 
                         // +0.25 Folder name matches a historical InstallLocation and the app is no longer in the registry
@@ -1325,16 +1329,18 @@ impl LeftoverScanner {
                                 0.25,
                                 format!("匹配已知安装路径但应用已卸载: {}", folder_name),
                             );
-                        } else if let Some(uninstalled) = self
-                            .app_map
-                            .uninstalled_app_for_name(&folder_lower)
+                        } else if let Some(uninstalled) =
+                            self.app_map.uninstalled_app_for_name(&folder_lower)
                         {
                             // Token-level historical hit: directory names and install records are rarely character-for-character identical
                             // （`Comfy Desktop` vs `comfyui-desktop-2-updater`），
                             // Exact matching basically fails; this is the path where historical evidence really takes effect.
                             ctx.add(
                                 0.20,
-                                format!("目录名与该应用的历史安装记录吻合（已卸载）: {}", uninstalled),
+                                format!(
+                                    "目录名与该应用的历史安装记录吻合（已卸载）: {}",
+                                    uninstalled
+                                ),
                             );
                         }
 
@@ -1368,16 +1374,14 @@ impl LeftoverScanner {
                                 -0.45,
                                 format!("匹配当前已安装应用 DisplayName: {}", folder_name),
                             );
-                        } else if let Some(owner) = self.app_map.installed_app_for_name(&folder_lower)
+                        } else if let Some(owner) =
+                            self.app_map.installed_app_for_name(&folder_lower)
                         {
                             // -0.35 Token match to an app still installed.
                             // What exact matching misses is the most common form: `ms-playwright` / `Code` /
                             // `comfyui-desktop-2-updater` - they never match DisplayName;
                             // without a penalty they would appear in results as 0.30 items and be treated by users as "deletable".
-                            ctx.add(
-                                -0.35,
-                                format!("目录名与仍在安装的应用吻合: {}", owner),
-                            );
+                            ctx.add(-0.35, format!("目录名与仍在安装的应用吻合: {}", owner));
                         }
 
                         // -0.60 Folder name exactly matches an installed app's InstallLocation last directory
@@ -1613,7 +1617,8 @@ impl LeftoverScanner {
                 let Some(extension) = path.extension() else {
                     continue;
                 };
-                if !EXECUTABLE_EXTENSIONS.contains(&extension.to_string_lossy().to_lowercase().as_str())
+                if !EXECUTABLE_EXTENSIONS
+                    .contains(&extension.to_string_lossy().to_lowercase().as_str())
                 {
                     continue;
                 }
@@ -1647,10 +1652,7 @@ impl LeftoverScanner {
 
                 if let Some(owner) = self.app_map.installed_app_for_name(&name_lower) {
                     // The same-named app is still installed: this is probably its own launcher, must not be touched
-                    ctx.add(
-                        -0.45,
-                        format!("文件名与仍在安装的应用吻合: {}", owner),
-                    );
+                    ctx.add(-0.45, format!("文件名与仍在安装的应用吻合: {}", owner));
                 } else if let Some(uninstalled) = self.app_map.uninstalled_app_for_name(&name_lower)
                 {
                     ctx.add(
@@ -1733,13 +1735,13 @@ impl LeftoverScanner {
             for entry in WalkDir::new(base_dir)
                 .max_depth(6)
                 .into_iter()
-                    .filter_entry(|entry| {
-                        if !entry.file_type().is_dir() {
-                            return true;
-                        }
-                        let name = entry.file_name().to_string_lossy().to_lowercase();
-                        should_descend_for_disks(&name, entry.depth())
-                    })
+                .filter_entry(|entry| {
+                    if !entry.file_type().is_dir() {
+                        return true;
+                    }
+                    let name = entry.file_name().to_string_lossy().to_lowercase();
+                    should_descend_for_disks(&name, entry.depth())
+                })
                 .filter_map(|e| e.ok())
             {
                 let path = entry.path();
@@ -1819,7 +1821,6 @@ impl LeftoverScanner {
                     reasons: vec!["孤立虚拟磁盘文件，未关联已安装应用".into()],
                 });
             }
-
         }
 
         results
@@ -2439,21 +2440,37 @@ mod tests {
     }
 
     #[test]
-    fn test_no_token_in_known_folders() {
-        // Verify known_folders does not contain pure tokens of length <= 3
-        // InstalledAppMap::build() no longer splits DisplayName, so known_folders
-        // only comes from the last/second-to-last directory of InstallLocation
-        let map = InstalledAppMap::build();
-        for folder in &map.known_folders {
-            // Entries of length <= 3 must be valid directory names (like "amd", "git"), not token fragments
-            // Verification: known_folders should not contain pure numbers or common token fragments
-            let is_pure_numeric = folder.chars().all(|c| c.is_ascii_digit());
-            assert!(
-                !is_pure_numeric || folder.len() > 3,
-                "known_folders 不应包含纯数字短 token: \"{}\"",
-                folder
-            );
-        }
+    fn infer_folder_names_uses_install_location_only() {
+        // 用固定输入而不是读本机注册表：原测试跑在本机真实数据上，装了什么软件就决定它红还是绿，
+        // CI 干净机反而看不出问题（审计 M14）。这里锁定四条结构性约束。
+        //
+        // 1) 正常「厂商\产品」结构：两级都取
+        assert_eq!(
+            infer_folder_names(Some(r"C:\Program Files\SomeVendor\SomeApp")),
+            vec!["someapp".to_string(), "somevendor".to_string()]
+        );
+
+        // 2) 公共父目录不作为文件夹名，否则每个装在 Program Files 下的应用都会记成 "program files"
+        assert_eq!(
+            infer_folder_names(Some(r"C:\Program Files\SomeApp")),
+            vec!["someapp".to_string()]
+        );
+        assert_eq!(
+            infer_folder_names(Some(r"C:\ProgramData\SomeApp")),
+            vec!["someapp".to_string()]
+        );
+
+        // 3) 纯数字目录名是合法目录名，必须原样保留。
+        //    这正是原测试的错处：它把「纯数字短名」一律当成切词残留，
+        //    于是任何真实存在 `...\18` 目录的机器上都会误报。
+        assert_eq!(
+            infer_folder_names(Some(r"D:\Tools\18")),
+            vec!["18".to_string(), "tools".to_string()]
+        );
+
+        // 4) 缺失或空路径不产生任何文件夹名
+        assert!(infer_folder_names(None).is_empty());
+        assert!(infer_folder_names(Some("")).is_empty());
     }
 
     // ========================================================================
@@ -2629,7 +2646,11 @@ mod tests {
 
         assert_eq!(result.deleted_count, 1, "虚拟磁盘文件应被删除");
         assert_eq!(result.deleted_size, 4096, "大小按文件实际长度记");
-        assert!(result.errors.is_empty(), "不应产生错误: {:?}", result.errors);
+        assert!(
+            result.errors.is_empty(),
+            "不应产生错误: {:?}",
+            result.errors
+        );
         assert!(!virtual_disk.exists(), "文件应已不存在");
 
         let _ = fs::remove_dir_all(&base);
@@ -2666,7 +2687,10 @@ mod tests {
         assert_eq!(result.skipped_executables.len(), 1);
         assert_eq!(result.failed_paths.len(), 2, "跳过项与不存在项都算没删掉");
         assert_eq!(result.errors.len(), result.failed_paths.len(), "逐条对齐");
-        assert_eq!(result.failed_paths[0], skipped.to_string_lossy().to_string());
+        assert_eq!(
+            result.failed_paths[0],
+            skipped.to_string_lossy().to_string()
+        );
         assert!(
             result.errors[0].starts_with(skipped.to_string_lossy().as_ref()),
             "第一条错误必须属于被跳过的目录，实际: {}",
@@ -2697,7 +2721,8 @@ mod tests {
 
         let mut scanner = LeftoverScanner::new();
         scanner.deep_scan = false;
-        let result = scanner.scan_with_paths(vec![(root.clone(), LeftoverSource::LocalAppData)], &[]);
+        let result =
+            scanner.scan_with_paths(vec![(root.clone(), LeftoverSource::LocalAppData)], &[]);
 
         assert!(result.leftovers.is_empty(), "没有正向证据不该出结果");
         assert_eq!(result.scanned_directories, 1, "必须报告检查过几个目录");
@@ -2790,13 +2815,17 @@ mod tests {
             "装了 Playwright 时，ms-playwright 目录必须被认为是它在用"
         );
         assert_eq!(
-            installed.app_map.installed_app_for_name("kimi-desktop-updater"),
+            installed
+                .app_map
+                .installed_app_for_name("kimi-desktop-updater"),
             None
         );
 
         let uninstalled = scanner_with_apps(&[], &["Kimi"]);
         assert_eq!(
-            uninstalled.app_map.uninstalled_app_for_name("kimi-desktop-updater"),
+            uninstalled
+                .app_map
+                .uninstalled_app_for_name("kimi-desktop-updater"),
             Some("kimi"),
             "Kimi 卸载后，kimi-* 目录应能对上历史安装记录"
         );
@@ -2837,7 +2866,10 @@ mod tests {
         );
         assert!(paths[0].ends_with("GhostApp"));
         assert!(
-            result.leftovers[0].reasons.iter().any(|r| r.contains("已空")),
+            result.leftovers[0]
+                .reasons
+                .iter()
+                .any(|r| r.contains("已空")),
             "理由里要说明它是空目录"
         );
 
@@ -2862,7 +2894,10 @@ mod tests {
         let entries =
             scanner.scan_loose_files(&[(root.clone(), LeftoverSource::RoamingAppData)], &[]);
 
-        let names: Vec<&str> = entries.iter().map(|entry| entry.app_name.as_str()).collect();
+        let names: Vec<&str> = entries
+            .iter()
+            .map(|entry| entry.app_name.as_str())
+            .collect();
         assert_eq!(names, vec!["stray.exe"], "只有够大的 exe 该被报出来");
         assert_eq!(entries[0].leftover_type, LeftoverType::LooseFile);
         assert_eq!(entries[0].file_count, 1, "文件条目按 1 个文件计");
@@ -2877,8 +2912,7 @@ mod tests {
         let base = case_dir("loose-installed");
         let root = base.join("Roaming");
         fs::create_dir_all(&root).expect("创建目录失败");
-        fs::write(root.join("ollama app.exe"), vec![0u8; 256 * 1024])
-            .expect("写入 exe 失败");
+        fs::write(root.join("ollama app.exe"), vec![0u8; 256 * 1024]).expect("写入 exe 失败");
 
         let scanner = scanner_with_apps(&["Ollama"], &[]);
         let entries =
@@ -2887,7 +2921,10 @@ mod tests {
         assert!(
             entries.is_empty(),
             "Ollama 还装着时，ollama app.exe 可能是它自己在用，不能报: {:?}",
-            entries.iter().map(|e| e.app_name.as_str()).collect::<Vec<_>>()
+            entries
+                .iter()
+                .map(|e| e.app_name.as_str())
+                .collect::<Vec<_>>()
         );
 
         let _ = fs::remove_dir_all(&base);
