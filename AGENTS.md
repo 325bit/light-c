@@ -69,10 +69,11 @@ If output contains unreadable characters, inspect the exit code first.
 
 ## 5. 注释规范（强制）
 
-- 所有新增或修改代码必须包含**中文注释**
+- 所有新增或修改代码必须包含**英文注释**，不要写中文注释
+- 不要求回头翻译既有的中文注释；只有该处本来就要重写时才顺带改成英文
 - 注释说明“为什么这么做”，而不是重复代码
 - 关键逻辑必须解释清楚（尤其是边界处理、特殊判断）
-- 不写无意义注释（如：`// 自增1`）
+- 不写无意义注释（如：`// increment by 1`）
 
 ---
 
@@ -168,6 +169,7 @@ If output contains unreadable characters, inspect the exit code first.
 - commit message 简洁说明变更内容
 - 不提交无关文件
 - 提交信息默认英文
+- 打 tag 或准备发布 Release 前，先读 `RELEASE-CHECKLIST.md` 并逐项核对（不发版则无需关注）
 
 ---
 
