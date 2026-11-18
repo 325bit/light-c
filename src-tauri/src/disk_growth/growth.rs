@@ -12,7 +12,10 @@ use super::mft_scan::{
     normalize_path, scan_drive_with_progress, DirSizeEntry, DiskGrowthPhaseDuration,
     DiskGrowthScanProgress, FileSnapshotEntry,
 };
-use super::snapshot::{build_snapshot, DiskSnapshot, DiskSnapshotEntry, DiskSnapshotManager};
+use super::snapshot::{
+    build_snapshot, DiskSnapshot, DiskSnapshotEntry, DiskSnapshotManager, FileDetailOrder,
+    FileDiffRow,
+};
 
 const SIGNIFICANT_THRESHOLD: i64 = 1024 * 1024 * 1024;
 const FAST_THRESHOLD: i64 = 300 * 1024 * 1024;
@@ -32,7 +35,13 @@ const MAX_DETAIL_ENTRIES: usize = 50;
 /// with a flat directory structure the node count is far below the cap, so the exported report may be only a few hundred KB.
 const MAX_EXPORT_TREE_NODES: usize = 10_000;
 const DEFAULT_DETAIL_PAGE_SIZE: usize = 200;
-const MAX_DETAIL_PAGE_SIZE: usize = 1000;
+/// Hard ceiling for one detail page.
+///
+/// This is deliberately generous: a directory can report 10k+ changed files (Edge's cache,
+/// npm/pip caches) and the tree needs the file paths to rebuild folders below the snapshot's
+/// aggregation depth. The module dialog offers "load all" through this ceiling, and the whole
+/// page is virtualised on the client, so the cost is one JSON payload rather than rendering.
+const MAX_DETAIL_PAGE_SIZE: usize = 20_000;
 const DETAIL_SUBTREE_FALLBACK_DEPTH: u8 = 4;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -163,6 +172,20 @@ pub struct DiskGrowthFileDetailEntry {
     pub level: DiskGrowthLevel,
 }
 
+impl FileDiffRow for DiskGrowthFileDetailEntry {
+    fn diff_path(&self) -> &str {
+        &self.path
+    }
+
+    fn diff_old_size(&self) -> u64 {
+        self.old_size
+    }
+
+    fn diff_new_size(&self) -> u64 {
+        self.new_size
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DiskGrowthFileDetailsResponse {
     pub path: String,
@@ -256,6 +279,8 @@ pub fn get_file_change_details(
     path: String,
     offset: Option<usize>,
     limit: Option<usize>,
+    sort: Option<String>,
+    desc: Option<bool>,
     drive_letter: Option<String>,
 ) -> Result<DiskGrowthFileDetailsResponse, String> {
     let drive_letter = normalize_growth_drive_letter(drive_letter.as_deref())?;
@@ -278,6 +303,8 @@ pub fn get_file_change_details(
     let limit = limit
         .unwrap_or(DEFAULT_DETAIL_PAGE_SIZE)
         .clamp(1, MAX_DETAIL_PAGE_SIZE);
+    // Paging walks one order, so the order has to be known before the Top-N pruning happens.
+    let order = FileDetailOrder::parse(sort.as_deref(), desc);
     let previous_entries = manager.load_file_entries_for_parent(
         &previous_handle.path,
         &previous_handle.snapshot,
@@ -302,6 +329,7 @@ pub fn get_file_change_details(
             &current_handle.path,
             &current_handle.snapshot,
             &normalized_path,
+            order,
             offset.saturating_add(limit),
         )?;
         total_changed_files = subtree_total;
@@ -322,13 +350,7 @@ pub fn get_file_change_details(
             .collect();
     }
 
-    entries.sort_by(|left, right| {
-        right
-            .diff
-            .abs()
-            .cmp(&left.diff.abs())
-            .then_with(|| left.path.cmp(&right.path))
-    });
+    entries.sort_by(|left, right| order.compare(left, right));
     let paged_entries: Vec<DiskGrowthFileDetailEntry> =
         entries.into_iter().skip(offset).take(limit).collect();
     let returned_files = paged_entries.len();

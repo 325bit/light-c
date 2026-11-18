@@ -38,6 +38,34 @@ export interface GrowthDetailNode {
   children: GrowthDetailNode[];
 }
 
+export type GrowthDetailSortKey = 'diff' | 'size' | 'name';
+
+export interface GrowthDetailSort {
+  key: GrowthDetailSortKey;
+  desc: boolean;
+}
+
+/**
+ * Default order: the size of the change, largest first.
+ *
+ * This is also the backend's fallback order, so an old caller that sends no `sort` still
+ * paginates consistently with what it displays.
+ */
+export const DEFAULT_DETAIL_SORT: GrowthDetailSort = { key: 'diff', desc: true };
+
+const DEFAULT_SORT_DESC: Record<GrowthDetailSortKey, boolean> = {
+  name: false,
+  size: true,
+  diff: true,
+};
+
+/** Clicking the active column flips the direction; a new column starts at its natural one */
+export function nextDetailSort(current: GrowthDetailSort, key: GrowthDetailSortKey): GrowthDetailSort {
+  return current.key === key
+    ? { key, desc: !current.desc }
+    : { key, desc: DEFAULT_SORT_DESC[key] };
+}
+
 interface MutableNode extends GrowthDetailNode {
   children: GrowthDetailNode[];
 }
@@ -108,15 +136,31 @@ function finalizeSynthesized(node: MutableNode): { files: number } {
 
 const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
 
-function sortDetailNodes(nodes: GrowthDetailNode[]): void {
-  nodes.sort((left, right) => {
-    if (left.isDir !== right.isDir) return left.isDir ? -1 : 1;
-    const delta = Math.abs(right.diff) - Math.abs(left.diff);
-    if (delta !== 0) return delta;
-    return collator.compare(left.name, right.name);
-  });
+function compareDetailNodes(left: GrowthDetailNode, right: GrowthDetailNode, sort: GrowthDetailSort): number {
+  // Folders stay above files whatever the sort: the tree is grouped by folder first, and
+  // interleaving them would undo the grouping this modal exists for.
+  if (left.isDir !== right.isDir) return left.isDir ? -1 : 1;
+  let delta = 0;
+  switch (sort.key) {
+    case 'name':
+      delta = collator.compare(left.name, right.name);
+      break;
+    case 'size':
+      delta = left.size - right.size;
+      break;
+    default:
+      // Matches the backend: the size of the change, not its direction
+      delta = Math.abs(left.diff) - Math.abs(right.diff);
+      break;
+  }
+  if (delta !== 0) return sort.desc ? -delta : delta;
+  return collator.compare(left.name, right.name);
+}
+
+function sortDetailNodes(nodes: GrowthDetailNode[], sort: GrowthDetailSort): void {
+  nodes.sort((left, right) => compareDetailNodes(left, right, sort));
   for (const node of nodes) {
-    if (node.children.length > 0) sortDetailNodes(node.children);
+    if (node.children.length > 0) sortDetailNodes(node.children, sort);
   }
 }
 
@@ -133,6 +177,7 @@ export function buildDetailChildren(
   parentDepth: number,
   dirs: DiskGrowthDetailEntry[],
   files: DiskGrowthFileDetailEntry[],
+  sort: GrowthDetailSort = DEFAULT_DETAIL_SORT,
 ): GrowthDetailNode[] {
   const index = new Map<string, MutableNode>();
   const roots: MutableNode[] = [];
@@ -199,8 +244,17 @@ export function buildDetailChildren(
   }
 
   for (const root of roots) finalizeSynthesized(root);
-  sortDetailNodes(roots);
+  sortDetailNodes(roots, sort);
   return roots;
+}
+
+/** Files below a node; the count is what is loaded, not the folder's real file total */
+function countFiles(nodes: GrowthDetailNode[]): number {
+  let files = 0;
+  for (const node of nodes) {
+    files += node.isDir ? countFiles(node.children) : 1;
+  }
+  return files;
 }
 
 /** Attach children recursively for every directory whose data has been loaded */
@@ -208,6 +262,7 @@ export function buildDetailTree(
   rootPath: string,
   dirsByParent: Map<string, DiskGrowthDetailEntry[]>,
   filesByParent: Map<string, DiskGrowthFileDetailEntry[]>,
+  sort: GrowthDetailSort = DEFAULT_DETAIL_SORT,
 ): GrowthDetailNode[] {
   const visited = new Set<string>();
 
@@ -220,11 +275,15 @@ export function buildDetailTree(
       parentDepth,
       dirsByParent.get(key) ?? [],
       filesByParent.get(key) ?? [],
+      sort,
     );
     for (const child of children) {
       if (!child.isDir) continue;
       if (!dirsByParent.has(child.key) && !filesByParent.has(child.key)) continue;
       child.children = build(child.path, child.depth);
+      // The node was finalized from the parent's file page; a loaded layer replaces those children,
+      // so the "N files" label has to be recounted or it keeps the first page's number.
+      child.fileCount = countFiles(child.children);
     }
     return children;
   };

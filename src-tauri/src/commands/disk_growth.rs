@@ -19,10 +19,14 @@ pub async fn get_disk_growth_file_details(
     path: String,
     offset: Option<usize>,
     limit: Option<usize>,
+    // `diff` (default, by change magnitude) | `size` (current size) | `name`
+    sort: Option<String>,
+    // Omitted = the natural direction of `sort` (names A→Z, sizes largest first)
+    desc: Option<bool>,
     drive_letter: Option<String>,
 ) -> Result<crate::disk_growth::DiskGrowthFileDetailsResponse, String> {
     tokio::task::spawn_blocking(move || {
-        crate::disk_growth::get_file_change_details(path, offset, limit, drive_letter)
+        crate::disk_growth::get_file_change_details(path, offset, limit, sort, desc, drive_letter)
     })
     .await
     .map_err(|error| format!("读取文件级变化明细失败: {}", error))?

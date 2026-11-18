@@ -23,6 +23,8 @@ import {
   type TreeSourceFile,
 } from '../utils/fileTree';
 import { FileSortControl, FILE_SORT_KEYS } from './FileSortControl';
+import { FoldersOnlyToggle } from './FoldersOnlyToggle';
+import { useFoldersOnly } from '../hooks/useFoldersOnly';
 import { formatDate, formatSize } from '../utils/format';
 
 export interface FileTreeListProps<T extends TreeSourceFile> {
@@ -53,6 +55,8 @@ export interface FileTreeListProps<T extends TreeSourceFile> {
   sortable?: boolean;
   /** Available keys for the sort control; if the data source has no modified time, pass ['name','size'] to avoid a button that does nothing */
   sortKeys?: TreeSortKey[];
+  /** How the "folders only" switch looks: a labelled pill in modal headers, an icon in dense card toolbars */
+  foldersOnlyVariant?: 'label' | 'icon';
   className?: string;
 }
 
@@ -73,10 +77,13 @@ export function FileTreeList<T extends TreeSourceFile>({
   disabled = false,
   sortable = false,
   sortKeys = FILE_SORT_KEYS,
+  foldersOnlyVariant = 'icon',
   className,
 }: FileTreeListProps<T>) {
   const { t } = useTranslation('common');
   const scrollRef = useRef<HTMLDivElement>(null);
+  // Shared across every tree in the app; see useFoldersOnly for why it is not local state
+  const [foldersOnly, setFoldersOnly] = useFoldersOnly();
 
   /*
     Expansion strategy: expand small lists fully, collapse large lists by default.
@@ -101,9 +108,12 @@ export function FileTreeList<T extends TreeSourceFile>({
 
   const rows = useMemo(() => {
     // When there is no real hierarchy (all files on the same level), do not show a tree, avoiding a meaningless extra wrapper layer
-    if (!tree.hasBranches) return tree.nodes;
-    return flattenFileTree(tree.nodes, expandedKeys);
-  }, [tree, expandedKeys]);
+    const visible = !tree.hasBranches ? tree.nodes : flattenFileTree(tree.nodes, expandedKeys);
+    // Folders-only drops the file rows: a folder row already carries "N files · X MB", which is
+    // the number users scan, so the hierarchy stays readable without the file wall underneath.
+    // Selection state is untouched — folder checkboxes still cover their whole subtree.
+    return foldersOnly ? visible.filter((node) => node.isDir) : visible;
+  }, [tree, expandedKeys, foldersOnly]);
 
   const selectedCounts = useMemo(
     () => computeSelectedCounts(tree.nodes, selectedPaths),
@@ -318,6 +328,7 @@ export function FileTreeList<T extends TreeSourceFile>({
           </span>
         </span>
         {toolbarExtra}
+        <FoldersOnlyToggle variant={foldersOnlyVariant} />
         {sortable && (
           <FileSortControl sort={sort} onSortChange={setSort} keys={sortKeys} />
         )}
@@ -340,6 +351,20 @@ export function FileTreeList<T extends TreeSourceFile>({
         )}
       </div>
 
+      {rows.length === 0 ? (
+        <div className="flex flex-col items-center justify-center gap-2 px-4 text-center" style={{ height }}>
+          <p className="text-[0.86rem] text-[var(--text-faint)]">
+            {t('hiddenFiles', { count: tree.fileCount.toLocaleString() })}
+          </p>
+          <button
+            type="button"
+            onClick={() => setFoldersOnly(false)}
+            className="rounded px-2 py-1 text-[0.79rem] text-[var(--brand-green)] transition hover:bg-[var(--brand-green-10)]"
+          >
+            {t('showFiles')}
+          </button>
+        </div>
+      ) : (
       <div ref={scrollRef} className="overflow-auto" style={{ height }}>
         <div style={{ height: `${virtualizer.getTotalSize()}px`, width: '100%', position: 'relative' }}>
           {virtualizer.getVirtualItems().map((virtualRow) => {
@@ -361,6 +386,7 @@ export function FileTreeList<T extends TreeSourceFile>({
           })}
         </div>
       </div>
+      )}
     </div>
   );
 }

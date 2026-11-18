@@ -1163,6 +1163,7 @@ function FileListModal({
                   // The modal is the only entry point for "view all files", so sorting goes here;
                   // the 192px preview list in the card still has no sorting control
                   sortable
+                  foldersOnlyVariant="label"
                   height={Math.round(Math.min(560, Math.max(260, window.innerHeight * 0.45)))}
                   rowHeight={44}
                   renderFileMeta={(file) => <SocialFileMeta file={file} />}

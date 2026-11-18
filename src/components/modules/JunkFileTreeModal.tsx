@@ -127,6 +127,7 @@ export function JunkFileTreeModal({
                 // The modal is the only place this list is "for viewing", so sorting goes here;
                 // putting sorting controls in the 256px narrow list in the card would crowd out the path
                 sortable
+                foldersOnlyVariant="label"
                 height={Math.round(Math.min(560, Math.max(280, window.innerHeight * 0.5)))}
                 rowHeight={44}
                 renderFileActions={(file) => (

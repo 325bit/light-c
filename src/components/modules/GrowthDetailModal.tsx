@@ -38,18 +38,53 @@ import {
 } from '../../api/commands';
 import { formatSize } from '../../utils/format';
 import { buildPathTitle, describeGrowth, formatDiff, getGrowthStyle, normalizeDiskPath } from '../../utils/growthFormat';
-import { buildDetailTree, type GrowthDetailNode } from '../../utils/growthDetailTree';
+import {
+  buildDetailTree,
+  nextDetailSort,
+  DEFAULT_DETAIL_SORT,
+  type GrowthDetailNode,
+  type GrowthDetailSort,
+  type GrowthDetailSortKey,
+} from '../../utils/growthDetailTree';
+import { SortHeader } from './GrowthSortHeader';
+import { FoldersOnlyToggle } from '../FoldersOnlyToggle';
+import { useFoldersOnly } from '../../hooks/useFoldersOnly';
 
 const PAGE_SIZE = 200;
+/**
+ * "Load all" upper bound for one folder. The backend clamps to its own maximum; the
+ * point is that a folder listing 14k changed files can be pulled in one request
+ * instead of 70 round trips when the user asks for it.
+ */
+const LOAD_ALL_PAGE = 20000;
+const SORT_STORAGE_KEY = 'lightc.diskGrowth.detailSort';
+
+function readDetailSort(): GrowthDetailSort {
+  try {
+    const raw = localStorage.getItem(SORT_STORAGE_KEY);
+    if (!raw) return DEFAULT_DETAIL_SORT;
+    const parsed = JSON.parse(raw) as Partial<GrowthDetailSort> | null;
+    if (!parsed || (parsed.key !== 'diff' && parsed.key !== 'size' && parsed.key !== 'name')) {
+      return DEFAULT_DETAIL_SORT;
+    }
+    return { key: parsed.key, desc: typeof parsed.desc === 'boolean' ? parsed.desc : true };
+  } catch {
+    return DEFAULT_DETAIL_SORT;
+  }
+}
 
 type Row =
   | { kind: 'node'; node: GrowthDetailNode }
   | { kind: 'loading'; node: GrowthDetailNode }
   | { kind: 'empty'; node: GrowthDetailNode }
   | { kind: 'failed'; node: GrowthDetailNode }
+  /** Expanded folder whose children are all files while folders-only is on */
+  | { kind: 'filesHidden'; node: GrowthDetailNode; count: number }
   | { kind: 'more'; node: GrowthDetailNode };
 
 interface PageState {
+  /** Original-cased path; the map key is normalized, and the IPC call needs the real one */
+  path: string;
   loaded: number;
   total: number;
   hasMore: boolean;
@@ -71,6 +106,8 @@ export function GrowthDetailModal({
   onSearchPath,
 }: GrowthDetailModalProps) {
   const { t: moduleT } = useTranslation('modules');
+  const { t: commonT } = useTranslation('common');
+  const [foldersOnly, setFoldersOnly] = useFoldersOnly();
   const rootPath = entry.path;
 
   const [dirsByParent, setDirsByParent] = useState<Map<string, DiskGrowthDetailEntry[]>>(() => new Map());
@@ -80,27 +117,46 @@ export function GrowthDetailModal({
   const [loadingKeys, setLoadingKeys] = useState<Set<string>>(() => new Set());
   const [failedKeys, setFailedKeys] = useState<Set<string>>(() => new Set());
   const [expandedKeys, setExpandedKeys] = useState<Set<string>>(() => new Set());
+  const [sort, setSort] = useState<GrowthDetailSort>(readDetailSort);
 
   const loadingRef = useRef<Set<string>>(new Set());
+  /** Layers asked to reload while their previous request was still in flight */
+  const refetchAfterLoadRef = useRef<Set<string>>(new Set());
   /** Root level auto-expands once per opened directory; manual collapse must not be overridden */
   const autoExpandDoneRef = useRef(false);
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  /** Latest loader, so the tail of a request can restart the layer after an order change */
+  const loaderRef = useRef<
+    ((path: string, append?: boolean, filesOnly?: boolean) => Promise<PageState | null>) | null
+  >(null);
 
-  const loadChildren = useCallback(async (path: string, append = false) => {
+  const loadChildren = useCallback(async (
+    path: string,
+    append = false,
+    filesOnly = false,
+    pageSize = PAGE_SIZE,
+  ): Promise<PageState | null> => {
     const key = normalizeDiskPath(path);
-    if (loadingRef.current.has(key)) return;
+    if (loadingRef.current.has(key)) {
+      // Asked to reload mid-flight (typically the order changed): queue it for the tail of the request.
+      if (filesOnly) refetchAfterLoadRef.current.add(key);
+      return null;
+    }
     loadingRef.current.add(key);
     setLoadingKeys((current) => new Set(current).add(key));
 
     const offset = append ? (pages.get(key)?.loaded ?? 0) : 0;
+    let nextPage: PageState | null = null;
     try {
       // Directories only exist down to the snapshot's aggregation depth; beyond that
       // the file call returns the changed subtree, and paths rebuild the missing levels.
       const [dirsResult, filesResult] = await Promise.allSettled([
-        offset === 0
+        offset === 0 && !filesOnly
           ? getDiskGrowthDirectoryDetails(path, 0, PAGE_SIZE, driveLetter)
           : Promise.resolve(null),
-        getDiskGrowthFileDetails(path, offset, PAGE_SIZE, driveLetter),
+        // The backend pages through the requested order and prunes deep subtrees by the same key,
+        // so page 1 really is the top 200 of that order — no client-side fill pass is needed.
+        getDiskGrowthFileDetails(path, offset, pageSize, driveLetter, sort.key, sort.desc),
       ]);
 
       if (offset === 0 && dirsResult.status === 'fulfilled' && dirsResult.value) {
@@ -116,11 +172,13 @@ export function GrowthDetailModal({
           next.set(key, [...existing, ...result.entries]);
           return next;
         });
-        setPages((current) => new Map(current).set(key, {
+        nextPage = {
+          path,
           loaded: offset + result.returned_files,
           total: result.total_changed_files,
           hasMore: result.has_more,
-        }));
+        };
+        setPages((current) => new Map(current).set(key, nextPage as PageState));
       }
 
       const bothFailed = filesResult.status === 'rejected'
@@ -150,8 +208,16 @@ export function GrowthDetailModal({
         next.delete(key);
         return next;
       });
+      if (refetchAfterLoadRef.current.delete(key)) {
+        // This layer was reloaded while the old order was still in flight; restart it now so
+        // the rows on screen and the offsets used by "load more" belong to the same order.
+        void loaderRef.current?.(path, false, true);
+      }
     }
-  }, [driveLetter, pages, rootPath]);
+    return nextPage;
+  }, [driveLetter, pages, rootPath, sort.key, sort.desc]);
+
+  loaderRef.current = loadChildren;
 
   // Opening another directory starts from a clean tree
   useEffect(() => {
@@ -163,24 +229,56 @@ export function GrowthDetailModal({
     setFailedKeys(new Set());
     setExpandedKeys(new Set());
     loadingRef.current = new Set();
+    refetchAfterLoadRef.current = new Set();
     autoExpandDoneRef.current = false;
     void loadChildren(rootPath);
     // loadChildren depends on `pages`, which is reset above; the path is what identifies the request
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rootPath, driveLetter]);
 
+  const sortSignature = `${sort.key}:${sort.desc}`;
+  const appliedSortRef = useRef(sortSignature);
+
+  // Offsets only mean something inside one order: after a sort change every layer restarts at
+  // page 1 (reusing the directory list it already has) instead of appending rows from a
+  // different order, which would silently duplicate or skip files.
+  useEffect(() => {
+    if (appliedSortRef.current === sortSignature) return;
+    appliedSortRef.current = sortSignature;
+    for (const state of pages.values()) {
+      void loadChildren(state.path, false, true);
+    }
+    // pages is a snapshot of the loaded layers, not a trigger: this only runs on an order change
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sortSignature, loadChildren]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(SORT_STORAGE_KEY, JSON.stringify(sort));
+    } catch {
+      // Private mode or a full quota: the in-memory choice still applies
+    }
+  }, [sort]);
+
+  const handleSort = useCallback((key: GrowthDetailSortKey) => {
+    setSort((current) => nextDetailSort(current, key));
+  }, []);
+
   const tree = useMemo(
-    () => buildDetailTree(rootPath, dirsByParent, filesByParent),
-    [rootPath, dirsByParent, filesByParent],
+    () => buildDetailTree(rootPath, dirsByParent, filesByParent, sort),
+    [rootPath, dirsByParent, filesByParent, sort],
   );
 
   const rows = useMemo(() => {
     const out: Row[] = [];
     const walk = (nodes: GrowthDetailNode[]) => {
       for (const node of nodes) {
+        if (foldersOnly && !node.isDir) continue;
         out.push({ kind: 'node', node });
         if (!node.isDir || !expandedKeys.has(node.key)) continue;
-        if (loadingKeys.has(node.key)) {
+        // Only the first load replaces the children with a spinner; topping up extra pages for a
+        // sort keeps the rows already on screen and merely hides the "load more" row meanwhile.
+        if (loadingKeys.has(node.key) && node.children.length === 0) {
           out.push({ kind: 'loading', node });
           continue;
         }
@@ -192,13 +290,22 @@ export function GrowthDetailModal({
           out.push({ kind: 'empty', node });
           continue;
         }
+        // Folders-only: a file row only repeats what the folder's own file count already says
+        if (foldersOnly) {
+          const hidden = node.children.filter((child) => !child.isDir).length;
+          if (hidden === node.children.length) {
+            out.push({ kind: 'filesHidden', node, count: hidden });
+            if (pages.get(node.key)?.hasMore && !loadingKeys.has(node.key)) out.push({ kind: 'more', node });
+            continue;
+          }
+        }
         walk(node.children);
-        if (pages.get(node.key)?.hasMore) out.push({ kind: 'more', node });
+        if (pages.get(node.key)?.hasMore && !loadingKeys.has(node.key)) out.push({ kind: 'more', node });
       }
     };
     walk(tree);
     return out;
-  }, [tree, expandedKeys, loadingKeys, failedKeys, pages]);
+  }, [tree, expandedKeys, loadingKeys, failedKeys, pages, foldersOnly]);
 
   const virtualizer = useVirtualizer({
     count: rows.length,
@@ -330,7 +437,7 @@ export function GrowthDetailModal({
     );
   };
 
-  const renderMarker = (row: Row & { kind: 'loading' | 'empty' | 'failed' | 'more' }) => {
+  const renderMarker = (row: Row & { kind: 'loading' | 'empty' | 'failed' | 'filesHidden' | 'more' }) => {
     // 12 = row padding, then one level of indent + chevron slot, so markers line up under the child names.
     // Fixed h-10 keeps the virtualizer's 40px estimate exact for these rows too.
     const indent = 12 + (row.node.depth + 1) * 14 + 48;
@@ -357,21 +464,53 @@ export function GrowthDetailModal({
         </div>
       );
     }
+    if (row.kind === 'filesHidden') {
+      return (
+        <div className={`${base} gap-3 text-[var(--text-faint)]`} style={{ paddingLeft: indent }}>
+          <span className="tabular-nums">{commonT('hiddenFiles', { count: row.count.toLocaleString() })}</span>
+          <button
+            type="button"
+            onClick={() => setFoldersOnly(false)}
+            className="shrink-0 text-[var(--brand-green)] transition-colors hover:text-[var(--brand-green-hover)]"
+          >
+            {commonT('showFiles')}
+          </button>
+        </div>
+      );
+    }
     const page = pages.get(row.node.key);
+    const remaining = page ? Math.max(page.total - page.loaded, 0) : 0;
     return (
-      <button
-        type="button"
-        onClick={() => void loadChildren(row.node.path, true)}
-        className={`${base} w-full text-left text-[var(--brand-green)] transition-colors hover:text-[var(--brand-green-hover)]`}
-        style={{ paddingLeft: indent }}
-      >
-        {moduleT('diskGrowth.loadMore')}
-        {page && (
-          <span className="text-[0.79rem] text-[var(--text-faint)] tabular-nums">
-            {moduleT('diskGrowth.showing', { current: page.loaded, total: page.total })}
-          </span>
+      <div className={`${base} gap-3`} style={{ paddingLeft: indent }}>
+        <button
+          type="button"
+          onClick={() => void loadChildren(row.node.path, true)}
+          className="shrink-0 text-[var(--brand-green)] transition-colors hover:text-[var(--brand-green-hover)]"
+        >
+          {moduleT('diskGrowth.loadMore')}
+          {page && (
+            <span className="ml-2 text-[0.79rem] text-[var(--text-faint)] tabular-nums">
+              {moduleT('diskGrowth.showing', { current: page.loaded, total: page.total })}
+            </span>
+          )}
+        </button>
+        {/* Folders-only derives deeper folders from file paths, so a half-loaded layer hides part
+            of the hierarchy: offer one click to pull the rest instead of page after page. */}
+        {foldersOnly && remaining > 0 && (
+          <>
+            <button
+              type="button"
+              onClick={() => void loadChildren(row.node.path, false, false, LOAD_ALL_PAGE)}
+              className="shrink-0 text-[var(--brand-green)] transition-colors hover:text-[var(--brand-green-hover)]"
+            >
+              {moduleT('diskGrowth.loadAllFiles')}
+            </button>
+            <span className="min-w-0 truncate text-[0.79rem] text-[var(--text-faint)]">
+              {moduleT('diskGrowth.hiddenMoreHint', { count: remaining.toLocaleString() })}
+            </span>
+          </>
         )}
-      </button>
+      </div>
     );
   };
 
@@ -435,21 +574,47 @@ export function GrowthDetailModal({
             <div ref={scrollRef} className="min-h-0 flex-1 overflow-auto">
               {/* Inside the scroller on purpose: the scrollbar steals ~10px from the rows, so a header
                   sitting outside it would drift right of every column. Sticky keeps the labels visible. */}
-              <div className="sticky top-0 z-10 flex items-center gap-2 border-b border-[var(--border-color)] bg-[var(--bg-main)] px-3 py-1.5 text-[0.79rem] text-[var(--text-faint)]">
-                <div className="min-w-0 flex-1">{moduleT('diskGrowth.nameColumn')}</div>
-                <div className="w-24 shrink-0 text-right">{moduleT('diskGrowth.currentSizeHeader')}</div>
-                <div className="w-28 shrink-0 text-right">{moduleT('diskGrowth.differenceHeader')}</div>
-                {/* Sits in the action column so the header aligns with the row buttons and costs no extra row */}
-                <div className="flex w-[5.5rem] shrink-0 items-center justify-end">
-                  <button
-                    type="button"
-                    onClick={() => setExpandedKeys(new Set())}
-                    disabled={expandedKeys.size === 0}
-                    className="rounded p-1 text-[var(--text-muted)] transition hover:bg-[var(--bg-hover)] hover:text-[var(--brand-green)] disabled:opacity-30"
-                    title={moduleT('diskGrowth.collapseAll')}
-                  >
-                    <ChevronsDownUp className="h-3.5 w-3.5" />
-                  </button>
+              <div className="sticky top-0 z-10 border-b border-[var(--border-color)] bg-[var(--bg-main)]">
+                <div className="flex items-center gap-2 px-3 py-1.5 text-[0.79rem] text-[var(--text-faint)]">
+                  <div className="min-w-0 flex-1">
+                    <SortHeader
+                      label={moduleT('diskGrowth.nameColumn')}
+                      active={sort.key === 'name'}
+                      desc={sort.desc}
+                      onClick={() => handleSort('name')}
+                    />
+                  </div>
+                  <div className="w-24 shrink-0">
+                    <SortHeader
+                      label={moduleT('diskGrowth.currentSizeHeader')}
+                      active={sort.key === 'size'}
+                      desc={sort.desc}
+                      align="right"
+                      onClick={() => handleSort('size')}
+                    />
+                  </div>
+                  <div className="w-28 shrink-0">
+                    <SortHeader
+                      label={moduleT('diskGrowth.differenceHeader')}
+                      active={sort.key === 'diff'}
+                      desc={sort.desc}
+                      align="right"
+                      onClick={() => handleSort('diff')}
+                    />
+                  </div>
+                  {/* Sits in the action column so the header aligns with the row buttons and costs no extra row */}
+                  <div className="flex w-[5.5rem] shrink-0 items-center justify-end gap-0.5">
+                    <FoldersOnlyToggle variant="icon" />
+                    <button
+                      type="button"
+                      onClick={() => setExpandedKeys(new Set())}
+                      disabled={expandedKeys.size === 0}
+                      className="rounded p-1 text-[var(--text-muted)] transition hover:bg-[var(--bg-hover)] hover:text-[var(--brand-green)] disabled:opacity-30"
+                      title={moduleT('diskGrowth.collapseAll')}
+                    >
+                      <ChevronsDownUp className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
                 </div>
               </div>
 

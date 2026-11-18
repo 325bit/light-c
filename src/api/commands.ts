@@ -1624,13 +1624,29 @@ export async function cancelDiskGrowthScan(): Promise<void> {
   return invoke<void>('cancel_disk_growth_scan');
 }
 
+/**
+ * Changed files of one directory, paged through one ordering.
+ *
+ * `sort` decides both the order and which files land on which page — the backend prunes deep
+ * subtrees by the same key, so pass the active column here instead of sorting afterwards.
+ * `desc` may be omitted to use the natural direction of `sort` (names A→Z, sizes largest first).
+ */
 export async function getDiskGrowthFileDetails(
   path: string,
   offset?: number,
   limit?: number,
-  driveLetter?: string
+  driveLetter?: string,
+  sort?: 'diff' | 'size' | 'name',
+  desc?: boolean
 ): Promise<DiskGrowthFileDetailsResponse> {
-  return invoke<DiskGrowthFileDetailsResponse>('get_disk_growth_file_details', { path, offset, limit, driveLetter });
+  return invoke<DiskGrowthFileDetailsResponse>('get_disk_growth_file_details', {
+    path,
+    offset,
+    limit,
+    driveLetter,
+    sort,
+    desc,
+  });
 }
 
 export async function getDiskGrowthDirectoryDetails(
