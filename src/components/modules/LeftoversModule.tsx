@@ -1,6 +1,11 @@
 // ============================================================================
 // Leftover & cache scan module (formerly "Uninstall Leftovers"; supports deep detection of emulator and driver leftovers)
 // Scans AppData and ProgramData for orphaned folders left behind by uninstalled software
+//
+// Since the multi-version leftovers and the "other software caches" group moved here from the dev space module, a full
+// scan runs **three** backends in parallel: this module's own AppData/ProgramData heuristic, the dev-cache module's
+// version-directory measurement, and the dev-cache module's other-software-cache measurement.
+// They are rendered as three sections (they have different deletion contracts), so a failure of one must not hide the others.
 // ============================================================================
 
 import { useState, useCallback, useMemo, useEffect, useRef } from 'react';
@@ -17,6 +22,8 @@ import { ConfirmDialog } from '../ConfirmDialog';
 import { EmptyState } from '../EmptyState';
 import { useToast } from '../Toast';
 import { LeftoverWhitelistModal } from './LeftoverWhitelistModal';
+import { VersionLeftoverSection } from './VersionLeftoverSection';
+import { OtherAppCacheSection } from './OtherAppCacheSection';
 import { useModuleDashboard } from '../../contexts/DashboardContext';
 import {
   scanUninstallLeftovers,
@@ -34,6 +41,8 @@ import {
   type LeftoverWhitelistEntry,
   getSafetyCheckMessage,
 } from '../../api/commands';
+import { scanOtherAppCaches, scanVersionLeftovers } from '../../api/devCache';
+import type { DevCacheScanResult, VersionLeftoverScanResult } from '../../types/devCache';
 import { formatSize } from '../../utils/format';
 import { openSearchUrl } from '../../utils/searchEngine';
 import type { ModuleRenderProps } from './moduleProps';
@@ -65,6 +74,29 @@ function isSamePath(left: string, right: string): boolean {
   return normalizePathForCompare(left) === normalizePathForCompare(right);
 }
 
+/**
+ * Entries/size contributed by the multi-version section (one item per version directory).
+ *
+ * Kept as a pure function outside the component: the page shows three lists from two backends, and every place that
+ * writes the module card has to add up the same three numbers.
+ */
+function versionTotals(result: VersionLeftoverScanResult | null): { count: number; size: number } {
+  if (!result) return { count: 0, size: 0 };
+  return {
+    count: result.groups.reduce((sum, group) => sum + group.entries.length, 0),
+    size: result.totalSize,
+  };
+}
+
+/** Entries/size contributed by the other-software-cache section (one item per directory). */
+function cacheTotals(result: DevCacheScanResult | null): { count: number; size: number } {
+  if (!result) return { count: 0, size: 0 };
+  return {
+    count: result.groups.reduce((sum, group) => sum + group.entries.length, 0),
+    size: result.totalSize,
+  };
+}
+
 export function LeftoversModule({ isPageActive = true }: ModuleRenderProps) {
   const { t: navT } = useTranslation('nav');
   const { t } = useTranslation('common');
@@ -76,6 +108,22 @@ export function LeftoversModule({ isPageActive = true }: ModuleRenderProps) {
 
   // Local state
   const [scanResult, setScanResult] = useState<LeftoverScanResult | null>(null);
+  /**
+   * Multi-version leftovers (old version directories of the same software).
+   *
+   * Kept as separate state instead of being merged into `scanResult`: it comes from a different backend command,
+   * can succeed while the leftover scan fails, and is rendered as its own section with its own actions.
+   */
+  const [versionResult, setVersionResult] = useState<VersionLeftoverScanResult | null>(null);
+  const [versionError, setVersionError] = useState<string | null>(null);
+  /**
+   * Other software caches (driver installers, launcher web caches…).
+   *
+   * Same reasoning as `versionResult`: different backend, different deletion contract, so it is separate state
+   * and a separate section — even though it shares the `delete_dev_cache_paths` command with the version block.
+   */
+  const [otherResult, setOtherResult] = useState<DevCacheScanResult | null>(null);
+  const [otherError, setOtherError] = useState<string | null>(null);
   const [selectedPaths, setSelectedPaths] = useState<Set<string>>(new Set());
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
@@ -157,6 +205,39 @@ export function LeftoversModule({ isPageActive = true }: ModuleRenderProps) {
       .reduce((sum, l) => sum + l.size, 0);
   }, [scanResult, selectedPaths]);
 
+  /**
+   * Push the module card's counters to the dashboard.
+   *
+   * The card has one "files / size" pair for the whole page, so every caller must pass all three lists —
+   * the AppData leftovers it is given, plus the two dev-space sections held in state. Otherwise deleting an
+   * old version or a launcher cache would not change the number in the top-right corner, which reads like nothing happened.
+   * `fileCount` here counts *items* (leftover folders + version directories + cache directories), matching the
+   * original semantics of this module.
+   */
+  const pushStats = useCallback(
+    (
+      leftovers: { count: number; size: number },
+      versions: VersionLeftoverScanResult | null,
+      others: DevCacheScanResult | null,
+    ) => {
+      const versionPart = versionTotals(versions);
+      const cachePart = cacheTotals(others);
+      updateModuleState('leftovers', {
+        fileCount: leftovers.count + versionPart.count + cachePart.count,
+        totalSize: leftovers.size + versionPart.size + cachePart.size,
+      });
+    },
+    [updateModuleState],
+  );
+
+  /** Shorthand for the two callers that only mutate the leftover list and keep both sections as they are */
+  const updateStats = useCallback(
+    (leftoverCount: number, leftoverSize: number) => {
+      pushStats({ count: leftoverCount, size: leftoverSize }, versionResult, otherResult);
+    },
+    [otherResult, pushStats, versionResult],
+  );
+
   const loadWhitelist = useCallback(async () => {
     try {
       const entries = await listLeftoverWhitelist();
@@ -189,7 +270,7 @@ export function LeftoversModule({ isPageActive = true }: ModuleRenderProps) {
         if (!result) return result;
         const leftovers = result.leftovers.filter((item) => !isSamePath(item.path, whitelistCandidate.path));
         const totalSize = leftovers.reduce((sum, item) => sum + item.size, 0);
-        updateModuleState('leftovers', { fileCount: leftovers.length, totalSize });
+        updateStats(leftovers.length, totalSize);
         return { ...result, leftovers, total_size: totalSize };
       });
       setSelectedPaths((paths) => {
@@ -216,7 +297,7 @@ export function LeftoversModule({ isPageActive = true }: ModuleRenderProps) {
     } finally {
       setIsUpdatingWhitelist(false);
     }
-  }, [moduleT, showToast, updateModuleState, whitelistCandidate]);
+  }, [moduleT, showToast, updateStats, whitelistCandidate]);
 
   /**
    * One-click search: hand the full path to the default search engine so users can confirm what the directory is for themselves.
@@ -255,29 +336,159 @@ export function LeftoversModule({ isPageActive = true }: ModuleRenderProps) {
   const handleScan = useCallback(async () => {
     updateModuleState('leftovers', { status: 'scanning', error: null });
     setScanResult(null);
+    setVersionResult(null);
+    setVersionError(null);
+    setOtherResult(null);
+    setOtherError(null);
     setSelectedPaths(new Set());
     setDeleteError(null);
     setDeleteErrors([]);
     setDeleteFailedPaths([]);
     setShowErrorDetails(false);
 
-    try {
-      const result = await scanUninstallLeftovers();
-      setScanResult(result);
+    /*
+      Three independent backends, one click, run in parallel:
+      - `scan_uninstall_leftovers` scores first-level AppData / ProgramData directories (heuristics, confidence based);
+      - `scan_version_leftovers` measures version directories of the same software (exact sizes, current-version detection);
+      - `scan_other_app_caches` measures the caches other software leaves behind (driver installers, launcher web caches).
+      These are separate lists with separate deletion contracts, so `allSettled` is required: with `all`, one backend
+      failing would throw away the other two's perfectly good results.
+    */
+    const [leftoverOutcome, versionOutcome, otherOutcome] = await Promise.allSettled([
+      scanUninstallLeftovers(),
+      scanVersionLeftovers(),
+      scanOtherAppCaches(),
+    ]);
 
-      // Such judgments are after-the-fact inferences; even high confidence can damage data still in use, so all first-version results require explicit user confirmation.
-      setSelectedPaths(new Set());
-
-      updateModuleState('leftovers', {
-        status: 'done',
-        fileCount: result.leftovers.length,
-        totalSize: result.total_size,
-      });
-    } catch (err) {
-      console.error('残留&缓存扫描失败:', err);
-      updateModuleState('leftovers', { status: 'error', error: String(err) });
+    let version: VersionLeftoverScanResult | null = null;
+    if (versionOutcome.status === 'fulfilled') {
+      version = versionOutcome.value;
+      setVersionResult(version);
+    } else {
+      console.error('多版本残留扫描失败:', versionOutcome.reason);
+      setVersionError(String(versionOutcome.reason));
     }
-  }, [updateModuleState]);
+
+    let other: DevCacheScanResult | null = null;
+    if (otherOutcome.status === 'fulfilled') {
+      other = otherOutcome.value;
+      setOtherResult(other);
+    } else {
+      console.error('其它软件缓存扫描失败:', otherOutcome.reason);
+      setOtherError(String(otherOutcome.reason));
+    }
+
+    if (leftoverOutcome.status === 'rejected') {
+      console.error('残留&缓存扫描失败:', leftoverOutcome.reason);
+      updateModuleState('leftovers', { status: 'error', error: String(leftoverOutcome.reason) });
+      // The other two scans may still have succeeded; keep their numbers on the card instead of showing 0 / 0 B
+      if (version || other) {
+        pushStats({ count: 0, size: 0 }, version, other);
+      }
+      return;
+    }
+
+    const result = leftoverOutcome.value;
+    setScanResult(result);
+
+    // Such judgments are after-the-fact inferences; even high confidence can damage data still in use, so all first-version results require explicit user confirmation.
+    setSelectedPaths(new Set());
+
+    updateModuleState('leftovers', { status: 'done' });
+    pushStats({ count: result.leftovers.length, size: result.total_size }, version, other);
+  }, [pushStats, updateModuleState]);
+
+  /**
+   * Called by the multi-version section after old version directories are deleted.
+   *
+   * The section owns its list, so this only drops the removed paths from `versionResult` — otherwise deleting a version
+   * would leave the card's totals stale (and the exact sizes are no longer measurable after deletion).
+   */
+  const handleVersionsDeleted = useCallback(
+    (deletedPaths: string[]) => {
+      if (!versionResult || deletedPaths.length === 0) return;
+      const removed = new Set(deletedPaths);
+
+      const groups = versionResult.groups
+        .map((group) => {
+          const entries = group.entries.filter((entry) => !removed.has(entry.path));
+          return {
+            ...group,
+            entries,
+            totalSize: entries.reduce((sum, entry) => sum + entry.size, 0),
+            reclaimableSize: entries
+              .filter((entry) => !entry.isCurrent)
+              .reduce((sum, entry) => sum + entry.size, 0),
+          };
+        })
+        .filter((group) => group.entries.length > 0);
+
+      const next: VersionLeftoverScanResult = {
+        ...versionResult,
+        groups,
+        totalSize: groups.reduce((sum, group) => sum + group.totalSize, 0),
+        totalFiles: groups.reduce(
+          (sum, group) => sum + group.entries.reduce((files, entry) => files + entry.fileCount, 0),
+          0,
+        ),
+        reclaimableSize: groups.reduce((sum, group) => sum + group.reclaimableSize, 0),
+      };
+      setVersionResult(next);
+
+      pushStats(
+        { count: scanResult?.leftovers.length ?? 0, size: scanResult?.total_size ?? 0 },
+        next,
+        otherResult,
+      );
+    },
+    [otherResult, pushStats, scanResult, versionResult],
+  );
+
+  /**
+   * Called by the other-software-cache section after directories are deleted.
+   *
+   * Same contract as `handleVersionsDeleted`: the section owns its list, so this only drops the removed paths from
+   * `otherResult` and rewrites the card totals (the exact sizes are no longer measurable after deletion).
+   */
+  const handleOtherCachesDeleted = useCallback(
+    (deletedPaths: string[]) => {
+      if (!otherResult || deletedPaths.length === 0) return;
+      const removed = new Set(deletedPaths);
+
+      const groups = otherResult.groups
+        .map((group) => {
+          const entries = group.entries.filter((entry) => !removed.has(entry.path));
+          return {
+            ...group,
+            entries,
+            totalSize: entries.reduce((sum, entry) => sum + entry.size, 0),
+            fileCount: entries.reduce((sum, entry) => sum + entry.fileCount, 0),
+          };
+        })
+        .filter((group) => group.entries.length > 0);
+
+      const next: DevCacheScanResult = {
+        ...otherResult,
+        groups,
+        totalSize: groups.reduce((sum, group) => sum + group.totalSize, 0),
+        totalFiles: groups.reduce((sum, group) => sum + group.fileCount, 0),
+        // "Directly cleanable" must be recomputed too: the deleted directories are gone, so keeping the old
+        // number would promise space that is no longer there.
+        safeSize: groups
+          .flatMap((group) => group.entries)
+          .filter((entry) => entry.risk === 'cache')
+          .reduce((sum, entry) => sum + entry.size, 0),
+      };
+      setOtherResult(next);
+
+      pushStats(
+        { count: scanResult?.leftovers.length ?? 0, size: scanResult?.total_size ?? 0 },
+        versionResult,
+        next,
+      );
+    },
+    [otherResult, pushStats, scanResult, versionResult],
+  );
 
   // Listen for the one-click scan trigger
   useEffect(() => {
@@ -302,9 +513,9 @@ export function LeftoversModule({ isPageActive = true }: ModuleRenderProps) {
       const totalSize = remaining.reduce((sum, item) => sum + item.size, 0);
       setScanResult({ ...scanResult, leftovers: remaining, total_size: totalSize });
       setSelectedPaths((current) => new Set(Array.from(current).filter((path) => !removed.has(path))));
-      updateModuleState('leftovers', { fileCount: remaining.length, totalSize });
+      updateStats(remaining.length, totalSize);
     },
-    [scanResult, updateModuleState],
+    [scanResult, updateStats],
   );
 
   const handleDelete = useCallback(async () => {
@@ -396,10 +607,7 @@ export function LeftoversModule({ isPageActive = true }: ModuleRenderProps) {
         );
         setSelectedPaths(newSelected);
 
-        updateModuleState('leftovers', {
-          fileCount: remainingLeftovers.length,
-          totalSize: newTotalSize,
-        });
+        updateStats(remainingLeftovers.length, newTotalSize);
       }
 
       triggerHealthRefresh();
@@ -420,7 +628,7 @@ export function LeftoversModule({ isPageActive = true }: ModuleRenderProps) {
       setIsDeleting(false);
       setShowDeleteConfirm(false);
     }
-  }, [selectedPaths, scanResult, updateModuleState, triggerHealthRefresh, moduleT, showToast]);
+  }, [selectedPaths, scanResult, updateStats, triggerHealthRefresh, moduleT, showToast]);
 
   /**
    * Paths pending forced deletion: the "needs manual review" batch from the deep cleanup result.
@@ -712,11 +920,67 @@ export function LeftoversModule({ isPageActive = true }: ModuleRenderProps) {
       };
     },
     summary: () => {
-      if (!scanResult) return null;
+      // All three sections are reported here: the assistant answers questions about the whole page, so silently
+      // omitting one would make it claim "there is nothing else" while the user sees that section on screen.
+      const versionLines: string[] = [];
+      if (versionResult) {
+        if (versionResult.groups.length === 0) {
+          versionLines.push('多版本残留：没有发现同一软件并排存放多个版本目录的情况。');
+        } else {
+          const described = versionResult.groups
+            .slice(0, 3)
+            .map((group) => {
+              const current = group.entries.find((entry) => entry.isCurrent);
+              return `${group.name}（${group.entries.length} 个版本，当前在用 ${
+                current?.version ?? '未知'
+              }，可回收 ${formatSize(group.reclaimableSize)}）`;
+            })
+            .join('、');
+          versionLines.push(
+            `多版本残留：${versionResult.groups.length} 组，共 ${formatSize(versionResult.totalSize)}，` +
+              `其中可回收 ${formatSize(versionResult.reclaimableSize)}。`,
+            `分别是：${described}。`,
+            '这些目录只能删「旧版本」，当前在用版本不可勾选；删除走多版本区块自己的按钮，不可恢复、不进回收站。',
+          );
+        }
+      } else if (versionError) {
+        versionLines.push(`多版本残留：扫描失败（${versionError}），这部分没有数据。`);
+      }
+
+      const otherLines: string[] = [];
+      if (otherResult) {
+        const otherEntries = otherResult.groups.flatMap((group) => group.entries);
+        if (otherEntries.length === 0) {
+          otherLines.push('其它软件缓存：没有发现驱动安装包、启动器缓存这类目录。');
+        } else {
+          const biggest = [...otherEntries]
+            .sort((left, right) => right.size - left.size)
+            .slice(0, 3)
+            .map((entry) => `${entry.name} ${formatSize(entry.size)}`)
+            .join('、');
+          const risky = otherEntries.filter((entry) => entry.risk === 'confirm').length;
+          otherLines.push(
+            `其它软件缓存：${otherEntries.length} 个目录，共 ${formatSize(otherResult.totalSize)}，` +
+              `其中可直接清理 ${formatSize(otherResult.safeSize)}${risky > 0 ? `，另有 ${risky} 项标着「会丢数据」` : ''}。`,
+            `最大的三个：${biggest}。`,
+            '这些是垃圾清理与驱动清理都不处理的目录（驱动安装包、启动器网页缓存等），删除同样不可恢复、不进回收站。',
+          );
+        }
+      } else if (otherError) {
+        otherLines.push(`其它软件缓存：扫描失败（${otherError}），这部分没有数据。`);
+      }
+
+      if (!scanResult) {
+        return versionLines.length + otherLines.length > 0
+          ? [...versionLines, ...otherLines].join('')
+          : null;
+      }
       if (scanResult.leftovers.length === 0) {
         return [
           `刚扫描完，没有发现可信度足够的残留：检查了 ${scanResult.scanned_directories} 个一级目录，`,
           `最高置信度 ${Math.round(scanResult.highest_confidence * 100)}%，判定门槛 ${Math.round(scanResult.confidence_threshold * 100)}%。`,
+          ...versionLines,
+          ...otherLines,
         ].join('');
       }
       const topThree = [...scanResult.leftovers]
@@ -741,6 +1005,8 @@ export function LeftoversModule({ isPageActive = true }: ModuleRenderProps) {
         `口径：只判断 AppData / ProgramData 的一级目录，子目录不单独统计；置信度是启发式评分，不保证准确。`,
         `「更新缓存」这一类删掉只会让更新器下次重新下载，不影响已安装的程序；其余条目没有这个保证。`,
         `含 .exe/.dll/.sys 的目录用「删除选中」会被跳过，只能用「深度清理」；删除不可恢复。`,
+        ...versionLines,
+        ...otherLines,
       ].join('');
     },
   });
@@ -853,10 +1119,38 @@ export function LeftoversModule({ isPageActive = true }: ModuleRenderProps) {
           </div>
         )}
 
-        {/* Scan result content */}
-        {scanResult && scanResult.leftovers.length > 0 && (
+        {/* Scan result content: the leftover list and the two dev-space sections share one column,
+            but each is rendered/hidden independently (they come from three different backends) */}
+        {(scanResult || versionResult || versionError || otherResult || otherError) && (
           // pb-20: the bottom action bar is a fixed floating layer outside document flow; leave trailing space so it does not cover the last entry
           <div className="p-5 space-y-4 pb-20">
+            {/* Nothing found on the AppData side: keep the diagnostic (it is the proof the scan actually ran)
+                but compress it, because the multi-version section below still needs the vertical space */}
+            {scanResult && scanResult.leftovers.length === 0 && (
+              <div className="flex items-start gap-3 rounded-xl border border-[var(--color-success)]/20 bg-[var(--color-success)]/10 px-4 py-3">
+                <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-[var(--color-success)]" />
+                <div>
+                  <p className="text-[0.92rem] font-medium text-[var(--text-primary)]">
+                    {t('noLeftovers')}
+                  </p>
+                  {/* This module routinely returns 0 entries; users cannot distinguish "really no leftovers" from "scan is broken".
+                      Report the number of directories checked, the highest score, and the threshold — evidence that "it is running". */}
+                  <p className="mt-0.5 text-[0.82rem] text-[var(--text-muted)]">
+                    {scanResult.scanned_directories > 0
+                      ? moduleT('leftovers.noResultDiagnostic', {
+                          scanned: scanResult.scanned_directories,
+                          scored: scanResult.below_threshold,
+                          score: Math.round(scanResult.highest_confidence * 100),
+                          threshold: Math.round(scanResult.confidence_threshold * 100),
+                        })
+                      : moduleT('leftovers.noResultDesc')}
+                  </p>
+                </div>
+              </div>
+            )}
+
+            {scanResult && scanResult.leftovers.length > 0 && (
+              <>
             {/* Risk notice + confidence statistics */}
             <div className="flex items-start gap-3 p-4 bg-[var(--color-warning)]/10 rounded-xl border border-[var(--color-warning)]/20">
               <AlertTriangle className="w-5 h-5 text-[var(--color-warning)] shrink-0 mt-0.5" />
@@ -1122,29 +1416,58 @@ export function LeftoversModule({ isPageActive = true }: ModuleRenderProps) {
                 </div>
               ))}
             </div>
-          </div>
-        )}
+              </>
+            )}
 
-        {/* Empty state */}
-        {scanResult && scanResult.leftovers.length === 0 && (
-          <div className="p-5">
-            <EmptyState
-              icon={CheckCircle2}
-              title={t('noLeftovers')}
-              // This module routinely returns 0 entries; users cannot distinguish "really no leftovers" from "scan is broken".
-              // Report the number of directories checked, the highest score, and the threshold — evidence that "it is running".
-              description={
-                scanResult.scanned_directories > 0
-                  ? moduleT('leftovers.noResultDiagnostic', {
-                      scanned: scanResult.scanned_directories,
-                      scored: scanResult.below_threshold,
-                      score: Math.round(scanResult.highest_confidence * 100),
-                      threshold: Math.round(scanResult.confidence_threshold * 100),
-                    })
-                  : moduleT('leftovers.noResultDesc')
-              }
-              tone="success"
-            />
+            {/* Multi-version leftovers (moved here from the dev space module): old version directories of the same software */}
+            {versionError && (
+              <div className="flex items-start gap-3 rounded-xl border border-[var(--color-warning)]/20 bg-[var(--color-warning)]/10 px-4 py-3">
+                <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-[var(--color-warning)]" />
+                <div>
+                  <p className="text-[0.92rem] font-medium text-[var(--text-primary)]">
+                    {moduleT('leftoversVersion.scanFailedTitle')}
+                  </p>
+                  <p className="mt-0.5 break-all text-[0.82rem] text-[var(--text-muted)]">
+                    {versionError}
+                  </p>
+                </div>
+              </div>
+            )}
+
+            {versionResult && (
+              <VersionLeftoverSection
+                groups={versionResult.groups}
+                totalSize={versionResult.totalSize}
+                reclaimableSize={versionResult.reclaimableSize}
+                skipped={versionResult.skipped}
+                onDeleted={handleVersionsDeleted}
+              />
+            )}
+
+            {/* Other software caches (moved here from the dev space module): driver installers, launcher web caches */}
+            {otherError && (
+              <div className="flex items-start gap-3 rounded-xl border border-[var(--color-warning)]/20 bg-[var(--color-warning)]/10 px-4 py-3">
+                <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-[var(--color-warning)]" />
+                <div>
+                  <p className="text-[0.92rem] font-medium text-[var(--text-primary)]">
+                    {moduleT('leftoversOtherCache.scanFailedTitle')}
+                  </p>
+                  <p className="mt-0.5 break-all text-[0.82rem] text-[var(--text-muted)]">
+                    {otherError}
+                  </p>
+                </div>
+              </div>
+            )}
+
+            {otherResult && (
+              <OtherAppCacheSection
+                groups={otherResult.groups}
+                totalSize={otherResult.totalSize}
+                safeSize={otherResult.safeSize}
+                skipped={otherResult.skipped}
+                onDeleted={handleOtherCachesDeleted}
+              />
+            )}
           </div>
         )}
       </ModuleCard>

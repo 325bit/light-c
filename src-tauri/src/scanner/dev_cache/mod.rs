@@ -5,6 +5,12 @@
 //! multiple old-version directories of the same software (like Edge's four EdgeCore sets),
 //! and other app caches that cscan can find but junk cleanup and driver cleanup both ignore.
 //!
+//! The three halves are scanned by three separate commands, because they do not share a page:
+//! - `scan_dev_cache` → toolchain caches, shown on "dev cache cleanup";
+//! - `scan_version_leftovers` → multi-version directories, shown on "leftover & cache";
+//! - `scan_other_app_caches` → other software caches, also shown on "leftover & cache".
+//! All three delete through the same `delete_dev_cache_paths` validation.
+//!
 //! Division of labor with existing modules (no double counting):
 //! - Browser / temp files / recycle bin / thumbnails / update caches → `junk_clean`, `leftovers`
 //! - Installed driver binaries → `driver_cleanup` (this module handles only **downloaded driver installers**)
@@ -21,16 +27,53 @@ mod types;
 // Export names carry a module prefix: `scanner/mod.rs` `pub use`s each submodule into the same level,
 // naming them plainly `scan` / `delete` would collide with same-named symbols elsewhere.
 pub use delete::delete as delete_dev_cache_paths;
-pub use measure::scan as scan_dev_cache;
-// Only the result type is needed across modules (the commands layer); other structs can just reference each other within the submodule;
+pub use measure::{
+    scan as scan_dev_cache, scan_other_app_caches, scan_version_leftovers,
+};
+// Only the result types are needed across modules (the commands layer); other structs can just reference each other within the submodule;
 // re-exporting all of them would trigger unused_imports warnings.
-pub use types::{DevCacheDeleteResult, DevCacheScanResult};
+pub use types::{DevCacheDeleteResult, DevCacheScanResult, VersionLeftoverScanResult};
 
 #[cfg(test)]
 mod tests {
     use super::measure::{display_path, has_version_form, long_path};
     use super::targets::VersionPattern;
+    use super::types::DevCacheScanResult;
     use std::path::Path;
+
+    /// Print one cache-scan result; shared by the smoke test so the two halves print in the same shape.
+    fn print_cache_scan(label: &str, result: &DevCacheScanResult) {
+        println!(
+            "{label} 总计 {}（{} 个文件）/ 可直接清理 {} / 耗时 {}ms / 跳过 {}",
+            result.total_size,
+            result.total_files,
+            result.safe_size,
+            result.elapsed_ms,
+            result.skipped
+        );
+        for group in &result.groups {
+            println!(
+                "[{}] {}  {}  {} 项",
+                group.group_id,
+                group.group_name,
+                group.total_size,
+                group.entries.len()
+            );
+            for entry in &group.entries {
+                let link_note = match &entry.link {
+                    Some(link) => format!(
+                        "  ⤴ {:?} {} → {}（实体 {}）",
+                        link.kind, link.link_path, link.target, link.resolved
+                    ),
+                    None => String::new(),
+                };
+                println!(
+                    "    {:?} {:>12}  {}  {}{}",
+                    entry.risk, entry.size, entry.name, entry.path, link_note
+                );
+            }
+        }
+    }
 
     /// Edge / WebView / Copilot use four-part version numbers; something like `Optimized` must never be treated as a version directory —
     /// it could be a hard-link aggregation directory, with unpredictable consequences if deleted.
@@ -120,39 +163,20 @@ mod tests {
     #[test]
     #[ignore]
     fn smoke_scan_real_machine() {
-        let result = super::scan_dev_cache();
+        print_cache_scan("工具缓存", &super::scan_dev_cache());
+        // The "other software caches" group now has its own command; print it too so the split can be checked
+        // against one run instead of two separate test invocations.
+        print_cache_scan("其它软件缓存", &super::scan_other_app_caches());
+        let versions = super::scan_version_leftovers();
         println!(
-            "总计 {}（{} 个文件）/ 可直接清理 {} / 版本可回收 {} / 耗时 {}ms / 跳过 {}",
-            result.total_size,
-            result.total_files,
-            result.safe_size,
-            result.version_reclaimable_size,
-            result.elapsed_ms,
-            result.skipped
+            "多版本残留 总计 {}（{} 个文件）/ 可回收 {} / 耗时 {}ms / 跳过 {}",
+            versions.total_size,
+            versions.total_files,
+            versions.reclaimable_size,
+            versions.elapsed_ms,
+            versions.skipped
         );
-        for group in &result.groups {
-            println!(
-                "[{}] {}  {}  {} 项",
-                group.group_id,
-                group.group_name,
-                group.total_size,
-                group.entries.len()
-            );
-            for entry in &group.entries {
-                let link_note = match &entry.link {
-                    Some(link) => format!(
-                        "  ⤴ {:?} {} → {}（实体 {}）",
-                        link.kind, link.link_path, link.target, link.resolved
-                    ),
-                    None => String::new(),
-                };
-                println!(
-                    "    {:?} {:>12}  {}  {}{}",
-                    entry.risk, entry.size, entry.name, entry.path, link_note
-                );
-            }
-        }
-        for group in &result.version_groups {
+        for group in &versions.groups {
             println!(
                 "[ver:{}] {}  {}  可回收 {}  基目录 {}",
                 group.id, group.name, group.total_size, group.reclaimable_size, group.base_path
@@ -166,7 +190,7 @@ mod tests {
         }
 
         // Structural invariants: at most one "current version" per group, and the reclaimable amount must be less than the total
-        for group in &result.version_groups {
+        for group in &versions.groups {
             let current = group.entries.iter().filter(|entry| entry.is_current).count();
             assert!(current <= 1, "{} 出现 {} 个当前版本", group.name, current);
             assert!(group.reclaimable_size <= group.total_size);

@@ -5,6 +5,8 @@ English is the default changelog. See [简体中文](CHANGELOG-zh.md).
 ## v2.19.1
 
 - New setting to ask for administrator rights on startup, so you no longer restart manually from the modules that need them. Cancelling the prompt still lets the app run, with those features slower or unavailable.
+- Multi-version leftovers (the old version folders Edge, WebView2 and friends keep side by side) moved from dev space cleanup into "leftover & cache": one scan covers both lists, old versions get their own block at the bottom of the page with their own selection, and the old module is now "dev cache cleanup" with toolchain caches only.
+- Other software caches (driver installers and launcher caches left behind by NVIDIA, Epic, Steam and friends) moved out of dev cache cleanup too, into "leftover & cache" as their own block with its own action row. One scan now returns all three lists at once — AppData leftovers, old version folders, other software caches — and a failure in one no longer hides the others.
 
 ## v2.19.0
 

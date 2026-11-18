@@ -49,8 +49,10 @@ export const APP_MODULE_META: AppModuleMeta[] = [
   { id: 'social-clean', label: 'socialClean', icon: MessageCircle },
   // AI tool cleanup and social cleanup both belong to the "cleanup" group: both aggregate by tool and allow checkable deletion.
   { id: 'ai-tool-cleanup', label: 'aiToolCleanup', icon: Bot },
-  // Dev space: toolchain caches + multi-version leftovers. Also in the "cleanup" group with AI tool cleanup,
-  // the difference is it targets developer toolchains like compilers/package managers, rather than AI clients.
+  // Dev caches: toolchain caches only (multi-version leftovers and other software caches moved to the
+  // "leftover & cache" page).
+  // Also in the "cleanup" group with AI tool cleanup; the difference is it targets developer toolchains
+  // like compilers/package managers, rather than AI clients.
   { id: 'dev-cache', label: 'devCache', icon: Package },
   { id: 'system-slim', label: 'systemSlim', icon: Layers },
   { id: 'driver-cleanup', label: 'driverCleanup', icon: Cpu },

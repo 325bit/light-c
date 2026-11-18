@@ -122,8 +122,10 @@ pub fn run() {
             // Permanent delete (deep cleanup)
             delete_leftovers_permanent,
             check_leftover_safety,
-            // Dev caches and version leftovers (aligned with cscan's scan coverage)
+            // Dev caches, other software caches and version leftovers (aligned with cscan's scan coverage)
             scan_dev_cache,
+            scan_version_leftovers,
+            scan_other_app_caches,
             delete_dev_cache_paths,
             // System info
             get_system_info,

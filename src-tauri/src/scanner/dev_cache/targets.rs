@@ -11,6 +11,13 @@ use std::path::PathBuf;
 
 use super::types::DevRisk;
 
+/// Group id of "other software caches".
+///
+/// It gets its own constant because the group has a different owner page: these entries are rendered on
+/// "leftover & cache", not on "dev cache cleanup", so the scan filter (`measure.rs`) and the group-name table
+/// must agree on exactly one spelling — two string literals would drift the moment one of them is retyped.
+pub const OTHER_GROUP: &str = "other";
+
 /// A concrete directory target.
 pub struct TargetSpec {
     pub id: &'static str,
@@ -327,9 +334,13 @@ pub fn targets(env: &Env) -> Vec<TargetSpec> {
     // This section supplements the "union": directories cscan can find but neither LightC's junk cleanup (18 types of
     // Windows/browser caches) nor driver cleanup (only scans System32\drivers) takes care of.
     // Social app cleanup (WeChat/QQ) already covers these, so they are not listed again here.
+    //
+    // These are **scanned by `scan_other_app_caches` and shown on the "leftover & cache" page**, not on the dev cache page:
+    // they answer that page's question ("what did software leave behind"), so they live next to the leftovers instead of
+    // being mixed into the toolchain list. Deletion still goes through `delete_dev_cache_paths` — same validation, same contract.
     add(
         "nvidia-downloader",
-        "other",
+        OTHER_GROUP,
         "NVIDIA 驱动下载缓存",
         "驱动装完就没用的安装包，删了不影响已装驱动",
         DevRisk::Cache,
@@ -337,7 +348,7 @@ pub fn targets(env: &Env) -> Vec<TargetSpec> {
     );
     add(
         "nvidia-app-ota",
-        "other",
+        OTHER_GROUP,
         "NVIDIA App 驱动包",
         "UpdateFramework 里的 ota 安装包，删了驱动回滚时需要重下",
         DevRisk::Cache,
@@ -348,7 +359,7 @@ pub fn targets(env: &Env) -> Vec<TargetSpec> {
     );
     add(
         "steam-htmlcache",
-        "other",
+        OTHER_GROUP,
         "Steam 内置浏览器缓存",
         "不影响游戏库与下载，删了商店页首次加载稍慢",
         DevRisk::Cache,
@@ -356,7 +367,7 @@ pub fn targets(env: &Env) -> Vec<TargetSpec> {
     );
     add(
         "overwolf-dumps",
-        "other",
+        OTHER_GROUP,
         "Overwolf 崩溃转储",
         "崩溃 dump，纯调试用途",
         DevRisk::Cache,
@@ -364,7 +375,7 @@ pub fn targets(env: &Env) -> Vec<TargetSpec> {
     );
     add(
         "epic-webcache",
-        "other",
+        OTHER_GROUP,
         "Epic 启动器网页缓存",
         "webcache，删了商店页重新加载",
         DevRisk::Cache,
@@ -372,7 +383,7 @@ pub fn targets(env: &Env) -> Vec<TargetSpec> {
     );
     add(
         "overwolf",
-        "other",
+        OTHER_GROUP,
         "Overwolf 数据",
         "整个应用数据目录，删了登录状态与插件配置一起没",
         DevRisk::Confirm,
@@ -380,7 +391,7 @@ pub fn targets(env: &Env) -> Vec<TargetSpec> {
     );
     add(
         "utools",
-        "other",
+        OTHER_GROUP,
         "uTools 数据",
         "插件与本地索引，删了要重新装插件",
         DevRisk::Confirm,
@@ -388,7 +399,7 @@ pub fn targets(env: &Env) -> Vec<TargetSpec> {
     );
     add(
         "baidunetdisk",
-        "other",
+        OTHER_GROUP,
         "百度网盘缓存",
         "下载缓存与日志，删了不影响云端文件",
         DevRisk::Confirm,
@@ -396,7 +407,7 @@ pub fn targets(env: &Env) -> Vec<TargetSpec> {
     );
     add(
         "thunderstore",
-        "other",
+        OTHER_GROUP,
         "Thunderstore Mod Manager",
         "Mod 配置与缓存，删了要重新登录并重下 Mod",
         DevRisk::Confirm,
@@ -404,7 +415,7 @@ pub fn targets(env: &Env) -> Vec<TargetSpec> {
     );
     add(
         "faceit",
-        "other",
+        OTHER_GROUP,
         "FACEIT 反作弊客户端",
         "删了需要重新安装才能进服",
         DevRisk::Confirm,
@@ -412,7 +423,7 @@ pub fn targets(env: &Env) -> Vec<TargetSpec> {
     );
     add(
         "fivee",
-        "other",
+        OTHER_GROUP,
         "5E 对战平台",
         "登录态与配置，删了要重新登录",
         DevRisk::Confirm,
@@ -420,7 +431,7 @@ pub fn targets(env: &Env) -> Vec<TargetSpec> {
     );
     add(
         "astrbot",
-        "other",
+        OTHER_GROUP,
         "AstrBot 启动器",
         "实例配置，删了机器人实例需要重建",
         DevRisk::Confirm,
@@ -429,7 +440,7 @@ pub fn targets(env: &Env) -> Vec<TargetSpec> {
     );
     add(
         "onedrive",
-        "other",
+        OTHER_GROUP,
         "OneDrive 本地缓存",
         "云盘缓存，删了需要重新同步（不要删整个 OneDrive 目录）",
         DevRisk::Confirm,
@@ -437,7 +448,7 @@ pub fn targets(env: &Env) -> Vec<TargetSpec> {
     );
     add(
         "ps-remote",
-        "other",
+        OTHER_GROUP,
         "PS Remote Play 缓存",
         "安装源缓存，删了修复安装要重新下载",
         DevRisk::Confirm,
@@ -445,7 +456,7 @@ pub fn targets(env: &Env) -> Vec<TargetSpec> {
     );
     add(
         "davinci",
-        "other",
+        OTHER_GROUP,
         "DaVinci Resolve 缓存",
         "安装源与项目缓存，删了修复安装要重新下载",
         DevRisk::Confirm,
@@ -453,7 +464,7 @@ pub fn targets(env: &Env) -> Vec<TargetSpec> {
     );
     add(
         "epic",
-        "other",
+        OTHER_GROUP,
         "Epic 安装缓存",
         "安装源缓存，删了修复安装要重新下载",
         DevRisk::Confirm,

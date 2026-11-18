@@ -85,16 +85,33 @@ pub struct VersionGroup {
 #[serde(rename_all = "camelCase")]
 pub struct DevCacheScanResult {
     pub groups: Vec<DevCacheGroup>,
-    /// **Total** of tool caches + multi-version directories: the UI's "total usage" must match the sum of the two tabs
+    /// Total usage of tool caches only. Multi-version directories are **not** included:
+    /// they are reported by `scan_version_leftovers` and shown on the "leftover & cache" page.
     pub total_size: u64,
     pub total_files: usize,
-    /// Total of items with risk Cache that can be cleaned directly (excluding Confirm / Readonly and multi-version directories -
-    /// deleting old versions requires per-item user confirmation and cannot be mixed into "directly cleanable")
+    /// Total of items with risk Cache that can be cleaned directly (excluding Confirm / Readonly)
     pub safe_size: u64,
-    pub version_groups: Vec<VersionGroup>,
-    pub version_reclaimable_size: u64,
     pub elapsed_ms: u64,
     /// Number of paths skipped during scanning (insufficient permissions / in use), used to explain "why it is smaller than expected"
+    pub skipped: usize,
+}
+
+/// Result of the standalone multi-version leftover scan.
+///
+/// Split out of `DevCacheScanResult` because the two live on different pages: tool caches stay in "dev cache cleanup",
+/// while multi-version directories moved to "leftover & cache". Keeping one merged command would force each page
+/// to traverse the other's directories just to render its own list.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VersionLeftoverScanResult {
+    pub groups: Vec<VersionGroup>,
+    /// Total of every version directory (including the one in use), so the UI can show "X in total, Y reclaimable"
+    pub total_size: u64,
+    pub total_files: usize,
+    /// Total excluding the version currently in use
+    pub reclaimable_size: u64,
+    pub elapsed_ms: u64,
+    /// Version directories skipped while measuring (insufficient permissions / in use)
     pub skipped: usize,
 }
 

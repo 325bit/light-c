@@ -1,13 +1,15 @@
 /**
- * Dev space cleanup module.
+ * Dev cache cleanup module.
  *
- * This module is the light-c counterpart of cscan (the command-line scanner), covering the area that **no existing module handles**:
- * dev toolchain caches (NuGet / Cargo / Gradle / Go / JetBrains…) and sets of old version directories left by the same software.
+ * Scope: toolchain caches only (NuGet / Cargo / Gradle / Go / JetBrains…).
  *
- * Why two tabs:
- * "Tool Caches" is "a bunch of scattered cache directories grouped by tool", while "Multi-Version Leftovers" is "four side-by-side
- * Microsoft Edge versions under one path, only one of which is in use". The two have different information structures (the latter must mark "which version is current"),
- * forcing them into one tree would hide the difference from users.
+ * The other two halves of the old dev-space module **moved to the "leftover & cache" page**, because they answer the
+ * question that page asks ("what did software leave behind") and they need different deletion contracts:
+ * - multi-version directories (Edge / WebView2 / Copilot / GitHub Desktop keeping several versions side by side)
+ *   → `VersionLeftoverSection`;
+ * - other software caches (downloaded driver installers, launcher web caches — the ones garbage cleanup and driver
+ *   cleanup both ignore) → `OtherAppCacheSection`.
+ * This page therefore scans only its own caches — one command, one list.
  *
  * Why no "clean all in one click": emulator images, workspace state, and local models are gone once deleted,
  * so the user must first see "which directory is being deleted and what would be lost" before confirming; the backend re-validates path ownership too.
@@ -19,7 +21,6 @@ import {
   ChevronRight,
   FolderOpen,
   HardDrive,
-  Layers,
   Package,
   RefreshCw,
   Trash2,
@@ -31,64 +32,15 @@ import { ModuleOperationToolbar } from '../ModuleOperationToolbar';
 import { LinkBadge } from '../LinkBadge';
 import { ModuleDeleteProgress } from '../ModuleDeleteProgress';
 import { ModuleScanProgress } from '../ModuleScanProgress';
+import { SelectBox } from '../ui/SelectBox';
+import { RiskTag } from '../ui/RiskTag';
 import { deleteDevCachePaths, scanDevCache } from '../../api/devCache';
 import { openInFolder } from '../../api/commands';
-import type { DevCacheScanResult, DevRisk } from '../../types/devCache';
+import type { DevCacheScanResult } from '../../types/devCache';
 import { formatSize } from '../../utils/format';
 import { useToast } from '../Toast';
 import { useAiModuleBridge } from '../ai/useAiModuleBridge';
 import type { ModuleRenderProps } from './moduleProps';
-
-/** Tabs: tool caches / multi-version leftovers */
-type ViewTab = 'cache' | 'version';
-
-/**
- * Checkbox. Reused in three places (group, cache directory, version directory); extracted to keep three implementations from drifting apart.
- * `partial` is only for the group level: draw a dash when part of the group is selected, rather than an empty box.
- */
-function Checkbox({ checked, partial = false }: { checked: boolean; partial?: boolean }) {
-  return (
-    <div
-      className={`flex h-5 w-5 shrink-0 items-center justify-center rounded border-2 transition-colors ${
-        checked
-          ? 'border-[var(--brand-green)] bg-[var(--brand-green)]'
-          : partial
-            ? 'border-[var(--brand-green)] bg-[var(--brand-green)]/50'
-            : 'border-[var(--text-faint)]'
-      }`}
-    >
-      {(checked || partial) && (
-        <svg
-          className="h-3 w-3 text-white"
-          fill="none"
-          viewBox="0 0 24 24"
-          stroke="currentColor"
-          strokeWidth={3}
-        >
-          {checked ? (
-            <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-          ) : (
-            <path strokeLinecap="round" d="M5 12h14" />
-          )}
-        </svg>
-      )}
-    </div>
-  );
-}
-
-/** Risk badge: no badge for cache (the majority; badging it would be noisy), yellow for confirm, gray for readonly */
-function RiskTag({ risk, label }: { risk: DevRisk; label: string }) {
-  if (risk === 'cache') return null;
-  const tone =
-    risk === 'confirm'
-      ? 'bg-[var(--warning)]/15 text-[var(--warning)]'
-      : 'bg-[var(--bg-hover)] text-[var(--text-muted)]';
-  return (
-    <span className={`shrink-0 rounded px-1.5 py-0.5 text-[0.72rem] font-medium ${tone}`}>
-      {label}
-    </span>
-  );
-}
 
 export function DevCacheModule({ isPageActive = true }: ModuleRenderProps) {
   const { t: navT } = useTranslation('nav');
@@ -106,21 +58,17 @@ export function DevCacheModule({ isPageActive = true }: ModuleRenderProps) {
    */
   const [justCleared, setJustCleared] = useState(false);
   const [error, setError] = useState('');
-  const [tab, setTab] = useState<ViewTab>('cache');
-  /** Currently expanded card (accordion: only one open at a time). Cache groups and version groups share one key space, distinguished by prefix */
+  /** Currently expanded card (accordion: only one open at a time) */
   const [expanded, setExpanded] = useState<string | null>(null);
   /** Checked directory paths (one set shared by both tabs; deleted together) */
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [confirmOpen, setConfirmOpen] = useState(false);
 
-  /** Path → size. Checked totals span both tabs; a separate map is easier than traversing each time */
+  /** Path → size. A map is easier than traversing the groups every time a checkbox is toggled */
   const sizeByPath = useMemo(() => {
     const map = new Map<string, number>();
     if (!result) return map;
     result.groups.forEach((group) => group.entries.forEach((entry) => map.set(entry.path, entry.size)));
-    result.versionGroups.forEach((group) =>
-      group.entries.forEach((entry) => map.set(entry.path, entry.size)),
-    );
     return map;
   }, [result]);
 
@@ -132,30 +80,25 @@ export function DevCacheModule({ isPageActive = true }: ModuleRenderProps) {
     return total;
   }, [selected, sizeByPath]);
 
-  /** Paths that can be checked in the current tab (read-only items and the current version excluded), for the select-all button */
+  /** Paths that can be checked (read-only items excluded), for the select-all button */
   const selectablePaths = useMemo(() => {
     if (!result) return [] as string[];
-    if (tab === 'cache') {
-      return result.groups.flatMap((group) =>
-        group.entries.filter((entry) => entry.risk !== 'readonly').map((entry) => entry.path),
-      );
-    }
-    return result.versionGroups.flatMap((group) =>
-      group.entries.filter((entry) => !entry.isCurrent).map((entry) => entry.path),
+    return result.groups.flatMap((group) =>
+      group.entries.filter((entry) => entry.risk !== 'readonly').map((entry) => entry.path),
     );
-  }, [result, tab]);
+  }, [result]);
 
-  /** Whether there is anything to show: empty only when both tabs are empty */
+  /** Whether there is anything to show */
   const hasAnything = useMemo(() => {
     if (!result) return false;
-    return result.groups.length > 0 || result.versionGroups.length > 0;
+    return result.groups.length > 0;
   }, [result]);
 
   /**
    * Flattens the result into "one item per line" text for the AI assistant's read-only tools.
    *
-   * Order follows the UI: cache groups first, then version groups, each sorted by size descending —
-   * so the first line the assistant reads is the biggest space consumer, matching what the user sees on screen.
+   * Sorted by size descending — the first line the assistant reads is the biggest space consumer,
+   * matching what the user sees on screen.
    */
   const flattenEntries = useCallback(() => {
     if (!result) return [];
@@ -172,17 +115,6 @@ export function DevCacheModule({ isPageActive = true }: ModuleRenderProps) {
             `${group.groupName} · ${entry.fileCount} 个文件 · ${entry.risk}` +
             // Relocated directories must include their real location, otherwise the assistant interprets usage by the C-drive path
             (entry.link ? ` · 链接到 ${entry.link.resolved}` : ''),
-        });
-      });
-    });
-    result.versionGroups.forEach((group) => {
-      group.entries.forEach((entry) => {
-        rows.push({
-          groupName: group.name,
-          path: entry.path,
-          label: `v${entry.version}`,
-          size: entry.size,
-          extra: `${group.name} · ${entry.isCurrent ? '当前在用' : '旧版本'} · ${entry.fileCount} 个文件`,
         });
       });
     });
@@ -241,24 +173,21 @@ export function DevCacheModule({ isPageActive = true }: ModuleRenderProps) {
       // If never scanned, return null so the assistant truthfully says "no data yet" instead of making something up
       if (!result) return null;
       if (!hasAnything) {
-        return '已完成扫描：没有发现可清理的开发工具链缓存或多版本残留。';
+        return '已完成扫描：没有发现可清理的开发工具链缓存。';
       }
       const topCache = result.groups
         .slice(0, 3)
         .map((group) => `${group.groupName} ${formatSize(group.totalSize)}`)
         .join('、');
       const lines = [
-        `扫描到 ${result.groups.length} 组工具缓存、${result.versionGroups.length} 组多版本目录，`,
-        `合计 ${formatSize(result.totalSize)}（${result.totalFiles} 个文件）。`,
+        `扫描到 ${result.groups.length} 组工具链缓存，合计 ${formatSize(result.totalSize)}（${result.totalFiles} 个文件）。`,
       ];
       if (topCache) lines.push(`占用最多的工具链：${topCache}。`);
-      if (result.versionReclaimableSize > 0) {
-        lines.push(`旧版本目录里可回收 ${formatSize(result.versionReclaimableSize)}。`);
-      }
       lines.push(`当前已勾选 ${selected.size} 项，合计 ${formatSize(selectedSize)}。`);
       lines.push(
-        '口径说明：只统计开发工具链缓存、以及同一软件并排存放的旧版本目录；',
+        '口径说明：只统计开发工具链缓存；',
         '安装包、已安装程序本体、用户文档不在统计范围内。',
+        '同一软件并排存放的旧版本目录已移到「残留&缓存」页的「多版本残留」，其它软件（驱动安装包、启动器缓存等）已移到该页的「其它软件缓存」，均不在本模块统计。',
       );
       return lines.join('');
     },
@@ -280,10 +209,8 @@ export function DevCacheModule({ isPageActive = true }: ModuleRenderProps) {
       // After rescanning, old selections may point to directories that no longer exist; clearing them all is safest
       setSelected(new Set());
       setExpanded(null);
-      // Once caches are cleared, auto-switch to the tab that still has content so users do not stare at an empty card
-      if (next.groups.length === 0 && next.versionGroups.length > 0) setTab('version');
     } catch (scanError) {
-      console.error('扫描开发空间失败:', scanError);
+      console.error('扫描开发缓存失败:', scanError);
       setError(String(scanError));
     } finally {
       setScanning(false);
@@ -349,7 +276,7 @@ export function DevCacheModule({ isPageActive = true }: ModuleRenderProps) {
       if (deleteResult.deleted > 0) setJustCleared(true);
       await runScan(deleteResult.deleted > 0);
     } catch (deleteError) {
-      console.error('删除开发空间目录失败:', deleteError);
+      console.error('删除开发缓存目录失败:', deleteError);
       showToast({
         type: 'error',
         title: moduleT('devCache.deleteFailed'),
@@ -382,14 +309,12 @@ export function DevCacheModule({ isPageActive = true }: ModuleRenderProps) {
         }}
         className="cursor-pointer"
       >
-        <Checkbox checked={allSelected} partial={partiallySelected} />
+        <SelectBox checked={allSelected} partial={partiallySelected} />
       </div>
     );
   };
 
   const cacheEntries = result?.groups ?? [];
-  const versionEntries = result?.versionGroups ?? [];
-  const tabIsEmpty = tab === 'cache' ? cacheEntries.length === 0 : versionEntries.length === 0;
 
   return (
     <ModuleCard
@@ -448,10 +373,10 @@ export function DevCacheModule({ isPageActive = true }: ModuleRenderProps) {
           />
         ) : (
           <div className="space-y-3 pb-20">
-            {/* Three numbers: total caches / directly cleanable / reclaimable from old versions.
-                Shown separately on purpose — the latter two are "how much you actually free with one click",
-                the total includes read-only items (install caches), so treating it as the cleanup target would disappoint. */}
-            <div className="grid grid-cols-3 gap-2">
+            {/* Two numbers: total caches / directly cleanable.
+                Shown separately on purpose — the latter is "how much you actually free with one click",
+                while the total includes read-only items (install caches), so treating it as the cleanup target would disappoint. */}
+            <div className="grid grid-cols-2 gap-2">
               {[
                 {
                   label: moduleT('devCache.statTotal'),
@@ -462,11 +387,6 @@ export function DevCacheModule({ isPageActive = true }: ModuleRenderProps) {
                   label: moduleT('devCache.statSafe'),
                   value: formatSize(result.safeSize),
                   tone: 'text-[var(--brand-green)]',
-                },
-                {
-                  label: moduleT('devCache.statVersion'),
-                  value: formatSize(result.versionReclaimableSize),
-                  tone: 'text-[var(--text-primary)]',
                 },
               ].map((item) => (
                 <div key={item.label} className="rounded-xl bg-[var(--bg-main)] px-3 py-2">
@@ -484,37 +404,7 @@ export function DevCacheModule({ isPageActive = true }: ModuleRenderProps) {
               </p>
             )}
 
-            {/* Tabs: hidden when both tabs are empty, to avoid "empty tab that is even emptier inside" */}
-            <div className="flex gap-1 rounded-xl bg-[var(--bg-main)] p-1">
-              {(
-                [
-                  { id: 'cache' as ViewTab, label: moduleT('devCache.tabCache'), count: cacheEntries.length },
-                  { id: 'version' as ViewTab, label: moduleT('devCache.tabVersion'), count: versionEntries.length },
-                ]
-              ).map((item) => (
-                <button
-                  key={item.id}
-                  type="button"
-                  onClick={() => setTab(item.id)}
-                  className={`flex-1 rounded-lg px-3 py-1.5 text-[0.86rem] font-medium transition-colors ${
-                    tab === item.id
-                      ? 'bg-[var(--bg-card)] text-[var(--text-primary)] shadow-sm'
-                      : 'text-[var(--text-muted)] hover:text-[var(--text-secondary)]'
-                  }`}
-                >
-                  {item.label}
-                  <span className="ml-1 text-[var(--text-faint)]">{item.count}</span>
-                </button>
-              ))}
-            </div>
-
-            {tabIsEmpty ? (
-              <p className="px-1 py-6 text-center text-[0.86rem] text-[var(--text-muted)]">
-                {moduleT('devCache.tabEmpty')}
-              </p>
-            ) : tab === 'cache' ? (
-              /* ── Tab 1: toolchain caches ────────────────────────────── */
-              cacheEntries.map((group) => {
+            {cacheEntries.map((group) => {
                 const selectable = group.entries
                   .filter((entry) => entry.risk !== 'readonly')
                   .map((entry) => entry.path);
@@ -659,145 +549,7 @@ export function DevCacheModule({ isPageActive = true }: ModuleRenderProps) {
                     </AnimatePresence>
                   </div>
                 );
-              })
-            ) : (
-              /* ── Tab 2: multi-version leftovers ────────────────────────────── */
-              versionEntries.map((group) => {
-                const selectable = group.entries
-                  .filter((entry) => !entry.isCurrent)
-                  .map((entry) => entry.path);
-                const key = `v:${group.id}`;
-                const isOpen = expanded === key;
-
-                return (
-                  <div
-                    key={key}
-                    className="overflow-hidden rounded-2xl bg-[var(--bg-card)] shadow-sm"
-                  >
-                    <div
-                      className="flex cursor-pointer items-center gap-4 px-5 py-4 transition-colors hover:bg-[var(--bg-hover)]"
-                      onClick={() => setExpanded(isOpen ? null : key)}
-                    >
-                      <ChevronRight
-                        className={`h-5 w-5 shrink-0 text-[var(--text-faint)] transition-transform ${isOpen ? 'rotate-90' : ''}`}
-                      />
-                      {renderGroupHeaderCheckbox(selectable)}
-                      <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-[var(--brand-green-10)] text-[var(--brand-green)]">
-                        <Layers className="h-5 w-5" />
-                      </div>
-                      <div className="min-w-0 flex-1">
-                        <p className="truncate text-[1rem] font-bold text-[var(--text-primary)]">
-                          {group.name}
-                        </p>
-                        {/* Show the directory path: the same software may be installed twice (system drive + user drive),
-                            a name alone would leave users unable to tell which one is being deleted */}
-                        <p
-                          className="mt-1 truncate text-[0.93rem] text-[var(--text-muted)]"
-                          title={group.basePath}
-                        >
-                          {moduleT('devCache.versionSummary', {
-                            count: group.entries.length,
-                            size: formatSize(group.reclaimableSize),
-                          })}
-                        </p>
-                      </div>
-                      <p className="shrink-0 text-[1.07rem] font-bold tabular-nums text-[var(--text-primary)]">
-                        {formatSize(group.totalSize)}
-                      </p>
-                    </div>
-
-                    <AnimatePresence initial={false}>
-                      {isOpen && (
-                        <motion.div
-                          className="overflow-hidden border-t border-[var(--border-color)] bg-[var(--bg-main)]"
-                          initial={{ height: 0, opacity: 0 }}
-                          animate={{ height: 'auto', opacity: 1 }}
-                          exit={{ height: 0, opacity: 0 }}
-                          transition={{ duration: 0.24, ease: [0.22, 1, 0.36, 1] }}
-                        >
-                          <div className="max-h-[15em] overflow-y-auto px-5 py-2">
-                            {group.entries.map((entry) => (
-                              <div
-                                key={entry.path}
-                                className={`flex items-center gap-3 py-2 text-[0.86rem] ${
-                                  entry.isCurrent ? 'cursor-default' : 'cursor-pointer'
-                                }`}
-                                onClick={() => {
-                                  if (!entry.isCurrent) toggleEntry(entry.path);
-                                }}
-                              >
-                                {entry.isCurrent ? (
-                                  /* No checkbox for the current version, but keep a placeholder for alignment */
-                                  <div className="h-5 w-5 shrink-0" />
-                                ) : (
-                                  <div
-                                    className={`flex h-5 w-5 shrink-0 items-center justify-center rounded border-2 transition-colors ${
-                                      selected.has(entry.path)
-                                        ? 'border-[var(--brand-green)] bg-[var(--brand-green)]'
-                                        : 'border-[var(--text-faint)]'
-                                    }`}
-                                  >
-                                    {selected.has(entry.path) && (
-                                      <svg
-                                        className="h-3 w-3 text-white"
-                                        fill="none"
-                                        viewBox="0 0 24 24"
-                                        stroke="currentColor"
-                                        strokeWidth={3}
-                                      >
-                                        <path
-                                          strokeLinecap="round"
-                                          strokeLinejoin="round"
-                                          d="M5 13l4 4L19 7"
-                                        />
-                                      </svg>
-                                    )}
-                                  </div>
-                                )}
-                                <span className="w-36 shrink-0 truncate font-medium tabular-nums text-[var(--text-secondary)]">
-                                  {entry.version}
-                                </span>
-                                {entry.isCurrent && (
-                                  <span className="shrink-0 rounded bg-[var(--brand-green-10)] px-1.5 py-0.5 text-[0.72rem] font-medium text-[var(--brand-green)]">
-                                    {moduleT('devCache.currentTag')}
-                                  </span>
-                                )}
-                                {/* current_reason explains "why this version is judged as in use",
-                                    without it users can only trust the version number — which may not be the truth */}
-                                <span
-                                  className="min-w-0 flex-1 truncate text-[var(--text-muted)]"
-                                  title={`${entry.path}\n${entry.currentReason}`}
-                                >
-                                  {entry.isCurrent
-                                    ? entry.currentReason
-                                    : moduleT('devCache.versionFiles', {
-                                        count: entry.fileCount.toLocaleString(),
-                                      })}
-                                </span>
-                                <span className="w-20 shrink-0 text-right tabular-nums text-[var(--text-muted)]">
-                                  {formatSize(entry.size)}
-                                </span>
-                                <button
-                                  type="button"
-                                  onClick={(event) => {
-                                    event.stopPropagation();
-                                    openInFolder(entry.path);
-                                  }}
-                                  title={moduleT('devCache.openFolder')}
-                                  className="shrink-0 rounded p-0.5 text-[var(--text-muted)] transition-colors hover:bg-[var(--bg-hover)] hover:text-[var(--brand-green)]"
-                                >
-                                  <FolderOpen className="h-4 w-4" />
-                                </button>
-                              </div>
-                            ))}
-                          </div>
-                        </motion.div>
-                      )}
-                    </AnimatePresence>
-                  </div>
-                );
-              })
-            )}
+              })}
 
             {/* Toolbar reuses the shared component: position, busy state, and glass styling are all handled by it */}
             {shouldShowOperationToolbar && (

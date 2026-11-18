@@ -15,6 +15,7 @@ use winreg::RegKey;
 use super::targets::{self, Env, ProbeHive, RegProbe, VersionPattern, VersionSpec};
 use super::types::{
     DevCacheEntry, DevCacheGroup, DevCacheScanResult, DevRisk, VersionEntry, VersionGroup,
+    VersionLeftoverScanResult,
 };
 
 #[derive(Default)]
@@ -104,13 +105,39 @@ pub fn measure(root: &Path) -> (u64, usize, usize) {
     (bytes, files, skipped)
 }
 
-/// Full scan: toolchain caches + multi-version leftovers.
+/// Full scan of **toolchain caches only** — what the "dev cache cleanup" page shows.
+///
+/// The two other halves of this module live on the "leftover & cache" page and have their own entry points:
+/// multi-version directories (`scan_version_leftovers`) and other software caches (`scan_other_app_caches`).
+/// Running them here would make each page traverse the other's directories for nothing.
 pub fn scan() -> DevCacheScanResult {
+    scan_targets(|group| group != targets::OTHER_GROUP)
+}
+
+/// Full scan of the **"other software caches"** group only — rendered on the "leftover & cache" page.
+///
+/// These are the downloaded driver installers / launcher web caches that garbage cleanup and driver cleanup both
+/// leave alone (NVIDIA, Epic, Steam, DaVinci…). Measurement and deletion validation are the same as the toolchain
+/// caches — only the owning page differs, because the question they answer ("what did software leave behind")
+/// is the one that page already asks.
+pub fn scan_other_app_caches() -> DevCacheScanResult {
+    scan_targets(|group| group == targets::OTHER_GROUP)
+}
+
+/// Shared implementation: measure every target whose group passes `keep`, then assemble groups and counters.
+///
+/// The group filter runs **before** measuring, not after: skipping a whole page's worth of directories here is
+/// exactly the point of splitting the commands, and filtering afterwards would leave the traversal cost in place.
+fn scan_targets(keep: impl Fn(&str) -> bool) -> DevCacheScanResult {
     let started = Instant::now();
     let env = Env::detect();
 
+    let specs: Vec<targets::TargetSpec> = targets::targets(&env)
+        .into_iter()
+        .filter(|spec| keep(spec.group))
+        .collect();
+
     // Targets are independent of each other; measure in parallel and the slowest one determines total time
-    let specs = targets::targets(&env);
     let measured: Vec<(u64, usize, usize)> = specs.par_iter().map(|spec| measure(&spec.path)).collect();
 
     let mut skipped = 0usize;
@@ -148,20 +175,9 @@ pub fn scan() -> DevCacheScanResult {
     }
     groups.sort_by(|a, b| b.total_size.cmp(&a.total_size));
 
-    let version_groups = scan_versions(&env);
-    let version_reclaimable_size = version_groups.iter().map(|g| g.reclaimable_size).sum();
-    let version_total_size: u64 = version_groups.iter().map(|g| g.total_size).sum();
-    let version_total_files: usize = version_groups
-        .iter()
-        .flat_map(|g| g.entries.iter())
-        .map(|entry| entry.file_count)
-        .sum();
-
     DevCacheScanResult {
-        // The total must **include** multi-version directories: the UI's "total usage" must match the sum of the two tabs' sizes,
-        // otherwise users would think the version block was left out (or counted twice)
-        total_size: groups.iter().map(|g| g.total_size).sum::<u64>() + version_total_size,
-        total_files: groups.iter().map(|g| g.file_count).sum::<usize>() + version_total_files,
+        total_size: groups.iter().map(|g| g.total_size).sum(),
+        total_files: groups.iter().map(|g| g.file_count).sum(),
         safe_size: groups
             .iter()
             .flat_map(|g| g.entries.iter())
@@ -169,21 +185,54 @@ pub fn scan() -> DevCacheScanResult {
             .map(|entry| entry.size)
             .sum(),
         groups,
-        version_groups,
-        version_reclaimable_size,
+        elapsed_ms: started.elapsed().as_millis() as u64,
+        skipped,
+    }
+}
+
+/// Full scan of **multi-version leftovers only** (the same software keeping several version directories side by side).
+///
+/// Group order is by reclaimable size descending rather than by the static target order: unlike caches,
+/// most machines only have one or two such groups, and what the user cares about is which one frees the most.
+pub fn scan_version_leftovers() -> VersionLeftoverScanResult {
+    let started = Instant::now();
+    let env = Env::detect();
+
+    let mut skipped = 0usize;
+    let mut groups: Vec<VersionGroup> = Vec::new();
+    for spec in targets::version_specs(&env) {
+        if let Some((group, group_skipped)) = scan_one_version_group(&spec) {
+            skipped += group_skipped;
+            groups.push(group);
+        }
+    }
+    groups.sort_by(|a, b| b.reclaimable_size.cmp(&a.reclaimable_size));
+
+    VersionLeftoverScanResult {
+        total_size: groups.iter().map(|g| g.total_size).sum(),
+        total_files: groups
+            .iter()
+            .flat_map(|g| g.entries.iter())
+            .map(|entry| entry.file_count)
+            .sum(),
+        reclaimable_size: groups.iter().map(|g| g.reclaimable_size).sum(),
+        groups,
         elapsed_ms: started.elapsed().as_millis() as u64,
         skipped,
     }
 }
 
 /// Group by `spec.group`; group order follows the appearance order in targets.rs to avoid jumping around on each refresh.
+///
+/// Group names stay here rather than in targets.rs: they are display text for grouping only, and the "other" group
+/// keeps a Chinese fallback name in the same table — the frontend looks the section title up from i18n.
 fn build_groups(specs: &[targets::TargetSpec], entries: Vec<DevCacheEntry>) -> Vec<DevCacheGroup> {
-    const GROUP_NAMES: &[(&str, &str)] = &[
+    let group_names: &[(&str, &str)] = &[
         ("pkg", "包管理器缓存"),
         ("build", "构建与索引缓存"),
         ("logs", "日志与追踪"),
         ("confirm", "需确认的项目"),
-        ("other", "其它软件缓存"),
+        (targets::OTHER_GROUP, "其它软件缓存"),
         ("readonly", "只展示 · 请勿删除"),
     ];
 
@@ -209,7 +258,7 @@ fn build_groups(specs: &[targets::TargetSpec], entries: Vec<DevCacheEntry>) -> V
             if group_entries.is_empty() {
                 return None;
             }
-            let name = GROUP_NAMES
+            let name = group_names
                 .iter()
                 .find(|(id, _)| *id == group_id)
                 .map(|(_, name)| name.to_string())
@@ -222,15 +271,6 @@ fn build_groups(specs: &[targets::TargetSpec], entries: Vec<DevCacheEntry>) -> V
                 entries: group_entries,
             })
         })
-        .collect()
-}
-
-/// Scan version directories. The parent directory itself is never deleted; deletion only goes down to version subdirectories.
-fn scan_versions(env: &Env) -> Vec<VersionGroup> {
-    let specs = targets::version_specs(env);
-    specs
-        .into_iter()
-        .filter_map(|spec| scan_one_version_group(&spec))
         .collect()
 }
 
@@ -297,7 +337,9 @@ pub(super) fn resolve_current(
     }
 }
 
-fn scan_one_version_group(spec: &VersionSpec) -> Option<VersionGroup> {
+/// Scan one product's version directory set. Returns `None` when there is nothing to clean
+/// (nonexistent root / fewer than two versions), plus the number of directories skipped while measuring.
+fn scan_one_version_group(spec: &VersionSpec) -> Option<(VersionGroup, usize)> {
     let versions = list_versions(spec);
     if versions.len() < 2 {
         return None;
@@ -305,18 +347,16 @@ fn scan_one_version_group(spec: &VersionSpec) -> Option<VersionGroup> {
 
     let (current, current_reason) = resolve_current(spec, &versions);
 
-    let sizes: Vec<(u64, usize)> = versions
+    let measured: Vec<(u64, usize, usize)> = versions
         .par_iter()
-        .map(|(_, path)| {
-            let (bytes, files, _) = measure(path);
-            (bytes, files)
-        })
+        .map(|(_, path)| measure(path))
         .collect();
+    let skipped: usize = measured.iter().map(|(_, _, skip)| *skip).sum();
 
     let entries: Vec<VersionEntry> = versions
         .iter()
-        .zip(sizes)
-        .map(|((name, path), (size, file_count))| {
+        .zip(measured)
+        .map(|((name, path), (size, file_count, _))| {
             let is_current = current.as_deref() == Some(name.as_str());
             VersionEntry {
                 version: parse_version(name, &spec.pattern).unwrap_or_else(|| name.clone()),
@@ -341,14 +381,17 @@ fn scan_one_version_group(spec: &VersionSpec) -> Option<VersionGroup> {
         .map(|entry| entry.size)
         .sum();
 
-    Some(VersionGroup {
-        id: spec.id.to_string(),
-        name: spec.name.to_string(),
-        base_path: display_path(&spec.base),
-        total_size,
-        reclaimable_size,
-        entries,
-    })
+    Some((
+        VersionGroup {
+            id: spec.id.to_string(),
+            name: spec.name.to_string(),
+            base_path: display_path(&spec.base),
+            total_size,
+            reclaimable_size,
+            entries,
+        },
+        skipped,
+    ))
 }
 
 /// Directory name → version string. Return None if it cannot be parsed.

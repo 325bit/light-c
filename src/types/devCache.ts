@@ -1,8 +1,12 @@
 /**
- * Data structures for the dev space (toolchain caches + multi-version leftovers).
+ * Data structures for dev caches, other software caches and multi-version leftovers.
  *
  * Fields correspond one-to-one with the Serialize output of the backend `scanner/dev_cache/types.rs` (camelCase).
  * The frontend `src/types/devCache.ts` and that Rust file are the same contract; change one and you must sync the other.
+ *
+ * Three commands scan three disjoint slices because the UI shows them on two pages
+ * (`scanDevCache` / `scanVersionLeftovers` / `scanOtherAppCaches`); they only share the same directory measurement
+ * and deletion validation.
  */
 
 /**
@@ -85,15 +89,34 @@ export interface VersionGroup {
 
 export interface DevCacheScanResult {
   groups: DevCacheGroup[];
-  /** Total of tool caches + multi-version directories: the UI's "total usage" must match the sum of the two tabs */
+  /**
+   * Total usage of tool caches only. Multi-version directories are **not** included:
+   * they come from `VersionLeftoverScanResult` and are shown on the "leftover & cache" page.
+   */
   totalSize: number;
   totalFiles: number;
-  /** Total of items with risk cache that can be cleaned directly (excluding confirm / readonly, and excluding old version directories) */
+  /** Total of items with risk cache that can be cleaned directly (excluding confirm / readonly) */
   safeSize: number;
-  versionGroups: VersionGroup[];
-  versionReclaimableSize: number;
   elapsedMs: number;
   /** Number of paths skipped during scanning due to permissions/locks, used to explain "why it is smaller than expected" */
+  skipped: number;
+}
+
+/**
+ * Result of the standalone multi-version leftover scan (same software keeping several version directories side by side).
+ *
+ * Split from `DevCacheScanResult` because the two live on different pages: tool caches stay in "dev cache cleanup",
+ * multi-version directories are shown in "leftover & cache".
+ */
+export interface VersionLeftoverScanResult {
+  groups: VersionGroup[];
+  /** Total of every version directory (including the one in use) */
+  totalSize: number;
+  totalFiles: number;
+  /** Total excluding the version currently in use */
+  reclaimableSize: number;
+  elapsedMs: number;
+  /** Version directories skipped while measuring (permissions / in use) */
   skipped: number;
 }
 

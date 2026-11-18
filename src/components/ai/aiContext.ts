@@ -23,12 +23,15 @@ const MODULE_INFO: Record<string, { name: string; role: string }> = {
   'social-clean': { name: '社交软件清理', role: '定位微信、QQ 等聊天软件产生的缓存。' },
   'ai-tool-cleanup': { name: 'AI 工具清理', role: '统计 AI 客户端和编程助手留下的缓存目录。' },
   'dev-cache': {
-    name: '开发空间清理',
-    role: '统计开发工具链（包管理器、构建工具、IDE）的缓存，以及同一软件并排存放的旧版本目录。',
+    name: '开发缓存清理',
+    role: '统计开发工具链（包管理器、构建工具、IDE）留下的缓存目录。',
   },
   'system-slim': { name: '系统瘦身', role: '处理系统组件、休眠文件、还原点等系统级占用。' },
   'driver-cleanup': { name: '旧驱动清理', role: '识别被更高版本替代的旧驱动包，删除前会自动备份。' },
-  leftovers: { name: '残留清理', role: '查找软件卸载后遗留的目录与文件。' },
+  leftovers: {
+    name: '残留&缓存',
+    role: '查找软件卸载后遗留的目录与文件、同一软件并排存放的旧版本目录，以及驱动安装包、启动器缓存等其它软件留下的缓存。',
+  },
   registry: { name: '注册表清理', role: '检查孤立键值与无效引用。' },
   'context-menu': { name: '右键菜单管理', role: '管理资源管理器右键菜单项。' },
   hotspot: { name: '大目录分析', role: '递归分析目录占用，定位空间被谁吃掉。' },

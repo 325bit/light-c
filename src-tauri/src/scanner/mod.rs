@@ -20,7 +20,7 @@ mod scan_engine;
 pub(crate) mod shell_icons;
 mod ai_tool_cleaner;
 mod social_scanner;
-// [dev-cache] Development space cleanup: toolchain caches + multi-version leftovers (covering parts not handled by the original light-c module)
+// [dev-cache] Dev cache cleanup + the multi-version leftover scan (shown on the "leftover & cache" page)
 pub(crate) mod dev_cache;
 
 pub use categories::*;
