@@ -365,49 +365,136 @@ impl Default for EnhancedDeleteResult {
 // Enhanced delete engine
 // ============================================================================
 
+/// Which known root a Take-Ownership whitelist entry is anchored to (M5 fix).
+///
+/// Before the fix the whitelist matched with `find()` at *any* depth, so a folder
+/// merely named `Cache` under user documents (e.g. `C:\Users\X\Documents\Backup\Cache`)
+/// qualified for Take Ownership — granting Administrators full control over a path
+/// that is not a junk cache at all. Every entry must now declare which known root
+/// anchors it, and a match is only accepted at that exact position.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum OwnershipAnchor {
+    /// Match only directly under a drive root: `X:<entry>…` (the marker starts
+    /// right after the drive colon, the same boundary rule as
+    /// `safety_constants::is_rebuildable_system_cache_path`).
+    DriveRoot,
+    /// Match only directly under the user-profile root: `X:\users\<name><entry>…`.
+    ProfileRoot,
+    /// Match at any component boundary inside the profile's `AppData\Local` subtree.
+    ///
+    /// Chromium-based browsers place their `Service Worker` / `Media Cache`
+    /// directories below vendor/profile directories that vary per browser
+    /// (`Google\Chrome`, `Microsoft\Edge`, Brave\…), so the suffix cannot be
+    /// spelled out. Restricting the search to this user-owned subtree keeps the
+    /// grant out of user documents and other arbitrary locations.
+    ProfileAppDataLocal,
+}
+
 /// Safe directories where Take Ownership is allowed
 ///
 /// # Note
 /// The "take ownership" operation is only allowed for files under these directories.
 /// This prevents accidental deletion of system files.
-const SAFE_OWNERSHIP_PATHS: &[&str] = &[
-    "\\temp",
-    "\\tmp",
-    "\\cache",
-    "\\caches",
-    "\\appdata\\local\\temp",
-    "\\appdata\\local\\microsoft\\windows\\temporary internet files",
-    "\\appdata\\local\\microsoft\\windows\\inetcache",
-    "\\appdata\\local\\microsoft\\windows\\caches",
-    "\\appdata\\local\\microsoft\\windows\\explorer",
-    "\\appdata\\local\\microsoft\\windows\\webcache",
-    "\\appdata\\local\\microsoft\\windows\\clipboard",
+/// Each entry is `(anchor, marker)`; see `OwnershipAnchor` for why matching is
+/// position-bound instead of a plain substring search.
+const SAFE_OWNERSHIP_PATHS: &[(OwnershipAnchor, &str)] = &[
+    (OwnershipAnchor::DriveRoot, "\\temp"),
+    (OwnershipAnchor::DriveRoot, "\\tmp"),
+    (OwnershipAnchor::DriveRoot, "\\cache"),
+    (OwnershipAnchor::DriveRoot, "\\caches"),
+    (OwnershipAnchor::ProfileRoot, "\\appdata\\local\\temp"),
+    (
+        OwnershipAnchor::ProfileRoot,
+        "\\appdata\\local\\microsoft\\windows\\temporary internet files",
+    ),
+    (
+        OwnershipAnchor::ProfileRoot,
+        "\\appdata\\local\\microsoft\\windows\\inetcache",
+    ),
+    (
+        OwnershipAnchor::ProfileRoot,
+        "\\appdata\\local\\microsoft\\windows\\caches",
+    ),
+    (
+        OwnershipAnchor::ProfileRoot,
+        "\\appdata\\local\\microsoft\\windows\\explorer",
+    ),
+    (
+        OwnershipAnchor::ProfileRoot,
+        "\\appdata\\local\\microsoft\\windows\\webcache",
+    ),
+    (
+        OwnershipAnchor::ProfileRoot,
+        "\\appdata\\local\\microsoft\\windows\\clipboard",
+    ),
     // Service Worker / media cache directories of Chromium-based browsers, at the same level as Cache and equally rebuildable.
-    "\\service worker",
-    "\\media cache",
-    "\\windows\\temp",
+    // Their location varies by browser (Google\Chrome, Microsoft\Edge, Brave\…),
+    // so they are matched at any component boundary **inside the profile's
+    // AppData\Local subtree only** — never in arbitrary user directories.
+    (OwnershipAnchor::ProfileAppDataLocal, "\\service worker"),
+    (OwnershipAnchor::ProfileAppDataLocal, "\\media cache"),
+    (OwnershipAnchor::DriveRoot, "\\windows\\temp"),
     // Windows 10/11 system-level temp directories and kernel crash report directories, containing rebuildable diagnostic data.
-    "\\windows\\systemtemp",
-    "\\windows\\livekernelreports",
-    "\\windows\\prefetch",
-    "\\windows\\softwaredistribution\\download",
-    "\\windows\\softwaredistribution\\deliveryoptimization",
-    "\\windows\\serviceprofiles\\networkservice\\appdata\\local\\microsoft\\windows\\deliveryoptimization",
-    "\\windows\\serviceprofiles\\localservice\\appdata\\local\\fontcache",
-    "\\programdata\\microsoft\\windows defender\\localcopy",
-    "\\programdata\\microsoft\\windows defender\\support",
-    "\\programdata\\microsoft\\windows defender\\scans\\history\\service",
+    (OwnershipAnchor::DriveRoot, "\\windows\\systemtemp"),
+    (OwnershipAnchor::DriveRoot, "\\windows\\livekernelreports"),
+    (OwnershipAnchor::DriveRoot, "\\windows\\prefetch"),
+    (
+        OwnershipAnchor::DriveRoot,
+        "\\windows\\softwaredistribution\\download",
+    ),
+    (
+        OwnershipAnchor::DriveRoot,
+        "\\windows\\softwaredistribution\\deliveryoptimization",
+    ),
+    (
+        OwnershipAnchor::DriveRoot,
+        "\\windows\\serviceprofiles\\networkservice\\appdata\\local\\microsoft\\windows\\deliveryoptimization",
+    ),
+    (
+        OwnershipAnchor::DriveRoot,
+        "\\windows\\serviceprofiles\\localservice\\appdata\\local\\fontcache",
+    ),
+    (
+        OwnershipAnchor::DriveRoot,
+        "\\programdata\\microsoft\\windows defender\\localcopy",
+    ),
+    (
+        OwnershipAnchor::DriveRoot,
+        "\\programdata\\microsoft\\windows defender\\support",
+    ),
+    (
+        OwnershipAnchor::DriveRoot,
+        "\\programdata\\microsoft\\windows defender\\scans\\history\\service",
+    ),
     // Windows error report queues/archives: jointly held by SYSTEM and TrustedInstaller, so elevated deletion must be allowed.
-    "\\programdata\\microsoft\\windows\\wer",
-    "\\windows\\system32\\d3d_cache",
-    "\\appdata\\local\\d3dscache",
-    "\\appdata\\local\\amd\\dxcache",
-    "\\appdata\\local\\nvidia\\dxcache",
-    "\\appdata\\local\\nvidia\\glcache",
-    "\\appdata\\local\\nvidia\\dxc",
-    "\\appdata\\local\\nvidia\\computecache",
-    "\\appdata\\local\\intel\\shadercache",
-    "\\$recycle.bin",
+    (
+        OwnershipAnchor::DriveRoot,
+        "\\programdata\\microsoft\\windows\\wer",
+    ),
+    (
+        OwnershipAnchor::DriveRoot,
+        "\\windows\\system32\\d3d_cache",
+    ),
+    (OwnershipAnchor::ProfileRoot, "\\appdata\\local\\d3dscache"),
+    (OwnershipAnchor::ProfileRoot, "\\appdata\\local\\amd\\dxcache"),
+    (
+        OwnershipAnchor::ProfileRoot,
+        "\\appdata\\local\\nvidia\\dxcache",
+    ),
+    (
+        OwnershipAnchor::ProfileRoot,
+        "\\appdata\\local\\nvidia\\glcache",
+    ),
+    (OwnershipAnchor::ProfileRoot, "\\appdata\\local\\nvidia\\dxc"),
+    (
+        OwnershipAnchor::ProfileRoot,
+        "\\appdata\\local\\nvidia\\computecache",
+    ),
+    (
+        OwnershipAnchor::ProfileRoot,
+        "\\appdata\\local\\intel\\shadercache",
+    ),
+    (OwnershipAnchor::DriveRoot, "\\$recycle.bin"),
 ];
 
 // Use the built-in Administrators group SID to avoid icacls failing to resolve localized group names on Chinese Windows.
@@ -902,17 +989,55 @@ impl EnhancedDeleteEngine {
     }
 
     /// Check whether a path is safe for Take Ownership
+    ///
+    /// M5 fix: whitelist entries may only match when anchored to a known root —
+    /// the drive root, the user-profile root, or the profile's AppData\Local
+    /// subtree. A plain substring search used to allow a hit at any depth, so a
+    /// folder merely *named* temp/cache under user documents qualified for
+    /// granting Administrators full control.
     fn is_safe_for_ownership(&self, path: &Path) -> bool {
-        let path_string = path.to_string_lossy();
-        let normalized = path_string.replace('/', "\\").to_ascii_lowercase();
+        // Same normalization as the protection checks: strip the `\\?\` prefix,
+        // unify `/` to `\`, then compare case-insensitively (ASCII only: the
+        // whitelist and every anchor are pure ASCII).
+        let normalized = crate::path_guard::normalize(path).to_ascii_lowercase();
 
-        SAFE_OWNERSHIP_PATHS.iter().any(|safe_path| {
-            let Some(start) = normalized.find(safe_path) else {
-                return false;
+        // Anchor 1: the drive root — the position right after `X:`.
+        let drive_root_anchor = drive_root_end(&normalized);
+
+        // Anchor 2: the user-profile root — the position right after `X:\users\<name>`.
+        // Only a path *starting* with `X:\users\` counts; a deeper `\users\`
+        // component (e.g. `C:\fake\users\victim`) must not forge a profile root.
+        let profile_root_anchor = profile_root_end(&normalized);
+
+        // Anchor 3 region: everything after `<profile>\appdata\local`.
+        let appdata_local_from = profile_root_anchor
+            .filter(|&end| normalized[end..].starts_with("\\appdata\\local\\"))
+            .map(|end| end + "\\appdata\\local".len());
+
+        SAFE_OWNERSHIP_PATHS.iter().any(|&(anchor, marker)| {
+            // The remainder after the marker must end the path or start a new
+            // component, so `\temp` never matches `C:\temporary` or `Support2`.
+            let suffix_is_boundary = |start: usize| {
+                let suffix = &normalized[start + marker.len()..];
+                suffix.is_empty() || suffix.starts_with('\\')
             };
-            let suffix = &normalized[start + safe_path.len()..];
-            // Directory whitelist must be matched by path segments, to avoid accidentally allowing similarly named directories.
-            suffix.is_empty() || suffix.starts_with('\\')
+            let starts_with_marker = |start: usize| {
+                normalized[start..].starts_with(marker) && suffix_is_boundary(start)
+            };
+
+            match anchor {
+                OwnershipAnchor::DriveRoot => drive_root_anchor.is_some_and(starts_with_marker),
+                OwnershipAnchor::ProfileRoot => profile_root_anchor.is_some_and(starts_with_marker),
+                // Markers start with `\`, so every occurrence inside the tail sits
+                // on a component boundary — only the region itself is constrained.
+                OwnershipAnchor::ProfileAppDataLocal => appdata_local_from
+                    .and_then(|from| {
+                        normalized[from..]
+                            .find(marker)
+                            .map(|offset| from + offset)
+                    })
+                    .is_some_and(suffix_is_boundary),
+            }
         })
     }
 
@@ -1109,6 +1234,39 @@ fn drive_root(path: &Path) -> Option<String> {
     Some(format!("{}:\\", (bytes[0] as char).to_ascii_uppercase()))
 }
 
+/// Position right after the drive root `X:` in a normalized path — where a
+/// drive-root-anchored whitelist marker must start. `None` when the path has no
+/// drive root (UNC paths, relative paths).
+fn drive_root_end(normalized: &str) -> Option<usize> {
+    let bytes = normalized.as_bytes();
+    if bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' {
+        Some(2)
+    } else {
+        None
+    }
+}
+
+/// Position right after the user-profile root `X:\users\<name>` in a normalized
+/// path — where a profile-anchored whitelist marker must start. `None` when the
+/// path does not start with such a root, so a deeper `\users\` component cannot
+/// forge one.
+fn profile_root_end(normalized: &str) -> Option<usize> {
+    let bytes = normalized.as_bytes();
+    if bytes.len() < 3 || !bytes[0].is_ascii_alphabetic() || bytes[1] != b':' || bytes[2] != b'\\' {
+        return None;
+    }
+    if !normalized[3..].starts_with("users\\") {
+        return None;
+    }
+    let after_users = 3 + "users\\".len();
+    let username_len = normalized[after_users..].find('\\')?;
+    if username_len == 0 {
+        // `X:\users\` with no username is not a profile root
+        return None;
+    }
+    Some(after_users + username_len)
+}
+
 impl Default for EnhancedDeleteEngine {
     fn default() -> Self {
         Self::new()
@@ -1161,6 +1319,42 @@ mod tests {
         )));
         assert!(engine.is_safe_for_ownership(Path::new(
             "C:\\Users\\Test\\AppData\\Local\\NVIDIA\\GLCache\\shader.bin"
+        )));
+    }
+
+    /// M5 regression: a whitelist entry must no longer match at arbitrary depth.
+    /// Before the fix, a folder merely named `Cache` under user documents or any
+    /// other location qualified for Take Ownership (Administrators: F).
+    #[test]
+    fn ownership_whitelist_matches_only_at_known_roots() {
+        let engine = EnhancedDeleteEngine::new();
+
+        // Arbitrary-depth hits must be rejected:
+        assert!(!engine.is_safe_for_ownership(Path::new(
+            "C:\\Users\\Test\\Documents\\Backup\\Cache\\thesis.doc"
+        )));
+        assert!(!engine
+            .is_safe_for_ownership(Path::new("C:\\Games\\cache\\save.dat")));
+        assert!(!engine.is_safe_for_ownership(Path::new(
+            "C:\\Users\\Test\\Documents\\service worker\\index"
+        )));
+        // A `\users\` component that is not at the drive root must not forge a profile root:
+        assert!(!engine.is_safe_for_ownership(Path::new(
+            "C:\\fake\\users\\victim\\AppData\\Local\\Temp\\x.tmp"
+        )));
+        // Similarly named directories stay rejected (suffix boundary):
+        assert!(!engine.is_safe_for_ownership(Path::new("C:\\temporary\\x.tmp")));
+
+        // Legit targets keep working, including every bypass spelling:
+        assert!(engine.is_safe_for_ownership(Path::new("C:\\Temp\\x.tmp")));
+        assert!(engine.is_safe_for_ownership(Path::new("C:/Windows/Temp/test.tmp")));
+        assert!(engine
+            .is_safe_for_ownership(Path::new(r"\\?\C:\Windows\Temp\test.tmp")));
+        assert!(engine.is_safe_for_ownership(Path::new(
+            "C:/Users/Test/AppData/Local/Temp/file.log"
+        )));
+        assert!(engine.is_safe_for_ownership(Path::new(
+            "C:\\Users\\Test\\AppData\\Local\\Google\\Chrome\\User Data\\Default\\Service Worker\\CacheStorage\\abc"
         )));
     }
 
