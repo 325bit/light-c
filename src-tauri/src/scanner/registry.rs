@@ -185,6 +185,10 @@ impl Default for RegistryScanner {
 /// Registry backup manager
 ///
 /// Uses `reg.exe export` to export a full subkey to a .reg file, recoverable by double-clicking.
+///
+/// Backups go to `data_dir/reg_backups/registry` (see `data_dir::registry_backup_dir`), not to the user's Documents folder:
+/// the location must follow the storage directory the user picked, and it has to be visible to the data-directory
+/// migration, the cleanup whitelist and the size accounting.
 pub struct RegistryBackup;
 
 impl RegistryBackup {
@@ -286,14 +290,6 @@ impl RegistryBackup {
         } else {
             Err(format!("无法解析注册表路径: {}", path))
         }
-    }
-
-    /// Default backup directory
-    pub fn get_backup_dir() -> PathBuf {
-        dirs::document_dir()
-            .unwrap_or_else(|| PathBuf::from("C:\\"))
-            .join("LightC")
-            .join("RegistryBackups")
     }
 }
 

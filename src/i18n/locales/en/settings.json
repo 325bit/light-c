@@ -231,9 +231,14 @@
       "warning": ""
     },
     "registryBackups": {
-      "label": "Registry backups",
-      "description": "Backup files created before context-menu and registry cleanup.",
-      "warning": "Deleting them removes the ability to review past registry cleanup operations from these backups."
+      "label": "Context-menu backups",
+      "description": "Backups exported before context-menu entries were cleaned.",
+      "warning": "Deleting them removes the ability to restore cleaned context-menu entries."
+    },
+    "registryRedundancyBackups": {
+      "label": "Registry redundancy backups",
+      "description": "Backups exported before registry redundancy entries were cleaned; they can restore deleted keys.",
+      "warning": "Deleting them removes the ability to restore deleted registry keys from these backups."
     },
     "shellIconLogs": {
       "label": "Virtual-drive operation log",

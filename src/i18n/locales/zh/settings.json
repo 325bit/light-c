@@ -231,9 +231,14 @@
       "warning": ""
     },
     "registryBackups": {
-      "label": "注册表备份",
-      "description": "右键菜单和注册表清理前生成的备份文件。",
-      "warning": "删除后无法再通过这些备份回溯旧注册表清理操作。"
+      "label": "右键菜单备份",
+      "description": "清理右键菜单项前导出的 .reg 备份。",
+      "warning": "删除后无法再通过这些备份恢复已清理的右键菜单项。"
+    },
+    "registryRedundancyBackups": {
+      "label": "注册表冗余备份",
+      "description": "清理注册表冗余项前导出的 .reg 备份，可用于恢复被删除的键。",
+      "warning": "删除后将无法通过这些备份恢复已删除的注册表键。"
     },
     "shellIconLogs": {
       "label": "虚拟磁盘操作记录",

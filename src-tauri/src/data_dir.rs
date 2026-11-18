@@ -55,6 +55,15 @@ const MIGRATABLE_DATA_ENTRIES: [&str; 6] = [
     "driver_backups",
 ];
 
+/// Registry-redundancy backups live under the data directory, in a subdirectory of the context-menu backup folder.
+///
+/// Deliberately not the same folder as the context-menu backups: the two modules export different filename formats,
+/// so mixing them would make it impossible to tell which module produced a `.reg` file.
+pub const REGISTRY_BACKUP_RELATIVE_PATH: &str = "reg_backups/registry";
+
+/// Records that registry backups left in the user's Documents folder were already moved into the data directory.
+const LEGACY_REGISTRY_BACKUP_STATE_FILE: &str = "legacy_registry_backups_v1.json";
+
 // ============================================================================
 // Runtime cache
 // ============================================================================
@@ -93,8 +102,12 @@ pub struct StorageLocationInfo {
     pub migration_completed: bool,
 }
 
+/// Completion record for a one-shot migration.
+///
+/// Shared by the portable-data migration and the legacy-backup migration: both only need "has it already run",
+/// otherwise a directory the user just cleared would be refilled from the old location on the next launch.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct PortableMigrationState {
+struct MigrationState {
     schema_version: u32,
     completed: bool,
     source_directory: String,
@@ -180,7 +193,7 @@ const DISK_GROWTH_SNAPSHOT_JSON_SUFFIX: &str = ".json";
 const DISK_GROWTH_SNAPSHOT_SHARD_SUFFIX: &str = ".files";
 
 // Snapshot entries expand dynamically by drive letter; the normal whitelist keeps only fixed data, so "Clear local data" won't delete all disk baselines.
-const CLEARABLE_DATA_DEFINITIONS: [ClearableDataDefinition; 6] = [
+const CLEARABLE_DATA_DEFINITIONS: [ClearableDataDefinition; 7] = [
     ClearableDataDefinition {
         id: "install_history",
         label: "安装历史缓存",
@@ -201,12 +214,22 @@ const CLEARABLE_DATA_DEFINITIONS: [ClearableDataDefinition; 6] = [
     },
     ClearableDataDefinition {
         id: "reg_backups",
-        label: "注册表备份",
-        description: "右键菜单和注册表清理前生成的备份文件。",
+        label: "右键菜单备份",
+        description: "清理右键菜单项前导出的 .reg 备份。",
         relative_path: "reg_backups",
         item_type: ClearableDataType::DirectoryContents,
-        warning: Some("删除后无法再通过这些备份回溯旧注册表清理操作。"),
-        excluded_relative_paths: &["shell_icons"],
+        warning: Some("删除后无法再通过这些备份恢复已清理的右键菜单项。"),
+        // Both subdirectories are independently managed items; counting them here would double the reported size.
+        excluded_relative_paths: &["shell_icons", "registry"],
+    },
+    ClearableDataDefinition {
+        id: "registry_redundancy_backups",
+        label: "注册表冗余备份",
+        description: "清理注册表冗余项前导出的 .reg 备份，可用于恢复被删除的键。",
+        relative_path: REGISTRY_BACKUP_RELATIVE_PATH,
+        item_type: ClearableDataType::DirectoryContents,
+        warning: Some("删除后将无法通过这些备份恢复已删除的注册表键。"),
+        excluded_relative_paths: &[],
     },
     ClearableDataDefinition {
         id: "shell_icon_logs",
@@ -304,6 +327,11 @@ fn load_or_create() -> PathBuf {
             },
             resolved.display()
         );
+        // Older versions wrote registry backups to Documents regardless of this setting; pull them in once.
+        // Skipped in dev builds for the same reason as the migrations above: a debug run must not move the user's files.
+        if !cfg!(debug_assertions) {
+            migrate_legacy_registry_backups(&resolved);
+        }
         return resolved;
     }
 
@@ -319,6 +347,9 @@ fn load_or_create() -> PathBuf {
     }
 
     log::info!("数据目录 (默认): {}", resolved.display());
+    if !cfg!(debug_assertions) {
+        migrate_legacy_registry_backups(&resolved);
+    }
     resolved
 }
 
@@ -494,7 +525,7 @@ fn migrate_legacy_portable_data_inner(
     let migration_state_path = portable_data_dir
         .join(PORTABLE_MIGRATION_DIR)
         .join(PORTABLE_MIGRATION_STATE_FILE);
-    if read_portable_migration_state(&migration_state_path)
+    if read_migration_state(&migration_state_path)
         .is_some_and(|state| state.schema_version == 1 && state.completed)
     {
         return Ok(());
@@ -511,9 +542,9 @@ fn migrate_legacy_portable_data_inner(
         migrate_owned_data_entries(&legacy_data_dir, portable_data_dir)?;
     }
 
-    write_portable_migration_state(
+    write_migration_state(
         &migration_state_path,
-        &PortableMigrationState {
+        &MigrationState {
             schema_version: 1,
             completed: true,
             source_directory: legacy_root.to_string_lossy().to_string(),
@@ -574,14 +605,14 @@ fn current_distribution_channel() -> DistributionChannel {
         .unwrap_or(DistributionChannel::Installer)
 }
 
-fn read_portable_migration_state(path: &Path) -> Option<PortableMigrationState> {
+fn read_migration_state(path: &Path) -> Option<MigrationState> {
     let json = fs::read_to_string(path).ok()?;
     serde_json::from_str(&json).ok()
 }
 
-fn write_portable_migration_state(
+fn write_migration_state(
     path: &Path,
-    state: &PortableMigrationState,
+    state: &MigrationState,
 ) -> Result<(), String> {
     let Some(parent) = path.parent() else {
         return Err(format!("迁移状态路径无效: {}", path.display()));
@@ -727,6 +758,152 @@ fn copy_dir_contents(src: &Path, dest: &Path) -> Result<(), String> {
 }
 
 // ============================================================================
+// Legacy registry-backup migration
+// ============================================================================
+
+/// Directory older versions wrote registry-redundancy backups to (`Documents\LightC\RegistryBackups`).
+///
+/// Kept only as the migration source: new backups go to the data directory, so changing the data directory
+/// no longer strands backups in Documents where nothing counts or migrates them.
+fn legacy_registry_backup_dir() -> Option<PathBuf> {
+    dirs::document_dir().map(|dir| dir.join(APP_ROOT_DIR_NAME).join("RegistryBackups"))
+}
+
+/// Registry-redundancy backup directory under a given data directory root.
+fn registry_backup_dir_in(data_dir: &Path) -> PathBuf {
+    data_dir.join(REGISTRY_BACKUP_RELATIVE_PATH)
+}
+
+/// Move registry-redundancy backups left in the user's Documents folder into the current data directory.
+fn migrate_legacy_registry_backups(data_dir: &Path) {
+    let Some(source) = legacy_registry_backup_dir() else {
+        return;
+    };
+    migrate_legacy_registry_backups_from(&source, data_dir);
+}
+
+/// Inner implementation with explicit paths: the unit tests point it at temp directories instead of Documents.
+///
+/// Copy first, delete the source only after the copy succeeded — moving the file with a delete-first would turn
+/// a failed copy into a lost backup, and these files are the only way back from a mistaken registry cleanup.
+/// Files that aren't `.reg` (whatever the user left in there) are untouched.
+fn migrate_legacy_registry_backups_from(source: &Path, data_dir: &Path) {
+    let state_path = data_dir
+        .join(PORTABLE_MIGRATION_DIR)
+        .join(LEGACY_REGISTRY_BACKUP_STATE_FILE);
+    if read_migration_state(&state_path)
+        .is_some_and(|state| state.schema_version == 1 && state.completed)
+    {
+        return;
+    }
+
+    let destination = registry_backup_dir_in(data_dir);
+    if !source.is_dir() {
+        // Nothing to migrate: either a fresh install, or an earlier run already moved the files and removed the folder.
+        // Deliberately no state file here — otherwise every new install would get a `.migration` folder it never needed.
+        return;
+    }
+    // A custom data directory can itself live under Documents; never treat the target as its own source.
+    if paths_overlap(source, &destination) {
+        record_legacy_registry_backup_migration(&state_path, source);
+        return;
+    }
+
+    if let Err(error) = fs::create_dir_all(&destination) {
+        // No state file: retry on the next launch rather than silently giving up on the user's backups.
+        log::warn!(
+            "创建注册表备份目录失败 {}: {}",
+            destination.display(),
+            error
+        );
+        return;
+    }
+
+    let entries = match fs::read_dir(source) {
+        Ok(entries) => entries,
+        Err(error) => {
+            log::warn!("读取旧注册表备份目录失败 {}: {}", source.display(), error);
+            return;
+        }
+    };
+
+    let mut moved_files = 0usize;
+    let mut failed_files = 0usize;
+    for entry_res in entries {
+        let Ok(entry) = entry_res else {
+            failed_files += 1;
+            continue;
+        };
+        let path = entry.path();
+        if !path.is_file() || !has_reg_extension(&path) {
+            continue;
+        }
+
+        let target = destination.join(entry.file_name());
+        // Same rule as data-directory migration: when the target already exists, keep the newer copy.
+        let copy_result = if target.exists() {
+            Ok(())
+        } else {
+            fs::copy(&path, &target).map(|_| ())
+        };
+
+        match copy_result {
+            Ok(()) => {
+                if let Err(error) = fs::remove_file(&path) {
+                    log::warn!("删除旧注册表备份失败 {}: {}", path.display(), error);
+                }
+                moved_files += 1;
+            }
+            Err(error) => {
+                failed_files += 1;
+                log::warn!("迁移旧注册表备份失败 {}: {}", path.display(), error);
+            }
+        }
+    }
+
+    // Remove the emptied legacy folders so Documents doesn't keep an empty shell around.
+    remove_dir_if_empty(source);
+    if let Some(parent) = source.parent() {
+        remove_dir_if_empty(parent);
+    }
+
+    if failed_files == 0 {
+        record_legacy_registry_backup_migration(&state_path, source);
+    }
+    log::info!(
+        "旧注册表备份迁移: 已移动 {} 个, 失败 {} 个, 目标 {}",
+        moved_files,
+        failed_files,
+        destination.display()
+    );
+}
+
+fn record_legacy_registry_backup_migration(state_path: &Path, source: &Path) {
+    if let Err(error) = write_migration_state(
+        state_path,
+        &MigrationState {
+            schema_version: 1,
+            completed: true,
+            source_directory: source.to_string_lossy().to_string(),
+        },
+    ) {
+        log::warn!("写入旧注册表备份迁移状态失败: {}", error);
+    }
+}
+
+fn has_reg_extension(path: &Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("reg"))
+}
+
+fn remove_dir_if_empty(path: &Path) {
+    if fs::read_dir(path).is_ok_and(|mut entries| entries.next().is_none()) {
+        let _ = fs::remove_dir(path);
+    }
+}
+
+// ============================================================================
 // Public API
 // ============================================================================
 
@@ -773,6 +950,14 @@ pub fn get_data_dir() -> PathBuf {
     DATA_DIR_CACHE.read().unwrap().clone()
 }
 
+/// Backup directory for registry-redundancy cleanups.
+///
+/// Single source of truth for the path: the registry module, the "clear local data" whitelist and the
+/// legacy-backup migration all derive from `REGISTRY_BACKUP_RELATIVE_PATH`, so they can't drift apart.
+pub fn registry_backup_dir() -> PathBuf {
+    registry_backup_dir_in(&get_data_dir())
+}
+
 /// Get the default data directory path (for UI display)
 pub fn get_default_dir() -> PathBuf {
     default_data_dir().unwrap_or_else(|| PathBuf::from("."))
@@ -790,7 +975,7 @@ pub fn get_storage_location_info() -> StorageLocationInfo {
     let migration_state_path = default_data_directory
         .join(PORTABLE_MIGRATION_DIR)
         .join(PORTABLE_MIGRATION_STATE_FILE);
-    let migration_completed = read_portable_migration_state(&migration_state_path)
+    let migration_completed = read_migration_state(&migration_state_path)
         .is_some_and(|state| state.schema_version == 1 && state.completed);
     let migration_available = channel == DistributionChannel::Portable
         && !migration_completed
@@ -1782,5 +1967,146 @@ mod tests {
         let data_dir = std::env::temp_dir();
         let error = clear_single_item("not-a-real-item", &data_dir).expect_err("未知项必须报错");
         assert!(error.contains("not-a-real-item"), "错误信息要带上出错的项");
+    }
+
+    fn unique_temp_root(prefix: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "{}-{}-{}",
+            prefix,
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("获取测试时间失败")
+                .as_nanos()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        root
+    }
+
+    /// Backups must live inside the data directory: that is what makes them follow the user's storage setting.
+    #[test]
+    fn registry_backup_dir_sits_under_the_data_directory() {
+        let data_dir = PathBuf::from(r"D:\LightCData");
+        let backup_dir = registry_backup_dir_in(&data_dir);
+
+        assert_eq!(
+            path_compare_key(&backup_dir),
+            path_compare_key(&PathBuf::from(r"D:\LightCData\reg_backups\registry"))
+        );
+        // Must not depend on the Documents known folder any more.
+        if let Some(documents) = dirs::document_dir() {
+            assert!(!path_compare_key(&backup_dir).starts_with(&path_compare_key(&documents)));
+        }
+    }
+
+    /// The one-time migration must move `.reg` files out of the old Documents folder, leave other files alone,
+    /// and record completion so a cleared directory doesn't refill on the next launch.
+    #[test]
+    fn migrates_legacy_registry_backups_once() {
+        let root = unique_temp_root("lightc-legacy-registry-migration");
+        let legacy_source = root.join("Documents").join("LightC").join("RegistryBackups");
+        let data_dir = root.join("data");
+        fs::create_dir_all(&legacy_source).expect("创建旧备份目录失败");
+        fs::write(
+            legacy_source.join("lightc_registry_backup_20260101_000000.reg"),
+            "Windows Registry Editor Version 5.00\n",
+        )
+        .expect("写入旧备份失败");
+        fs::write(legacy_source.join("user-notes.txt"), "keep me").expect("写入非备份文件失败");
+
+        migrate_legacy_registry_backups_from(&legacy_source, &data_dir);
+
+        let destination = registry_backup_dir_in(&data_dir);
+        assert!(destination
+            .join("lightc_registry_backup_20260101_000000.reg")
+            .is_file());
+        assert!(!legacy_source
+            .join("lightc_registry_backup_20260101_000000.reg")
+            .exists());
+        // Non-backup files are the user's, not ours to move or delete — the folder stays as long as they're there.
+        assert!(legacy_source.join("user-notes.txt").is_file());
+        assert_eq!(
+            fs::read_dir(&legacy_source)
+                .expect("读取旧备份目录失败")
+                .count(),
+            1,
+            "旧目录里只应剩下用户自己的文件"
+        );
+        assert!(data_dir
+            .join(PORTABLE_MIGRATION_DIR)
+            .join(LEGACY_REGISTRY_BACKUP_STATE_FILE)
+            .is_file());
+
+        // After "clear local data" removes the backups, a second migration must not resurrect them.
+        fs::remove_file(destination.join("lightc_registry_backup_20260101_000000.reg")).unwrap();
+        migrate_legacy_registry_backups_from(&legacy_source, &data_dir);
+        assert_eq!(
+            fs::read_dir(&destination).map(|entries| entries.count()).unwrap_or(0),
+            0
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// The emptied legacy folders should not be left behind in Documents.
+    #[test]
+    fn removes_emptied_legacy_registry_backup_folders() {
+        let root = unique_temp_root("lightc-legacy-registry-cleanup");
+        let legacy_root = root.join("Documents").join("LightC");
+        let legacy_source = legacy_root.join("RegistryBackups");
+        let data_dir = root.join("data");
+        fs::create_dir_all(&legacy_source).expect("创建旧备份目录失败");
+        fs::write(
+            legacy_source.join("lightc_registry_backup_20260101_000000.reg"),
+            "Windows Registry Editor Version 5.00\n",
+        )
+        .expect("写入旧备份失败");
+
+        migrate_legacy_registry_backups_from(&legacy_source, &data_dir);
+
+        assert!(registry_backup_dir_in(&data_dir)
+            .join("lightc_registry_backup_20260101_000000.reg")
+            .is_file());
+        assert!(!legacy_source.exists(), "空掉的旧备份目录应被删除");
+        assert!(!legacy_root.exists(), "空掉的 Documents\\LightC 也应被删除");
+        assert!(root.join("Documents").is_dir(), "只删空目录，不动 Documents 本身");
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// Registry backups get their own cleanup item; the context-menu item must not count the same bytes twice.
+    #[test]
+    fn counts_and_clears_registry_backups_separately() {
+        let root = unique_temp_root("lightc-registry-clear-item");
+        let context_dir = root.join("reg_backups");
+        let registry_dir = context_dir.join("registry");
+        fs::create_dir_all(&registry_dir).expect("创建备份目录失败");
+        fs::write(context_dir.join("HKCR_all_20260101_000000.reg"), "context").expect("写入备份失败");
+        fs::write(registry_dir.join("lightc_registry_backup_20260101_000000.reg"), "registry")
+            .expect("写入备份失败");
+
+        let parent_definition = CLEARABLE_DATA_DEFINITIONS
+            .iter()
+            .find(|definition| definition.id == "reg_backups")
+            .expect("右键菜单备份项必须存在");
+        let parent_item =
+            build_clearable_data_item(&root, parent_definition).expect("统计右键菜单备份失败");
+        assert_eq!(parent_item.file_count, 1, "父项不能把子目录的备份算进去");
+        assert_eq!(parent_item.size, "context".len() as u64);
+
+        let registry_definition = CLEARABLE_DATA_DEFINITIONS
+            .iter()
+            .find(|definition| definition.id == "registry_redundancy_backups")
+            .expect("注册表冗余备份项必须存在");
+        let registry_item =
+            build_clearable_data_item(&root, registry_definition).expect("统计注册表冗余备份失败");
+        assert_eq!(registry_item.file_count, 1);
+        assert_eq!(registry_item.size, "registry".len() as u64);
+
+        let cleared = clear_single_item("registry_redundancy_backups", &root).expect("清理失败");
+        assert_eq!(cleared, (1, "registry".len() as u64));
+        assert!(context_dir.join("HKCR_all_20260101_000000.reg").is_file());
+
+        let _ = fs::remove_dir_all(&root);
     }
 }

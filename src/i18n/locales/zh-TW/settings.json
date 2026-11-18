@@ -231,9 +231,14 @@
       "warning": ""
     },
     "registryBackups": {
-      "label": "登錄檔備份",
-      "description": "右鍵選單和登錄檔清理前生成的備份檔案。",
-      "warning": "刪除後無法再透過這些備份回溯舊登錄檔清理操作。"
+      "label": "右鍵選單備份",
+      "description": "清理右鍵選單項目之前匯出的 .reg 備份。",
+      "warning": "刪除後將無法再透過這些備份還原已清理的右鍵選單項目。"
+    },
+    "registryRedundancyBackups": {
+      "label": "登錄檔冗餘備份",
+      "description": "清理登錄檔冗餘項目之前匯出的 .reg 備份，可用於還原已刪除的機碼。",
+      "warning": "刪除後將無法透過這些備份還原已刪除的登錄檔機碼。"
     },
     "shellIconLogs": {
       "label": "虛擬磁碟操作記錄",

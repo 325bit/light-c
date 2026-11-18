@@ -14,6 +14,7 @@ const DATA_ITEM_TRANSLATION_KEYS: Record<string, string> = {
   install_history: 'clearDataItems.installHistory',
   logs: 'clearDataItems.logs',
   reg_backups: 'clearDataItems.registryBackups',
+  registry_redundancy_backups: 'clearDataItems.registryRedundancyBackups',
   shell_icon_logs: 'clearDataItems.shellIconLogs',
   shell_icon_backups: 'clearDataItems.shellIconBackups',
   driver_backups: 'clearDataItems.driverBackups',

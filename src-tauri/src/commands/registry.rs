@@ -35,7 +35,7 @@ pub async fn delete_registry_entries(
 ) -> Result<RegistryDeleteResult, String> {
     info!("开始删除 {} 个注册表条目...", entries.len());
 
-    let backup_dir = RegistryBackup::get_backup_dir();
+    let backup_dir = crate::data_dir::registry_backup_dir();
     let backup_path = RegistryBackup::export_backup(&entries, &backup_dir)
         .map_err(|e| format!("创建备份失败: {}", e))?;
 
@@ -80,7 +80,7 @@ pub async fn delete_registry_entries(
 /// Open the registry backup directory
 #[tauri::command]
 pub async fn open_registry_backup_dir() -> Result<(), String> {
-    let backup_dir = RegistryBackup::get_backup_dir();
+    let backup_dir = crate::data_dir::registry_backup_dir();
 
     std::fs::create_dir_all(&backup_dir).map_err(|e| format!("创建备份目录失败: {}", e))?;
 
