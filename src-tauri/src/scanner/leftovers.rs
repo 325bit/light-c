@@ -49,12 +49,12 @@
 // 4. Size threshold: ignore folders smaller than 1MB
 // ============================================================================
 
-use once_cell::sync::Lazy;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
+use std::sync::LazyLock;
 use std::time::{Duration, SystemTime};
 use walkdir::WalkDir;
 use winreg::enums::*;
@@ -104,11 +104,12 @@ fn get_data_sub_path(relative: &str) -> PathBuf {
 // ============================================================================
 
 /// Package-name format: com.example.app, org.apache.commons, etc.
-static RE_PACKAGE_NAME: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"^[a-z][a-z0-9]*(\.[a-z][a-z0-9]*){2,}$").unwrap());
+static RE_PACKAGE_NAME: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^[a-z][a-z0-9]*(\.[a-z][a-z0-9]*){2,}$").unwrap());
 
 /// Pure version-number format: 1.2.3.4, v2.0, etc.
-static RE_VERSION_FOLDER: Lazy<Regex> = Lazy::new(|| Regex::new(r"^v?\d+(\.\d+){1,3}$").unwrap());
+static RE_VERSION_FOLDER: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^v?\d+(\.\d+){1,3}$").unwrap());
 
 /// Updater directories: names containing updater / update, or ending directly with Updater.
 ///
@@ -118,8 +119,8 @@ static RE_VERSION_FOLDER: Lazy<Regex> = Lazy::new(|| Regex::new(r"^v?\d+(\.\d+){
 /// These folders hold "downloaded/unpacked new versions" and are no longer needed after the program updates. Worst case if deleted:
 /// the next update simply downloads them again - this is the only category here where we can tell the user exactly "what the consequence is",
 /// so it is worth marking separately (`DetectionCategory::UpdaterCache`) instead of lumping it into "high confidence".
-static RE_UPDATER_DIR: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"(^|[-_. ])(updater|update)([-_. ]|$)|updater$").unwrap());
+static RE_UPDATER_DIR: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(^|[-_. ])(updater|update)([-_. ]|$)|updater$").unwrap());
 
 /// The app's own cache/log directories.
 ///
@@ -128,7 +129,7 @@ static RE_UPDATER_DIR: Lazy<Regex> =
 /// ⚠️ Plain `Cache` / `Temp` / `CrashDumps` do not reach here - they are already excluded in `build_whitelist_rules()`;
 /// that is the junk-cleanup module's territory, and reporting on both sides would make users think "it wasn't deleted".
 /// This rule only covers "app directories whose names carry cache characteristics".
-static RE_CACHE_DIR: Lazy<Regex> = Lazy::new(|| {
+static RE_CACHE_DIR: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"cache|caches|crashpad|crashrpt|crashdumps|crashreports|logs?$|temp$|tmp$").unwrap()
 });
 

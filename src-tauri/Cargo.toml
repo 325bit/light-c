@@ -17,7 +17,10 @@ publish = false
 # to make the lib name unique and wouldn't conflict with the bin name.
 # This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
 name = "cleanup_c_lib"
-crate-type = ["staticlib", "cdylib", "rlib"]
+# rlib only: this is a Windows-desktop-only app, so the staticlib (iOS) and
+# cdylib (Android) artifacts from the create-tauri-app template are never
+# consumed by anything and only slow down linking.
+crate-type = ["rlib"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
@@ -28,7 +31,10 @@ tauri = { version = "2", features = ["protocol-asset"] }
 # still resolves zip ^4, which carries six RUSTSEC advisories (symlink escape,
 # SUID bit preservation, unverified AES auth code, ...), so there is no smaller
 # step that clears them.
-tauri-plugin-updater = { version = "2.14.1", features = ["native-tls"] }
+# Do NOT re-enable its "native-tls" feature: the default "rustls-tls" already
+# covers HTTPS, and enabling both stacks used to link native-tls + openssl-sys
+# alongside rustls (two complete TLS implementations in the binary).
+tauri-plugin-updater = "2.14.1"
 tauri-plugin-opener = "2"
 tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
@@ -44,8 +50,15 @@ reqwest = { version = "0.13", features = ["json", "rustls"] }
 walkdir = "2"              # Recursive directory walking
 jwalk = "0.8"              # Parallel directory walking (caches metadata on Windows 11)
 glob = "0.3"               # Glob pattern expansion
-# Async runtime
-tokio = { version = "1", features = ["full"] }
+# Async runtime. "full" used to pull io / fs / net / process / signal that this
+# crate never touches; the features below are the complete set actually used:
+#   rt      -- tokio::spawn / tokio::task::spawn_blocking
+#   macros  -- tokio::join!
+#   sync    -- tokio::sync::Mutex
+#   time    -- tokio::time::timeout
+# The multi-threaded runtime itself is created by tauri (which enables
+# rt-multi-thread for us); we only call into an existing runtime.
+tokio = { version = "1", features = ["rt", "macros", "sync", "time"] }
 # Date and time
 chrono = { version = "0.4", features = ["serde"] }
 # Windows system APIs
@@ -65,8 +78,6 @@ tauri-plugin-process = "2.3.1"
 # crate is linked. The 6 -> 7 bump is an MSRV/dependency refresh; the functions
 # used here (home_dir, data_dir, data_local_dir, document_dir) are unchanged.
 dirs = "7.0.0"
-# Single-instance enforcement
-once_cell = "1.19"
 # Regex matching (filtering uninstall-leftover names and versions)
 regex = "1"
 quick-xml = "0.42"

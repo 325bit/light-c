@@ -530,9 +530,9 @@ pub fn get_cleanup_history(app_data_dir: &Path) -> Result<Vec<CleanupHistorySumm
 // Global log manager instance
 // ============================================================================
 
-use once_cell::sync::OnceCell;
+use std::sync::OnceLock;
 
-static CLEANUP_LOGGER: OnceCell<CleanupLogger> = OnceCell::new();
+static CLEANUP_LOGGER: OnceLock<CleanupLogger> = OnceLock::new();
 
 /// Initialize the global log manager
 pub fn init_logger(app_data_dir: &Path) {
