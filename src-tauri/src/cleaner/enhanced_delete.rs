@@ -1021,9 +1021,8 @@ impl EnhancedDeleteEngine {
                 let suffix = &normalized[start + marker.len()..];
                 suffix.is_empty() || suffix.starts_with('\\')
             };
-            let starts_with_marker = |start: usize| {
-                normalized[start..].starts_with(marker) && suffix_is_boundary(start)
-            };
+            let starts_with_marker =
+                |start: usize| normalized[start..].starts_with(marker) && suffix_is_boundary(start);
 
             match anchor {
                 OwnershipAnchor::DriveRoot => drive_root_anchor.is_some_and(starts_with_marker),
@@ -1031,11 +1030,7 @@ impl EnhancedDeleteEngine {
                 // Markers start with `\`, so every occurrence inside the tail sits
                 // on a component boundary — only the region itself is constrained.
                 OwnershipAnchor::ProfileAppDataLocal => appdata_local_from
-                    .and_then(|from| {
-                        normalized[from..]
-                            .find(marker)
-                            .map(|offset| from + offset)
-                    })
+                    .and_then(|from| normalized[from..].find(marker).map(|offset| from + offset))
                     .is_some_and(suffix_is_boundary),
             }
         })
@@ -1333,8 +1328,7 @@ mod tests {
         assert!(!engine.is_safe_for_ownership(Path::new(
             "C:\\Users\\Test\\Documents\\Backup\\Cache\\thesis.doc"
         )));
-        assert!(!engine
-            .is_safe_for_ownership(Path::new("C:\\Games\\cache\\save.dat")));
+        assert!(!engine.is_safe_for_ownership(Path::new("C:\\Games\\cache\\save.dat")));
         assert!(!engine.is_safe_for_ownership(Path::new(
             "C:\\Users\\Test\\Documents\\service worker\\index"
         )));
@@ -1348,11 +1342,10 @@ mod tests {
         // Legit targets keep working, including every bypass spelling:
         assert!(engine.is_safe_for_ownership(Path::new("C:\\Temp\\x.tmp")));
         assert!(engine.is_safe_for_ownership(Path::new("C:/Windows/Temp/test.tmp")));
-        assert!(engine
-            .is_safe_for_ownership(Path::new(r"\\?\C:\Windows\Temp\test.tmp")));
-        assert!(engine.is_safe_for_ownership(Path::new(
-            "C:/Users/Test/AppData/Local/Temp/file.log"
-        )));
+        assert!(engine.is_safe_for_ownership(Path::new(r"\\?\C:\Windows\Temp\test.tmp")));
+        assert!(
+            engine.is_safe_for_ownership(Path::new("C:/Users/Test/AppData/Local/Temp/file.log"))
+        );
         assert!(engine.is_safe_for_ownership(Path::new(
             "C:\\Users\\Test\\AppData\\Local\\Google\\Chrome\\User Data\\Default\\Service Worker\\CacheStorage\\abc"
         )));

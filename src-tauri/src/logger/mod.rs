@@ -4,12 +4,19 @@
 //
 // Features:
 // 1. Serialize log data to JSON files with serde_json
-// 2. Count files via std::fs::read_dir to implement log rotation (default: keep 10 files)
+// 2. Count files via std::fs::read_dir to implement log rotation
 // 3. Write logs asynchronously without blocking the main thread
 // 4. Cleanup logic continues even if log writing fails
 //
 // Log storage location: AppData/Roaming/LightC/logs/
 // File naming format: cleanup_YYYYMMDD_HHMMSS.json
+// ============================================================================
+//
+// M11 fix: the session-based API (start_session / log_entry / finish_session),
+// the CLEANUP_LOGGER global and cleanup_old_logs were never called anywhere
+// — a second logger written alongside the batch API below and left unused. The
+// only live surface is record_cleanup_action (one-shot batch save), so
+// everything else was removed instead of kept "for later".
 // ============================================================================
 
 use chrono::Local;
@@ -17,8 +24,6 @@ use log::{debug, error, info, warn};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use tokio::sync::Mutex;
 
 /// Default maximum number of log files to keep
 const DEFAULT_MAX_LOG_FILES: usize = 10;
@@ -129,8 +134,6 @@ impl Default for CleanupSession {
 pub struct CleanupLogger {
     /// Log storage directory
     log_dir: PathBuf,
-    /// Current session (uses Arc<Mutex> for async access)
-    current_session: Arc<Mutex<Option<CleanupSession>>>,
 }
 
 impl CleanupLogger {
@@ -146,121 +149,10 @@ impl CleanupLogger {
             error!("创建日志目录失败: {:?}, 错误: {}", log_dir, e);
         }
 
-        Self {
-            log_dir,
-            current_session: Arc::new(Mutex::new(None)),
-        }
+        Self { log_dir }
     }
 
-    /// Get the log directory path
-    pub fn get_log_dir(&self) -> &Path {
-        &self.log_dir
-    }
-
-    /// Start a new cleanup session
-    pub async fn start_session(&self) {
-        let mut session = self.current_session.lock().await;
-        *session = Some(CleanupSession::new());
-        info!("开始新的清理会话");
-    }
-
-    /// Record a single cleanup operation
-    ///
-    /// # Arguments
-    /// * `category` - cleanup module category
-    /// * `path` - file path
-    /// * `size` - file size
-    /// * `success` - whether it succeeded
-    /// * `error_msg` - error message (optional)
-    pub async fn log_entry(
-        &self,
-        category: &str,
-        path: &str,
-        size: u64,
-        success: bool,
-        error_msg: Option<String>,
-    ) {
-        let entry = CleanupLogEntry {
-            timestamp: Local::now().format("%Y-%m-%d %H:%M:%S%.3f").to_string(),
-            category: category.to_string(),
-            path: path.to_string(),
-            size,
-            result: if success {
-                "Success".to_string()
-            } else {
-                "Failed".to_string()
-            },
-            error_message: error_msg,
-        };
-
-        let mut session = self.current_session.lock().await;
-        if let Some(ref mut s) = *session {
-            s.add_entry(entry);
-        } else {
-            // If there is no active session, create a temporary one
-            let mut new_session = CleanupSession::new();
-            new_session.add_entry(entry);
-            *session = Some(new_session);
-        }
-    }
-
-    /// Finish the current session and save the log
-    ///
-    /// Uses serde_json to serialize log data:
-    /// 1. Call serde_json::to_string_pretty() to generate formatted JSON
-    /// 2. Write to the file with std::fs::write()
-    /// 3. Even if writing fails, the program is unaffected
-    pub async fn finish_session(&self) -> Result<PathBuf, String> {
-        let mut session_guard = self.current_session.lock().await;
-
-        if let Some(ref mut session) = *session_guard {
-            session.finish();
-
-            // Generate the log file name
-            let filename = format!("cleanup_{}.json", Local::now().format("%Y%m%d_%H%M%S"));
-            let log_path = self.log_dir.join(&filename);
-
-            // Serialize to a formatted JSON string with serde_json
-            // to_string_pretty() produces readable, indented JSON
-            match serde_json::to_string_pretty(session) {
-                Ok(json_content) => {
-                    // Write the file, handling errors with Result
-                    match fs::write(&log_path, json_content) {
-                        Ok(_) => {
-                            info!("清理日志已保存: {:?}", log_path);
-
-                            // Perform log rotation (in a background thread, non-blocking)
-                            let log_dir = self.log_dir.clone();
-                            tokio::spawn(async move {
-                                if let Err(e) = rotate_logs(&log_dir, DEFAULT_MAX_LOG_FILES).await {
-                                    warn!("日志轮转失败: {}", e);
-                                }
-                            });
-
-                            *session_guard = None;
-                            return Ok(log_path);
-                        }
-                        Err(e) => {
-                            // Write failed: record the error but do not crash
-                            error!("写入日志文件失败: {}", e);
-                            *session_guard = None;
-                            return Err(format!("写入日志文件失败: {}", e));
-                        }
-                    }
-                }
-                Err(e) => {
-                    // Serialization failed: record the error but do not crash
-                    error!("序列化日志失败: {}", e);
-                    *session_guard = None;
-                    return Err(format!("序列化日志失败: {}", e));
-                }
-            }
-        }
-
-        Err("没有活动的清理会话".to_string())
-    }
-
-    /// Save a batch of cleanup records directly (without session mode)
+    /// Save a batch of cleanup records directly
     ///
     /// Used to record multiple cleanup results at once
     pub async fn save_cleanup_results(
@@ -371,18 +263,8 @@ async fn rotate_logs(log_dir: &Path, max_log_files: usize) -> Result<(), String>
     Ok(())
 }
 
-/// Run the log rotation check at application startup
-pub async fn cleanup_old_logs(app_data_dir: &Path) {
-    let log_dir = app_data_dir.join("logs");
-    if log_dir.exists() {
-        if let Err(e) = rotate_logs(&log_dir, DEFAULT_MAX_LOG_FILES).await {
-            warn!("启动时日志轮转失败: {}", e);
-        }
-    }
-}
-
 // ============================================================================
-// Log command functions (called by thin wrappers in commands.rs)
+// Log command functions (called by thin wrappers in commands/logger_cmd.rs)
 // ============================================================================
 
 /// Cleanup log entry (format passed in from the frontend)
@@ -413,8 +295,6 @@ pub async fn record_cleanup_action(
     entries: Vec<CleanupLogEntryInput>,
     max_log_files: Option<usize>,
 ) -> Result<String, String> {
-    use log::info;
-
     info!("记录清理操作，共 {} 条记录", entries.len());
 
     if entries.is_empty() {
@@ -457,8 +337,6 @@ pub async fn record_cleanup_action(
 
 /// Open the log folder (explorer.exe)
 pub fn open_logs_folder(app_data_dir: &Path) -> Result<(), String> {
-    use log::info;
-
     info!("打开日志文件夹");
 
     let log_path = app_data_dir.join("logs");
@@ -485,8 +363,6 @@ pub fn open_logs_folder(app_data_dir: &Path) -> Result<(), String> {
 
 /// Get the cleanup history list
 pub fn get_cleanup_history(app_data_dir: &Path) -> Result<Vec<CleanupHistorySummary>, String> {
-    use log::info;
-
     info!("获取清理历史记录");
 
     let log_path = app_data_dir.join("logs");
@@ -524,23 +400,4 @@ pub fn get_cleanup_history(app_data_dir: &Path) -> Result<Vec<CleanupHistorySumm
     history.sort_by(|a, b| b.session_start.cmp(&a.session_start));
 
     Ok(history)
-}
-
-// ============================================================================
-// Global log manager instance
-// ============================================================================
-
-use std::sync::OnceLock;
-
-static CLEANUP_LOGGER: OnceLock<CleanupLogger> = OnceLock::new();
-
-/// Initialize the global log manager
-pub fn init_logger(app_data_dir: &Path) {
-    let _ = CLEANUP_LOGGER.set(CleanupLogger::new(app_data_dir));
-    info!("清理日志系统已初始化");
-}
-
-/// Get the global log manager
-pub fn get_logger() -> Option<&'static CleanupLogger> {
-    CLEANUP_LOGGER.get()
 }

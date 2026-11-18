@@ -11,7 +11,6 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::time::{Instant, SystemTime};
 use tauri::Emitter;
-use walkdir::WalkDir;
 
 // ============================================================================
 // Data structure definitions
@@ -189,13 +188,7 @@ const PROTECTED_DIRECTORIES: &[&str] = &[
 const MIN_SIZE_THRESHOLD: u64 = 50 * 1024 * 1024;
 /// Absolute lower bound (1MB) to avoid returning too many tiny entries
 const SIZE_THRESHOLD_FLOOR: u64 = 1 * 1024 * 1024;
-/// Minimum directory size to trigger drill-down (5GB)
-const DRILL_DOWN_SIZE_THRESHOLD: u64 = 5 * 1024 * 1024 * 1024;
-/// Minimum file count to trigger drill-down
-const DRILL_DOWN_FILE_COUNT_THRESHOLD: usize = 1000;
-/// Maximum drill-down depth
-const MAX_DRILL_DOWN_DEPTH: u8 = 8;
-/// Maximum number of subdirectories returned during drill-down
+/// Maximum number of subdirectories returned per level
 const DRILL_DOWN_TOP_CHILDREN: usize = 3;
 
 /// Directories to skip during scanning (inaccessible or meaningless)
@@ -292,15 +285,6 @@ fn is_hidden_name(name: &str) -> bool {
     false
 }
 
-/// Fast-mode filename filtering (does not call metadata(), avoiding Win11 Defender IO interception)
-fn is_hidden_by_name(entry: &walkdir::DirEntry) -> bool {
-    entry
-        .file_name()
-        .to_str()
-        .map(|n| is_hidden_name(n))
-        .unwrap_or(false)
-}
-
 /// Path-based hidden check (used by jwalk's process_read_dir callback, does not rely on DirEntry)
 pub(crate) fn is_hidden_by_path(path: &Path) -> bool {
     path.file_name()
@@ -318,41 +302,6 @@ fn calculate_relative_depth(root: &Path, path: &Path) -> usize {
 }
 
 // ============================================================================
-// Scan accuracy modes
-// ============================================================================
-
-/// Scan accuracy mode
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum ScanAccuracyMode {
-    /// Fast mode (default):
-    /// - max_depth = 4, skip HEAVY_SKIP_DIRS
-    /// - do not read modified time, only count size + file_count
-    Fast,
-    /// Accurate mode (enabled explicitly by the user):
-    /// - max_depth = 10, keep modified
-    /// - allow deeper scanning
-    Accurate,
-}
-
-impl ScanAccuracyMode {
-    /// Get the scan depth for the corresponding mode
-    fn max_depth(self) -> u8 {
-        match self {
-            ScanAccuracyMode::Fast => 6,
-            ScanAccuracyMode::Accurate => 10,
-        }
-    }
-
-    /// Whether modified time needs to be collected during file traversal
-    fn track_modified(self) -> bool {
-        match self {
-            ScanAccuracyMode::Fast => false,
-            ScanAccuracyMode::Accurate => true,
-        }
-    }
-}
-
-// ============================================================================
 // Large-directory scan engine
 // ============================================================================
 
@@ -363,8 +312,6 @@ pub struct HotspotScanner {
     full_scan: bool,
     /// Maximum number of entries to return
     top_n: usize,
-    /// Scan accuracy (default Fast)
-    accuracy_mode: ScanAccuracyMode,
     /// Maximum display depth (scan root is Level 0, default 3, range 2-5)
     max_display_depth: usize,
     /// Scan depth (controls WalkDir/jwalk max_depth, independent of display depth)
@@ -389,24 +336,12 @@ impl HotspotScanner {
         Self {
             full_scan,
             top_n,
-            accuracy_mode: ScanAccuracyMode::Fast,
             max_display_depth: 3,
             scan_depth: 6, // Fast mode fixed at 6 levels, covering AppData/Local/App/Cache depth
             size_threshold: MIN_SIZE_THRESHOLD,
             ignore_system_dirs: true, // ignore system directories by default, preserving existing behavior
             drive_letter: 'C',
         }
-    }
-
-    /// Set the scan accuracy mode (chainable)
-    /// Also sets scan_depth accordingly: Fast=6, Accurate=10
-    pub fn with_accuracy(mut self, mode: ScanAccuracyMode) -> Self {
-        self.accuracy_mode = mode;
-        self.scan_depth = match mode {
-            ScanAccuracyMode::Fast => 6,
-            ScanAccuracyMode::Accurate => 10,
-        };
-        self
     }
 
     /// Set the maximum display depth (can be linked with the settings panel)
@@ -434,17 +369,6 @@ impl HotspotScanner {
         self
     }
 
-    /// Perform a scan (no progress notification; only for shallow AppData scans and legacy API compatibility)
-    /// For deep scans use `scan_with_ui()` to get real-time progress
-    pub fn scan(&self) -> Result<HotspotScanResult, String> {
-        if self.full_scan {
-            log::warn!("深度扫描建议使用 scan_with_ui() 以获得进度反馈");
-            self.scan_full_disk(None) // do not send progress events
-        } else {
-            self.scan_appdata()
-        }
-    }
-
     /// Perform a scan (with real-time progress notifications)
     /// The frontend displays the progress bar by listening for the `hotspot-scan:progress` event
     pub fn scan_with_ui(&self, app_handle: &tauri::AppHandle) -> Result<HotspotScanResult, String> {
@@ -467,7 +391,9 @@ impl HotspotScanner {
         let appdata_path = Self::get_appdata_path()?;
 
         let max_depth = self.scan_depth; // scan depth (fixed at 6), independent of display depth
-        let track_modified = self.accuracy_mode.track_modified();
+                                         // Modified time is never collected: the only mode that wanted it (Accurate) had no
+                                         // constructor left after the dead "accuracy mode" API was removed (M11).
+        let track_modified = false;
         let cancel_flag = AtomicBool::new(false); // AppData scans do not support cancellation
 
         // Single jwalk traversal of AppData, aggregating ancestors at all levels
@@ -560,7 +486,9 @@ impl HotspotScanner {
 
         let total_first_level = first_level_dirs.len();
         let max_depth = self.scan_depth;
-        let track_modified = self.accuracy_mode.track_modified();
+        // See scan_appdata: modified time is never collected after the dead
+        // "accuracy mode" API was removed (M11).
+        let track_modified = false;
 
         let total_scanned = AtomicUsize::new(0);
         let total_size = AtomicU64::new(0);
@@ -870,145 +798,6 @@ impl HotspotScanner {
         })
     }
 
-    /// Smart drill-down analysis (with statistics cache to avoid repeated WalkDir)
-    ///
-    /// Same functionality as `drill_down_directory`, but prefers subdirectory statistics from the cache,
-    /// falling back to `calculate_folder_stats()` only on a cache miss.
-    ///
-    /// # Arguments
-    /// - `dir`: current directory
-    /// - `current_depth`: current depth level
-    /// - `is_full_scan`: whether this is a full-disk scan
-    /// - `stats_cache`: subtree statistics cache (result of aggregate_subtree_stats)
-    fn drill_down_directory_cached(
-        dir: &Path,
-        current_depth: u8,
-        is_full_scan: bool,
-        stats_cache: &HashMap<PathBuf, FolderStats>,
-    ) -> Vec<HotspotEntry> {
-        // Beyond the maximum depth, stop drilling down
-        if current_depth > MAX_DRILL_DOWN_DEPTH {
-            return Vec::new();
-        }
-
-        // Prefer statistics from the cache; fall back to WalkDir on a miss
-        let stats = match stats_cache.get(dir) {
-            Some(s) => FolderStats {
-                total_size: s.total_size,
-                file_count: s.file_count,
-                last_modified: s.last_modified,
-            },
-            None => match Self::calculate_folder_stats(dir, 6, true) {
-                Some(s) => s,
-                None => return Vec::new(),
-            },
-        };
-
-        // Check whether drill-down conditions are met
-        if stats.total_size < DRILL_DOWN_SIZE_THRESHOLD
-            || stats.file_count < DRILL_DOWN_FILE_COUNT_THRESHOLD
-        {
-            return Vec::new();
-        }
-
-        // Get all subdirectories and query their sizes from the cache
-        let mut sub_dirs: Vec<(PathBuf, FolderStats)> = Vec::new();
-
-        if let Ok(entries) = std::fs::read_dir(dir) {
-            for entry in entries.filter_map(|e| e.ok()) {
-                let sub_path = entry.path();
-                if sub_path.is_dir()
-                    && !Self::should_skip_scan(&sub_path)
-                    && !is_heavy_system_dir(&sub_path)
-                {
-                    // Prefer values from the cache
-                    let sub_stats_opt = stats_cache
-                        .get(&sub_path)
-                        .cloned()
-                        .or_else(|| Self::calculate_folder_stats(&sub_path, 4, true));
-
-                    if let Some(sub_stats) = sub_stats_opt {
-                        if sub_stats.total_size >= MIN_SIZE_THRESHOLD {
-                            sub_dirs.push((sub_path, sub_stats));
-                        }
-                    }
-                }
-            }
-        }
-
-        // Sort by size descending and take the top N
-        sub_dirs.sort_by(|a, b| b.1.total_size.cmp(&a.1.total_size));
-
-        sub_dirs
-            .into_iter()
-            .take(DRILL_DOWN_TOP_CHILDREN)
-            .map(|(sub_path, sub_stats)| {
-                // Recursively drill down into subdirectories (continuing to use the cache)
-                let children = Self::drill_down_directory_cached(
-                    &sub_path,
-                    current_depth + 1,
-                    is_full_scan,
-                    stats_cache,
-                );
-
-                let mut entry =
-                    Self::build_entry(&sub_path, &sub_stats, current_depth, is_full_scan);
-                entry.children = children;
-                entry
-            })
-            .collect()
-    }
-
-    /// Smart drill-down analysis (fallback interface, for scenarios without a cache)
-    ///
-    /// Trigger condition: directory >5GB and >1000 files → recursively analyze subdirectory structure
-    /// Limit: max depth 3 levels, each level returns the top 3 largest subdirectories
-    fn drill_down_directory(
-        dir: &Path,
-        current_depth: u8,
-        is_full_scan: bool,
-    ) -> Vec<HotspotEntry> {
-        Self::drill_down_directory_cached(dir, current_depth, is_full_scan, &HashMap::new())
-    }
-
-    /// Build a single-level direct subdirectory list for protected directories (no recursive drill-down)
-    ///
-    /// Subdirectories of protected directories (e.g. C:\Windows) can contain million-file directories such as WinSxS,
-    /// so recursive drill-down is forbidden to avoid triggering a full WalkDir from `calculate_folder_stats` on a cache miss.
-    /// Only read direct subdirectory statistics from the shallow cache, take the top N, and do not set children.
-    fn build_shallow_children(
-        dir: &Path,
-        cache: &HashMap<PathBuf, FolderStats>,
-        root: &Path,
-    ) -> Vec<HotspotEntry> {
-        let mut children: Vec<HotspotEntry> = Vec::new();
-
-        if let Ok(entries) = std::fs::read_dir(dir) {
-            for entry in entries.filter_map(|e| e.ok()) {
-                let sub_path = entry.path();
-                if !sub_path.is_dir()
-                    || Self::should_skip_scan(&sub_path)
-                    || is_heavy_system_dir(&sub_path)
-                {
-                    continue;
-                }
-
-                if let Some(stats) = cache.get(&sub_path) {
-                    if stats.total_size >= MIN_SIZE_THRESHOLD {
-                        let depth = calculate_relative_depth(root, &sub_path);
-                        let mut child_entry =
-                            Self::build_entry(&sub_path, stats, depth as u8, true);
-                        child_entry.children = Vec::new();
-                        children.push(child_entry);
-                    }
-                }
-            }
-        }
-
-        children.sort_by(|a, b| b.total_size.cmp(&a.total_size));
-        children.into_iter().take(DRILL_DOWN_TOP_CHILDREN).collect()
-    }
-
     // ========================================================================
     // Helper methods
     // ========================================================================
@@ -1159,90 +948,6 @@ impl HotspotScanner {
         } else {
             "System".to_string()
         }
-    }
-
-    /// Calculate folder statistics
-    ///
-    /// # Arguments
-    /// - `max_depth`: upper limit of WalkDir recursion depth
-    /// - `include_modified`: whether to collect last modified time (skipped in Fast mode to reduce IO)
-    fn calculate_folder_stats(
-        path: &Path,
-        max_depth: u8,
-        include_modified: bool,
-    ) -> Option<FolderStats> {
-        let mut total_size: u64 = 0;
-        let mut file_count: usize = 0;
-        let mut last_modified: i64 = 0;
-
-        let walker = WalkDir::new(path)
-            .follow_links(false)
-            .max_depth(max_depth as usize)
-            .into_iter()
-            .filter_entry(|e| !Self::is_hidden_system_entry(e) && !is_heavy_system_dir(e.path()));
-
-        for entry in walker {
-            match entry {
-                Ok(e) => {
-                    if e.file_type().is_file() {
-                        // Single metadata() call to avoid repeated IO on Win11 + Defender
-                        if let Ok(metadata) = e.metadata() {
-                            total_size += metadata.len();
-                            file_count += 1;
-
-                            // Only collect modified time when needed (skipped in fast mode)
-                            if include_modified {
-                                if let Ok(modified) = metadata.modified() {
-                                    let timestamp = Self::system_time_to_millis(modified);
-                                    if timestamp > last_modified {
-                                        last_modified = timestamp;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-                Err(_) => continue, // silently skip permission-denied and similar errors
-            }
-        }
-
-        if file_count == 0 && total_size == 0 {
-            return None;
-        }
-
-        Some(FolderStats {
-            total_size,
-            file_count,
-            last_modified,
-        })
-    }
-
-    /// Determine whether it is a hidden system entry
-    fn is_hidden_system_entry(entry: &walkdir::DirEntry) -> bool {
-        // Check the name first (avoid unnecessary metadata() calls)
-        if entry
-            .file_name()
-            .to_str()
-            .map(|n| is_hidden_name(n))
-            .unwrap_or(false)
-        {
-            return true;
-        }
-
-        #[cfg(windows)]
-        {
-            use std::os::windows::fs::MetadataExt;
-            if let Ok(metadata) = entry.metadata() {
-                const FILE_ATTRIBUTE_HIDDEN: u32 = 0x2;
-                const FILE_ATTRIBUTE_SYSTEM: u32 = 0x4;
-                let attrs = metadata.file_attributes();
-                if (attrs & FILE_ATTRIBUTE_HIDDEN != 0) && (attrs & FILE_ATTRIBUTE_SYSTEM != 0) {
-                    return true;
-                }
-            }
-        }
-
-        false
     }
 
     /// Convert SystemTime to a Unix timestamp (milliseconds)
@@ -1546,17 +1251,7 @@ fn flatten_hotspots(
     result
 }
 
-// ============================================================================
-// Static methods for legacy API compatibility
-// ============================================================================
-
 impl HotspotScanner {
-    /// Legacy API compatibility: perform an AppData scan
-    pub fn scan_legacy(top_n: usize) -> Result<HotspotScanResult, String> {
-        let scanner = HotspotScanner::new(false, top_n);
-        scanner.scan()
-    }
-
     /// Path drill-down scan (UI click to drill down)
     ///
     /// A single ancestor-aggregation scan returns size statistics for multiple subdirectory levels under the target path.
@@ -1625,16 +1320,6 @@ mod tests {
         assert!(result.is_ok());
         let path = result.unwrap();
         assert!(path.exists());
-    }
-
-    #[test]
-    fn test_scan_appdata() {
-        let scanner = HotspotScanner::new(false, 10);
-        let result = scanner.scan();
-        assert!(result.is_ok());
-        let scan_result = result.unwrap();
-        assert!(scan_result.entries.len() <= 10);
-        assert!(!scan_result.is_full_scan);
     }
 
     #[test]

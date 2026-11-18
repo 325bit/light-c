@@ -20,8 +20,6 @@ use super::safety_constants::{
 
 /// Delete engine
 pub struct DeleteEngine {
-    /// Whether to use safe delete mode (move to recycle bin instead of direct deletion)
-    safe_mode: bool,
     /// Whether to skip files that are in use
     skip_in_use: bool,
 }
@@ -30,15 +28,8 @@ impl DeleteEngine {
     /// Create a new delete engine
     pub fn new() -> Self {
         DeleteEngine {
-            safe_mode: false,  // direct deletion by default
             skip_in_use: true, // skip files in use by default
         }
-    }
-
-    /// Set safe mode
-    pub fn with_safe_mode(mut self, enabled: bool) -> Self {
-        self.safe_mode = enabled;
-        self
     }
 
     /// Set whether to skip files in use

@@ -183,57 +183,6 @@ impl Default for ScanResult {
     }
 }
 
-/// Scan progress information
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ScanProgress {
-    /// Category currently being scanned
-    pub current_category: String,
-    /// Number of completed categories
-    pub completed_categories: usize,
-    /// Total number of categories
-    pub total_categories: usize,
-    /// Number of files scanned in the current category
-    pub current_file_count: usize,
-    /// Size scanned in the current category
-    pub current_size: u64,
-    /// Progress percentage (0-100)
-    pub progress_percent: f32,
-}
-
-impl ScanProgress {
-    /// Create new progress information
-    pub fn new(total_categories: usize) -> Self {
-        ScanProgress {
-            current_category: String::new(),
-            completed_categories: 0,
-            total_categories,
-            current_file_count: 0,
-            current_size: 0,
-            progress_percent: 0.0,
-        }
-    }
-
-    /// Update the current category
-    pub fn set_current_category(&mut self, category: &str) {
-        self.current_category = category.to_string();
-        self.current_file_count = 0;
-        self.current_size = 0;
-    }
-
-    /// Complete a category
-    pub fn complete_category(&mut self) {
-        self.completed_categories += 1;
-        self.progress_percent =
-            (self.completed_categories as f32 / self.total_categories as f32) * 100.0;
-    }
-
-    /// Update the scan progress of the current category
-    pub fn update_current(&mut self, file_count: usize, size: u64) {
-        self.current_file_count = file_count;
-        self.current_size = size;
-    }
-}
-
 /// Format file size into a human-readable format
 pub fn format_size(bytes: u64) -> String {
     const KB: u64 = 1024;
