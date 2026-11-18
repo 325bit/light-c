@@ -534,16 +534,32 @@ export function GrowthResultList({
             const showEmptyHint = expanded
               && !loading
               && resolveChildren(node).length === 0;
+            // The snapshot stops at depth 4: no deeper folders does not mean no changes, only that
+            // the remaining detail lives in files, which the drill-down modal groups by folder.
+            const detailEntry = hasDiff
+              ? (node.entry ?? (node.hasOwnStats ? growthEntryFromNode(node) : null))
+              : null;
             return (
               <Fragment key={node.key}>
                 {renderRow(node)}
                 {showEmptyHint && (
-                  <p
-                    className="pb-2 pr-4 text-[0.79rem] text-[var(--text-faint)]"
-                    style={{ paddingLeft: 16 + NAME_OFFSET + (node.depth + 1) * INDENT_STEP }}
-                  >
-                    {moduleT('diskGrowth.noDeeperChange')}
-                  </p>
+                  detailEntry ? (
+                    <button
+                      type="button"
+                      onClick={() => onShowDetails(detailEntry)}
+                      className="pb-2 pr-4 text-left text-[0.79rem] text-[var(--brand-green)] transition-colors hover:underline"
+                      style={{ paddingLeft: 16 + NAME_OFFSET + (node.depth + 1) * INDENT_STEP }}
+                    >
+                      {moduleT('diskGrowth.noDeeperChange')} · {moduleT('diskGrowth.openFileDetails')}
+                    </button>
+                  ) : (
+                    <p
+                      className="pb-2 pr-4 text-[0.79rem] text-[var(--text-faint)]"
+                      style={{ paddingLeft: 16 + NAME_OFFSET + (node.depth + 1) * INDENT_STEP }}
+                    >
+                      {moduleT('diskGrowth.noDeeperChange')}
+                    </p>
+                  )
                 )}
               </Fragment>
             );

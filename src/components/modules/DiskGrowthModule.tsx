@@ -1,8 +1,6 @@
 import { ScanTimingPopover, type TimingGroup } from '../ScanTimingPopover';
 import { AdminRequiredHint, useAdminPrivilege } from '../AdminRequiredHint';
 import { useAiModuleBridge } from '../ai/useAiModuleBridge';
-import { AiAskButton } from '../ai/AiAskButton';
-import { buildItemQuestion } from '../ai/aiQuestions';
 // ============================================================================
 // Multi-drive full-disk change analysis module
 //
@@ -12,19 +10,8 @@ import { buildItemQuestion } from '../ai/aiQuestions';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import i18n from '../../i18n';
-import { createPortal } from 'react-dom';
-import { useVirtualizer } from '@tanstack/react-virtual';
-import { AnimatePresence, motion } from 'framer-motion';
-import {
-  AlertTriangle,
-  CheckCircle2,
-  FolderOpen,
-  HardDrive,
-  Loader2,
-  X,
-  ChevronRight,
-  Download,
-} from 'lucide-react';
+import { AnimatePresence } from 'framer-motion';
+import { AlertTriangle, CheckCircle2, Download, HardDrive } from 'lucide-react';
 import { ModuleScanProgress } from '../ModuleScanProgress';
 import { StopScanButton } from '../ui/StopScanButton';
 import { ModuleCard } from '../ModuleCard';
@@ -42,29 +29,19 @@ import { useSettings } from '../../contexts';
 import { openSearchUrl } from '../../utils/searchEngine';
 import {
   cancelDiskGrowthScan,
-  getDiskGrowthDirectoryDetails,
   getDiskGrowthExportTree,
-  getDiskGrowthFileDetails,
   openInFolder,
   scanDiskGrowth,
   saveDiskGrowthHtml,
-  type DiskGrowthDetailEntry,
-  type DiskGrowthDirectoryDetailsResponse,
   type DiskGrowthEntry,
-  type DiskGrowthFileDetailEntry,
-  type DiskGrowthFileDetailsResponse,
   type DiskGrowthReport,
   type DiskGrowthScanResponse,
 } from '../../api/commands';
 import { formatSize } from '../../utils/format';
 import { useToast } from '../Toast';
 import { buildDiskGrowthHtml } from '../../utils/diskGrowthHtml';
-import {
-  buildPathTitle,
-  formatDiff,
-  getGrowthStyle,
-  normalizeDiskPath,
-} from '../../utils/growthFormat';
+import { formatDiff, normalizeDiskPath } from '../../utils/growthFormat';
+import { GrowthDetailModal } from './GrowthDetailModal';
 import { GrowthResultList } from './GrowthResultList';
 import type { ModuleRenderProps } from './moduleProps';
 
@@ -108,32 +85,6 @@ function selectTopLevelGrowthPaths(entries: DiskGrowthEntry[]): string[] {
   }
 
   return topLevelPaths;
-}
-
-function buildChildGrowthEntry(parent: DiskGrowthEntry, path: string): DiskGrowthEntry | null {
-  const detail = (parent.details ?? []).find((item) => normalizeDiskPath(item.path) === normalizeDiskPath(path));
-  if (!detail) return null;
-  const style = getGrowthStyle(detail.level);
-  const direction = detail.diff > 0
-    ? i18n.t('diskGrowth.increase', { ns: 'modules' })
-    : i18n.t('diskGrowth.decrease', { ns: 'modules' });
-  return {
-    path: detail.path,
-    old_size: detail.old_size,
-    new_size: detail.new_size,
-    diff: detail.diff,
-    diff_percent: detail.old_size > 0 ? (detail.diff / detail.old_size) * 100 : 100,
-    modified: detail.modified,
-    level: detail.level,
-    explanation: i18n.t('diskGrowth.growthExplanation', {
-      ns: 'modules',
-      level: style.label,
-      direction,
-      size: formatSize(Math.abs(detail.diff)),
-    }),
-    suggestion: i18n.t('diskGrowth.growthSuggestion', { ns: 'modules' }),
-    details: [],
-  };
 }
 
 function SummaryCards({
@@ -279,376 +230,6 @@ function DiskGrowthDiagnostics({
       </div>
 
     </div>
-  );
-}
-
-function DiskGrowthDetailsModal({
-  entry,
-  driveLetter,
-  onClose,
-  onOpenFolder,
-}: {
-  entry: DiskGrowthEntry | null;
-  driveLetter: string;
-  onClose: () => void;
-  onOpenFolder: (path: string) => void;
-}) {
-  const { t: moduleT } = useTranslation('modules');
-  const [currentEntry, setCurrentEntry] = useState<DiskGrowthEntry | null>(entry);
-  const [fileDetails, setFileDetails] = useState<DiskGrowthFileDetailsResponse | null>(null);
-  const [directoryDetails, setDirectoryDetails] = useState<DiskGrowthDirectoryDetailsResponse | null>(null);
-  const [fileRows, setFileRows] = useState<DiskGrowthFileDetailEntry[]>([]);
-  const [directoryRows, setDirectoryRows] = useState<DiskGrowthDetailEntry[]>([]);
-  const [fileLoading, setFileLoading] = useState(false);
-  const [directoryLoading, setDirectoryLoading] = useState(false);
-  const [fileError, setFileError] = useState<string | null>(null);
-  const [directoryError, setDirectoryError] = useState<string | null>(null);
-  const fileScrollRef = useRef<HTMLDivElement | null>(null);
-  const directoryScrollRef = useRef<HTMLDivElement | null>(null);
-  const rootPath = entry?.path ?? '';
-  const currentPath = currentEntry?.path ?? rootPath;
-  const detailPageSize = 200;
-
-  useEffect(() => {
-    setCurrentEntry(entry);
-  }, [entry]);
-
-  useEffect(() => {
-    if (!currentEntry) return;
-
-    let cancelled = false;
-    setFileDetails(null);
-    setDirectoryDetails(null);
-    setFileRows([]);
-    setDirectoryRows([]);
-    setFileError(null);
-    setDirectoryError(null);
-    setFileLoading(true);
-    setDirectoryLoading(true);
-
-    // File-level details are lazy-loaded on demand to avoid carrying hundreds of thousands of file records in the main scan result.
-    getDiskGrowthFileDetails(currentEntry.path, 0, detailPageSize, driveLetter)
-      .then((result) => {
-        if (!cancelled) {
-          setFileDetails(result);
-          setFileRows(result.entries);
-        }
-      })
-      .catch((err) => {
-        if (!cancelled) setFileError(String(err));
-      })
-      .finally(() => {
-        if (!cancelled) setFileLoading(false);
-      });
-
-    // Directory details are also lazy-loaded per current directory, to avoid being unable to continue pagination when the main result carries only a few details.
-    getDiskGrowthDirectoryDetails(currentEntry.path, 0, detailPageSize, driveLetter)
-      .then((result) => {
-        if (!cancelled) {
-          setDirectoryDetails(result);
-          setDirectoryRows(result.entries);
-        }
-      })
-      .catch((err) => {
-        if (!cancelled) setDirectoryError(String(err));
-      })
-      .finally(() => {
-        if (!cancelled) setDirectoryLoading(false);
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [currentEntry, driveLetter]);
-
-  const fileVirtualizer = useVirtualizer({
-    count: fileRows.length,
-    getScrollElement: () => fileScrollRef.current,
-    estimateSize: () => 58,
-    overscan: 8,
-  });
-  const directoryVirtualizer = useVirtualizer({
-    count: directoryRows.length,
-    getScrollElement: () => directoryScrollRef.current,
-    estimateSize: () => 58,
-    overscan: 8,
-  });
-
-  if (!entry || !currentEntry) return null;
-
-  const style = getGrowthStyle(currentEntry.level);
-  const rootNormalized = normalizeDiskPath(rootPath);
-  const currentNormalized = normalizeDiskPath(currentPath);
-  const relativeParts = currentNormalized.startsWith(rootNormalized)
-    ? currentPath
-        .slice(rootPath.length)
-        .replace(/^\/+/, '')
-        .split('/')
-        .filter(Boolean)
-    : [];
-  const breadcrumbItems = [
-    { label: rootPath, path: rootPath },
-    ...relativeParts.map((part, index) => ({
-      label: part,
-      path: `${rootPath.replace(/\/+$/g, '')}/${relativeParts.slice(0, index + 1).join('/')}`,
-    })),
-  ];
-  const handleEnterDirectory = (path: string) => {
-    const childEntry = buildChildGrowthEntry(
-      { ...currentEntry, details: directoryRows.length > 0 ? directoryRows : currentEntry.details },
-      path
-    );
-    if (childEntry) setCurrentEntry(childEntry);
-  };
-  const loadMoreFiles = async () => {
-    if (!currentEntry || fileLoading || !fileDetails?.has_more) return;
-    setFileLoading(true);
-    try {
-      const result = await getDiskGrowthFileDetails(currentEntry.path, fileRows.length, detailPageSize, driveLetter);
-      setFileDetails(result);
-      setFileRows((rows) => [...rows, ...result.entries]);
-    } catch (err) {
-      setFileError(String(err));
-    } finally {
-      setFileLoading(false);
-    }
-  };
-  const loadMoreDirectories = async () => {
-    if (!currentEntry || directoryLoading || !directoryDetails?.has_more) return;
-    setDirectoryLoading(true);
-    try {
-      const result = await getDiskGrowthDirectoryDetails(currentEntry.path, directoryRows.length, detailPageSize, driveLetter);
-      setDirectoryDetails(result);
-      setDirectoryRows((rows) => [...rows, ...result.entries]);
-    } catch (err) {
-      setDirectoryError(String(err));
-    } finally {
-      setDirectoryLoading(false);
-    }
-  };
-  // The modal must be mounted under body to avoid the outer motion transform of the page mode changing the reference for fixed positioning.
-  return createPortal(
-    <motion.div
-      className="fixed inset-0 z-[10000] flex items-center justify-center bg-black/40 backdrop-blur-sm glass-backdrop"
-      initial={{ opacity: 0 }}
-      animate={{ opacity: 1 }}
-      exit={{ opacity: 0 }}
-      transition={{ duration: 0.18, ease: 'easeOut' }}
-      onClick={onClose}
-    >
-      <motion.div
-        className="w-[74.29rem] max-w-[calc(100vw-32px)] h-[90vh] max-h-[calc(100vh-32px)] rounded-2xl bg-[var(--bg-card)] glass-dialog shadow-2xl border border-[var(--border-color)] overflow-hidden flex flex-col"
-        initial={{ opacity: 0, scale: 0.96, y: 12 }}
-        animate={{ opacity: 1, scale: 1, y: 0 }}
-        exit={{ opacity: 0, scale: 0.96, y: 12 }}
-        transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
-        onClick={(event) => event.stopPropagation()}
-      >
-        <div className="flex items-center justify-between px-5 py-4 border-b border-[var(--border-color)]">
-          <div className="min-w-0">
-            <h3 className="text-sm font-semibold text-[var(--text-primary)]">{moduleT('diskGrowth.details')}</h3>
-            <div className="mt-1 flex items-center gap-1 text-xs text-[var(--text-muted)] min-w-0">
-              {breadcrumbItems.map((item, index) => (
-                <div key={item.path} className="flex items-center gap-1 min-w-0">
-                  {index > 0 && <ChevronRight className="w-3 h-3 shrink-0 text-[var(--text-faint)]" />}
-                  <button
-                    onClick={() => {
-                      if (index === 0) {
-                        setCurrentEntry(entry);
-                        return;
-                      }
-                      const childEntry = buildChildGrowthEntry(entry, item.path);
-                      if (childEntry) setCurrentEntry(childEntry);
-                    }}
-                    className="truncate hover:text-[var(--brand-green)] transition-colors"
-                    title={item.path}
-                  >
-                    {index === 0 ? item.label : item.label}
-                  </button>
-                </div>
-              ))}
-            </div>
-          </div>
-          <button
-            onClick={onClose}
-            className="p-1.5 rounded-lg text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-colors"
-          >
-            <X className="w-4 h-4" />
-          </button>
-        </div>
-
-        <div className="p-5 space-y-4 overflow-hidden flex-1 min-h-0 flex flex-col">
-          <div className="grid grid-cols-3 gap-3 shrink-0">
-            <div className="glass-block rounded-xl bg-[var(--bg-main)] px-3 py-2">
-              <p className="text-[0.79rem] text-[var(--text-muted)]">{moduleT('diskGrowth.previousSize')}</p>
-              <p className="mt-1 text-sm font-semibold text-[var(--text-primary)] tabular-nums">
-                {formatSize(currentEntry.old_size)}
-              </p>
-            </div>
-            <div className="glass-block rounded-xl bg-[var(--bg-main)] px-3 py-2">
-              <p className="text-[0.79rem] text-[var(--text-muted)]">{moduleT('diskGrowth.currentSize')}</p>
-              <p className="mt-1 text-sm font-semibold text-[var(--text-primary)] tabular-nums">
-                {formatSize(currentEntry.new_size)}
-              </p>
-            </div>
-            <div className="glass-block rounded-xl bg-[var(--bg-main)] px-3 py-2">
-              <p className="text-[0.79rem] text-[var(--text-muted)]">{moduleT('diskGrowth.difference')}</p>
-              <p className={`mt-1 text-sm font-semibold tabular-nums ${style.color}`}>
-                {formatDiff(currentEntry.diff)}
-              </p>
-            </div>
-          </div>
-
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 flex-1 min-h-0">
-            <div className="glass-list rounded-xl bg-[var(--bg-main)] border border-[var(--border-color)] overflow-hidden min-w-0 min-h-0 flex flex-col">
-              <div className="flex items-center gap-3 px-4 py-2 border-b border-[var(--border-color)] text-[0.79rem] text-[var(--text-faint)] shrink-0">
-                <span className="flex-1">{moduleT('diskGrowth.subdirectories')}</span>
-                <span className="w-20 text-right">{moduleT('diskGrowth.currentSize')}</span>
-                <span className="w-24 text-right">{moduleT('diskGrowth.difference')}</span>
-                <span className="w-24" />
-              </div>
-              <div ref={directoryScrollRef} className="flex-1 min-h-0 overflow-auto">
-                {directoryError ? (
-                  <div className="px-4 py-8 text-center text-sm text-[var(--text-muted)]">{directoryError}</div>
-                ) : directoryRows.length > 0 ? (
-                  <div style={{ height: `${directoryVirtualizer.getTotalSize()}px`, position: 'relative' }}>
-                    {directoryVirtualizer.getVirtualItems().map((virtualItem) => {
-                      const detail = directoryRows[virtualItem.index];
-                      if (!detail) return null;
-                      const detailStyle = getGrowthStyle(detail.level);
-                      return (
-                        <div
-                          key={detail.path}
-                          className="absolute left-0 top-0 w-full flex items-center gap-3 px-4 py-2.5 hover:bg-[var(--bg-hover)] transition-colors"
-                          style={{ transform: `translateY(${virtualItem.start}px)`, height: `${virtualItem.size}px` }}
-                        >
-                          <div className="flex-1 min-w-0">
-                            <p className="text-[0.93rem] text-[var(--text-primary)] truncate" title={buildPathTitle(detail.path, detail.modified)}>{detail.name}</p>
-                            <p className="text-[0.79rem] text-[var(--text-faint)] truncate" title={buildPathTitle(detail.path, detail.modified)}>{detail.path}</p>
-                          </div>
-                          <span className="w-20 text-right text-[0.93rem] font-medium text-[var(--text-primary)] tabular-nums">{formatSize(detail.new_size)}</span>
-                          <span className={`w-24 text-right text-[0.93rem] font-medium tabular-nums ${detailStyle.color}`}>{formatDiff(detail.diff)}</span>
-                          <div className="w-24 flex items-center justify-end gap-0.5">
-                            {/* Quick ask: this row is **what the user expanded to see**, so the path in the question is itself,
-                                `skipLookup` -> do not let the assistant look it up (this file-level detail is outside its read capability,
-                                looking it up would only waste a try). */}
-                            <AiAskButton
-                              question={buildItemQuestion(detail.path, 'folder')}
-                              skipLookup
-                              className="inline-flex h-7 w-7 items-center justify-center"
-                            />
-                            <button onClick={() => onOpenFolder(detail.path)} className="p-1.5 rounded-lg text-[var(--text-muted)] hover:bg-[var(--brand-green-10)] hover:text-[var(--brand-green)] transition" title={moduleT('diskGrowth.openFolder')}>
-                              <FolderOpen className="w-4 h-4" />
-                            </button>
-                            <button onClick={() => handleEnterDirectory(detail.path)} className="p-1.5 rounded-lg text-[var(--text-muted)] hover:bg-[var(--brand-green-10)] hover:text-[var(--brand-green)] transition" title={moduleT('diskGrowth.enterDirectory')}>
-                              <ChevronRight className="w-4 h-4" />
-                            </button>
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                ) : directoryLoading ? (
-                  <div className="flex items-center justify-center gap-2 px-4 py-8 text-sm text-[var(--text-muted)]">
-                    <Loader2 className="w-4 h-4 animate-spin text-[var(--brand-green)]" />
-                    {moduleT('diskGrowth.loadingDirectories')}
-                  </div>
-                ) : (
-                  <div className="px-4 py-8 text-center text-sm text-[var(--text-muted)]">{moduleT('diskGrowth.noDirectories')}</div>
-                )}
-              </div>
-              {directoryDetails && (
-                <div className="flex items-center justify-between gap-3 border-t border-[var(--border-color)] px-4 py-2 text-xs text-[var(--text-faint)] shrink-0">
-                  <span>{moduleT('diskGrowth.showing', { current: directoryRows.length, total: directoryDetails.total_changed_dirs })}</span>
-                  {directoryDetails.has_more ? (
-                    <button onClick={loadMoreDirectories} disabled={directoryLoading} className="text-[var(--brand-green)] hover:text-[var(--brand-green-hover)] disabled:opacity-60 transition-colors">
-                      {directoryLoading ? moduleT('diskGrowth.loading') : moduleT('diskGrowth.loadMoreDirectories')}
-                    </button>
-                  ) : (
-                    <span>{moduleT('diskGrowth.loadedAll')}</span>
-                  )}
-                </div>
-              )}
-            </div>
-
-            <div className="glass-list rounded-xl bg-[var(--bg-main)] border border-[var(--border-color)] overflow-hidden min-w-0 min-h-0 flex flex-col">
-              <div className="flex items-center gap-3 px-4 py-2 border-b border-[var(--border-color)] text-[0.79rem] text-[var(--text-faint)] shrink-0">
-                <span className="flex-1">{moduleT('diskGrowth.files')}</span>
-                <span className="w-20 text-right">{moduleT('diskGrowth.currentSize')}</span>
-                <span className="w-24 text-right">{moduleT('diskGrowth.difference')}</span>
-                <span className="w-16" />
-              </div>
-              <div ref={fileScrollRef} className="flex-1 min-h-0 overflow-auto">
-                {fileError ? (
-                  <div className="px-4 py-8 text-center">
-                    <p className="text-sm text-[var(--text-muted)]">{moduleT('diskGrowth.fileDetailsUnavailable')}</p>
-                    <p className="mt-1 text-xs text-[var(--text-faint)]">{fileError}</p>
-                  </div>
-                ) : fileRows.length > 0 ? (
-                  <div style={{ height: `${fileVirtualizer.getTotalSize()}px`, position: 'relative' }}>
-                    {fileVirtualizer.getVirtualItems().map((virtualItem) => {
-                      const file = fileRows[virtualItem.index];
-                      if (!file) return null;
-                      const fileStyle = getGrowthStyle(file.level);
-                      return (
-                        <div
-                          key={file.path}
-                          className="absolute left-0 top-0 w-full flex items-center gap-3 px-4 py-2.5 hover:bg-[var(--bg-hover)] transition-colors"
-                          style={{ transform: `translateY(${virtualItem.start}px)`, height: `${virtualItem.size}px` }}
-                        >
-                          <div className="flex-1 min-w-0">
-                            <p className="text-[0.93rem] text-[var(--text-primary)] truncate" title={buildPathTitle(file.path, file.modified)}>{file.name}</p>
-                            <p className="text-[0.79rem] text-[var(--text-faint)] truncate" title={buildPathTitle(file.path, file.modified)}>{file.path}</p>
-                          </div>
-                          <span className="w-20 text-right text-[0.93rem] font-medium text-[var(--text-primary)] tabular-nums">{formatSize(file.new_size)}</span>
-                          <span className={`w-24 text-right text-[0.93rem] font-medium tabular-nums ${fileStyle.color}`}>{formatDiff(file.diff)}</span>
-                          <div className="w-16 flex items-center justify-end gap-0.5">
-                            {/* Quick ask: this row is a **specific file** (seen only after expanding details),
-                                `skipLookup` -> do not let the assistant look it up; answer "what this is and whether it can be deleted" from the model's own knowledge */}
-                            <AiAskButton
-                              question={buildItemQuestion(file.path, 'file')}
-                              skipLookup
-                              className="inline-flex h-7 w-7 items-center justify-center"
-                            />
-                            <button onClick={() => onOpenFolder(file.path)} className="p-1.5 rounded-lg text-[var(--text-muted)] hover:bg-[var(--brand-green-10)] hover:text-[var(--brand-green)] transition" title={moduleT('diskGrowth.openLocation')}>
-                              <FolderOpen className="w-4 h-4" />
-                            </button>
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                ) : fileLoading ? (
-                  <div className="flex items-center justify-center gap-2 px-4 py-8 text-sm text-[var(--text-muted)]">
-                    <Loader2 className="w-4 h-4 animate-spin text-[var(--brand-green)]" />
-                    {moduleT('diskGrowth.loadingFiles')}
-                  </div>
-                ) : (
-                  <div className="px-4 py-8 text-center text-sm text-[var(--text-muted)]">{moduleT('diskGrowth.noFiles')}</div>
-                )}
-              </div>
-              {fileDetails && (
-                <div className="flex items-center justify-between gap-3 border-t border-[var(--border-color)] px-4 py-2 text-xs text-[var(--text-faint)] shrink-0">
-                  <span>{moduleT('diskGrowth.showing', { current: fileRows.length, total: fileDetails.total_changed_files })}</span>
-                  {fileDetails.has_more ? (
-                    <button onClick={loadMoreFiles} disabled={fileLoading} className="text-[var(--brand-green)] hover:text-[var(--brand-green-hover)] disabled:opacity-60 transition-colors">
-                      {fileLoading ? moduleT('diskGrowth.loading') : moduleT('diskGrowth.loadMoreFiles')}
-                    </button>
-                  ) : (
-                    <span>{moduleT('diskGrowth.loadedAll')}</span>
-                  )}
-                </div>
-              )}
-            </div>
-          </div>
-
-          <p className="text-[0.79rem] text-[var(--text-faint)] shrink-0">
-            {moduleT('diskGrowth.detailNote', { count: detailPageSize })}
-          </p>
-        </div>
-      </motion.div>
-    </motion.div>,
-    document.body
   );
 }
 
@@ -1087,12 +668,13 @@ export function DiskGrowthModule({ isPageActive = true }: ModuleRenderProps) {
       )}
       <AnimatePresence>
         {detailEntry && (
-          <DiskGrowthDetailsModal
+          <GrowthDetailModal
             key={`${selectedDriveLetter}-${detailEntry.path}`}
             entry={detailEntry}
             driveLetter={selectedDriveLetter}
             onClose={handleCloseDetails}
             onOpenFolder={handleOpenFolder}
+            onSearchPath={handleSearchPath}
           />
         )}
       </AnimatePresence>

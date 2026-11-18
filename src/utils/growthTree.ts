@@ -90,7 +90,8 @@ export interface GrowthTree {
   hasBranches: boolean;
 }
 
-function levelFromDiff(diff: number, oldSize: number): GrowthLevel {
+/** Same thresholds as the backend: 1 GB significant, 300 MB fast */
+export function growthLevelFromDiff(diff: number, oldSize: number): GrowthLevel {
   if (oldSize === 0 && diff > 0) return 'new';
   if (diff >= GIGABYTE) return 'significant';
   if (diff >= FAST_THRESHOLD) return 'fast';
@@ -234,7 +235,7 @@ export function buildGrowthTree(entries: DiskGrowthEntry[]): GrowthTree {
       node.diff = diff;
       node.diffPercent = oldSize > 0 ? (diff / oldSize) * 100 : 100;
       node.modified = modified;
-      node.level = levelFromDiff(diff, oldSize);
+      node.level = growthLevelFromDiff(diff, oldSize);
     }
   };
   for (const root of collapsedRoots) finalize(root, 0);
