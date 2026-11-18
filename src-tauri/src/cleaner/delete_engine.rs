@@ -133,6 +133,11 @@ impl DeleteEngine {
     fn delete_single_file(&self, path: &str, size: u64) -> Result<(u64, bool), String> {
         let file_path = Path::new(path);
 
+        // C1 fix, gate 0: reject `..` / `.` traversal up front. The engines' own checks are
+        // literal-string based while the OS resolves `..`, so a traversal path must never
+        // reach any deletion API, regardless of what the prefix checks decide.
+        crate::path_guard::validate_deletable(file_path)?;
+
         // Check whether the path exists
         if !file_path.exists() {
             return Err("文件不存在".to_string());
@@ -143,9 +148,12 @@ impl DeleteEngine {
             return Err("系统保护路径，禁止删除".to_string());
         }
 
-        // Safety check layer 2: check whether it is within the allowed deletion range
+        // Safety check layer 2: check whether it is within the allowed deletion range.
+        // C1 fix: this used to be warn-only, i.e. the check result was discarded and any
+        // path outside the junk-cleanup scope was still deleted. It is a hard error now.
         if !self.is_in_allowed_scope(file_path) {
-            warn!("路径不在允许删除范围内: {}", path);
+            error!("安全拦截: 路径不在允许删除范围内，已拒绝删除 {}", path);
+            return Err("路径不在允许删除范围内，已拒绝删除".to_string());
         }
 
         // Try to delete
@@ -265,7 +273,9 @@ impl DeleteEngine {
     /// decision point, called once per file in a batch, so its cost adds directly to total delete time.
     /// It is also the C1 audit fix point and needs both a benchmark and unit tests to guard it.
     pub fn is_protected_path(&self, path: &Path) -> bool {
-        let path_str = path.to_string_lossy().to_lowercase();
+        // C1 fix: normalize separators and strip the `\\?\` prefix before matching,
+        // otherwise `C:/...` and `\\?\C:\...` bypass every `\`-based prefix below.
+        let path_str = crate::path_guard::normalize(path).to_lowercase();
 
         // Layer 1: check the path prefix
         for protected in PROTECTED_PATH_PREFIXES {
@@ -324,7 +334,8 @@ impl DeleteEngine {
 
     /// Validate whether the path is within the allowed deletion range
     fn is_in_allowed_scope(&self, path: &Path) -> bool {
-        let path_str = path.to_string_lossy().to_lowercase();
+        // Same normalization as is_protected_path, so both layers see the same spelling.
+        let path_str = crate::path_guard::normalize(path).to_lowercase();
 
         // Path ranges allowed for deletion
         let allowed_scopes = [
@@ -404,5 +415,43 @@ mod tests {
         assert!(engine.is_protected_path(Path::new("C:\\Windows.old")));
         assert!(engine.is_protected_path(Path::new("C:\\Windows.old\\Windows\\System32\\old.dll")));
         assert!(engine.is_protected_path(Path::new("C:\\$Windows.~BT")));
+    }
+
+    /// C1 regression: the three bypass spellings from the audit must all be blocked.
+    #[test]
+    fn bypass_spellings_are_blocked() {
+        let engine = DeleteEngine::new();
+
+        // 1. Forward slashes: previously matched no `\`-based prefix at all
+        assert!(engine.is_protected_path(Path::new("C:/Windows/System32/foo.dll")));
+        assert!(engine.is_protected_path(Path::new("C:/Program Files/App")));
+        assert!(engine.is_protected_path(Path::new("C:/")));
+
+        // 2. Extended-length prefix: previously kept `\\?\` in the string, so every prefix missed
+        assert!(engine.is_protected_path(Path::new(r"\\?\C:\Windows\System32\foo.dll")));
+        assert!(engine.is_protected_path(Path::new(r"\\?\C:\")));
+
+        // 3. Relative components: rejected outright before any check or deletion,
+        //    because the prefix checks match the literal while the OS resolves `..`.
+        assert!(crate::path_guard::validate_deletable(Path::new(
+            r"C:\Temp\..\Windows\System32\config"
+        ))
+        .is_err());
+    }
+
+    /// C1 regression: the allowed-scope check is a hard error, not a warning.
+    #[test]
+    fn out_of_scope_paths_are_rejected() {
+        let engine = DeleteEngine::new();
+
+        // A user document outside every allowed scope must be rejected by delete_single_file,
+        // not deleted with a warning like before the fix.
+        let outside = Path::new(r"C:\Users\Test\Documents\report.docx");
+        assert!(engine.is_protected_path(outside) || !engine.is_in_allowed_scope(outside));
+
+        // In-scope junk paths still pass layer 2 (and layer 1) so normal cleanup is unaffected.
+        assert!(engine.is_in_allowed_scope(Path::new(r"C:\Users\Test\AppData\Local\Temp\x.tmp")));
+        assert!(engine.is_in_allowed_scope(Path::new("C:/Windows/Temp/install.log")));
+        assert!(!engine.is_protected_path(Path::new(r"C:\Windows\Temp\install.log")));
     }
 }

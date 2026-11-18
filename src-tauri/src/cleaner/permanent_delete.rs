@@ -226,6 +226,13 @@ impl PermanentDeleteEngine {
     ) -> SafetyCheckResult {
         let path_str = path.to_string_lossy().to_string();
 
+        // C1 fix, gate 0: reject `..` / `.` traversal before any check.
+        // The protected-path matching below works on the literal string while
+        // remove_dir_all resolves `..`, so a traversal path must never get here.
+        if let Err(error) = crate::path_guard::validate_deletable(path) {
+            return SafetyCheckResult::InProtectedPath { reason: error };
+        }
+
         // If the protection rules cannot be loaded, reject by default, so a config problem cannot weaken the permanent-delete safety boundary.
         let user_whitelist = match &self.user_whitelist {
             Ok(entries) => entries,
@@ -313,7 +320,11 @@ impl PermanentDeleteEngine {
     /// - Absolute paths (e.g. C:\Windows): only use starts_with plus a path-separator boundary check
     /// - Relative paths (e.g. \Desktop, \Documents): use path-component matching (\Desktop\ or ends with \Desktop)
     fn check_protected_path(&self, path: &str) -> Option<String> {
-        let path_lower = path.to_lowercase();
+        // C1 fix: normalize separators and strip the `\\?\` prefix before matching,
+        // so `C:/Windows/...` and `\\?\C:\Windows\...` can no longer bypass the
+        // `\`-based prefix checks below.
+        let normalized = crate::path_guard::normalize(Path::new(path));
+        let path_lower = normalized.to_lowercase();
 
         for protected in PROTECTED_PATHS {
             let protected_lower = protected.to_lowercase();
@@ -349,13 +360,13 @@ impl PermanentDeleteEngine {
         }
 
         // Extra check: do not allow deleting a drive root directory
-        if path.len() <= 3 {
+        if normalized.len() <= 3 {
             return Some("不允许删除驱动器根目录".to_string());
         }
 
         // Check whether it is a direct child of a user directory (e.g. C:\Users\xxx itself)
         if path_lower.starts_with(r"c:\users\") {
-            let parts: Vec<&str> = path.split('\\').collect();
+            let parts: Vec<&str> = normalized.split('\\').collect();
             if parts.len() <= 3 {
                 return Some("不允许删除用户根目录".to_string());
             }
@@ -718,6 +729,28 @@ mod tests {
         assert!(engine
             .check_protected_path(r"C:\Users\test\AppData\Local\SomeApp")
             .is_none());
+    }
+
+    /// C1 regression: bypass spellings must not slip past the protected-path check.
+    #[test]
+    fn bypass_spellings_are_blocked() {
+        let engine = PermanentDeleteEngine::new();
+
+        // Forward slashes previously matched no `\`-based prefix at all
+        assert!(engine
+            .check_protected_path(r"C:/Windows/System32/test")
+            .is_some());
+        assert!(engine.check_protected_path(r"C:/").is_some());
+
+        // Extended-length prefix previously kept `\\?\` in the string
+        assert!(engine
+            .check_protected_path(r"\\?\C:\Windows\System32\test")
+            .is_some());
+        assert!(engine.check_protected_path(r"\\?\C:\").is_some());
+
+        // Traversal paths are rejected by the guard before any check runs
+        let result = engine.perform_safety_checks(Path::new(r"C:\Temp\..\Windows\System32\config"));
+        assert!(matches!(result, SafetyCheckResult::InProtectedPath { .. }));
     }
 
     #[test]

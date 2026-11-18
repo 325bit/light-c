@@ -14,6 +14,7 @@ mod disk_health;
 mod driver_cleanup;
 mod health_score;
 mod logger;
+mod path_guard;
 mod runtime;
 mod scanner;
 mod system_info;

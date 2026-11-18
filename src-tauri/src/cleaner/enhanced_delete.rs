@@ -605,9 +605,13 @@ impl EnhancedDeleteEngine {
 
         // Separate recycle bin paths: recycle bin files should be emptied via the Shell API, not deleted one by one
         // Directly deleting files under $Recycle.Bin requires SYSTEM privileges; SHEmptyRecycleBinW is the standard way
-        let (recycle_paths, normal_paths): (Vec<&String>, Vec<&String>) = paths
-            .iter()
-            .partition(|p| p.to_lowercase().contains("\\$recycle.bin"));
+        // C1 fix: normalize first, so `C:/...` or `\\?\...` recycle entries are still classified correctly.
+        let (recycle_paths, normal_paths): (Vec<&String>, Vec<&String>) =
+            paths.iter().partition(|p| {
+                crate::path_guard::normalize(Path::new(p))
+                    .to_lowercase()
+                    .contains("\\$recycle.bin")
+            });
 
         // Recycle bin files cannot be deleted individually; call the Shell API per drive so one bad volume does not drag down the others.
         if !recycle_paths.is_empty() {
@@ -739,6 +743,19 @@ impl EnhancedDeleteEngine {
         // Get the file size
         let logical_size = self.get_file_size(file_path);
         let physical_size = self.calculate_physical_size_for_path(file_path, logical_size);
+
+        // C1 fix, gate 0: reject `..` / `.` traversal before any deletion happens.
+        // The prefix checks below match the literal string, the OS resolves `..`.
+        if crate::path_guard::validate_deletable(file_path).is_err() {
+            return FileDeleteResult {
+                path: path.to_string(),
+                success: false,
+                logical_size,
+                physical_size,
+                failure_reason: Some(DeleteFailureReason::OutOfScope),
+                marked_for_reboot: false,
+            };
+        }
 
         // Check whether the file exists
         if !file_path.exists() {
@@ -966,7 +983,9 @@ impl EnhancedDeleteEngine {
             is_rebuildable_system_cache_path, PROTECTED_FILES, PROTECTED_PATH_PREFIXES,
         };
 
-        let path_str = path.to_string_lossy().to_lowercase();
+        // C1 fix: normalize separators and strip the `\\?\` prefix before matching,
+        // consistent with delete_engine::is_protected_path.
+        let path_str = crate::path_guard::normalize(path).to_lowercase();
 
         for prefix in PROTECTED_PATH_PREFIXES {
             if path_str.starts_with(prefix) && !is_rebuildable_system_cache_path(&path_str) {
@@ -1133,6 +1152,15 @@ mod tests {
         assert!(engine.is_system_protected(Path::new("C:\\Windows\\System32\\ntdll.dll")));
         assert!(engine.is_system_protected(Path::new("C:\\pagefile.sys")));
         assert!(!engine.is_system_protected(Path::new("C:\\Temp\\test.tmp")));
+
+        // C1 regression: the bypass spellings must hit the protection check as well
+        assert!(engine.is_system_protected(Path::new("C:/Windows/System32/ntdll.dll")));
+        assert!(engine.is_system_protected(Path::new(r"\\?\C:\Windows\System32\ntdll.dll")));
+        // And traversal paths are rejected outright by the guard, before any deletion
+        assert!(crate::path_guard::validate_deletable(Path::new(
+            r"C:\Temp\..\Windows\System32\config"
+        ))
+        .is_err());
     }
 
     #[test]
