@@ -75,26 +75,27 @@ pub fn open_in_folder(path: String) -> Result<(), String> {
 
 /// Open a file directly (using the system default program)
 #[tauri::command]
-pub fn open_file(path: String) -> Result<(), String> {
+pub fn open_file(app: tauri::AppHandle, path: String) -> Result<(), String> {
     info!("打开文件: {}", path);
 
     #[cfg(target_os = "windows")]
     {
-        use std::process::Command;
-        // cmd's start parses forward slashes in a path as switch separators, so a path with mixed separators gets broken
-        // (e.g., "...\Local/Programs\Zed\Zed.exe" reports "Windows cannot find the file"),
-        // stay consistent with open_in_folder: normalize to backslashes before handing it to cmd.
+        use tauri_plugin_opener::OpenerExt;
+        // C3 fix: this used to build `format!("\"{}\"", path)` and hand it to `cmd /C start`,
+        // where cmd.exe re-parses the whole command line — a path containing `"` / `&` / `^`
+        // (all legal NTFS filename characters) allowed arbitrary command injection.
+        // The opener plugin passes the path straight to ShellExecuteW; no shell is involved.
+        // Forward slashes are still normalized first: ShellExecuteW needs backslash paths,
+        // same as open_in_folder above.
         let windows_path = path.replace('/', "\\");
-        let quoted_path = format!("\"{}\"", windows_path);
-        Command::new("cmd")
-            .args(["/C", "start", "", &quoted_path])
-            .spawn()
-            .map_err(|e| format!("无法打开文件: {}", e))?;
-        Ok(())
+        app.opener()
+            .open_path(windows_path, None::<&str>)
+            .map_err(|e| format!("无法打开文件: {}", e))
     }
 
     #[cfg(not(target_os = "windows"))]
     {
+        let _ = app;
         Err("此功能仅支持Windows系统".to_string())
     }
 }
