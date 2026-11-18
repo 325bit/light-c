@@ -16,7 +16,9 @@ mod health_score;
 mod logger;
 mod path_guard;
 mod runtime;
+mod scan_cancel;
 mod scanner;
+mod sys_drive;
 mod system_info;
 mod system_slim;
 

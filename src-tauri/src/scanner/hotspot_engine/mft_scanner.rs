@@ -14,8 +14,9 @@ use std::time::{Instant, UNIX_EPOCH};
 use log::info;
 use rayon::prelude::*;
 
+use crate::scan_cancel::{is_cancelled, ScanKind};
 use crate::scanner::big_files_engine::mft_core;
-use crate::scanner::hotspot::{is_hotspot_scan_cancelled, FolderStats};
+use crate::scanner::hotspot::FolderStats;
 
 /// Fixed record number of the volume root in NTFS: the first 16 MFT entries are metafiles and `$Root` is 5.
 const ROOT_MFT_ID: u64 = 5;
@@ -163,7 +164,7 @@ fn read_all_records(
     let stage_start = Instant::now();
     let metadata_reader = mft_core::NtfsFileMetadataReader::open(drive_letter)?;
     let (records, mft_stats) = metadata_reader.read_all_records(&|processed| {
-        if is_hotspot_scan_cancelled() {
+        if is_cancelled(ScanKind::Hotspot) {
             return false;
         }
         if processed % PROGRESS_STEP == 0 {
@@ -312,7 +313,7 @@ fn read_fallback_sizes(
     let measured: Vec<(u64, u64, i64)> = fallback
         .par_iter()
         .filter_map(|(parent_id, name)| {
-            if is_hotspot_scan_cancelled() {
+            if is_cancelled(ScanKind::Hotspot) {
                 return None;
             }
             let parent = directories.get(parent_id)?;

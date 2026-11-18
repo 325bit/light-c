@@ -266,7 +266,7 @@ impl DeleteEngine {
     pub fn is_protected_path(&self, path: &Path) -> bool {
         // C1 fix: normalize separators and strip the `\\?\` prefix before matching,
         // otherwise `C:/...` and `\\?\C:\...` bypass every `\`-based prefix below.
-        let path_str = crate::path_guard::normalize(path).to_lowercase();
+        let path_str = crate::path_guard::compare_key(path);
 
         // Layer 1: check the path prefix
         for protected in PROTECTED_PATH_PREFIXES {
@@ -326,7 +326,7 @@ impl DeleteEngine {
     /// Validate whether the path is within the allowed deletion range
     fn is_in_allowed_scope(&self, path: &Path) -> bool {
         // Same normalization as is_protected_path, so both layers see the same spelling.
-        let path_str = crate::path_guard::normalize(path).to_lowercase();
+        let path_str = crate::path_guard::compare_key(path);
 
         // Path ranges allowed for deletion
         let allowed_scopes = [

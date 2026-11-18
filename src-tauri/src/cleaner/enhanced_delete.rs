@@ -554,7 +554,7 @@ impl EnhancedDeleteEngine {
 
     /// Calculate physical usage by the file's partition, avoiding applying the C drive cluster size when deeply cleaning D/E drives.
     fn calculate_physical_size_for_path(&self, path: &Path, logical_size: u64) -> u64 {
-        let Some(drive_root) = drive_root(path) else {
+        let Some(drive_root) = crate::sys_drive::drive_root_of(path) else {
             return self.calculate_physical_size(logical_size);
         };
         let cluster_size = self.cluster_size_for_drive(&drive_root);
@@ -999,7 +999,7 @@ impl EnhancedDeleteEngine {
         // Same normalization as the protection checks: strip the `\\?\` prefix,
         // unify `/` to `\`, then compare case-insensitively (ASCII only: the
         // whitelist and every anchor are pure ASCII).
-        let normalized = crate::path_guard::normalize(path).to_ascii_lowercase();
+        let normalized = crate::path_guard::compare_key(path);
 
         // Anchor 1: the drive root — the position right after `X:`.
         let drive_root_anchor = drive_root_end(&normalized);
@@ -1044,7 +1044,7 @@ impl EnhancedDeleteEngine {
 
         // C1 fix: normalize separators and strip the `\\?\` prefix before matching,
         // consistent with delete_engine::is_protected_path.
-        let path_str = crate::path_guard::normalize(path).to_lowercase();
+        let path_str = crate::path_guard::compare_key(path);
 
         for prefix in PROTECTED_PATH_PREFIXES {
             if path_str.starts_with(prefix) && !is_rebuildable_system_cache_path(&path_str) {
@@ -1220,15 +1220,6 @@ fn delete_recycle_entry(path: &str) -> Result<(), String> {
 }
 
 /// Extract the partition root directory from a normal file path, for reading cluster size per volume.
-fn drive_root(path: &Path) -> Option<String> {
-    let path = path.to_string_lossy();
-    let bytes = path.as_bytes();
-    if bytes.len() < 2 || bytes[1] != b':' || !bytes[0].is_ascii_alphabetic() {
-        return None;
-    }
-    Some(format!("{}:\\", (bytes[0] as char).to_ascii_uppercase()))
-}
-
 /// Position right after the drive root `X:` in a normalized path — where a
 /// drive-root-anchored whitelist marker must start. `None` when the path has no
 /// drive root (UNC paths, relative paths).

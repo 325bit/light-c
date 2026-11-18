@@ -128,24 +128,8 @@ fn build_hotspot_progress(
     }
 }
 
-/// Global cancellation flag, shared across threads (consistent with the big_files.rs pattern)
-static HOTSPOT_SCAN_CANCELLED: AtomicBool = AtomicBool::new(false);
-
-/// Reset the cancellation flag (called before a scan starts)
-pub fn reset_hotspot_cancelled() {
-    HOTSPOT_SCAN_CANCELLED.store(false, Ordering::SeqCst);
-}
-
-/// Set the cancellation flag (called when the frontend clicks the cancel button)
-pub fn cancel_hotspot_scan() {
-    log::info!("收到取消大目录扫描请求");
-    HOTSPOT_SCAN_CANCELLED.store(true, Ordering::SeqCst);
-}
-
-/// Exposes cancellation-state queries to the MFT engine, so the MFT stage does not ignore the frontend stop button and run the whole flow
-pub(crate) fn is_hotspot_scan_cancelled() -> bool {
-    HOTSPOT_SCAN_CANCELLED.load(Ordering::SeqCst)
-}
+// M13 fix: the cancel flag used to be a module-local `static HOTSPOT_SCAN_CANCELLED`;
+// it now lives in `crate::scan_cancel` alongside the other three scanners' flags.
 
 // ============================================================================
 // Dangerous-directory blacklist configuration
@@ -496,7 +480,7 @@ impl HotspotScanner {
 
         let mut all_entries: Vec<HotspotEntry> = Vec::new();
         let mut ancestor_cache: HashMap<PathBuf, FolderStats> = HashMap::new();
-        let cancel_flag = &HOTSPOT_SCAN_CANCELLED;
+        let cancel_flag = crate::scan_cancel::flag(crate::scan_cancel::ScanKind::Hotspot);
 
         // ========================================================================
         // Try the direct MFT read engine (admin + NTFS)

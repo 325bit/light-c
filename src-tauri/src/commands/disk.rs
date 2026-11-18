@@ -62,28 +62,10 @@ pub fn get_local_drives() -> Result<Vec<LocalDriveInfo>, String> {
 
     #[cfg(target_os = "windows")]
     {
-        use winapi::um::fileapi::{GetDriveTypeW, GetLogicalDrives};
-        use winapi::um::winbase::DRIVE_FIXED;
-
-        let mask = unsafe { GetLogicalDrives() };
-        if mask == 0 {
-            return Err("无法读取本机磁盘分区列表".to_string());
-        }
-
+        // M13 fix: single drive enumeration source (crate::sys_drive)
         let mut drives = Vec::new();
-        for index in 0..26 {
-            if mask & (1 << index) == 0 {
-                continue;
-            }
-
-            let letter = (b'A' + index as u8) as char;
+        for letter in crate::sys_drive::fixed_drive_letters()? {
             let root = format!("{}:\\", letter);
-            let wide_root = wide_null(&root);
-            let drive_type = unsafe { GetDriveTypeW(wide_root.as_ptr()) };
-            if drive_type != DRIVE_FIXED {
-                continue;
-            }
-
             match query_drive_info(letter) {
                 Ok(drive) => drives.push(drive),
                 Err(error) => {

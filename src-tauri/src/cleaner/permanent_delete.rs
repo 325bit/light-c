@@ -324,7 +324,8 @@ impl PermanentDeleteEngine {
         // so `C:/Windows/...` and `\\?\C:\Windows\...` can no longer bypass the
         // `\`-based prefix checks below.
         let normalized = crate::path_guard::normalize(Path::new(path));
-        let path_lower = normalized.to_lowercase();
+        // M13 fix: matching goes through the shared compare_key spelling.
+        let path_lower = crate::path_guard::compare_key(Path::new(path));
 
         for protected in PROTECTED_PATHS {
             let protected_lower = protected.to_lowercase();

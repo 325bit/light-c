@@ -11,7 +11,7 @@ use tauri::{AppHandle, Emitter};
 
 #[tauri::command]
 pub fn cancel_disk_growth_scan() {
-    crate::disk_growth::cancel_disk_growth_scan();
+    crate::scan_cancel::cancel(crate::scan_cancel::ScanKind::DiskGrowth);
 }
 
 #[tauri::command]
@@ -116,7 +116,7 @@ pub async fn scan_disk_growth(
 ) -> Result<crate::disk_growth::DiskScanAndAnalyzeResponse, String> {
     let log_drive = drive_letter.as_deref().unwrap_or("系统盘").to_string();
     info!("开始执行 {} 全盘空间变化分析", log_drive);
-    crate::disk_growth::reset_disk_growth_cancelled();
+    crate::scan_cancel::reset(crate::scan_cancel::ScanKind::DiskGrowth);
 
     let result = tokio::task::spawn_blocking(move || {
         crate::disk_growth::scan_and_analyze_drive_with_progress(

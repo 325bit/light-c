@@ -17,7 +17,7 @@ pub struct CleanupDirectoryResult {
 /// Cancel a large-directory scan
 #[tauri::command]
 pub fn cancel_hotspot_scan() {
-    crate::scanner::cancel_hotspot_scan();
+    crate::scan_cancel::cancel(crate::scan_cancel::ScanKind::Hotspot);
 }
 
 /// Scan large directories
@@ -51,7 +51,7 @@ pub async fn scan_hotspot(
             threshold / 1024 / 1024,
             ignore
         );
-        crate::scanner::reset_hotspot_cancelled();
+        crate::scan_cancel::reset(crate::scan_cancel::ScanKind::Hotspot);
     } else {
         info!(
             "开始扫描 AppData 目录，Top {}，展示深度 {}，阈值 {}MB",

@@ -6,7 +6,6 @@
 use serde::{Deserialize, Serialize};
 use std::cmp::{Ordering, Reverse};
 use std::collections::BinaryHeap;
-use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use tauri::{Emitter, Window};
 use walkdir::WalkDir;
 
@@ -27,8 +26,8 @@ fn is_cloud_placeholder(metadata: &std::fs::Metadata) -> bool {
     has_cloud_placeholder_attributes(metadata.file_attributes())
 }
 
-// Global cancellation flag, shared across threads
-static LARGE_FILE_SCAN_CANCELLED: AtomicBool = AtomicBool::new(false);
+// M13 fix: the cancel flag used to be a module-local `static LARGE_FILE_SCAN_CANCELLED`;
+// it now lives in `crate::scan_cancel` alongside the other three scanners' flags.
 
 // ============================================================================
 // Data structures
@@ -86,17 +85,16 @@ pub struct LargeFileScanProgress {
 
 /// Reset the cancellation flag
 pub fn reset_cancelled() {
-    LARGE_FILE_SCAN_CANCELLED.store(false, AtomicOrdering::SeqCst);
+    crate::scan_cancel::reset(crate::scan_cancel::ScanKind::BigFiles);
 }
 
 /// Set the cancellation flag
 pub fn cancel() {
-    log::info!("收到取消大文件扫描请求");
-    LARGE_FILE_SCAN_CANCELLED.store(true, AtomicOrdering::SeqCst);
+    crate::scan_cancel::cancel(crate::scan_cancel::ScanKind::BigFiles);
 }
 
 pub(crate) fn is_cancelled() -> bool {
-    LARGE_FILE_SCAN_CANCELLED.load(AtomicOrdering::SeqCst)
+    crate::scan_cancel::is_cancelled(crate::scan_cancel::ScanKind::BigFiles)
 }
 
 /// Run the big file scan (blocking; should be called inside spawn_blocking)
@@ -261,7 +259,7 @@ pub fn scan(
             .filter_map(|e| e.ok())
             .filter(|e| e.file_type().is_file())
         {
-            if LARGE_FILE_SCAN_CANCELLED.load(AtomicOrdering::SeqCst) {
+            if crate::scan_cancel::is_cancelled(crate::scan_cancel::ScanKind::BigFiles) {
                 log::info!("大文件扫描被用户取消，已扫描 {} 个文件", file_count);
                 let _ = window.emit("large-file-scan:cancelled", ());
                 let mut results: Vec<LargeFileEntry> =

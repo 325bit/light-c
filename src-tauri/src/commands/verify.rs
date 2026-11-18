@@ -11,7 +11,27 @@ const INSTALLER_EXE_SIGNATURE_ASSET: &str = "LightC_installer_exe.sig";
 const WEBVIEW2_OFFLINE_EXE_SIGNATURE_ASSET: &str = "LightC_webview2_offline_exe.sig";
 const PORTABLE_EXE_SIGNATURE_ASSET: &str = "LightC_portable_exe.sig";
 const OFFICIAL_RELEASE_URL: &str = "https://github.com/Chunyu33/light-c/releases";
-const UPDATER_PUBLIC_KEY: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDU3NEJFNkU1NzM3OEQyQTQKUldTazBuaHo1ZVpMVnpKbnUrSnUrWlpVakhKL1c5ZXV3ZXhYeW4wbFRSeVFyb01TZ0h2RGpsZFoK";
+
+/// M13 fix: the updater public key used to be hard-coded here *and* in
+/// `tauri.conf.json` (`plugins.updater.pubkey`). Two spellings of a security
+/// constant drift silently — the updater would install with one key while
+/// `verify_integrity` checked with another if only one side was rotated.
+/// The key is now read from `tauri.conf.json` at compile time, so the updater
+/// and the integrity check share one source of truth by construction.
+fn updater_public_key() -> &'static str {
+    static KEY: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    KEY.get_or_init(|| {
+        serde_json::from_str::<serde_json::Value>(include_str!("../../tauri.conf.json"))
+            .ok()
+            .and_then(|config| {
+                config["plugins"]["updater"]["pubkey"]
+                    .as_str()
+                    .map(str::to_owned)
+            })
+            .expect("tauri.conf.json must contain plugins.updater.pubkey")
+    })
+    .as_str()
+}
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -218,7 +238,7 @@ fn verify_exe_signatures(
 }
 
 fn verify_exe_signature(exe_bytes: &[u8], signature_text: &str) -> Result<(), VerifyError> {
-    let public_key_text = decode_base64_text(UPDATER_PUBLIC_KEY)
+    let public_key_text = decode_base64_text(updater_public_key())
         .map_err(|message| VerifyError::Local(format!("官方公钥解析失败：{}", message)))?;
     let signature_text = normalize_signature_text(signature_text)?;
     let public_key = PublicKey::decode(&public_key_text)

@@ -10,7 +10,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{LazyLock, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -35,7 +35,23 @@ const DEEP_JUNK_SESSION_TTL: Duration = Duration::from_secs(60 * 60);
 // Number of deep scan sessions to keep, so old sessions are not immediately evicted when the user runs several scans in a row.
 const MAX_DEEP_JUNK_SESSIONS: usize = 4;
 
-static DEEP_JUNK_SCAN_CANCELLED: AtomicBool = AtomicBool::new(false);
+// M13 fix: the cancel flag used to be a module-local `static DEEP_JUNK_SCAN_CANCELLED`;
+// it now lives in `crate::scan_cancel` alongside the other three scanners' flags.
+// This thin shim keeps the nine internal check sites readable.
+
+/// Reset the deep scan cancel flag.
+pub fn reset_cancelled() {
+    crate::scan_cancel::reset(crate::scan_cancel::ScanKind::DeepJunk);
+}
+
+/// Set the deep scan cancel flag; both MFT and fallback traversal check it.
+pub fn cancel() {
+    crate::scan_cancel::cancel(crate::scan_cancel::ScanKind::DeepJunk);
+}
+
+fn is_cancelled() -> bool {
+    crate::scan_cancel::is_cancelled(crate::scan_cancel::ScanKind::DeepJunk)
+}
 
 /// Deep scan stage progress; the frontend uses it to show the current partition and MFT stage.
 #[derive(Debug, Clone, Serialize)]
@@ -110,20 +126,6 @@ static DEEP_JUNK_SESSIONS: LazyLock<Mutex<HashMap<String, DeepJunkScanSession>>>
     LazyLock::new(|| Mutex::new(HashMap::new()));
 static DEEP_JUNK_SESSION_COUNTER: AtomicU64 = AtomicU64::new(1);
 
-/// Reset the deep scan cancel flag.
-pub fn reset_cancelled() {
-    DEEP_JUNK_SCAN_CANCELLED.store(false, Ordering::SeqCst);
-}
-
-/// Set the deep scan cancel flag; both MFT and fallback traversal check it.
-pub fn cancel() {
-    DEEP_JUNK_SCAN_CANCELLED.store(true, Ordering::SeqCst);
-}
-
-fn is_cancelled() -> bool {
-    DEEP_JUNK_SCAN_CANCELLED.load(Ordering::SeqCst)
-}
-
 /// Recursion depth limit for deep scanning, passed in from the settings page's "deep discovery scan depth".
 ///
 /// Module-level state is used instead of passing the depth down at every level: the scan chain goes through MFT
@@ -166,7 +168,7 @@ pub fn scan_all(window: &Window) -> Result<DeepJunkScanResult, String> {
     #[cfg(windows)]
     {
         let stage = std::time::Instant::now();
-        let drive_letters = fixed_drive_letters()?;
+        let drive_letters = crate::sys_drive::fixed_drive_letters()?;
         record_stage(&mut outer_stages, "discover", stage);
         if drive_letters.is_empty() {
             return Err("没有找到可访问的固定磁盘分区".to_string());
@@ -782,33 +784,6 @@ fn scan_non_ntfs_drive(
         },
         files,
     }
-}
-
-#[cfg(windows)]
-fn fixed_drive_letters() -> Result<Vec<char>, String> {
-    use winapi::um::fileapi::{GetDriveTypeW, GetLogicalDrives};
-    use winapi::um::winbase::DRIVE_FIXED;
-
-    let mask = unsafe { GetLogicalDrives() };
-    if mask == 0 {
-        return Err("无法读取本机磁盘分区列表".to_string());
-    }
-
-    Ok((0..26)
-        .filter_map(|index| {
-            if mask & (1 << index) == 0 {
-                return None;
-            }
-            let letter = (b'A' + index as u8) as char;
-            let root = format!("{}:\\", letter);
-            let wide_root = root
-                .encode_utf16()
-                .chain(std::iter::once(0))
-                .collect::<Vec<_>>();
-            let drive_type = unsafe { GetDriveTypeW(wide_root.as_ptr()) };
-            (drive_type == DRIVE_FIXED && Path::new(&root).is_dir()).then_some(letter)
-        })
-        .collect())
 }
 
 #[cfg(windows)]

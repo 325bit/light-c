@@ -25,7 +25,7 @@ pub fn scan_current_user(category: &JunkCategory, result: &mut CategoryScanResul
         };
 
         let mut entries = Vec::new();
-        for drive_letter in get_drive_letters() {
+        for drive_letter in crate::sys_drive::existing_drive_letters() {
             let sid_path = PathBuf::from(format!("{}:\\$Recycle.Bin\\{}", drive_letter, user_sid));
             collect_drive_entries(&sid_path, category, &mut entries);
         }
@@ -59,17 +59,6 @@ pub fn is_current_user_entry_path(path: &str) -> bool {
         let _ = path;
         false
     }
-}
-
-#[cfg(windows)]
-fn get_drive_letters() -> Vec<char> {
-    // Enumerate only currently existing drives, avoiding passing unmounted volumes to the Shell API.
-    ('A'..='Z')
-        .filter(|letter| {
-            let root = format!("{}:\\", letter);
-            Path::new(&root).is_dir()
-        })
-        .collect()
 }
 
 #[cfg(windows)]

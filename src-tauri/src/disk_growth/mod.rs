@@ -10,4 +10,3 @@ pub mod mft_scan;
 pub mod snapshot;
 
 pub use growth::*;
-pub use mft_scan::{cancel_disk_growth_scan, reset_disk_growth_cancelled};

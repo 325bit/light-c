@@ -12,7 +12,7 @@ use rayon::ThreadPoolBuilder;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 use std::fs;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Instant, UNIX_EPOCH};
 
 use winapi::um::fileapi::GetDriveTypeW;
@@ -25,27 +25,10 @@ const METADATA_PROGRESS_STEP: usize = 10_000;
 /// Fixed record number of the volume root directory in NTFS: the first 16 MFT records are metafiles, and `$Root` is record 5.
 const ROOT_MFT_ID: u64 = 5;
 
-static DISK_GROWTH_SCAN_CANCELLED: AtomicBool = AtomicBool::new(false);
-
-pub fn reset_disk_growth_cancelled() {
-    DISK_GROWTH_SCAN_CANCELLED.store(false, Ordering::SeqCst);
-}
-
-pub fn cancel_disk_growth_scan() {
-    log::info!("收到取消全盘分析请求");
-    DISK_GROWTH_SCAN_CANCELLED.store(true, Ordering::SeqCst);
-}
-
-fn is_disk_growth_cancelled() -> bool {
-    DISK_GROWTH_SCAN_CANCELLED.load(Ordering::SeqCst)
-}
-
+// M13 fix: the cancel flag used to be a module-local `static DISK_GROWTH_SCAN_CANCELLED`;
+// it now lives in `crate::scan_cancel` alongside the other three scanners' flags.
 fn ensure_not_cancelled() -> Result<(), String> {
-    if is_disk_growth_cancelled() {
-        Err("扫描已取消".to_string())
-    } else {
-        Ok(())
-    }
+    crate::scan_cancel::check(crate::scan_cancel::ScanKind::DiskGrowth)
 }
 
 /// A single MFT record. This directly uses the parse result from `mft_core` - one sequential read yields
@@ -176,7 +159,7 @@ where
     // the same data was processed twice, while measurements showed enumeration alone took 36.9s and a single full-table read only 3.9s.
     let metadata_reader = mft_core::NtfsFileMetadataReader::open(drive_letter)?;
     let (raw_entries, mft_stats) = metadata_reader.read_all_records(&|processed| {
-        if is_disk_growth_cancelled() {
+        if crate::scan_cancel::is_cancelled(crate::scan_cancel::ScanKind::DiskGrowth) {
             return false;
         }
         if processed % 100_000 == 0 {
@@ -413,7 +396,7 @@ where
         file_records
             .into_par_iter()
             .filter_map(|record| {
-                if is_disk_growth_cancelled() {
+                if crate::scan_cancel::is_cancelled(crate::scan_cancel::ScanKind::DiskGrowth) {
                     return None;
                 }
                 let current = processed.fetch_add(1, Ordering::Relaxed) + 1;

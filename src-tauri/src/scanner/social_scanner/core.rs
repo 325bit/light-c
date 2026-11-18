@@ -394,7 +394,11 @@ impl SocialScanner {
         let default_documents = format!("{}\\Documents", user_profile);
 
         // Get all available drives (for full-disk search fallback)
-        let available_drives = Self::get_available_drives();
+        // M13 fix: single drive enumeration source (crate::sys_drive); non-Windows keeps its POSIX fallback
+        #[cfg(target_os = "windows")]
+        let available_drives = crate::sys_drive::existing_drive_roots();
+        #[cfg(not(target_os = "windows"))]
+        let available_drives = vec!["/".to_string()];
 
         info!("SocialScanner 初始化:");
         info!("  用户目录: {}", user_profile);
@@ -446,20 +450,6 @@ impl SocialScanner {
     // ========================================================================
     // System utility methods
     // ========================================================================
-
-    /// Get all available disk drives
-    #[cfg(target_os = "windows")]
-    fn get_available_drives() -> Vec<String> {
-        let mut drives = Vec::new();
-        // Check drives A-Z
-        for letter in b'C'..=b'Z' {
-            let drive = format!("{}:\\", letter as char);
-            if Path::new(&drive).exists() {
-                drives.push(drive);
-            }
-        }
-        drives
-    }
 
     #[cfg(not(target_os = "windows"))]
     fn get_available_drives() -> Vec<String> {

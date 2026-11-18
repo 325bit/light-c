@@ -62,6 +62,18 @@ pub fn normalize(path: &Path) -> String {
     stripped.replace('/', "\\")
 }
 
+/// The canonical lowercase comparison form shared by every delete engine.
+///
+/// M13 audit fix: the engines each spelled "normalize then lowercase" slightly
+/// differently (`to_lowercase` vs `to_ascii_lowercase`, some with their own
+/// separator replace) — eight copies of the same rule with different quality.
+/// All of them now call this one function. Lowercasing is ASCII-only, which is
+/// the correct policy for Windows path matching: the protected/scope constants
+/// are pure ASCII, and Unicode lowercasing has no effect on them.
+pub fn compare_key(path: &Path) -> String {
+    normalize(path).to_ascii_lowercase()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
