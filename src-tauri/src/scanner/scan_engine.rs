@@ -3,7 +3,7 @@
 // Uses parallel scanning to optimize performance
 // ============================================================================
 
-use log::{debug, info};
+use log::{debug, info, warn};
 use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
@@ -55,8 +55,10 @@ impl ScanEngine {
         // Scan all categories in parallel using threads
         let results: Arc<Mutex<Vec<CategoryScanResult>>> = Arc::new(Mutex::new(Vec::new()));
         let mut handles = vec![];
+        let mut category_names: Vec<String> = Vec::new();
 
         for category in categories {
+            category_names.push(category.display_name().to_string());
             let results_clone = Arc::clone(&results);
             let handle = thread::spawn(move || {
                 let engine = ScanEngine {
@@ -82,18 +84,35 @@ impl ScanEngine {
             handles.push(handle);
         }
 
-        // Wait for all threads to finish
-        for handle in handles {
-            let _ = handle.join();
+        // Wait for all threads to finish. A category thread that panicked must not vanish
+        // silently: record its name so the UI can surface a partial-scan warning instead of
+        // presenting a full result with missing categories.
+        let mut failed_categories: Vec<String> = Vec::new();
+        for (handle, category_name) in handles.into_iter().zip(category_names) {
+            if handle.join().is_err() {
+                warn!("分类 {} 扫描线程 panic，该分类结果缺失", category_name);
+                failed_categories.push(category_name);
+            }
         }
 
         // Aggregate the results
         let mut result = ScanResult::new();
+        result.failed_categories = failed_categories;
+        // Consume the collected results by value instead of cloning each one; at this point
+        // every thread has joined, so no one else reads the shared vec anymore.
         let mut category_results = results
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        for category_result in category_results.iter() {
-            result.add_category_result(category_result.clone());
+        for category_result in category_results.drain(..) {
+            result.add_category_result(category_result);
+        }
+
+        if !result.failed_categories.is_empty() {
+            warn!(
+                "本次扫描有 {} 个分类失败: {}",
+                result.failed_categories.len(),
+                result.failed_categories.join(", ")
+            );
         }
 
         let duration = start_time.elapsed();

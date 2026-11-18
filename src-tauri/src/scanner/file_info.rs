@@ -140,6 +140,10 @@ pub struct ScanResult {
     pub scan_duration_ms: u64,
     /// Scan timestamp
     pub scan_timestamp: i64,
+    /// Names of categories whose scan threads panicked and produced no result.
+    /// Empty on a healthy scan; non-empty entries mean the visible result is partial.
+    #[serde(default)]
+    pub failed_categories: Vec<String>,
 }
 
 impl ScanResult {
@@ -151,6 +155,7 @@ impl ScanResult {
             total_file_count: 0,
             scan_duration_ms: 0,
             scan_timestamp: chrono::Utc::now().timestamp(),
+            failed_categories: Vec::new(),
         }
     }
 
