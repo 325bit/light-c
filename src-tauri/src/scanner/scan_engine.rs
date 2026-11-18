@@ -76,9 +76,7 @@ impl ScanEngine {
 
                 // Poisoned locks here mean a sibling thread panicked while holding the mutex;
                 // recovering the guarded data is safe now that the panicking thread has exited.
-                let mut results = results_clone
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner);
+                let mut results = results_clone.lock().unwrap_or_else(PoisonError::into_inner);
                 results.push(category_result);
             });
             handles.push(handle);
@@ -100,9 +98,7 @@ impl ScanEngine {
         result.failed_categories = failed_categories;
         // Consume the collected results by value instead of cloning each one; at this point
         // every thread has joined, so no one else reads the shared vec anymore.
-        let mut category_results = results
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+        let mut category_results = results.lock().unwrap_or_else(PoisonError::into_inner);
         for category_result in category_results.drain(..) {
             result.add_category_result(category_result);
         }
