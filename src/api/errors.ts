@@ -65,6 +65,23 @@ function asPayload(value: unknown): AppErrorPayload | null {
 }
 
 /**
+ * Recover a payload that was stringified somewhere along the way.
+ *
+ * Tauri hands the deserialized value to the promise rejection, so this should not
+ * happen — but if a wrapper ever does `String(error)`, the alternative is showing
+ * the user raw JSON. Cheap insurance on a hot failure path.
+ */
+function parseStringified(text: string): AppErrorPayload | null {
+  const trimmed = text.trim();
+  if (!trimmed.startsWith('{') || !trimmed.includes('"code"')) return null;
+  try {
+    return asPayload(JSON.parse(trimmed));
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Normalize anything a `catch` can receive into the structured shape.
  *
  * Tolerates the pre-M16 string ABI on purpose: a command that has not been
@@ -75,10 +92,12 @@ export function toAppError(error: unknown): AppErrorPayload {
   if (payload) return payload;
 
   if (typeof error === 'string') {
-    return { code: 'internal', message: error };
+    const recovered = parseStringified(error);
+    return recovered ?? { code: 'internal', message: error };
   }
   if (error instanceof Error) {
-    return { code: 'internal', message: error.message };
+    const recovered = parseStringified(error.message);
+    return recovered ?? { code: 'internal', message: error.message };
   }
   if (error === undefined || error === null) {
     return { code: 'internal', message: '' };
