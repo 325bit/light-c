@@ -512,6 +512,8 @@ export interface SocialFileEntry {
   risk_level: RiskLevel;
   /** 鏄惁鍙垹闄わ紙Critical 绾у埆寮哄埗涓?false锛?*/
   deletable: boolean;
+  /** 最后修改时间（Unix 秒）；0 表示没取到，排序时垫底 */
+  modified_time: number;
 }
 
 /** 绀句氦杞欢鍒嗙被缁熻 */

@@ -695,6 +695,7 @@
       "noFiles": "這個目錄裡沒有檔案",
       "columnPath": "檔案路徑",
       "columnSize": "大小",
+      "columnTime": "修改時間",
       "openFolder": "在資料夾中開啟"
     },
     "devCache": {

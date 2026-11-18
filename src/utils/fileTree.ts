@@ -306,6 +306,45 @@ export function sortTree<T extends TreeSourceFile>(
 }
 
 /**
+ * 扁平列表排序（不建树的「全部文件」弹窗用）。
+ *
+ * 中文说明：AI 缓存明细这类地方拿到的就是一堆文件，没有目录层级可折，
+ * 排序口径要和目录树弹窗完全一致，否则同一个「按大小」在两个窗口里含义不同。
+ * 三条口径同样照搬：名称自然序、大小按字节、时间按 Unix 秒；
+ * 时间缺失（0）的一律排在最后，不随升降序翻到前面去。
+ */
+export function sortFileList<T>(
+  files: T[],
+  sort: TreeSort,
+  accessors: {
+    getName: (file: T) => string;
+    getSize: (file: T) => number;
+    getTime: (file: T) => number;
+  },
+): T[] {
+  const { key, desc } = sort;
+  const next = files.slice();
+  next.sort((left, right) => {
+    if (key === 'name') {
+      const result = collator.compare(accessors.getName(left), accessors.getName(right));
+      return desc ? -result : result;
+    }
+    if (key === 'size') {
+      const result = accessors.getSize(left) - accessors.getSize(right);
+      return desc ? -result : result;
+    }
+    const leftTime = accessors.getTime(left);
+    const rightTime = accessors.getTime(right);
+    if (leftTime === rightTime) return 0;
+    // 没有时间戳的数据无论升序降序都垫底：把它们当成"最旧"会在降序时冒到最前面
+    if (leftTime === 0) return 1;
+    if (rightTime === 0) return -1;
+    return desc ? rightTime - leftTime : leftTime - rightTime;
+  });
+  return next;
+}
+
+/**
  * 把树摊平成可见行（已折叠目录的后代不出现），供虚拟列表消费。
  *
  * 展开状态由调用方持有：目录 key 稳定（就是完整路径），重新扫描后同一批目录

@@ -9,7 +9,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
-import { ArrowDown, ArrowUp, ChevronRight, Folder, FolderOpen, File as FileIcon } from 'lucide-react';
+import { ChevronRight, Folder, FolderOpen, File as FileIcon } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import {
   buildFileTree,
@@ -17,12 +17,12 @@ import {
   collectFolderKeys,
   computeSelectedCounts,
   sortTree,
-  DEFAULT_SORT_DESC,
   type FileTreeNode,
   type TreeSort,
   type TreeSortKey,
   type TreeSourceFile,
 } from '../utils/fileTree';
+import { FileSortControl, FILE_SORT_KEYS } from './FileSortControl';
 import { formatDate, formatSize } from '../utils/format';
 
 export interface FileTreeListProps<T extends TreeSourceFile> {
@@ -51,13 +51,12 @@ export interface FileTreeListProps<T extends TreeSourceFile> {
   disabled?: boolean;
   /** 显示排序控件（名称 / 大小 / 修改时间）。卡片内那块窄列表默认不显示 */
   sortable?: boolean;
+  /** 排序控件的可用键；数据源没有修改时间时传 ['name','size']，免得摆一个点了没反应的按钮 */
+  sortKeys?: TreeSortKey[];
   className?: string;
 }
 
 const INDENT_STEP = 14;
-
-/** 排序控件里的按键顺序：名称 / 大小 / 修改时间 */
-const SORT_KEYS: TreeSortKey[] = ['name', 'size', 'time'];
 
 export function FileTreeList<T extends TreeSourceFile>({
   files,
@@ -73,6 +72,7 @@ export function FileTreeList<T extends TreeSourceFile>({
   toolbarExtra,
   disabled = false,
   sortable = false,
+  sortKeys = FILE_SORT_KEYS,
   className,
 }: FileTreeListProps<T>) {
   const { t } = useTranslation('common');
@@ -190,24 +190,6 @@ export function FileTreeList<T extends TreeSourceFile>({
   const collapseAll = useCallback(() => {
     setExpandedKeys(new Set());
   }, []);
-
-  /**
-   * 点同一个键切换升/降序，点别的键换成那个键的默认方向
-   * （大小和时间默认从大到小/从新到旧，名称默认从小到大）。
-   */
-  const handleSort = useCallback((key: TreeSortKey) => {
-    setSort((previous) => (
-      previous.key === key
-        ? { key, desc: !previous.desc }
-        : { key, desc: DEFAULT_SORT_DESC[key] }
-    ));
-  }, []);
-
-  const sortLabel = useCallback((key: TreeSortKey) => {
-    if (key === 'size') return t('sortBySize');
-    if (key === 'time') return t('sortByTime');
-    return t('sortByName');
-  }, [t]);
 
   const virtualizer = useVirtualizer({
     count: rows.length,
@@ -337,29 +319,7 @@ export function FileTreeList<T extends TreeSourceFile>({
         </span>
         {toolbarExtra}
         {sortable && (
-          <div className="flex shrink-0 items-center gap-0.5 rounded-lg bg-[var(--bg-hover)] p-0.5">
-            {SORT_KEYS.map((key) => {
-              const active = sort.key === key;
-              return (
-                <button
-                  key={key}
-                  onClick={() => handleSort(key)}
-                  title={active
-                    ? (sort.desc ? t('sortDescendingHint') : t('sortAscendingHint'))
-                    : t('sortSwitchHint')}
-                  className={`flex items-center gap-0.5 rounded-md px-1.5 py-0.5 text-[0.79rem] transition
-                    ${active
-                      ? 'bg-[var(--bg-card)] font-medium text-[var(--brand-green)] shadow-sm'
-                      : 'text-[var(--text-muted)] hover:text-[var(--brand-green)]'}`}
-                >
-                  {sortLabel(key)}
-                  {active && (sort.desc
-                    ? <ArrowDown className="h-3 w-3" />
-                    : <ArrowUp className="h-3 w-3" />)}
-                </button>
-              );
-            })}
-          </div>
+          <FileSortControl sort={sort} onSortChange={setSort} keys={sortKeys} />
         )}
         {tree.hasBranches && (
           <span className="flex shrink-0 items-center gap-1">

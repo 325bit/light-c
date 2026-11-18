@@ -324,6 +324,13 @@ impl AiToolScanner {
                 files.push(AiCacheFile {
                     path: entry.path().to_string_lossy().to_string(),
                     size: metadata.len(),
+                    // 明细弹窗要按修改时间排序：这里已经在读 metadata，取 mtime 不额外发系统调用
+                    modified_time: metadata
+                        .modified()
+                        .ok()
+                        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+                        .map(|elapsed| elapsed.as_secs())
+                        .unwrap_or(0),
                 });
             }
         }

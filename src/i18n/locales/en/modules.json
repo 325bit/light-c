@@ -156,6 +156,7 @@
       "noFiles": "No files in this folder",
       "columnPath": "File path",
       "columnSize": "Size",
+      "columnTime": "Modified",
       "openFolder": "Show in folder"
     },
     "devCache": {

@@ -28,6 +28,9 @@ pub struct AiCacheEntry {
 pub struct AiCacheFile {
     pub path: String,
     pub size: u64,
+    /// 最后修改时间（Unix 秒）。明细弹窗的「按修改时间排序」用它；
+    /// 读不到按 0 传，排序时垫底。
+    pub modified_time: u64,
 }
 
 /// 明细弹窗的文件列表。

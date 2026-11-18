@@ -1160,6 +1160,9 @@ function FileListModal({
                   onSetSelection={onSetSelectionForPaths}
                   onToggleFile={(file) => onToggleFile(file)}
                   isSelectable={isFileDeletable}
+                  // 弹窗是「查看全部文件」的唯一入口，排序放在这里；
+                  // 卡片里那块 192px 的预览列表仍然不摆排序控件
+                  sortable
                   height={Math.round(Math.min(560, Math.max(260, window.innerHeight * 0.45)))}
                   rowHeight={44}
                   renderFileMeta={(file) => <SocialFileMeta file={file} />}

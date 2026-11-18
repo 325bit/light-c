@@ -194,6 +194,19 @@ impl FileCategory {
 // 数据结构
 // ============================================================================
 
+/// 文件最后修改时间（Unix 秒）。
+///
+/// 读不到（占用、权限、时钟早于 1970）一律按 0 返回 —— 界面上这类条目在
+/// 「按修改时间」排序时统一垫底，不会混进正常数据里。
+fn modified_secs(metadata: &std::fs::Metadata) -> i64 {
+    metadata
+        .modified()
+        .ok()
+        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|elapsed| elapsed.as_secs() as i64)
+        .unwrap_or(0)
+}
+
 /// 社交软件文件条目
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SocialFileEntry {
@@ -209,6 +222,10 @@ pub struct SocialFileEntry {
     pub risk_level: RiskLevel,
     /// 是否可删除（Critical 级别强制为 false）
     pub deletable: bool,
+    /// 最后修改时间（Unix 秒）。明细弹窗的「按修改时间排序」用它；
+    /// 旧版本缓存里没有这个字段，反序列化时按 0 处理（排序垫底）。
+    #[serde(default)]
+    pub modified_time: i64,
 }
 
 /// 社交软件分类统计
@@ -761,6 +778,7 @@ impl SocialScanner {
                 entries.push(self.build_file_entry(
                     &dir_entry.path(),
                     metadata.len(),
+                    modified_secs(&metadata),
                     app_name,
                     base_category,
                 ));
@@ -815,6 +833,7 @@ impl SocialScanner {
         &self,
         path: &Path,
         size: u64,
+        modified_time: i64,
         app_name: &str,
         base_category: FileCategory,
     ) -> SocialFileEntry {
@@ -826,6 +845,7 @@ impl SocialScanner {
             category,
             risk_level,
             deletable: risk_level.is_deletable(),
+            modified_time,
         }
     }
 

@@ -43,6 +43,8 @@ export interface AiToolScanResult {
 export interface AiCacheFile {
   path: string;
   size: number;
+  /** 最后修改时间（Unix 秒）；0 表示没取到，排序时垫底 */
+  modifiedTime: number;
 }
 
 /** 明细弹窗的文件列表 */

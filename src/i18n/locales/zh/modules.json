@@ -178,6 +178,7 @@
       "noFiles": "这个目录里没有文件",
       "columnPath": "文件路径",
       "columnSize": "大小",
+      "columnTime": "修改时间",
       "openFolder": "在文件夹中打开"
     },
     "devCache": {

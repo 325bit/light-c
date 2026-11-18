@@ -156,6 +156,7 @@
       "noFiles": "このフォルダーにファイルはありません",
       "columnPath": "ファイルパス",
       "columnSize": "サイズ",
+      "columnTime": "更新日時",
       "openFolder": "フォルダーで開く"
     },
     "devCache": {

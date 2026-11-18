@@ -7,7 +7,7 @@
  * 为什么用虚拟滚动：单个缓存目录可能有上万个文件（WorkBuddy 的 logs 就上千），
  * 一次性渲染会让弹窗卡死。这里按行虚拟化，只渲染视口内的十几行。
  */
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { AnimatePresence, motion } from 'framer-motion';
@@ -16,7 +16,9 @@ import { FolderOpen, X } from 'lucide-react';
 import { listAiCacheFiles } from '../../api/aiToolCleanup';
 import { openInFolder } from '../../api/commands';
 import type { AiCacheFileList } from '../../types/aiToolCleanup';
-import { formatSize } from '../../utils/format';
+import { FileSortControl } from '../FileSortControl';
+import { sortFileList, type TreeSort } from '../../utils/fileTree';
+import { formatDate, formatSize } from '../../utils/format';
 
 interface AiCacheFileModalProps {
   isOpen: boolean;
@@ -34,7 +36,27 @@ export function AiCacheFileModal({ isOpen, dirPath, dirName, onClose }: AiCacheF
   const files = listing.files;
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [sort, setSort] = useState<TreeSort>({ key: 'name', desc: false });
   const scrollRef = useRef<HTMLDivElement>(null);
+
+  /*
+    排序口径与「查看全部文件」目录树弹窗完全一致：名称自然序、大小按字节、
+    时间按 Unix 秒；没有时间戳的条目无论升降序都垫底，不会冒充"最新"。
+    这里没有目录层级，所以直接排数组，不用建树。
+  */
+  const sortedFiles = useMemo(
+    () => sortFileList(files, sort, {
+      // 按名称排的是文件名，不是整条路径：同一目录下文件名的前缀都一样，
+      // 拿全路径去比等于没排。取最后一段。
+      getName: (file) => {
+        const separator = Math.max(file.path.lastIndexOf('\\'), file.path.lastIndexOf('/'));
+        return separator >= 0 ? file.path.slice(separator + 1) : file.path;
+      },
+      getSize: (file) => file.size,
+      getTime: (file) => file.modifiedTime ?? 0,
+    }),
+    [files, sort],
+  );
 
   useEffect(() => {
     if (!isOpen || !dirPath) {
@@ -61,7 +83,7 @@ export function AiCacheFileModal({ isOpen, dirPath, dirName, onClose }: AiCacheF
   }, [isOpen, dirPath]);
 
   const virtualizer = useVirtualizer({
-    count: files.length,
+    count: sortedFiles.length,
     getScrollElement: () => scrollRef.current,
     estimateSize: () => 34,
     overscan: 8,
@@ -76,9 +98,9 @@ export function AiCacheFileModal({ isOpen, dirPath, dirName, onClose }: AiCacheF
    */
   useEffect(() => {
     virtualizer.measure();
-    // 只依赖 files：virtualizer 每次渲染都是新对象，放进依赖会无限重渲染
+    // 只依赖排序后的列表：virtualizer 每次渲染都是新对象，放进依赖会无限重渲染
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [files]);
+  }, [sortedFiles]);
 
   const totalSize = files.reduce((sum, file) => sum + file.size, 0);
 
@@ -120,21 +142,30 @@ export function AiCacheFileModal({ isOpen, dirPath, dirName, onClose }: AiCacheF
               )}
             </p>
           </div>
-          <button
-            type="button"
-            onClick={onClose}
-            className="p-2 rounded-lg hover:bg-[var(--bg-hover)] transition-colors"
-            aria-label={t('common:close')}
-          >
-            <X className="h-5 w-5 text-[var(--text-muted)]" />
-          </button>
+          <div className="flex shrink-0 items-center gap-2">
+            {/* 排序控件与其他「查看全部文件」弹窗同一套：名称 / 大小 / 修改时间，
+                再点同一个键切换升降序。列头不单独做可点击排序，避免两处口径打架 */}
+            <FileSortControl sort={sort} onSortChange={setSort} />
+            <button
+              type="button"
+              onClick={onClose}
+              className="p-2 rounded-lg hover:bg-[var(--bg-hover)] transition-colors"
+              aria-label={t('common:close')}
+            >
+              <X className="h-5 w-5 text-[var(--text-muted)]" />
+            </button>
+          </div>
         </div>
 
         {/* 表头行：列宽与数据行对齐，序号列居中 */}
         <div className="flex shrink-0 items-center gap-4 border-b border-[var(--border-color)] bg-[var(--bg-hover)] px-6 py-2 text-xs font-medium text-[var(--text-muted)]">
           <span className="w-10 shrink-0 text-center">#</span>
           <span className="flex-1">{t('aiTools.columnPath')}</span>
-          <span className="w-24 text-right">{t('aiTools.columnSize')}</span>
+          {/* 按时间排序时才出现时间列：平时不占宽度，排序时才有依据可看 */}
+          {sort.key === 'time' && (
+            <span className="w-24 shrink-0 text-right">{t('aiTools.columnTime')}</span>
+          )}
+          <span className="w-24 shrink-0 text-right">{t('aiTools.columnSize')}</span>
           {/* 占位：与数据行的「打开文件夹」按钮对齐 */}
           <span className="w-5 shrink-0" />
         </div>
@@ -148,14 +179,14 @@ export function AiCacheFileModal({ isOpen, dirPath, dirName, onClose }: AiCacheF
             <div className="flex h-32 items-center justify-center px-6 text-center text-sm text-[var(--color-danger)]">
               {error}
             </div>
-          ) : files.length === 0 ? (
+          ) : sortedFiles.length === 0 ? (
             <div className="flex h-32 items-center justify-center text-sm text-[var(--text-muted)]">
               {t('aiTools.noFiles')}
             </div>
           ) : (
             <div style={{ height: `${virtualizer.getTotalSize()}px`, position: 'relative' }}>
               {virtualizer.getVirtualItems().map((virtualRow) => {
-                const file = files[virtualRow.index];
+                const file = sortedFiles[virtualRow.index];
                 return (
                   <div
                     key={virtualRow.key}
@@ -174,6 +205,11 @@ export function AiCacheFileModal({ isOpen, dirPath, dirName, onClose }: AiCacheF
                     >
                       {file.path}
                     </span>
+                    {sort.key === 'time' && (
+                      <span className="w-24 shrink-0 text-right tabular-nums text-[var(--text-faint)]">
+                        {file.modifiedTime > 0 ? formatDate(file.modifiedTime) : '—'}
+                      </span>
+                    )}
                     <span className="w-24 shrink-0 text-right tabular-nums text-[var(--text-muted)]">
                       {formatSize(file.size)}
                     </span>
