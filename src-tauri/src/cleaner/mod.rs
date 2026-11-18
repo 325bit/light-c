@@ -2,6 +2,7 @@
 // Cleaner module - responsible for deleting junk files
 // ============================================================================
 
+mod delete_attempt;
 mod delete_engine;
 mod enhanced_delete;
 mod permanent_delete;

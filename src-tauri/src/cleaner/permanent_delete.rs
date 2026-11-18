@@ -27,25 +27,25 @@
 //
 // [Error handling]
 // - All IO operations are wrapped in Result
-// - When a file is locked, automatically switch to the "delete on reboot" queue
-// - When permissions are insufficient, try taking ownership and retry
+// - When a file is locked, the shared ladder queues it for deletion on reboot
+// - When permissions are insufficient, it clears protection attributes and retries
+//   (it never takes ownership: an uninstall leftover is not a cache directory)
 // ============================================================================
 
-use std::fs;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
-use log::{debug, info, warn};
+use log::{info, warn};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use walkdir::WalkDir;
 
+use super::delete_attempt::{
+    attempt_delete, AttemptPolicy, AttributeClearance, DeleteOutcome, RebootPolicy,
+};
 use crate::error::ErrorCode;
 use crate::path_guard::{ensure_deletable, DeleteScope};
 use crate::scanner::leftover_whitelist::{self, LeftoverWhitelistEntry};
-
-#[cfg(windows)]
-use crate::cleaner::enhanced_delete::windows_api;
 
 // ============================================================================
 // Safety check result type
@@ -107,34 +107,6 @@ impl SafetyCheckResult {
                 format!("系统保护路径: {}", reason)
             }
         }
-    }
-}
-
-/// Classify a raw deletion failure message.
-///
-/// This is the one place where sniffing the OS text is legitimate: the string
-/// comes straight from `remove_dir_all` / `icacls`, before anyone formatted it
-/// for a human. Everywhere else the UI must switch on `failure_code` instead.
-fn classify_delete_failure(message: &str) -> ErrorCode {
-    let lower = message.to_ascii_lowercase();
-    if lower.contains("access is denied")
-        || message.contains("拒绝访问")
-        || lower.contains("os error 5")
-    {
-        ErrorCode::PermissionDenied
-    } else if lower.contains("being used")
-        || message.contains("占用")
-        || lower.contains("os error 32")
-    {
-        ErrorCode::TargetInUse
-    } else if lower.contains("not find")
-        || message.contains("找不到")
-        || lower.contains("os error 2")
-        || lower.contains("os error 3")
-    {
-        ErrorCode::NotFound
-    } else {
-        ErrorCode::Internal
     }
 }
 
@@ -449,12 +421,28 @@ impl PermanentDeleteEngine {
         let (total_size, file_count) = self.calculate_dir_size(path);
 
         // ====================================================================
-        // ⚠️ WARNING: the following code performs permanent deletion; data cannot be recovered!
+        // WARNING: the following code performs permanent deletion; data cannot be recovered!
         // ====================================================================
 
-        // Try to delete the entire directory directly
-        match self.try_remove_dir_all(path) {
-            Ok(()) => {
+        // S3b: one call into the shared ladder. Leftovers get the same two rungs
+        // as junk clean — attributes (only when the refusal was about permissions,
+        // because a locked tree is not an attribute problem) and the reboot queue.
+        // Never ownership: an uninstall leftover under Program Files is not a
+        // cache directory, and handing Administrators full control of it is not
+        // something a "delete leftovers" click authorises.
+        let policy = AttemptPolicy {
+            clear_attributes: AttributeClearance::OnPermissionDenied,
+            take_ownership: false,
+            ownership_for_caches: false,
+            reboot: if self.enable_reboot_fallback {
+                RebootPolicy::EntryScope
+            } else {
+                RebootPolicy::Off
+            },
+        };
+
+        match attempt_delete(path, DeleteScope::Leftovers, &policy) {
+            DeleteOutcome::Freed => {
                 info!(
                     "成功永久删除: {} ({} 文件, {} 字节)",
                     path_str, file_count, total_size
@@ -472,112 +460,39 @@ impl PermanentDeleteEngine {
                     safety_check: SafetyCheckResult::Safe,
                 }
             }
-            Err(e) => {
-                warn!("直接删除失败: {} - {}", path_str, e);
-
-                // Try deletion on reboot
-                if self.enable_reboot_fallback {
-                    if self.mark_for_reboot_delete(path) {
-                        return LeftoverDeleteResult {
-                            path: path_str,
-                            success: false,
-                            deleted_files: 0,
-                            freed_size: 0,
-                            failure_reason: Some("已标记为重启后删除".to_string()),
-                            failure_code: Some(ErrorCode::TargetInUse),
-                            marked_for_reboot: true,
-                            needs_manual_review: false,
-                            safety_check: SafetyCheckResult::Safe,
-                        };
-                    }
-                }
-
+            DeleteOutcome::RebootPending => {
+                info!("已标记为重启后删除: {}", path_str);
                 LeftoverDeleteResult {
                     path: path_str,
                     success: false,
                     deleted_files: 0,
                     freed_size: 0,
-                    failure_reason: Some(format!("删除失败: {}", e)),
-                    failure_code: Some(classify_delete_failure(&e)),
+                    failure_reason: Some("已标记为重启后删除".to_string()),
+                    failure_code: Some(ErrorCode::TargetInUse),
+                    marked_for_reboot: true,
+                    needs_manual_review: false,
+                    safety_check: SafetyCheckResult::Safe,
+                }
+            }
+            DeleteOutcome::Failed(error) => {
+                warn!("删除失败: {} - {}", path_str, error.message);
+                LeftoverDeleteResult {
+                    path: path_str,
+                    success: false,
+                    deleted_files: 0,
+                    freed_size: 0,
+                    failure_reason: Some(format!("删除失败: {}", error.message)),
+                    // S3b: the code comes from the ladder's OS-error mapping now,
+                    // not from `classify_delete_failure`, which had to sniff the
+                    // formatted message for "os error N" because the numeric code
+                    // had already been formatted away one frame up.
+                    failure_code: Some(error.code),
                     marked_for_reboot: false,
                     needs_manual_review: false,
                     safety_check: SafetyCheckResult::Safe,
                 }
             }
         }
-    }
-
-    /// Try to delete the entire directory
-    ///
-    /// Explanation
-    /// Uses std::fs::remove_dir_all to recursively delete the directory and all its contents.
-    /// If read-only files are encountered, it first tries to remove the read-only attribute and retry.
-    fn try_remove_dir_all(&self, path: &Path) -> Result<(), String> {
-        // ====================================================================
-        // ⚠️ WARNING: this operation permanently deletes disk data and cannot be undone!
-        // ====================================================================
-
-        // One kind of uninstall leftover is a **file** (an orphaned ext4.vhdx / vmdk, etc.).
-        // remove_dir_all always reports "invalid directory name" for a file, then falls through to "delete on reboot" —
-        // the user thinks it was deleted, but no space was actually freed.
-        if fs::symlink_metadata(path)
-            .map(|metadata| metadata.is_file())
-            .unwrap_or(false)
-        {
-            return fs::remove_file(path).map_err(|error| format!("{}", error));
-        }
-
-        // First try direct deletion
-        match fs::remove_dir_all(path) {
-            Ok(()) => return Ok(()),
-            Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
-                debug!("权限不足，尝试移除保护属性后重试: {:?}", path);
-            }
-            Err(e) => return Err(format!("{}", e)),
-        }
-
-        // Try removing protection attributes from all files and retry
-        self.remove_all_protection_attributes(path);
-
-        // ====================================================================
-        // ⚠️ WARNING: this operation permanently deletes disk data and cannot be undone!
-        // ====================================================================
-        fs::remove_dir_all(path).map_err(|e| format!("{}", e))
-    }
-
-    /// Remove protection attributes from all files under a directory
-    fn remove_all_protection_attributes(&self, path: &Path) {
-        for entry in WalkDir::new(path).into_iter().filter_map(|e| e.ok()) {
-            let entry_path = entry.path().to_string_lossy().to_string();
-            #[cfg(windows)]
-            let _ = windows_api::remove_protection_attributes(&entry_path);
-        }
-    }
-
-    /// Mark a directory for deletion on reboot
-    ///
-    /// MoveFileExW + MOVEFILE_DELAY_UNTIL_REBOOT requires a directory to be deleted only after all its contents
-    /// have been removed. Therefore the marking order must be: deepest subdirectory → files → top-level directory.
-    fn mark_for_reboot_delete(&self, path: &Path) -> bool {
-        let mut any_marked = false;
-
-        // Collect all entries and sort by depth from deepest to shallowest (directories before files at the same depth)
-        let mut entries: Vec<(usize, std::path::PathBuf, bool)> = WalkDir::new(path)
-            .into_iter()
-            .filter_map(|e| e.ok())
-            .map(|e| (e.depth(), e.path().to_path_buf(), e.file_type().is_dir()))
-            .collect();
-        entries.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| b.2.cmp(&a.2)));
-
-        for (_depth, entry_path, _is_dir) in &entries {
-            let path_str = entry_path.to_string_lossy().to_string();
-            #[cfg(windows)]
-            if windows_api::mark_for_delete_on_reboot(&path_str).is_ok() {
-                any_marked = true;
-            }
-        }
-
-        any_marked
     }
 
     /// Calculate directory size
@@ -615,29 +530,7 @@ impl Default for PermanentDeleteEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn raw_os_failures_map_to_actionable_codes() {
-        // `failure_code` is what the UI switches on, so the classification of the
-        // raw OS text has to stay stable even when the wording differs by locale.
-        assert_eq!(
-            classify_delete_failure("拒绝访问。 (os error 5)"),
-            ErrorCode::PermissionDenied
-        );
-        assert_eq!(
-            classify_delete_failure("Access is denied. (os error 5)"),
-            ErrorCode::PermissionDenied
-        );
-        assert_eq!(
-            classify_delete_failure("另一个程序正在使用此文件 (os error 32)"),
-            ErrorCode::TargetInUse
-        );
-        assert_eq!(
-            classify_delete_failure("系统找不到指定的文件。 (os error 2)"),
-            ErrorCode::NotFound
-        );
-        assert_eq!(classify_delete_failure("boom"), ErrorCode::Internal);
-    }
+    use std::fs;
 
     #[test]
     fn safety_failures_carry_the_protected_code() {

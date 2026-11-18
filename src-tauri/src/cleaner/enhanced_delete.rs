@@ -14,21 +14,18 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
-use std::io;
-#[cfg(windows)]
-use std::os::windows::process::CommandExt;
 use std::path::Path;
-use std::process::Command;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use log::{debug, info, warn};
 use serde::{Deserialize, Serialize};
 
-use crate::path_guard::{
-    drive_root_end, ensure_deletable, is_rebuildable_system_cache_path, profile_root_end,
-    DeleteScope,
+use super::delete_attempt::{
+    attempt_delete, AttemptPolicy, AttributeClearance, DeleteOutcome, RebootPolicy,
 };
+use crate::error::ErrorCode;
+use crate::path_guard::{ensure_deletable, DeleteScope};
 
 // ============================================================================
 // Windows API bindings
@@ -368,141 +365,6 @@ impl Default for EnhancedDeleteResult {
 // Enhanced delete engine
 // ============================================================================
 
-/// Which known root a Take-Ownership whitelist entry is anchored to (M5 fix).
-///
-/// Before the fix the whitelist matched with `find()` at *any* depth, so a folder
-/// merely named `Cache` under user documents (e.g. `C:\Users\X\Documents\Backup\Cache`)
-/// qualified for Take Ownership — granting Administrators full control over a path
-/// that is not a junk cache at all. Every entry must now declare which known root
-/// anchors it, and a match is only accepted at that exact position.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum OwnershipAnchor {
-    /// Match only directly under a drive root: `X:<entry>…` (the marker starts
-    /// right after the drive colon, the same boundary rule as
-    /// `path_guard::is_rebuildable_system_cache_path`).
-    DriveRoot,
-    /// Match only directly under the user-profile root: `X:\users\<name><entry>…`.
-    ProfileRoot,
-    /// Match at any component boundary inside the profile's `AppData\Local` subtree.
-    ///
-    /// Chromium-based browsers place their `Service Worker` / `Media Cache`
-    /// directories below vendor/profile directories that vary per browser
-    /// (`Google\Chrome`, `Microsoft\Edge`, Brave\…), so the suffix cannot be
-    /// spelled out. Restricting the search to this user-owned subtree keeps the
-    /// grant out of user documents and other arbitrary locations.
-    ProfileAppDataLocal,
-}
-
-/// Safe directories where Take Ownership is allowed
-///
-/// # Note
-/// The "take ownership" operation is only allowed for files under these directories.
-/// This prevents accidental deletion of system files.
-/// Each entry is `(anchor, marker)`; see `OwnershipAnchor` for why matching is
-/// position-bound instead of a plain substring search.
-const SAFE_OWNERSHIP_PATHS: &[(OwnershipAnchor, &str)] = &[
-    (OwnershipAnchor::DriveRoot, "\\temp"),
-    (OwnershipAnchor::DriveRoot, "\\tmp"),
-    (OwnershipAnchor::DriveRoot, "\\cache"),
-    (OwnershipAnchor::DriveRoot, "\\caches"),
-    (OwnershipAnchor::ProfileRoot, "\\appdata\\local\\temp"),
-    (
-        OwnershipAnchor::ProfileRoot,
-        "\\appdata\\local\\microsoft\\windows\\temporary internet files",
-    ),
-    (
-        OwnershipAnchor::ProfileRoot,
-        "\\appdata\\local\\microsoft\\windows\\inetcache",
-    ),
-    (
-        OwnershipAnchor::ProfileRoot,
-        "\\appdata\\local\\microsoft\\windows\\caches",
-    ),
-    (
-        OwnershipAnchor::ProfileRoot,
-        "\\appdata\\local\\microsoft\\windows\\explorer",
-    ),
-    (
-        OwnershipAnchor::ProfileRoot,
-        "\\appdata\\local\\microsoft\\windows\\webcache",
-    ),
-    (
-        OwnershipAnchor::ProfileRoot,
-        "\\appdata\\local\\microsoft\\windows\\clipboard",
-    ),
-    // Service Worker / media cache directories of Chromium-based browsers, at the same level as Cache and equally rebuildable.
-    // Their location varies by browser (Google\Chrome, Microsoft\Edge, Brave\…),
-    // so they are matched at any component boundary **inside the profile's
-    // AppData\Local subtree only** — never in arbitrary user directories.
-    (OwnershipAnchor::ProfileAppDataLocal, "\\service worker"),
-    (OwnershipAnchor::ProfileAppDataLocal, "\\media cache"),
-    (OwnershipAnchor::DriveRoot, "\\windows\\temp"),
-    // Windows 10/11 system-level temp directories and kernel crash report directories, containing rebuildable diagnostic data.
-    (OwnershipAnchor::DriveRoot, "\\windows\\systemtemp"),
-    (OwnershipAnchor::DriveRoot, "\\windows\\livekernelreports"),
-    (OwnershipAnchor::DriveRoot, "\\windows\\prefetch"),
-    (
-        OwnershipAnchor::DriveRoot,
-        "\\windows\\softwaredistribution\\download",
-    ),
-    (
-        OwnershipAnchor::DriveRoot,
-        "\\windows\\softwaredistribution\\deliveryoptimization",
-    ),
-    (
-        OwnershipAnchor::DriveRoot,
-        "\\windows\\serviceprofiles\\networkservice\\appdata\\local\\microsoft\\windows\\deliveryoptimization",
-    ),
-    (
-        OwnershipAnchor::DriveRoot,
-        "\\windows\\serviceprofiles\\localservice\\appdata\\local\\fontcache",
-    ),
-    (
-        OwnershipAnchor::DriveRoot,
-        "\\programdata\\microsoft\\windows defender\\localcopy",
-    ),
-    (
-        OwnershipAnchor::DriveRoot,
-        "\\programdata\\microsoft\\windows defender\\support",
-    ),
-    (
-        OwnershipAnchor::DriveRoot,
-        "\\programdata\\microsoft\\windows defender\\scans\\history\\service",
-    ),
-    // Windows error report queues/archives: jointly held by SYSTEM and TrustedInstaller, so elevated deletion must be allowed.
-    (
-        OwnershipAnchor::DriveRoot,
-        "\\programdata\\microsoft\\windows\\wer",
-    ),
-    (
-        OwnershipAnchor::DriveRoot,
-        "\\windows\\system32\\d3d_cache",
-    ),
-    (OwnershipAnchor::ProfileRoot, "\\appdata\\local\\d3dscache"),
-    (OwnershipAnchor::ProfileRoot, "\\appdata\\local\\amd\\dxcache"),
-    (
-        OwnershipAnchor::ProfileRoot,
-        "\\appdata\\local\\nvidia\\dxcache",
-    ),
-    (
-        OwnershipAnchor::ProfileRoot,
-        "\\appdata\\local\\nvidia\\glcache",
-    ),
-    (OwnershipAnchor::ProfileRoot, "\\appdata\\local\\nvidia\\dxc"),
-    (
-        OwnershipAnchor::ProfileRoot,
-        "\\appdata\\local\\nvidia\\computecache",
-    ),
-    (
-        OwnershipAnchor::ProfileRoot,
-        "\\appdata\\local\\intel\\shadercache",
-    ),
-    (OwnershipAnchor::DriveRoot, "\\$recycle.bin"),
-];
-
-// Use the built-in Administrators group SID to avoid icacls failing to resolve localized group names on Chinese Windows.
-const LOCAL_ADMINISTRATORS_SID: &str = "*S-1-5-32-544";
-
 /// Enhanced delete engine
 pub struct EnhancedDeleteEngine {
     /// Disk cluster size cache
@@ -779,7 +641,7 @@ impl EnhancedDeleteEngine {
         // surfaces installers under `C:\Windows\Temp`.
         if let Err(error) = ensure_deletable(file_path, DeleteScope::EnhancedClean) {
             let reason = match error.code {
-                crate::error::ErrorCode::Protected => DeleteFailureReason::SystemProtected,
+                ErrorCode::Protected => DeleteFailureReason::SystemProtected,
                 _ => DeleteFailureReason::OutOfScope,
             };
             return FileDeleteResult {
@@ -804,9 +666,17 @@ impl EnhancedDeleteEngine {
             };
         }
 
-        // Try to delete
-        match self.try_delete(file_path) {
-            Ok(_) => {
+        // S3b: the ladder (attributes -> ownership -> reboot queue) is one call
+        // now. The policy below keeps this engine's product decisions: attribute
+        // clearing always, ownership only inside the whitelist and only when the
+        // user allowed it (or for rebuildable caches, which the cleanup wizard
+        // deletes anyway), reboot queue behind that same whitelist.
+        match attempt_delete(
+            file_path,
+            DeleteScope::EnhancedClean,
+            &self.attempt_policy(),
+        ) {
+            DeleteOutcome::Freed => {
                 debug!("成功删除: {}", path);
                 FileDeleteResult {
                     path: path.to_string(),
@@ -817,220 +687,55 @@ impl EnhancedDeleteEngine {
                     marked_for_reboot: false,
                 }
             }
-            Err(e) => {
-                // Treat only Windows sharing violations as "locked", so permission errors are not wrongly queued for reboot.
-                let is_locked = matches!(e.raw_os_error, Some(32 | 33));
-
-                if is_locked && self.enable_reboot_delete {
-                    // Try to mark the file for deletion on reboot
-                    if self.is_safe_for_ownership(file_path) {
-                        match windows_api::mark_for_delete_on_reboot(path) {
-                            Ok(_) => {
-                                info!("文件已标记为重启删除: {}", path);
-                                return FileDeleteResult {
-                                    path: path.to_string(),
-                                    success: false,
-                                    logical_size,
-                                    physical_size,
-                                    failure_reason: Some(DeleteFailureReason::MarkedForReboot),
-                                    marked_for_reboot: true,
-                                };
-                            }
-                            Err(mark_err) => {
-                                warn!("标记重启删除失败: {} - {}", path, mark_err);
-                            }
-                        }
-                    }
-
-                    FileDeleteResult {
-                        path: path.to_string(),
-                        success: false,
-                        logical_size,
-                        physical_size,
-                        failure_reason: Some(DeleteFailureReason::FileLocked),
-                        marked_for_reboot: false,
-                    }
-                } else if e.raw_os_error == Some(5) || e.message.contains("权限") {
-                    FileDeleteResult {
-                        path: path.to_string(),
-                        success: false,
-                        logical_size,
-                        physical_size,
-                        // Keep the specific results of icacls and attribute handling so the UI does not show only a generic insufficient-permissions message.
-                        failure_reason: Some(DeleteFailureReason::Other(format!(
-                            "权限不足：{}",
-                            e.message
-                        ))),
-                        marked_for_reboot: false,
-                    }
-                } else {
-                    FileDeleteResult {
-                        path: path.to_string(),
-                        success: false,
-                        logical_size,
-                        physical_size,
-                        failure_reason: Some(DeleteFailureReason::Other(e.message)),
-                        marked_for_reboot: false,
-                    }
+            DeleteOutcome::RebootPending => {
+                info!("文件已标记为重启删除: {}", path);
+                FileDeleteResult {
+                    path: path.to_string(),
+                    success: false,
+                    logical_size,
+                    physical_size,
+                    failure_reason: Some(DeleteFailureReason::MarkedForReboot),
+                    marked_for_reboot: true,
+                }
+            }
+            DeleteOutcome::Failed(error) => {
+                // The code picks the reason. `Other` only carries the English
+                // diagnostic for the tooltip, so no sentence is assembled here —
+                // this used to be `Other(format!("权限不足：{}", message))`.
+                let reason = match error.code {
+                    ErrorCode::TargetInUse => DeleteFailureReason::FileLocked,
+                    ErrorCode::PermissionDenied => DeleteFailureReason::PermissionDenied,
+                    ErrorCode::NotFound => DeleteFailureReason::NotFound,
+                    _ => DeleteFailureReason::Other(error.message),
+                };
+                FileDeleteResult {
+                    path: path.to_string(),
+                    success: false,
+                    logical_size,
+                    physical_size,
+                    failure_reason: Some(reason),
+                    marked_for_reboot: false,
                 }
             }
         }
     }
 
-    /// Try to delete a file (multiple strategies)
-    fn try_delete(&self, path: &Path) -> Result<(), DeleteAttemptError> {
-        // Keep the original error code from the first deletion so later strategy failures can still be correctly identified as sharing violations.
-        let first_error = match self.direct_delete(path) {
-            Ok(()) => return Ok(()),
-            Err(error) => error,
-        };
-
-        let mut attempt_messages = vec![format!("直接删除失败: {}", first_error)];
-
-        // Strategy 2: delete after removing protection attributes, keeping the failure reason so the UI can locate the problem.
-        if let Err(error) = self.delete_after_remove_attrs(path) {
-            attempt_messages.push(error);
-        } else {
-            return Ok(());
-        }
-
-        // Cache directories explicitly marked by the Defender cleanup wizard allow single-file ownership takeover by default; other directories remain under the global toggle.
-        let path_string = path.to_string_lossy();
-        let is_cache_path = is_rebuildable_system_cache_path(&path_string);
-        if self.is_safe_for_ownership(path) && (self.enable_take_ownership || is_cache_path) {
-            if let Err(error) = self.delete_with_ownership(path) {
-                attempt_messages.push(error);
+    /// This engine's rung selection; see `delete_attempt::AttemptPolicy`.
+    ///
+    /// `ownership_for_caches` reproduces the old condition
+    /// `is_safe_for_ownership && (enable_take_ownership || is_cache_path)`: the
+    /// cache exemption widens the toggle, it never bypasses the whitelist.
+    fn attempt_policy(&self) -> AttemptPolicy {
+        AttemptPolicy {
+            clear_attributes: AttributeClearance::Always,
+            take_ownership: self.enable_take_ownership,
+            ownership_for_caches: true,
+            reboot: if self.enable_reboot_delete {
+                RebootPolicy::OwnershipWhitelist
             } else {
-                return Ok(());
-            }
+                RebootPolicy::Off
+            },
         }
-
-        // All strategies failed; aggregate each step's result so the UI does not show only a generic "deletion failed".
-        Err(DeleteAttemptError {
-            message: format!("删除失败: {}", attempt_messages.join("；")),
-            raw_os_error: first_error.raw_os_error(),
-        })
-    }
-
-    /// Delete directly
-    fn direct_delete(&self, path: &Path) -> io::Result<()> {
-        if path.is_dir() {
-            fs::remove_dir_all(path)
-        } else {
-            fs::remove_file(path)
-        }
-    }
-
-    /// Delete after removing protection attributes
-    fn delete_after_remove_attrs(&self, path: &Path) -> Result<(), String> {
-        let path_str = path.to_string_lossy();
-
-        // Remove read-only and similar attributes
-        windows_api::remove_protection_attributes(&path_str)?;
-
-        // Try deleting again
-        self.direct_delete(path)
-            .map_err(|e| format!("移除属性后仍无法删除: {}", e))
-    }
-
-    /// Delete after taking ownership
-    ///
-    /// # Note
-    /// Use the icacls command to take ownership of the file, then delete it.
-    /// Note: for performance, the /T recursive flag is not used; only a single file is handled.
-    ///
-    /// Safety considerations:
-    /// - Only run in directories listed in SAFE_OWNERSHIP_PATHS
-    /// - Never perform this operation on system-critical files
-    fn delete_with_ownership(&self, path: &Path) -> Result<(), String> {
-        let path_str = path.to_string_lossy();
-
-        debug!("尝试获取所有权: {}", path_str);
-
-        // Take ownership using icacls (no /T recursion, for better performance)
-        let output = Command::new("icacls")
-            .arg(&*path_str)
-            .arg("/setowner")
-            .arg(LOCAL_ADMINISTRATORS_SID)
-            .arg("/C") // continue on errors
-            .arg("/Q") // quiet mode
-            .creation_flags(0x08000000) // CREATE_NO_WINDOW - do not show a console window
-            .output()
-            .map_err(|e| format!("执行 icacls 失败: {}", e))?;
-
-        if !output.status.success() {
-            return Err(format!(
-                "获取所有权失败（退出码 {:?}）",
-                output.status.code()
-            ));
-        }
-
-        // Grant full control
-        let output = Command::new("icacls")
-            .arg(&*path_str)
-            .arg("/grant")
-            .arg(format!("{}:F", LOCAL_ADMINISTRATORS_SID))
-            .arg("/C")
-            .arg("/Q")
-            .creation_flags(0x08000000)
-            .output()
-            .map_err(|e| format!("执行 icacls 授权失败: {}", e))?;
-
-        if !output.status.success() {
-            return Err(format!("授权失败（退出码 {:?}）", output.status.code()));
-        }
-
-        // Try deleting again
-        self.direct_delete(path)
-            .map_err(|e| format!("获取所有权后仍无法删除: {}", e))
-    }
-
-    /// Check whether a path is safe for Take Ownership
-    ///
-    /// M5 fix: whitelist entries may only match when anchored to a known root —
-    /// the drive root, the user-profile root, or the profile's AppData\Local
-    /// subtree. A plain substring search used to allow a hit at any depth, so a
-    /// folder merely *named* temp/cache under user documents qualified for
-    /// granting Administrators full control.
-    fn is_safe_for_ownership(&self, path: &Path) -> bool {
-        // Same normalization as the protection checks: strip the `\\?\` prefix,
-        // unify `/` to `\`, then compare case-insensitively (ASCII only: the
-        // whitelist and every anchor are pure ASCII).
-        let normalized = crate::path_guard::compare_key(path);
-
-        // Anchor 1: the drive root — the position right after `X:`.
-        let drive_root_anchor = drive_root_end(&normalized);
-
-        // Anchor 2: the user-profile root — the position right after `X:\users\<name>`.
-        // Only a path *starting* with `X:\users\` counts; a deeper `\users\`
-        // component (e.g. `C:\fake\users\victim`) must not forge a profile root.
-        let profile_root_anchor = profile_root_end(&normalized);
-
-        // Anchor 3 region: everything after `<profile>\appdata\local`.
-        let appdata_local_from = profile_root_anchor
-            .filter(|&end| normalized[end..].starts_with("\\appdata\\local\\"))
-            .map(|end| end + "\\appdata\\local".len());
-
-        SAFE_OWNERSHIP_PATHS.iter().any(|&(anchor, marker)| {
-            // The remainder after the marker must end the path or start a new
-            // component, so `\temp` never matches `C:\temporary` or `Support2`.
-            let suffix_is_boundary = |start: usize| {
-                let suffix = &normalized[start + marker.len()..];
-                suffix.is_empty() || suffix.starts_with('\\')
-            };
-            let starts_with_marker =
-                |start: usize| normalized[start..].starts_with(marker) && suffix_is_boundary(start);
-
-            match anchor {
-                OwnershipAnchor::DriveRoot => drive_root_anchor.is_some_and(starts_with_marker),
-                OwnershipAnchor::ProfileRoot => profile_root_anchor.is_some_and(starts_with_marker),
-                // Markers start with `\`, so every occurrence inside the tail sits
-                // on a component boundary — only the region itself is constrained.
-                OwnershipAnchor::ProfileAppDataLocal => appdata_local_from
-                    .and_then(|from| normalized[from..].find(marker).map(|offset| from + offset))
-                    .is_some_and(suffix_is_boundary),
-            }
-        })
     }
 
     /// Get the file size
@@ -1089,13 +794,6 @@ fn align_physical_size(logical_size: u64, cluster_size: u32) -> u64 {
 
     let cluster_size = cluster_size as u64;
     ((logical_size + cluster_size - 1) / cluster_size) * cluster_size
-}
-
-/// Deletion attempt error, keeping the original system error code to distinguish "locked" from permission problems.
-#[derive(Debug)]
-struct DeleteAttemptError {
-    message: String,
-    raw_os_error: Option<i32>,
 }
 
 /// Extract the drive root path needed by the Shell API from a recycle bin data path.
@@ -1214,70 +912,6 @@ mod tests {
     }
 
     #[test]
-    fn test_safe_ownership_check() {
-        let engine = EnhancedDeleteEngine::new();
-
-        assert!(engine.is_safe_for_ownership(Path::new("C:\\Windows\\Temp\\test.tmp")));
-        assert!(engine
-            .is_safe_for_ownership(Path::new("C:\\Users\\Test\\AppData\\Local\\Temp\\file.log")));
-        assert!(engine.is_safe_for_ownership(Path::new(
-            "C:\\ProgramData\\Microsoft\\Windows Defender\\Support\\MPLog.log"
-        )));
-        assert!(!engine.is_safe_for_ownership(Path::new(
-            "C:\\ProgramData\\Microsoft\\Windows Defender\\Support2\\MPLog.log"
-        )));
-        assert!(!engine.is_safe_for_ownership(Path::new("C:\\Windows\\System32\\test.dll")));
-        // Cache directories added by deep scanning (Defender scan history, font cache, clipboard, NVIDIA shader variants)
-        // must also allow safe elevated deletion.
-        assert!(engine.is_safe_for_ownership(Path::new(
-            "C:\\ProgramData\\Microsoft\\Windows Defender\\Scans\\History\\Service\\entry.bin"
-        )));
-        assert!(engine.is_safe_for_ownership(Path::new(
-            "C:\\Windows\\ServiceProfiles\\LocalService\\AppData\\Local\\FontCache\\font.bin"
-        )));
-        assert!(engine.is_safe_for_ownership(Path::new(
-            "C:\\Users\\Test\\AppData\\Local\\Microsoft\\Windows\\Clipboard\\entry.bin"
-        )));
-        assert!(engine.is_safe_for_ownership(Path::new(
-            "C:\\Users\\Test\\AppData\\Local\\NVIDIA\\GLCache\\shader.bin"
-        )));
-    }
-
-    /// M5 regression: a whitelist entry must no longer match at arbitrary depth.
-    /// Before the fix, a folder merely named `Cache` under user documents or any
-    /// other location qualified for Take Ownership (Administrators: F).
-    #[test]
-    fn ownership_whitelist_matches_only_at_known_roots() {
-        let engine = EnhancedDeleteEngine::new();
-
-        // Arbitrary-depth hits must be rejected:
-        assert!(!engine.is_safe_for_ownership(Path::new(
-            "C:\\Users\\Test\\Documents\\Backup\\Cache\\thesis.doc"
-        )));
-        assert!(!engine.is_safe_for_ownership(Path::new("C:\\Games\\cache\\save.dat")));
-        assert!(!engine.is_safe_for_ownership(Path::new(
-            "C:\\Users\\Test\\Documents\\service worker\\index"
-        )));
-        // A `\users\` component that is not at the drive root must not forge a profile root:
-        assert!(!engine.is_safe_for_ownership(Path::new(
-            "C:\\fake\\users\\victim\\AppData\\Local\\Temp\\x.tmp"
-        )));
-        // Similarly named directories stay rejected (suffix boundary):
-        assert!(!engine.is_safe_for_ownership(Path::new("C:\\temporary\\x.tmp")));
-
-        // Legit targets keep working, including every bypass spelling:
-        assert!(engine.is_safe_for_ownership(Path::new("C:\\Temp\\x.tmp")));
-        assert!(engine.is_safe_for_ownership(Path::new("C:/Windows/Temp/test.tmp")));
-        assert!(engine.is_safe_for_ownership(Path::new(r"\\?\C:\Windows\Temp\test.tmp")));
-        assert!(
-            engine.is_safe_for_ownership(Path::new("C:/Users/Test/AppData/Local/Temp/file.log"))
-        );
-        assert!(engine.is_safe_for_ownership(Path::new(
-            "C:\\Users\\Test\\AppData\\Local\\Google\\Chrome\\User Data\\Default\\Service Worker\\CacheStorage\\abc"
-        )));
-    }
-
-    #[test]
     fn system_protection_comes_from_the_shared_table() {
         fn refused(path: &str) -> bool {
             ensure_deletable(Path::new(path), DeleteScope::EnhancedClean).is_err()
@@ -1319,7 +953,7 @@ mod tests {
                 path
             );
             assert!(
-                engine.is_safe_for_ownership(Path::new(path)),
+                crate::path_guard::is_safe_for_ownership(Path::new(path)),
                 "应允许提权删除: {}",
                 path
             );

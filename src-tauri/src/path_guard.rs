@@ -422,6 +422,194 @@ pub fn is_rebuildable_system_cache_path(path: &str) -> bool {
     })
 }
 
+// ============================================================================
+// Take-Ownership whitelist (moved out of `enhanced_delete` in S3b)
+//
+// This is deliberately *not* a protection rule. It answers "may we escalate
+// privileges on this path", which is the deletion ladder's question, not the
+// gate's — a path can be perfectly deletable and still be wrong to take
+// ownership of. It lives next to the protection table anyway, for the same
+// reason S3a merged those two: two copies of a whitelist is how the protection
+// tables drifted apart in the first place, and the reboot gate needs this one.
+// ============================================================================
+
+/// Which known root a Take-Ownership whitelist entry is anchored to (M5 fix).
+///
+/// Before the fix the whitelist matched with `find()` at *any* depth, so a folder
+/// merely named `Cache` under user documents (e.g. `C:\Users\X\Documents\Backup\Cache`)
+/// qualified for Take Ownership — granting Administrators full control over a path
+/// that is not a junk cache at all. Every entry must now declare which known root
+/// anchors it, and a match is only accepted at that exact position.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum OwnershipAnchor {
+    /// Match only directly under a drive root: `X:<entry>…` (the marker starts
+    /// right after the drive colon, the same boundary rule as
+    /// `is_rebuildable_system_cache_path`).
+    DriveRoot,
+    /// Match only directly under the user-profile root: `X:\users\<name><entry>…`.
+    ProfileRoot,
+    /// Match at any component boundary inside the profile's `AppData\Local` subtree.
+    ///
+    /// Chromium-based browsers place their `Service Worker` / `Media Cache`
+    /// directories below vendor/profile directories that vary per browser
+    /// (`Google\Chrome`, `Microsoft\Edge`, Brave\…), so the suffix cannot be
+    /// spelled out. Restricting the search to this user-owned subtree keeps the
+    /// grant out of user documents and other arbitrary locations.
+    ProfileAppDataLocal,
+}
+
+/// Safe directories where Take Ownership is allowed.
+///
+/// The "take ownership" operation is only allowed for files under these
+/// directories. This prevents accidental deletion of system files. Each entry is
+/// `(anchor, marker)`; see `OwnershipAnchor` for why matching is position-bound
+/// instead of a plain substring search.
+const SAFE_OWNERSHIP_PATHS: &[(OwnershipAnchor, &str)] = &[
+    (OwnershipAnchor::DriveRoot, "\\temp"),
+    (OwnershipAnchor::DriveRoot, "\\tmp"),
+    (OwnershipAnchor::DriveRoot, "\\cache"),
+    (OwnershipAnchor::DriveRoot, "\\caches"),
+    (OwnershipAnchor::ProfileRoot, "\\appdata\\local\\temp"),
+    (
+        OwnershipAnchor::ProfileRoot,
+        "\\appdata\\local\\microsoft\\windows\\temporary internet files",
+    ),
+    (
+        OwnershipAnchor::ProfileRoot,
+        "\\appdata\\local\\microsoft\\windows\\inetcache",
+    ),
+    (
+        OwnershipAnchor::ProfileRoot,
+        "\\appdata\\local\\microsoft\\windows\\caches",
+    ),
+    (
+        OwnershipAnchor::ProfileRoot,
+        "\\appdata\\local\\microsoft\\windows\\explorer",
+    ),
+    (
+        OwnershipAnchor::ProfileRoot,
+        "\\appdata\\local\\microsoft\\windows\\webcache",
+    ),
+    (
+        OwnershipAnchor::ProfileRoot,
+        "\\appdata\\local\\microsoft\\windows\\clipboard",
+    ),
+    // Service Worker / media cache directories of Chromium-based browsers, at the same level as Cache and equally rebuildable.
+    // Their location varies by browser (Google\Chrome, Microsoft\Edge, Brave\…),
+    // so they are matched at any component boundary **inside the profile's
+    // AppData\Local subtree only** — never in arbitrary user directories.
+    (OwnershipAnchor::ProfileAppDataLocal, "\\service worker"),
+    (OwnershipAnchor::ProfileAppDataLocal, "\\media cache"),
+    (OwnershipAnchor::DriveRoot, "\\windows\\temp"),
+    // Windows 10/11 system-level temp directories and kernel crash report directories, containing rebuildable diagnostic data.
+    (OwnershipAnchor::DriveRoot, "\\windows\\systemtemp"),
+    (OwnershipAnchor::DriveRoot, "\\windows\\livekernelreports"),
+    (OwnershipAnchor::DriveRoot, "\\windows\\prefetch"),
+    (
+        OwnershipAnchor::DriveRoot,
+        "\\windows\\softwaredistribution\\download",
+    ),
+    (
+        OwnershipAnchor::DriveRoot,
+        "\\windows\\softwaredistribution\\deliveryoptimization",
+    ),
+    (
+        OwnershipAnchor::DriveRoot,
+        "\\windows\\serviceprofiles\\networkservice\\appdata\\local\\microsoft\\windows\\deliveryoptimization",
+    ),
+    (
+        OwnershipAnchor::DriveRoot,
+        "\\windows\\serviceprofiles\\localservice\\appdata\\local\\fontcache",
+    ),
+    (
+        OwnershipAnchor::DriveRoot,
+        "\\programdata\\microsoft\\windows defender\\localcopy",
+    ),
+    (
+        OwnershipAnchor::DriveRoot,
+        "\\programdata\\microsoft\\windows defender\\support",
+    ),
+    (
+        OwnershipAnchor::DriveRoot,
+        "\\programdata\\microsoft\\windows defender\\scans\\history\\service",
+    ),
+    // Windows error report queues/archives: jointly held by SYSTEM and TrustedInstaller, so elevated deletion must be allowed.
+    (
+        OwnershipAnchor::DriveRoot,
+        "\\programdata\\microsoft\\windows\\wer",
+    ),
+    (
+        OwnershipAnchor::DriveRoot,
+        "\\windows\\system32\\d3d_cache",
+    ),
+    (OwnershipAnchor::ProfileRoot, "\\appdata\\local\\d3dscache"),
+    (OwnershipAnchor::ProfileRoot, "\\appdata\\local\\amd\\dxcache"),
+    (
+        OwnershipAnchor::ProfileRoot,
+        "\\appdata\\local\\nvidia\\dxcache",
+    ),
+    (
+        OwnershipAnchor::ProfileRoot,
+        "\\appdata\\local\\nvidia\\glcache",
+    ),
+    (OwnershipAnchor::ProfileRoot, "\\appdata\\local\\nvidia\\dxc"),
+    (
+        OwnershipAnchor::ProfileRoot,
+        "\\appdata\\local\\nvidia\\computecache",
+    ),
+    (
+        OwnershipAnchor::ProfileRoot,
+        "\\appdata\\local\\intel\\shadercache",
+    ),
+    (OwnershipAnchor::DriveRoot, "\\$recycle.bin"),
+];
+
+/// Whether taking ownership of `path` is allowed.
+///
+/// Used twice in the deletion ladder: to decide whether the privilege-escalation
+/// rung may run, and — for `RebootPolicy::OwnershipWhitelist` — whether the
+/// reboot queue may be used at all.
+pub fn is_safe_for_ownership(path: &Path) -> bool {
+    // Same normalization as the protection checks: strip the `\\?\` prefix,
+    // unify `/` to `\`, then compare case-insensitively (ASCII only: the
+    // whitelist and every anchor are pure ASCII).
+    let normalized = compare_key(path);
+
+    // Anchor 1: the drive root — the position right after `X:`.
+    let drive_root_anchor = drive_root_end(&normalized);
+
+    // Anchor 2: the user-profile root — the position right after `X:\users\<name>`.
+    // Only a path *starting* with `X:\users\` counts; a deeper `\users\`
+    // component (e.g. `C:\fake\users\victim`) must not forge a profile root.
+    let profile_root_anchor = profile_root_end(&normalized);
+
+    // Anchor 3 region: everything after `<profile>\appdata\local`.
+    let appdata_local_from = profile_root_anchor
+        .filter(|&end| normalized[end..].starts_with("\\appdata\\local\\"))
+        .map(|end| end + "\\appdata\\local".len());
+
+    SAFE_OWNERSHIP_PATHS.iter().any(|&(anchor, marker)| {
+        // The remainder after the marker must end the path or start a new
+        // component, so `\temp` never matches `C:\temporary` or `Support2`.
+        let suffix_is_boundary = |start: usize| {
+            let suffix = &normalized[start + marker.len()..];
+            suffix.is_empty() || suffix.starts_with('\\')
+        };
+        let starts_with_marker =
+            |start: usize| normalized[start..].starts_with(marker) && suffix_is_boundary(start);
+
+        match anchor {
+            OwnershipAnchor::DriveRoot => drive_root_anchor.is_some_and(starts_with_marker),
+            OwnershipAnchor::ProfileRoot => profile_root_anchor.is_some_and(starts_with_marker),
+            // Markers start with `\`, so every occurrence inside the tail sits
+            // on a component boundary — only the region itself is constrained.
+            OwnershipAnchor::ProfileAppDataLocal => appdata_local_from
+                .and_then(|from| normalized[from..].find(marker).map(|offset| from + offset))
+                .is_some_and(suffix_is_boundary),
+        }
+    })
+}
+
 /// Position right after the drive colon in a normalized path (`c:` → 2).
 pub(crate) fn drive_root_end(normalized: &str) -> Option<usize> {
     let bytes = normalized.as_bytes();
@@ -841,5 +1029,80 @@ mod tests {
                 );
             }
         }
+    }
+
+    // ------------------------------------------------------------------
+    // Take-Ownership whitelist. Moved here from `enhanced_delete` in S3b,
+    // together with the table itself.
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn ownership_whitelist_covers_the_deep_scan_cache_directories() {
+        assert!(is_safe_for_ownership(Path::new(
+            "C:\\Windows\\Temp\\test.tmp"
+        )));
+        assert!(is_safe_for_ownership(Path::new(
+            "C:\\Users\\Test\\AppData\\Local\\Temp\\file.log"
+        )));
+        assert!(is_safe_for_ownership(Path::new(
+            "C:\\ProgramData\\Microsoft\\Windows Defender\\Support\\MPLog.log"
+        )));
+        assert!(!is_safe_for_ownership(Path::new(
+            "C:\\ProgramData\\Microsoft\\Windows Defender\\Support2\\MPLog.log"
+        )));
+        assert!(!is_safe_for_ownership(Path::new(
+            "C:\\Windows\\System32\\test.dll"
+        )));
+        // Cache directories added by deep scanning (Defender scan history, font
+        // cache, clipboard, NVIDIA shader variants) must also allow safe elevated
+        // deletion, otherwise they are found but can never be deleted.
+        assert!(is_safe_for_ownership(Path::new(
+            "C:\\ProgramData\\Microsoft\\Windows Defender\\Scans\\History\\Service\\entry.bin"
+        )));
+        assert!(is_safe_for_ownership(Path::new(
+            "C:\\Windows\\ServiceProfiles\\LocalService\\AppData\\Local\\FontCache\\font.bin"
+        )));
+        assert!(is_safe_for_ownership(Path::new(
+            "C:\\Users\\Test\\AppData\\Local\\Microsoft\\Windows\\Clipboard\\entry.bin"
+        )));
+        assert!(is_safe_for_ownership(Path::new(
+            "C:\\Users\\Test\\AppData\\Local\\NVIDIA\\GLCache\\shader.bin"
+        )));
+    }
+
+    /// M5 regression: a whitelist entry must no longer match at arbitrary depth.
+    /// Before the fix, a folder merely named `Cache` under user documents or any
+    /// other location qualified for Take Ownership (Administrators: F).
+    #[test]
+    fn ownership_whitelist_matches_only_at_known_roots() {
+        // Arbitrary-depth hits must be rejected:
+        assert!(!is_safe_for_ownership(Path::new(
+            "C:\\Users\\Test\\Documents\\Backup\\Cache\\thesis.doc"
+        )));
+        assert!(!is_safe_for_ownership(Path::new(
+            "C:\\Games\\cache\\save.dat"
+        )));
+        assert!(!is_safe_for_ownership(Path::new(
+            "C:\\Users\\Test\\Documents\\service worker\\index"
+        )));
+        // A `\users\` component that is not at the drive root must not forge a profile root:
+        assert!(!is_safe_for_ownership(Path::new(
+            "C:\\fake\\users\\victim\\AppData\\Local\\Temp\\x.tmp"
+        )));
+        // Similarly named directories stay rejected (suffix boundary):
+        assert!(!is_safe_for_ownership(Path::new("C:\\temporary\\x.tmp")));
+
+        // Legit targets keep working, including every bypass spelling:
+        assert!(is_safe_for_ownership(Path::new("C:\\Temp\\x.tmp")));
+        assert!(is_safe_for_ownership(Path::new("C:/Windows/Temp/test.tmp")));
+        assert!(is_safe_for_ownership(Path::new(
+            r"\\?\C:\Windows\Temp\test.tmp"
+        )));
+        assert!(is_safe_for_ownership(Path::new(
+            "C:/Users/Test/AppData/Local/Temp/file.log"
+        )));
+        assert!(is_safe_for_ownership(Path::new(
+            "C:\\Users\\Test\\AppData\\Local\\Google\\Chrome\\User Data\\Default\\Service Worker\\CacheStorage\\abc"
+        )));
     }
 }
