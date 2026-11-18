@@ -23,11 +23,11 @@ mod system_slim;
 use commands::*;
 
 // ============================================================================
-/// 性能基准测试的出口层
+/// Export layer for performance benchmarks
 ///
-/// `benches/` 是独立 crate，只能看到本 crate 的 `pub` 项，而业务模块保持私有
-/// 是刻意的封装。这里只做一层最小出口：把基准真正需要、且逻辑稳定的函数
-/// 重新导出，其余一律不对外开放。`#[doc(hidden)]` 表示它不属于对外文档。
+/// `benches/` is a separate crate and can only see `pub` items here. Keeping business modules
+/// private is deliberate, so this module re-exports only the stable functions the benchmarks
+/// actually need. Everything else stays closed; `#[doc(hidden)]` keeps this layer out of public docs.
 pub mod bench_api {
     pub use crate::cleaner::DeleteEngine;
     pub use crate::scanner::deep_junk::{could_be_junk_path, normalize_into};

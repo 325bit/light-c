@@ -946,8 +946,8 @@ fn build_analyze_entries(
 
 fn explain_path(path: &str, diff: i64, level: DiskGrowthLevel) -> (String, String) {
     let lower_path = path.to_lowercase();
-    // 用 unsigned_abs 而不是 abs() as u64：diff 取到 i64::MIN 时 abs() 会溢出 panic，
-    // 而这里只是想把差值转成「显示用的字节数」，负数方向由下面的 direction 表达。
+    // Use unsigned_abs instead of abs() as u64: abs() overflows and panics when diff is i64::MIN.
+    // All we need here is a display byte count; the sign is expressed by `direction` below.
     let readable = format_size(diff.unsigned_abs());
     let direction = if diff > 0 { "增加" } else { "减少" };
 

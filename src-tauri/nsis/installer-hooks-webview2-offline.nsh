@@ -3,7 +3,7 @@
 ; ============================================================================
 
 !macro NSIS_HOOK_PREINSTALL
-  ; 离线包会自带 WebView2 安装器，只处理旧进程锁文件问题，不拦截缺失的 WebView2 Runtime。
+  ; The offline package ships its own WebView2 installer, so only handle stale process locks here; do not block on a missing WebView2 Runtime.
   Call LightC_CloseRunningProcess
 !macroend
 

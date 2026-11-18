@@ -3,9 +3,9 @@
 ; ============================================================================
 
 !macro NSIS_HOOK_PREINSTALL
-  ; 自动更新或用户手动覆盖安装时，旧 LightC.exe 可能仍占用目标文件，先尝试关闭以避免“无法打开要写入的文件”。
+  ; During updates or manual reinstalls, an old LightC.exe may still lock target files; close it first to avoid "cannot open file for writing".
   Call LightC_CloseRunningProcess
-  ; 常规包不再自动下载 WebView2，避免微软 bootstrapper 在异常环境里创建额外 Edge 快捷方式。
+  ; The regular installer no longer downloads WebView2 automatically: Microsoft's bootstrapper can create extra Edge shortcuts in unusual environments.
   Call LightC_CheckWebView2Runtime
 !macroend
 

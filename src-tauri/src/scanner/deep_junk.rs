@@ -1259,8 +1259,9 @@ const JUNK_PATH_HINTS: &[&str] = &[
 ///
 /// Of the millions of paths on a disk, the vast majority are unrelated to junk rules. Filtering them out here first means
 /// the several string allocations and dozen-plus rules below do not have to run.
-// pub 仅为 benches 调用（经 lib.rs 的 bench_api 出口），模块本身仍是 pub(crate)，
-// 对外部使用者不可见。这是全仓性能最敏感的一段，需要一个回归基准盯住它。
+// `pub` only for benches (through lib.rs's bench_api); the module itself stays pub(crate)
+// and is invisible to external users. This is the most performance-sensitive code in the repo,
+// so a regression benchmark must keep watch on it.
 pub fn could_be_junk_path(path: &str) -> bool {
     let bytes = path.as_bytes();
     for (index, &byte) in bytes.iter().enumerate() {
@@ -1302,8 +1303,8 @@ fn starts_with_ignore_ascii_case(haystack: &[u8], needle: &[u8]) -> bool {
 ///
 /// It processes byte by byte and preserves non-ASCII bytes as-is, so paths containing non-ASCII characters are not corrupted;
 /// buffer reuse means a million calls allocate only once, instead of two Strings each time.
-// pub 仅为 benches 调用（经 lib.rs 的 bench_api 出口）：缓冲区复用是这条路径的
-// 核心优化点，改动它必须有基准数据支撑。
+// `pub` only for benches (through lib.rs's bench_api): buffer reuse is the core optimization
+// on this path, so any change here needs benchmark data to back it up.
 pub fn normalize_into(path: &str, buffer: &mut Vec<u8>) {
     buffer.clear();
     buffer.reserve(path.len());

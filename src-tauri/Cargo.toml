@@ -40,24 +40,24 @@ minisign-verify = "0.3"
 # copies of the whole hyper/tower TLS stack into the binary.
 reqwest = { version = "0.13", features = ["json", "rustls"] }
 
-# 文件系统操作
-walkdir = "2"              # 递归遍历目录
-jwalk = "0.8"              # 并行目录遍历（Win11 下缓存 metadata）
-glob = "0.3"               # 通配符路径展开
-# 异步运行时
+# Filesystem operations
+walkdir = "2"              # Recursive directory walking
+jwalk = "0.8"              # Parallel directory walking (caches metadata on Windows 11)
+glob = "0.3"               # Glob pattern expansion
+# Async runtime
 tokio = { version = "1", features = ["full"] }
-# 日期时间处理
+# Date and time
 chrono = { version = "0.4", features = ["serde"] }
-# Windows系统API
+# Windows system APIs
 winapi = { version = "0.3", features = ["fileapi", "winbase", "handleapi", "errhandlingapi", "sysinfoapi", "processenv", "ioapiset", "winnt", "processthreadsapi", "securitybaseapi", "sddl", "aclapi", "accctrl", "shellapi", "winuser", "stringapiset", "winnls", "winsvc", "dpapi", "wincrypt"] }
-# Windows 搜索索引重建（COM 接口），复用 tauri 已引入的 windows crate 版本
+# Windows Search index rebuild (COM); reuse the windows crate version already pulled in by tauri
 windows = { version = "0.61", features = ["Win32_System_Search", "Win32_System_Com", "Win32_Foundation"] }
-# Windows注册表操作
+# Windows registry access
 winreg = "0.55"
-# 日志
+# Logging
 log = "0.4"
 env_logger = "0.11"
-# 并行处理
+# Parallelism
 rayon = "1.10"
 num_cpus = "1.16"
 tauri-plugin-process = "2.3.1"
@@ -65,9 +65,9 @@ tauri-plugin-process = "2.3.1"
 # crate is linked. The 6 -> 7 bump is an MSRV/dependency refresh; the functions
 # used here (home_dir, data_dir, data_local_dir, document_dir) are unchanged.
 dirs = "7.0.0"
-# 单例模式
+# Single-instance enforcement
 once_cell = "1.19"
-# 正则匹配（卸载残留包名/版本号过滤）
+# Regex matching (filtering uninstall-leftover names and versions)
 regex = "1"
 quick-xml = "0.42"
 
@@ -108,10 +108,11 @@ harness = false
 correctness = "deny"
 suspicious = "deny"
 
-# 开发构建开一级优化。
+# Enable opt-level 1 for dev builds.
 #
-# 默认的 dev profile 是 opt-level = 0，扫描、解析这类纯 CPU 代码会慢 4-5 倍
-# （本项目实测：MFT 后处理 686ms → 3377ms）。在 dev 里测性能会得出完全错误的结论，
-# 所以这里只开 1 级：运行时接近 release 的一半以上，编译时间几乎不变。
+# The default dev profile (opt-level = 0) makes CPU-bound scanning and parsing 4-5x slower
+# (measured here: MFT post-processing 686ms -> 3377ms). Benchmarking dev builds would give
+# completely wrong conclusions, so use level 1: runtime is well above half of release speed
+# with almost no extra compile time.
 [profile.dev]
 opt-level = 1

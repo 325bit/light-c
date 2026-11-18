@@ -1,7 +1,7 @@
 fn main() {
-    // tauri-build 默认只把应用清单嵌进 bin 目标。这里换成“自己注入”：先让它不嵌，
-    // 再统一给所有目标补清单，否则 bin 目标会同时拿到两份 MANIFEST 资源，
-    // 链接时报 CVT1100: duplicate resource。
+    // tauri-build embeds the app manifest only into the bin target. Disable that and inject
+    // the manifest ourselves: otherwise the bin target receives two MANIFEST resources and
+    // linking fails with CVT1100: duplicate resource.
     let attributes = tauri_build::Attributes::new()
         .windows_attributes(tauri_build::WindowsAttributes::new_without_app_manifest());
     tauri_build::try_build(attributes).expect("tauri-build 执行失败");
@@ -9,16 +9,16 @@ fn main() {
     link_app_manifest_into_every_target();
 }
 
-/// 让**所有**链接目标（含 lib 单测二进制）都带上 Windows 应用清单。
+/// Embed the Windows application manifest into **every** linked target, including the lib test binary.
 ///
-/// 背景：tauri 2.12 起 `common-controls-v6` 进入默认特性，lib 因此静态引用了
-/// `comctl32!TaskDialogIndirect`（muda 的“关于”对话框用它）。该导出只存在于
-/// ComCtl32 v6，而 v6 必须在应用清单里声明 `Microsoft.Windows.Common-Controls`
-/// 依赖才会被激活；缺清单时加载的是 System32 下的 v5，进程在启动阶段就以
-/// STATUS_ENTRYPOINT_NOT_FOUND (0xC0000139) 退出，一个用例都跑不到。
+/// Background: from tauri 2.12, `common-controls-v6` is a default feature, so the lib statically
+/// references `comctl32!TaskDialogIndirect` (used by muda's About dialog). That export exists only
+/// in ComCtl32 v6, which is activated only when the application manifest declares a dependency on
+/// `Microsoft.Windows.Common-Controls`. Without the manifest, the v5 copy in System32 is loaded and
+/// the process exits at startup with STATUS_ENTRYPOINT_NOT_FOUND (0xC0000139) -- no test can even run.
 ///
-/// `/MANIFESTINPUT` 会把清单**合并**进链接器生成的默认清单，UAC、DPI 等节都保留，
-/// 所以 bin 目标的最终清单与 tauri-build 原先嵌入的那份等价。
+/// `/MANIFESTINPUT` **merges** our manifest into the linker-generated default one, preserving
+/// UAC, DPI, and other sections, so the final bin manifest is equivalent to what tauri-build embedded.
 fn link_app_manifest_into_every_target() {
     #[cfg(all(target_os = "windows", target_env = "msvc"))]
     {
@@ -36,7 +36,7 @@ fn link_app_manifest_into_every_target() {
     }
 }
 
-/// 与 tauri-build 内置清单一致：只声明 ComCtl32 v6 依赖。
+/// Matches tauri-build's built-in manifest: declares only the ComCtl32 v6 dependency.
 #[cfg(all(target_os = "windows", target_env = "msvc"))]
 const APP_MANIFEST: &str = r#"<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
   <dependency>

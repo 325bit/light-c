@@ -261,9 +261,9 @@ impl DeleteEngine {
 
     /// Check whether it is a protected path (multiple safety checks)
     ///
-    /// pub 仅为 benches 调用（经 lib.rs 的 bench_api 出口）：这是「这条路径能不能删」
-    /// 的判定入口，一次批量删除会对每个文件调用一次，耗时直接进删除总时长；
-    /// 同时它也是审计 C1 的修复点，需要基准 + 单元测试双重盯住。
+    /// `pub` only for benches (through lib.rs's bench_api): this is the "can this path be deleted"
+    /// decision point, called once per file in a batch, so its cost adds directly to total delete time.
+    /// It is also the C1 audit fix point and needs both a benchmark and unit tests to guard it.
     pub fn is_protected_path(&self, path: &Path) -> bool {
         let path_str = path.to_string_lossy().to_lowercase();
 

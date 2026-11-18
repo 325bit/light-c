@@ -1,16 +1,16 @@
-# 全局默认：LF
+# Global default: LF
 * text=auto eol=lf
 
-# Rust 相关文件强制 LF
+# Force LF for Rust-related files
 *.rs text eol=lf
 *.toml text eol=lf
 *.lock text eol=lf
 
-# Windows 可执行脚本保留 CRLF
+# Keep CRLF for Windows executable scripts
 *.bat text eol=crlf
 *.cmd text eol=crlf
 
-# 二进制文件不转换
+# Do not convert binary files
 *.png binary
 *.ico binary
 *.icns binary

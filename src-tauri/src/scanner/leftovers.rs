@@ -818,10 +818,10 @@ fn should_descend_for_disks(name_lower: &str, depth: usize) -> bool {
     true
 }
 
-/// 从 InstallLocation 推断文件夹名。纯函数，便于用固定输入测试（不读本机注册表）。
+/// Infer folder names from InstallLocation. Kept pure so tests can use fixed fixtures instead of reading the local registry.
 ///
-/// 只取两级：末级目录名，以及倒数第二级（排除 Program Files 这类公共父目录）。
-/// **不从 DisplayName 切词**——切出来的短词元会撞上无关目录，这是历史上误判的主要来源。
+/// Take at most two levels: the final directory and its parent, excluding common parents such as Program Files.
+/// **Do not split DisplayName into words** -- short tokens from the display name collide with unrelated directories and were the main source of false positives.
 fn infer_folder_names(install_location: Option<&str>) -> Vec<String> {
     let Some(location) = install_location else {
         return Vec::new();
@@ -829,7 +829,7 @@ fn infer_folder_names(install_location: Option<&str>) -> Vec<String> {
     let location_path = Path::new(location);
     let mut inferred = Vec::new();
 
-    // a. 末级目录名：应用自己的目录，最可靠
+    // a. Final directory name: the app's own folder, most reliable
     if let Some(folder) = location_path.file_name() {
         let name = folder.to_string_lossy().to_lowercase();
         if !name.is_empty() {
@@ -837,8 +837,8 @@ fn infer_folder_names(install_location: Option<&str>) -> Vec<String> {
         }
     }
 
-    // b. 倒数第二级目录名：对应「厂商\产品」结构。必须排除公共父目录，
-    //    否则装在 Program Files 下的每个应用都会把 "program files" 记成文件夹名。
+    // b. Parent directory: matches the "vendor\\product" layout. Common parents must be excluded,
+    //    otherwise every app under Program Files would also register "program files" as a folder name.
     if let Some(parent) = location_path.parent() {
         if let Some(vendor) = parent.file_name() {
             let vendor_name = vendor.to_string_lossy().to_lowercase();
@@ -2441,16 +2441,17 @@ mod tests {
 
     #[test]
     fn infer_folder_names_uses_install_location_only() {
-        // 用固定输入而不是读本机注册表：原测试跑在本机真实数据上，装了什么软件就决定它红还是绿，
-        // CI 干净机反而看不出问题（审计 M14）。这里锁定四条结构性约束。
+        // Use fixed inputs instead of the local registry: the old test depended on installed software,
+        // so its result varied by machine while a clean CI runner hid the problem (audit M14).
+        // These four structural invariants are what actually need to hold.
         //
-        // 1) 正常「厂商\产品」结构：两级都取
+        // 1) Normal "vendor\\product" layout: take both levels
         assert_eq!(
             infer_folder_names(Some(r"C:\Program Files\SomeVendor\SomeApp")),
             vec!["someapp".to_string(), "somevendor".to_string()]
         );
 
-        // 2) 公共父目录不作为文件夹名，否则每个装在 Program Files 下的应用都会记成 "program files"
+        // 2) Common parents are not folder names, otherwise every Program Files app records "program files"
         assert_eq!(
             infer_folder_names(Some(r"C:\Program Files\SomeApp")),
             vec!["someapp".to_string()]
@@ -2460,15 +2461,15 @@ mod tests {
             vec!["someapp".to_string()]
         );
 
-        // 3) 纯数字目录名是合法目录名，必须原样保留。
-        //    这正是原测试的错处：它把「纯数字短名」一律当成切词残留，
-        //    于是任何真实存在 `...\18` 目录的机器上都会误报。
+        // 3) All-digit directory names are legal and must be kept as-is.
+        //    The old test treated them as tokenization debris and therefore produced false
+        //    positives on any machine with a real `...\\18` directory.
         assert_eq!(
             infer_folder_names(Some(r"D:\Tools\18")),
             vec!["18".to_string(), "tools".to_string()]
         );
 
-        // 4) 缺失或空路径不产生任何文件夹名
+        // 4) Missing or empty paths produce no folder names
         assert!(infer_folder_names(None).is_empty());
         assert!(infer_folder_names(Some("")).is_empty());
     }

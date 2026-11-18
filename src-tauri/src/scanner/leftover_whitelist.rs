@@ -152,24 +152,27 @@ fn normalize_string_path_for_compare(path: &str) -> String {
     trim_trailing_separator(strip_extended_length_prefix(&path.replace('/', "\\"))).to_lowercase()
 }
 
-/// 判断路径里是否可能出现 8.3 短名。
+/// Check whether a path may contain an 8.3 short name.
 ///
-/// 短名一定带 `~`（如 `PASSAC~1`）；反过来长名里也可能合法出现 `~`（`~` 是合法文件名字符），
-/// 那种情况只会多付一次 canonicalize，不会误判，所以这个判断可以放宽。
+/// Short names always contain `~` (e.g. `PASSAC~1`), but long names may also legally contain `~`:
+/// it is a valid filename character. A false positive only costs one extra canonicalize, never a
+/// wrong match, so this check is intentionally permissive.
 fn may_contain_short_name(path: &str) -> bool {
     path.contains('~')
 }
 
-/// 比较用的路径键：能拿到真实长名就用长名，拿不到就退回字面量规范化。
+/// Comparison key: use the real long path when available, otherwise fall back to normalized literal text.
 ///
-/// 为什么必须做这一步：写入侧 `normalize_existing_path` 会 `fs::canonicalize`，得到的是
-/// 文件系统记录的长名；而扫描侧的路径可能来自环境变量，是 8.3 短名——长用户名或中文
-/// 用户名机器上 `%TEMP%` 就是 `C:\Users\PASSAC~1\...`。两侧拼写永远不等，白名单会静默
-/// 失效，而它是永久删除前唯一由用户控制的防线。
+/// Why this is needed: the write side (`normalize_existing_path`) calls `fs::canonicalize` and
+/// stores the long name recorded by the filesystem, while a scanned path can come from an
+/// environment variable as an 8.3 short name. On machines with long or non-ASCII user names,
+/// `%TEMP%` is `C:\Users\PASSAC~1\...`. The two spellings never match, so the whitelist silently
+/// stops working -- and it is the only user-controlled guard before permanent deletion.
 ///
-/// 成本控制：canonicalize 单次实测约 50µs，对每个候选文件都调用的话，一万个文件就是半秒，
-/// 与这个工具「快」的定位冲突。所以只在路径里出现 `~`（短名的必要特征）时才付这个开销，
-/// 常规长名路径仍然走纯字符串比较，热路径开销不变。
+/// Cost control: one canonicalize costs about 50µs in measurements; doing it for every
+/// candidate would add half a second per 10,000 files and defeat this tool's speed goal.
+/// Pay that cost only when `~` is present (a necessary symptom of short names); ordinary
+/// long paths keep the pure string comparison, so the hot path is unchanged.
 fn comparison_key(path: &str) -> String {
     if !may_contain_short_name(path) {
         return normalize_string_path_for_compare(path);
@@ -178,17 +181,18 @@ fn comparison_key(path: &str) -> String {
         .unwrap_or_else(|| normalize_string_path_for_compare(path))
 }
 
-/// 把路径里「最长的已存在祖先」换成真实长名，不存在的尾部原样拼回去。
+/// Replace the longest existing ancestor with its real long name, then append the missing tail verbatim.
 ///
-/// 为什么不能直接 canonicalize 整条路径：删除候选里很多条目已经不存在（这正是要清理的对象），
-/// canonicalize 对不存在的路径直接失败；而白名单必须能拦住「已存在父目录 + 待删子项」这种组合，
-/// 否则用户保护了 `SomeApp`，`SomeApp\cache` 却因为不存在而绕过保护。
+/// Why not canonicalize the whole path: most deletion candidates no longer exist (that is why
+/// they are being cleaned), and `fs::canonicalize` fails on missing paths. The whitelist must
+/// still catch "existing parent + missing child", otherwise protecting `SomeApp` would not protect
+/// `SomeApp\cache` once the child disappears.
 fn canonicalize_longest_existing_prefix(path: &Path) -> Option<String> {
     let mut missing_suffix: Vec<String> = Vec::new();
     let mut current = path;
     loop {
         if let Ok(canonical) = fs::canonicalize(current) {
-            // 祖先部分直接取比较键（已去前缀、已小写），再把缺失的尾部按同样规则拼回去
+            // Normalize the resolved ancestor the same way, then append the missing tail with the same rules
             let mut resolved = normalize_path_for_compare(&canonical);
             for part in missing_suffix.iter().rev() {
                 if !resolved.ends_with('\\') {
@@ -198,7 +202,7 @@ fn canonicalize_longest_existing_prefix(path: &Path) -> Option<String> {
             }
             return Some(resolved);
         }
-        // 逐级往上退，直到某个祖先存在为止；退到盘符根仍失败则放弃（交给调用方回退字面量比较）
+        // Walk up until an ancestor exists; if even the drive root fails, give up and let the caller fall back to literal comparison
         missing_suffix.push(current.file_name()?.to_string_lossy().to_string());
         current = current.parent()?;
     }
@@ -300,8 +304,8 @@ mod tests {
 
     #[test]
     fn path_with_tilde_still_matches_its_canonical_form() {
-        // 目录名里带 `~` 会走 comparison_key 的 canonicalize 分支（`~` 是 8.3 短名的特征，
-        // 但也是合法文件名字符）。这里要保证：走慢分支之后，同一路径的不同拼写仍然判为同一条。
+        // A `~` in a directory name takes the canonicalize branch in comparison_key (`~` indicates an 8.3 short name
+        // but is also legal in long names). Verify that both spellings still resolve to the same whitelist entry.
         let root = std::env::temp_dir().join(format!(
             "lightc~whitelist-{}-{}",
             std::process::id(),
@@ -316,7 +320,7 @@ mod tests {
             added_at: "2026-01-01T00:00:00Z".to_string(),
         }];
 
-        // 字面拼写（含 `~`）与 canonical 拼写必须都命中，子路径同样命中
+        // Both the literal spelling (with `~`) and the canonical spelling must match, including child paths
         assert!(
             contains_path(&entries, &protected),
             "含 ~ 的字面路径必须命中"

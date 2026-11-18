@@ -89,9 +89,9 @@ if (Test-Path $PrivateKeyPath) {
     if ([string]::IsNullOrWhiteSpace($SigningPassword)) {
         throw "Signing password is required in TAURI_SIGNING_PRIVATE_KEY_PASSWORD or TAURI_PRIVATE_KEY_PASSWORD"
     }
-    # 使用调用方注入的密码，避免把私钥密码写入脚本或提交到仓库。
+    # Use the password supplied by the caller; never hardcode the private key password in the script or commit it.
     $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = $SigningPassword
-    # Tauri 构建和独立 signer 使用不同的环境变量名，两者都设置才能保证每种包都能生成签名。
+    # Tauri's build and the standalone signer use different environment variable names; set both so every artifact gets a signature.
     $env:TAURI_PRIVATE_KEY = $env:TAURI_SIGNING_PRIVATE_KEY
     $env:TAURI_PRIVATE_KEY_PASSWORD = $SigningPassword
     Write-Host "  Private key loaded from $PrivateKeyPath" -ForegroundColor Gray
@@ -100,9 +100,9 @@ if (Test-Path $PrivateKeyPath) {
 }
 
 Push-Location $ProjectRoot
-# 注意：npm 会把 "npm notice ..." 写到 stderr，而脚本开头是 $ErrorActionPreference = "Stop"。
-# 不合并输出的话，PowerShell 会把它当成 NativeCommandError 抛异常，
-# 脚本会在构建已经成功、exit code 还是 0 的情况下直接中止（后面的打包/签名/校验全不执行）。
+# Note: npm writes "npm notice ..." to stderr, and this script starts with $ErrorActionPreference = "Stop".
+# Without 2>&1, PowerShell treats that output as a NativeCommandError and aborts even though
+# the build succeeded and the exit code is 0 -- packaging, signing, and verification never run.
 & cmd /c "npm run tauri build 2>&1"
 $buildExit = $LASTEXITCODE
 Pop-Location
@@ -168,7 +168,7 @@ if (-not (Test-Path $ExePath)) {
 Copy-Item $ExePath $PortableDir -Force
 Write-Host "    Copied: LightC.exe" -ForegroundColor White
 
-# 旧 marker 继续保留；manifest 让新版程序能够校验数据目录采用相对路径。
+# Keep the legacy marker; the manifest lets newer builds verify that the data directory uses relative paths.
 Set-Content -Path (Join-Path $PortableDir "LightC.portable") -Value "portable" -Encoding UTF8
 $PortableManifest = [ordered]@{
     schema_version = 1
@@ -178,7 +178,7 @@ $PortableManifest = [ordered]@{
 $PortableManifest | ConvertTo-Json | Out-File -FilePath (Join-Path $PortableDir "LightC.portable.json") -Encoding utf8
 Write-Host "    Created: portable mode manifest" -ForegroundColor White
 
-# 安装版和便携版校验的都是当前运行时 exe，分别输出固定资产名供完整性校验下载。
+# Both the installed and portable variants sign the current runtime exe; emit fixed asset names for integrity-check downloads.
 $InstallerSignaturePath = Join-Path $DistReleaseDir "LightC_installer_exe.sig"
 $PortableSignaturePath = Join-Path $DistReleaseDir "LightC_portable_exe.sig"
 New-ExeSignatureAsset -ExecutablePath $ExePath -OutputPath $InstallerSignaturePath

@@ -149,7 +149,7 @@ export function filterGrowthEntries(entries: DiskGrowthEntry[], filter: GrowthFi
  * Build the folder tree from the flat changed-directory list.
  *
  * The scanned drive is not a node of its own: it is already shown in the module
- * header ("当前分析：C 盘"), so the first level here is `Users`, `Windows`, ...
+ * header ("Currently analyzing: C drive"), so the first level here is `Users`, `Windows`, ...
  */
 export function buildGrowthTree(entries: DiskGrowthEntry[]): GrowthTree {
   const byKey = new Map<string, GrowthNode>();

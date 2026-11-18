@@ -536,8 +536,8 @@ fn attribute(tag: &str, key: &str) -> Option<String> {
     Some(inner[..end].trim().to_string())
 }
 
-// 测试放在文件末尾：clippy::items_after_test_module 要求测试模块之后不再有代码项，
-// 同时让阅读顺序保持「实现 → 验证」。
+// Keep tests at the end of the file: clippy::items_after_test_module forbids items after the test module,
+// and it also keeps the reading order as implementation -> verification.
 #[cfg(test)]
 mod tests {
     use super::*;
