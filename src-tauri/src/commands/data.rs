@@ -111,18 +111,29 @@ pub fn authorize_wallpaper(app: &tauri::AppHandle) {
 
 /// Open the system image picker dialog.
 /// Only allow common static image formats: gif is also accepted and WebView can decode it, but this is the user's own choice.
+///
+/// M10 fix: uses the dialog plugin's callback API instead of `blocking_pick_file`.
+/// The blocking variant parks the async executor thread the command runs on until
+/// the user closes the dialog; the callback wakes this command through a oneshot
+/// channel instead, leaving the executor free while the dialog is open.
 #[tauri::command]
 pub async fn pick_wallpaper_dialog(app: tauri::AppHandle) -> Result<Option<String>, String> {
     use tauri_plugin_dialog::DialogExt;
 
-    let result = app
-        .dialog()
+    let (sender, receiver) = tokio::sync::oneshot::channel::<Option<String>>();
+    app.dialog()
         .file()
         .set_title("选择背景壁纸")
         .add_filter("图片", WALLPAPER_EXTENSIONS)
-        .blocking_pick_file();
+        .pick_file(move |file| {
+            // The dialog closes exactly once, so the receiver is always present.
+            // A send error would mean the command future was dropped — nothing left to report to.
+            let _ = sender.send(file.map(|path| path.to_string()));
+        });
 
-    Ok(result.map(|p| p.to_string()))
+    receiver
+        .await
+        .map_err(|error| format!("文件对话框回调通道已关闭: {}", error))
 }
 
 /// Install a wallpaper: validate file → copy to data directory → clear wallpaper with old extension.
@@ -187,15 +198,23 @@ pub fn get_wallpaper_path() -> String {
 }
 
 /// Open the system folder picker dialog
+///
+/// M10 fix: callback API + oneshot channel instead of `blocking_pick_folder`,
+/// for the same reason as `pick_wallpaper_dialog` — the blocking variant parks
+/// an async executor thread for as long as the dialog stays open.
 #[tauri::command]
 pub async fn pick_folder_dialog(app: tauri::AppHandle) -> Result<Option<String>, String> {
     use tauri_plugin_dialog::DialogExt;
 
-    let result = app
-        .dialog()
+    let (sender, receiver) = tokio::sync::oneshot::channel::<Option<String>>();
+    app.dialog()
         .file()
         .set_title("选择数据存储目录")
-        .blocking_pick_folder();
+        .pick_folder(move |folder| {
+            let _ = sender.send(folder.map(|path| path.to_string()));
+        });
 
-    Ok(result.map(|p| p.to_string()))
+    receiver
+        .await
+        .map_err(|error| format!("文件夹对话框回调通道已关闭: {}", error))
 }
