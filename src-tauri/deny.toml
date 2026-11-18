@@ -46,11 +46,21 @@ feature-depth = 1
 # The defaults already match our policy, so nothing is overridden here:
 #   vulnerability with a patch available -> deny (must be handled)
 #   yanked version                       -> warn
-# Only the `ignore` placeholder is kept; every future exemption must state a reason.
+# Every exemption below must state a reason. An unmaintained advisory is not a
+# vulnerability -- it says the crate no longer receives fixes -- so each one is
+# judged on whether the crate sits on a reachable attack surface.
 # ----------------------------------------------------------------------------
 [advisories]
 ignore = [
-    # Example: { id = "RUSTSEC-0000-0000", reason = "only called locally, not reachable" },
+    # chrono 0.4.45 -- "unmaintained", all versions affected, no safe upgrade exists.
+    # Usage here is limited to Local::now()/Utc::now() plus .format("%Y%m%d_%H%M%S")
+    # for log-file names and backup timestamps; no string parsing, no timezone
+    # conversion of untrusted input, so none of the historical chrono RUSTSEC
+    # advisories (parser panics / DoS on malformed dates) are reachable.
+    # Upstream recommends jiff or time. Migrating is 12 files and would change
+    # timestamp formatting, so it is tracked as separate work rather than being
+    # bundled into a dependency-security bump.
+    { id = "RUSTSEC-2026-0543", reason = "chrono is only used for Local::now()/Utc::now() formatting; no untrusted date parsing" },
 ]
 
 # ----------------------------------------------------------------------------

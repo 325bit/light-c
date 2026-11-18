@@ -24,14 +24,21 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 tauri = { version = "2", features = ["protocol-asset"] }
-tauri-plugin-updater = { version = "2.9.0", features = ["native-tls"] }
+# 2.14.1 is the first release that depends on zip ^9. Every 2.10-2.14.0 release
+# still resolves zip ^4, which carries six RUSTSEC advisories (symlink escape,
+# SUID bit preservation, unverified AES auth code, ...), so there is no smaller
+# step that clears them.
+tauri-plugin-updater = { version = "2.14.1", features = ["native-tls"] }
 tauri-plugin-opener = "2"
 tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 base64 = "0.22"
-minisign-verify = "0.2"
-reqwest = { version = "0.12", features = ["json", "rustls-tls"] }
+minisign-verify = "0.3"
+# reqwest 0.13 renamed the `rustls-tls` feature to `rustls`, and the 0.13 line is
+# what tauri-plugin-updater 2.14 links against. Staying on 0.12 would compile two
+# copies of the whole hyper/tower TLS stack into the binary.
+reqwest = { version = "0.13", features = ["json", "rustls"] }
 
 # 文件系统操作
 walkdir = "2"              # 递归遍历目录
@@ -54,7 +61,10 @@ env_logger = "0.11"
 rayon = "1.10"
 num_cpus = "1.16"
 tauri-plugin-process = "2.3.1"
-dirs = "6.0.0"
+# Aligned with what tauri-plugin-updater 2.14 requires, so only one copy of the
+# crate is linked. The 6 -> 7 bump is an MSRV/dependency refresh; the functions
+# used here (home_dir, data_dir, data_local_dir, document_dir) are unchanged.
+dirs = "7.0.0"
 # 单例模式
 once_cell = "1.19"
 # 正则匹配（卸载残留包名/版本号过滤）
