@@ -23,7 +23,7 @@ use criterion::{criterion_group, criterion_main, Criterion};
 use std::hint::black_box;
 use std::path::Path;
 
-use cleanup_c_lib::bench_api::{could_be_junk_path, normalize_into, DeleteEngine};
+use cleanup_c_lib::bench_api::{could_be_junk_path, ensure_deletable, normalize_into, DeleteScope};
 
 /// Pre-filter samples: half hits, half misses.
 ///
@@ -104,14 +104,15 @@ fn bench_normalize_into(criterion: &mut Criterion) {
     group.finish();
 }
 
-/// Safety check: the engine is stateless, so one instance is reused throughout.
-fn bench_is_protected_path(criterion: &mut Criterion) {
-    let engine = DeleteEngine::new();
+/// The full deletion gate: protection table + scope allowlist, once per file.
+fn bench_ensure_deletable(criterion: &mut Criterion) {
     let mut group = criterion.benchmark_group("path_checks");
-    group.bench_function("is_protected_path", |bencher| {
+    group.bench_function("ensure_deletable", |bencher| {
         bencher.iter(|| {
             for path in PROTECTED_PATH_SAMPLES {
-                black_box(engine.is_protected_path(Path::new(black_box(path))));
+                black_box(
+                    ensure_deletable(Path::new(black_box(path)), DeleteScope::JunkClean).is_err(),
+                );
             }
         })
     });
@@ -122,6 +123,6 @@ criterion_group!(
     benches,
     bench_could_be_junk_path,
     bench_normalize_into,
-    bench_is_protected_path
+    bench_ensure_deletable
 );
 criterion_main!(benches);

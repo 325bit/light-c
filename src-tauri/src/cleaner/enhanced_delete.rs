@@ -25,7 +25,10 @@ use std::time::{Duration, Instant};
 use log::{debug, info, warn};
 use serde::{Deserialize, Serialize};
 
-use super::safety_constants::is_rebuildable_system_cache_path;
+use crate::path_guard::{
+    drive_root_end, ensure_deletable, is_rebuildable_system_cache_path, profile_root_end,
+    DeleteScope,
+};
 
 // ============================================================================
 // Windows API bindings
@@ -376,7 +379,7 @@ impl Default for EnhancedDeleteResult {
 enum OwnershipAnchor {
     /// Match only directly under a drive root: `X:<entry>…` (the marker starts
     /// right after the drive colon, the same boundary rule as
-    /// `safety_constants::is_rebuildable_system_cache_path`).
+    /// `path_guard::is_rebuildable_system_cache_path`).
     DriveRoot,
     /// Match only directly under the user-profile root: `X:\users\<name><entry>…`.
     ProfileRoot,
@@ -770,15 +773,21 @@ impl EnhancedDeleteEngine {
         let logical_size = self.get_file_size(file_path);
         let physical_size = self.calculate_physical_size_for_path(file_path, logical_size);
 
-        // C1 fix, gate 0: reject `..` / `.` traversal before any deletion happens.
-        // The prefix checks below match the literal string, the OS resolves `..`.
-        if crate::path_guard::validate_deletable(file_path).is_err() {
+        // S3a: the traversal gate, the protection table and the scope layers are one
+        // call now. `EnhancedClean` skips the junk allowlist and the
+        // `\windows\` extension layer, because the deep scanner deliberately
+        // surfaces installers under `C:\Windows\Temp`.
+        if let Err(error) = ensure_deletable(file_path, DeleteScope::EnhancedClean) {
+            let reason = match error.code {
+                crate::error::ErrorCode::Protected => DeleteFailureReason::SystemProtected,
+                _ => DeleteFailureReason::OutOfScope,
+            };
             return FileDeleteResult {
                 path: path.to_string(),
                 success: false,
                 logical_size,
                 physical_size,
-                failure_reason: Some(DeleteFailureReason::OutOfScope),
+                failure_reason: Some(reason),
                 marked_for_reboot: false,
             };
         }
@@ -791,18 +800,6 @@ impl EnhancedDeleteEngine {
                 logical_size,
                 physical_size,
                 failure_reason: Some(DeleteFailureReason::NotFound),
-                marked_for_reboot: false,
-            };
-        }
-
-        // Safety check
-        if self.is_system_protected(file_path) {
-            return FileDeleteResult {
-                path: path.to_string(),
-                success: false,
-                logical_size,
-                physical_size,
-                failure_reason: Some(DeleteFailureReason::SystemProtected),
                 marked_for_reboot: false,
             };
         }
@@ -1036,34 +1033,6 @@ impl EnhancedDeleteEngine {
         })
     }
 
-    /// Check whether a file is system-protected (uses shared safety constants, consistent with delete_engine)
-    fn is_system_protected(&self, path: &Path) -> bool {
-        use super::safety_constants::{
-            is_rebuildable_system_cache_path, PROTECTED_FILES, PROTECTED_PATH_PREFIXES,
-        };
-
-        // C1 fix: normalize separators and strip the `\\?\` prefix before matching,
-        // consistent with delete_engine::is_protected_path.
-        let path_str = crate::path_guard::compare_key(path);
-
-        for prefix in PROTECTED_PATH_PREFIXES {
-            if path_str.starts_with(prefix) && !is_rebuildable_system_cache_path(&path_str) {
-                return true;
-            }
-        }
-
-        if let Some(file_name) = path.file_name() {
-            let name = file_name.to_string_lossy().to_lowercase();
-            for protected in PROTECTED_FILES {
-                if name == *protected {
-                    return true;
-                }
-            }
-        }
-
-        false
-    }
-
     /// Get the file size
     fn get_file_size(&self, path: &Path) -> u64 {
         // A recycle bin entry's displayed size comes from $I metadata; a directory must not be counted by only its direct $R children.
@@ -1219,40 +1188,6 @@ fn delete_recycle_entry(path: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Extract the partition root directory from a normal file path, for reading cluster size per volume.
-/// Position right after the drive root `X:` in a normalized path — where a
-/// drive-root-anchored whitelist marker must start. `None` when the path has no
-/// drive root (UNC paths, relative paths).
-fn drive_root_end(normalized: &str) -> Option<usize> {
-    let bytes = normalized.as_bytes();
-    if bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' {
-        Some(2)
-    } else {
-        None
-    }
-}
-
-/// Position right after the user-profile root `X:\users\<name>` in a normalized
-/// path — where a profile-anchored whitelist marker must start. `None` when the
-/// path does not start with such a root, so a deeper `\users\` component cannot
-/// forge one.
-fn profile_root_end(normalized: &str) -> Option<usize> {
-    let bytes = normalized.as_bytes();
-    if bytes.len() < 3 || !bytes[0].is_ascii_alphabetic() || bytes[1] != b':' || bytes[2] != b'\\' {
-        return None;
-    }
-    if !normalized[3..].starts_with("users\\") {
-        return None;
-    }
-    let after_users = 3 + "users\\".len();
-    let username_len = normalized[after_users..].find('\\')?;
-    if username_len == 0 {
-        // `X:\users\` with no username is not a profile root
-        return None;
-    }
-    Some(after_users + username_len)
-}
-
 impl Default for EnhancedDeleteEngine {
     fn default() -> Self {
         Self::new()
@@ -1343,16 +1278,18 @@ mod tests {
     }
 
     #[test]
-    fn test_system_protected_check() {
-        let engine = EnhancedDeleteEngine::new();
+    fn system_protection_comes_from_the_shared_table() {
+        fn refused(path: &str) -> bool {
+            ensure_deletable(Path::new(path), DeleteScope::EnhancedClean).is_err()
+        }
 
-        assert!(engine.is_system_protected(Path::new("C:\\Windows\\System32\\ntdll.dll")));
-        assert!(engine.is_system_protected(Path::new("C:\\pagefile.sys")));
-        assert!(!engine.is_system_protected(Path::new("C:\\Temp\\test.tmp")));
+        assert!(refused("C:\\Windows\\System32\\ntdll.dll"));
+        assert!(refused("C:\\pagefile.sys"));
+        assert!(!refused("C:\\Temp\\test.tmp"));
 
         // C1 regression: the bypass spellings must hit the protection check as well
-        assert!(engine.is_system_protected(Path::new("C:/Windows/System32/ntdll.dll")));
-        assert!(engine.is_system_protected(Path::new(r"\\?\C:\Windows\System32\ntdll.dll")));
+        assert!(refused("C:/Windows/System32/ntdll.dll"));
+        assert!(refused(r"\\?\C:\Windows\System32\ntdll.dll"));
         // And traversal paths are rejected outright by the guard, before any deletion
         assert!(crate::path_guard::validate_deletable(Path::new(
             r"C:\Temp\..\Windows\System32\config"
@@ -1377,7 +1314,7 @@ mod tests {
 
         for path in deletable_paths {
             assert!(
-                !engine.is_system_protected(Path::new(path)),
+                ensure_deletable(Path::new(path), DeleteScope::EnhancedClean).is_ok(),
                 "不应被系统保护拦截: {}",
                 path
             );

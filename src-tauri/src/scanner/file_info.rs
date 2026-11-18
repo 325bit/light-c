@@ -4,6 +4,7 @@
 // ============================================================================
 
 use super::JunkCategory;
+use crate::error::{AppError, ErrorCode};
 use serde::{Deserialize, Serialize};
 
 /// Detailed information of a single file
@@ -250,10 +251,19 @@ impl DeleteResult {
         self.reboot_pending_size += size;
     }
 
-    /// Record a deletion failure
-    pub fn add_failure(&mut self, path: String, reason: String) {
+    /// Record a deletion failure.
+    ///
+    /// The typed error is split into a code (which the UI localizes) and an
+    /// English diagnostic (which only reaches the log and the tooltip). Before
+    /// S3a this took a bare string, so a refused path and an OS failure were
+    /// indistinguishable once they reached the frontend.
+    pub fn add_failure(&mut self, path: String, error: AppError) {
         self.failed_count += 1;
-        self.failed_files.push(DeleteError { path, reason });
+        self.failed_files.push(DeleteError {
+            path,
+            reason: error.message.clone(),
+            failure_code: Some(error.code),
+        });
     }
 }
 
@@ -268,6 +278,11 @@ impl Default for DeleteResult {
 pub struct DeleteError {
     /// File path
     pub path: String,
-    /// Error reason
+    /// English diagnostic. The UI localizes from `failure_code` and only falls
+    /// back to this text, so it must never be the primary user-facing copy.
     pub reason: String,
+    /// Machine-readable category, so the UI never has to sniff `reason`.
+    /// Absent from the wire when unknown, keeping old payloads compatible.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure_code: Option<ErrorCode>,
 }

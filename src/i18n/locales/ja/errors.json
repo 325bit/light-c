@@ -3,7 +3,7 @@
   "permission_denied_hint": "LightC を管理者として再起動してから再試行してください",
   "not_found": "対象はすでに存在しません",
   "not_found_hint": "他のプログラムによって削除された可能性があります。一覧を更新してください",
-  "invalid_path": "パスが不正なため操作を中止しました",
+  "invalid_path": "このパスは削除できません",
   "invalid_path_hint": "パスを空にしたり、. や .. を含めることはできません",
   "invalid_argument": "引数が不正です",
   "invalid_argument_hint": "入力内容を確認して再試行してください",

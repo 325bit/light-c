@@ -71,7 +71,10 @@ function safetyCheckText(result: SafetyCheckResult, t: (key: string, options?: R
     });
   }
   if ('InProtectedPath' in result) {
-    return t('leftoversExtra.safetyProtectedPath', { reason: result.InProtectedPath.reason });
+    // The backend sends the *reason* (which rule matched, or which whitelist
+    // refused) as an untranslatable diagnostic. The sentence comes from the
+    // shared error copy, keyed by code, so this line is not English-only.
+    return errorText({ code: 'protected', message: result.InProtectedPath.reason });
   }
   return t('leftoversExtra.safetyUnknown');
 }

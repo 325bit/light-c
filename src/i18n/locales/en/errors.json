@@ -3,7 +3,7 @@
   "permission_denied_hint": "Restart LightC as administrator and try again",
   "not_found": "The target no longer exists",
   "not_found_hint": "It may have been deleted by another program — refresh the list",
-  "invalid_path": "Invalid path — operation refused",
+  "invalid_path": "This path cannot be deleted",
   "invalid_path_hint": "The path cannot be empty or contain . or ..",
   "invalid_argument": "Invalid argument",
   "invalid_argument_hint": "Check the input and try again",

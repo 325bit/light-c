@@ -13,7 +13,7 @@ use std::time::Instant;
 use walkdir::WalkDir;
 
 use super::{CategoryScanResult, FileInfo, JunkCategory, ScanResult};
-use crate::cleaner::safety_constants::is_rebuildable_system_cache_path;
+use crate::path_guard::is_rebuildable_system_cache_path;
 
 /// Scan engine
 pub struct ScanEngine {

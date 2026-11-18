@@ -7,16 +7,9 @@ use log::{debug, error, info, warn};
 use std::fs;
 use std::path::Path;
 
+use crate::error::{AppError, ErrorCode};
+use crate::path_guard::{ensure_deletable, DeleteScope};
 use crate::scanner::{DeleteResult, FileInfo};
-
-// ============================================================================
-// Safety protection config — referenced uniformly from the shared module
-// ============================================================================
-
-use super::safety_constants::{
-    is_rebuildable_system_cache_path, PROTECTED_EXTENSIONS_IN_WINDOWS, PROTECTED_FILES,
-    PROTECTED_PATH_PREFIXES,
-};
 
 /// Delete engine
 pub struct DeleteEngine {
@@ -121,32 +114,25 @@ impl DeleteEngine {
 
     /// Delete a single file or directory (multiple safety checks)
     /// Returns (freed size, whether marked for deletion on reboot)
-    fn delete_single_file(&self, path: &str, size: u64) -> Result<(u64, bool), String> {
+    fn delete_single_file(&self, path: &str, size: u64) -> Result<(u64, bool), AppError> {
         let file_path = Path::new(path);
 
-        // C1 fix, gate 0: reject `..` / `.` traversal up front. The engines' own checks are
-        // literal-string based while the OS resolves `..`, so a traversal path must never
-        // reach any deletion API, regardless of what the prefix checks decide.
-        // The per-file result type still carries text, so the typed code is flattened here;
-        // the command layer re-validates and keeps the code (see commands::delete).
-        crate::path_guard::validate_deletable(file_path).map_err(|error| error.to_string())?;
+        // S3a: one decision point covers what used to be two separate layers here
+        // (protected path + allowed scope). It also covers the `..` / `.` traversal
+        // gate that C1 added, because `ensure_deletable` starts with it.
+        //
+        // The error keeps its code instead of being flattened to a sentence: the
+        // per-file result carries `failure_code` to the UI, and the command layer
+        // re-validates so a traversal attempt arrives as `invalid_path` rather than
+        // an untyped `internal` message.
+        if let Err(error) = ensure_deletable(file_path, DeleteScope::JunkClean) {
+            error!("安全拦截: 拒绝删除 {} - {}", path, error);
+            return Err(error);
+        }
 
         // Check whether the path exists
         if !file_path.exists() {
-            return Err("文件不存在".to_string());
-        }
-
-        // Safety check layer 1: check whether it is a protected path
-        if self.is_protected_path(file_path) {
-            return Err("系统保护路径，禁止删除".to_string());
-        }
-
-        // Safety check layer 2: check whether it is within the allowed deletion range.
-        // C1 fix: this used to be warn-only, i.e. the check result was discarded and any
-        // path outside the junk-cleanup scope was still deleted. It is a hard error now.
-        if !self.is_in_allowed_scope(file_path) {
-            error!("安全拦截: 路径不在允许删除范围内，已拒绝删除 {}", path);
-            return Err("路径不在允许删除范围内，已拒绝删除".to_string());
+            return Err(AppError::new(ErrorCode::NotFound).arg("path", path));
         }
 
         // Try to delete
@@ -158,7 +144,7 @@ impl DeleteEngine {
     }
 
     /// Delete a file, returning (size, whether marked for deletion on reboot)
-    fn delete_file(&self, path: &Path, size: u64) -> Result<(u64, bool), String> {
+    fn delete_file(&self, path: &Path, size: u64) -> Result<(u64, bool), AppError> {
         // Try to delete the file
         match fs::remove_file(path) {
             Ok(_) => Ok((size, false)),
@@ -176,16 +162,18 @@ impl DeleteEngine {
                             }
                         }
                     }
-                    Err(format!("权限不足: {}", e))
+                    Err(AppError::new(ErrorCode::PermissionDenied).detail(e.to_string()))
                 } else {
                     // Detect a sharing violation (error code 32, ERROR_SHARING_VIOLATION),
-                    // when the file is in use by another process it cannot be deleted directly, so mark it for deletion on reboot
+                    // when the file is in use by another process it cannot be deleted directly, so mark it for deletion on reboot.
+                    // The old guard here re-checked the allowed scope; the entry gate above
+                    // already guarantees that, so only the OS condition is left.
                     #[cfg(windows)]
                     let is_sharing_violation = e.raw_os_error() == Some(32); // ERROR_SHARING_VIOLATION
                     #[cfg(not(windows))]
                     let is_sharing_violation = false;
 
-                    if is_sharing_violation && self.is_in_allowed_scope(path) {
+                    if is_sharing_violation {
                         // Call MoveFileExW to mark for deletion on reboot
                         #[cfg(windows)]
                         {
@@ -202,9 +190,9 @@ impl DeleteEngine {
                                 }
                             }
                         }
-                        Err(format!("文件被系统占用: {}", e))
+                        Err(AppError::new(ErrorCode::TargetInUse).detail(e.to_string()))
                     } else {
-                        Err(format!("删除失败: {}", e))
+                        Err(AppError::new(ErrorCode::Internal).detail(e.to_string()))
                     }
                 }
             }
@@ -217,27 +205,24 @@ impl DeleteEngine {
     /// MoveFileExW + MOVEFILE_DELAY_UNTIL_REBOOT requires the directory to be empty,
     /// and when remove_dir_all fails there is usually still content inside, so queueing would not work anyway,
     /// it would only make users think "it will be deleted after reboot". Instead we classify the error and explain the cause clearly.
-    fn delete_directory(&self, path: &Path, size: u64) -> Result<(u64, bool), String> {
+    fn delete_directory(&self, path: &Path, size: u64) -> Result<(u64, bool), AppError> {
         match fs::remove_dir_all(path) {
             Ok(_) => Ok((size, false)),
             Err(e) => {
                 // Error classification aligned with delete_file: distinguish "insufficient permissions" from "in use".
-                // For insufficient permissions, add an actionable hint — directories managed by the system (such as the old Windows installation
-                // Windows.old) should be left to system disk cleanup; forcing deletion would also lose the ability to roll back to the old version.
+                // System-managed directories (such as the old Windows installation Windows.old) should be left to
+                // system disk cleanup; forcing deletion would also lose the ability to roll back to the old version.
                 #[cfg(windows)]
                 let is_sharing_violation = e.raw_os_error() == Some(32); // ERROR_SHARING_VIOLATION
                 #[cfg(not(windows))]
                 let is_sharing_violation = false;
 
                 if e.kind() == std::io::ErrorKind::PermissionDenied {
-                    Err(format!(
-                        "权限不足: {}（系统托管的目录请改用系统磁盘清理）",
-                        e
-                    ))
+                    Err(AppError::new(ErrorCode::PermissionDenied).detail(e.to_string()))
                 } else if is_sharing_violation {
-                    Err(format!("目录内有文件被占用: {}", e))
+                    Err(AppError::new(ErrorCode::TargetInUse).detail(e.to_string()))
                 } else {
-                    Err(format!("删除目录失败: {}", e))
+                    Err(AppError::new(ErrorCode::Internal).detail(e.to_string()))
                 }
             }
         }
@@ -259,121 +244,6 @@ impl DeleteEngine {
             0
         }
     }
-
-    /// Check whether it is a protected path (multiple safety checks)
-    ///
-    /// `pub` only for benches (through lib.rs's bench_api): this is the "can this path be deleted"
-    /// decision point, called once per file in a batch, so its cost adds directly to total delete time.
-    /// It is also the C1 audit fix point and needs both a benchmark and unit tests to guard it.
-    pub fn is_protected_path(&self, path: &Path) -> bool {
-        // C1 fix: normalize separators and strip the `\\?\` prefix before matching,
-        // otherwise `C:/...` and `\\?\C:\...` bypass every `\`-based prefix below.
-        let path_str = crate::path_guard::compare_key(path);
-
-        // Layer 1: check the path prefix
-        for protected in PROTECTED_PATH_PREFIXES {
-            if path_str.starts_with(protected) && !is_rebuildable_system_cache_path(&path_str) {
-                error!("安全拦截: 尝试删除受保护路径 {}", path_str);
-                return true;
-            }
-        }
-
-        // Layer 2: check the file name
-        if let Some(file_name) = path.file_name() {
-            let name = file_name.to_string_lossy().to_lowercase();
-            for protected in PROTECTED_FILES {
-                if name == *protected {
-                    error!("安全拦截: 尝试删除系统关键文件 {}", name);
-                    return true;
-                }
-            }
-        }
-
-        // Layer 3: protect specific extensions under the Windows directory
-        if path_str.contains("\\windows\\") {
-            if let Some(ext) = path.extension() {
-                let ext_str = ext.to_string_lossy().to_lowercase();
-                if PROTECTED_EXTENSIONS_IN_WINDOWS.contains(&ext_str.as_str()) {
-                    error!("安全拦截: 尝试删除Windows目录下的系统文件 {}", path_str);
-                    return true;
-                }
-            }
-        }
-
-        // Layer 4: check whether it is the root of a user profile folder
-        let user_critical_paths = [
-            "\\appdata\\local",
-            "\\appdata\\roaming",
-            "\\documents",
-            "\\desktop",
-            "\\downloads",
-        ];
-        for critical in &user_critical_paths {
-            // Only protect the root directory, not subdirectories
-            if path_str.ends_with(critical) {
-                error!("安全拦截: 尝试删除用户关键目录 {}", path_str);
-                return true;
-            }
-        }
-
-        // Layer 5: check whether it is a drive root directory
-        if path_str.len() <= 3 && path_str.ends_with("\\") {
-            error!("安全拦截: 尝试删除驱动器根目录 {}", path_str);
-            return true;
-        }
-
-        false
-    }
-
-    /// Validate whether the path is within the allowed deletion range
-    fn is_in_allowed_scope(&self, path: &Path) -> bool {
-        // Same normalization as is_protected_path, so both layers see the same spelling.
-        let path_str = crate::path_guard::compare_key(path);
-
-        // Path ranges allowed for deletion
-        let allowed_scopes = [
-            "\\temp",
-            "\\tmp",
-            "\\cache",
-            "\\caches",
-            "\\temporary",
-            "\\appdata\\local\\temp",
-            "\\appdata\\local\\microsoft\\windows\\temporary",
-            "\\appdata\\local\\microsoft\\windows\\inetcache",
-            "\\appdata\\local\\microsoft\\windows\\explorer", // thumbnail cache
-            "\\windows\\temp",
-            "\\windows\\prefetch",
-            "\\windows\\softwaredistribution\\download",
-            "\\windows\\softwaredistribution\\deliveryoptimization",
-            "\\deliveryoptimization\\",
-            "\\programdata\\microsoft\\windows defender\\localcopy",
-            "\\programdata\\microsoft\\windows defender\\support",
-            "\\d3d_cache",
-            "\\$recycle.bin", // recycle bin contents
-            "\\.log",
-            "\\.tmp",
-            "\\.bak",
-            "\\crash",
-            "\\dumps",
-        ];
-
-        for scope in &allowed_scopes {
-            if path_str.contains(scope) {
-                return true;
-            }
-        }
-
-        // Check whether the file extension is in the allowed list
-        if let Some(ext) = path.extension() {
-            let ext_str = ext.to_string_lossy().to_lowercase();
-            let allowed_exts = ["tmp", "temp", "log", "bak", "old", "dmp", "etl"];
-            if allowed_exts.contains(&ext_str.as_str()) {
-                return true;
-            }
-        }
-
-        false
-    }
 }
 
 impl Default for DeleteEngine {
@@ -385,44 +255,49 @@ impl Default for DeleteEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::path_guard::ensure_deletable;
+
+    /// Junk clean must refuse the system table. The table itself lives in
+    /// `path_guard` now (S3a) and is covered there in full; these cases guard the
+    /// wiring: the engine really calls it with the junk-clean scope.
+    fn refused(path: &str) -> bool {
+        ensure_deletable(Path::new(path), DeleteScope::JunkClean).is_err()
+    }
 
     #[test]
-    fn test_protected_paths() {
-        let engine = DeleteEngine::new();
+    fn protected_paths_are_refused() {
+        assert!(refused(r"C:\Windows\System32\test.dll"));
+        assert!(refused(r"C:\Program Files\App"));
+        assert!(refused(r"C:\Windows.old"));
+        assert!(refused(r"C:\Windows.old\Windows\System32\old.dll"));
+        assert!(refused(r"C:\$Windows.~BT"));
+    }
 
-        assert!(engine.is_protected_path(Path::new("C:\\Windows\\System32\\test.dll")));
-        assert!(engine.is_protected_path(Path::new("C:\\Program Files\\App")));
-        // Only rebuildable cache subdirectories explicitly listed by the Windows cleanup wizard may pass through system-directory protection.
-        assert!(
-            !engine.is_protected_path(Path::new("C:\\Windows\\System32\\d3d_cache\\shader.bin"))
-        );
-        assert!(!engine.is_protected_path(Path::new(
-            "C:\\ProgramData\\Microsoft\\Windows Defender\\Support\\MPLog.log"
-        )));
-        assert!(engine.is_protected_path(Path::new(
-            "C:\\ProgramData\\Microsoft\\Windows Defender\\Quarantine\\entry.bin"
-        )));
-        assert!(!engine.is_protected_path(Path::new("C:\\Temp\\test.tmp")));
-        // The old Windows installation is system-managed: it cannot be deleted inside the app, and a mid-way failure leaves a "half-deleted" state,
-        // so it must be blocked here (the scan side is unaffected and still lists the size normally).
-        assert!(engine.is_protected_path(Path::new("C:\\Windows.old")));
-        assert!(engine.is_protected_path(Path::new("C:\\Windows.old\\Windows\\System32\\old.dll")));
-        assert!(engine.is_protected_path(Path::new("C:\\$Windows.~BT")));
+    #[test]
+    fn rebuildable_system_caches_pass_through() {
+        // Only rebuildable cache subdirectories explicitly listed by the Windows
+        // cleanup wizard may pass through system-directory protection.
+        assert!(!refused(r"C:\Windows\System32\d3d_cache\shader.bin"));
+        assert!(!refused(
+            r"C:\ProgramData\Microsoft\Windows Defender\Support\MPLog.log"
+        ));
+        assert!(refused(
+            r"C:\ProgramData\Microsoft\Windows Defender\Quarantine\entry.bin"
+        ));
+        assert!(!refused(r"C:\Temp\test.tmp"));
     }
 
     /// C1 regression: the three bypass spellings from the audit must all be blocked.
     #[test]
     fn bypass_spellings_are_blocked() {
-        let engine = DeleteEngine::new();
-
         // 1. Forward slashes: previously matched no `\`-based prefix at all
-        assert!(engine.is_protected_path(Path::new("C:/Windows/System32/foo.dll")));
-        assert!(engine.is_protected_path(Path::new("C:/Program Files/App")));
-        assert!(engine.is_protected_path(Path::new("C:/")));
+        assert!(refused("C:/Windows/System32/foo.dll"));
+        assert!(refused("C:/Program Files/App"));
+        assert!(refused("C:/"));
 
         // 2. Extended-length prefix: previously kept `\\?\` in the string, so every prefix missed
-        assert!(engine.is_protected_path(Path::new(r"\\?\C:\Windows\System32\foo.dll")));
-        assert!(engine.is_protected_path(Path::new(r"\\?\C:\")));
+        assert!(refused(r"\\?\C:\Windows\System32\foo.dll"));
+        assert!(refused(r"\\?\C:\"));
 
         // 3. Relative components: rejected outright before any check or deletion,
         //    because the prefix checks match the literal while the OS resolves `..`.
@@ -435,16 +310,12 @@ mod tests {
     /// C1 regression: the allowed-scope check is a hard error, not a warning.
     #[test]
     fn out_of_scope_paths_are_rejected() {
-        let engine = DeleteEngine::new();
+        // A user document outside every allowed scope must be rejected by
+        // delete_single_file, not deleted with a warning like before the fix.
+        assert!(refused(r"C:\Users\Test\Documents\report.docx"));
 
-        // A user document outside every allowed scope must be rejected by delete_single_file,
-        // not deleted with a warning like before the fix.
-        let outside = Path::new(r"C:\Users\Test\Documents\report.docx");
-        assert!(engine.is_protected_path(outside) || !engine.is_in_allowed_scope(outside));
-
-        // In-scope junk paths still pass layer 2 (and layer 1) so normal cleanup is unaffected.
-        assert!(engine.is_in_allowed_scope(Path::new(r"C:\Users\Test\AppData\Local\Temp\x.tmp")));
-        assert!(engine.is_in_allowed_scope(Path::new("C:/Windows/Temp/install.log")));
-        assert!(!engine.is_protected_path(Path::new(r"C:\Windows\Temp\install.log")));
+        // In-scope junk paths still pass, so normal cleanup is unaffected.
+        assert!(!refused(r"C:\Users\Test\AppData\Local\Temp\x.tmp"));
+        assert!(!refused("C:/Windows/Temp/install.log"));
     }
 }

@@ -19,7 +19,7 @@
 // letting the user decide whether to delete it, thus avoiding accidental deletion of software in use.
 //
 // [Safety check protocol]
-// Check 1: core whitelist check - ensure the path is not inside a critical system directory
+// Check 1: protection rules - the shared `path_guard` table plus the user whitelist
 // Check 2: executable file check - scan for .exe/.dll/.sys files; if found, mark for manual review
 //
 // Note: the registry matching check is no longer performed, because the scoring engine has already confirmed the target is an uninstall leftover,
@@ -41,6 +41,7 @@ use serde::{Deserialize, Serialize};
 use walkdir::WalkDir;
 
 use crate::error::ErrorCode;
+use crate::path_guard::{ensure_deletable, DeleteScope};
 use crate::scanner::leftover_whitelist::{self, LeftoverWhitelistEntry};
 
 #[cfg(windows)]
@@ -55,14 +56,14 @@ use crate::cleaner::enhanced_delete::windows_api;
 pub enum SafetyCheckResult {
     /// Passed all checks, safe to delete
     Safe,
-    /// A match was found in the registry (Check 1 failed)
+    /// A match was found in the registry (legacy variant; the check is no longer run)
     FoundInRegistry {
         matched_field: String,
         matched_value: String,
     },
-    /// Executable files were found (Check 2 failed)
+    /// Executable files were found (executable check failed)
     ContainsExecutables { files: Vec<String> },
-    /// The path is inside a system-protected directory (Check 3 failed)
+    /// The path is inside a system-protected directory, or a whitelist refused it
     InProtectedPath { reason: String },
 }
 
@@ -182,36 +183,13 @@ pub struct PermanentDeleteResult {
 }
 
 // ============================================================================
-// Core whitelist - system paths that are absolutely forbidden to delete
+// Safety check constants
+//
+// The protected-path table lives in `path_guard` (S3a). This module only owns
+// the executable-extension list, which no other engine uses.
 // ============================================================================
 
-/// Core system-protected paths (Check 3)
-/// Nothing under these paths may be deleted through this module
-const PROTECTED_PATHS: &[&str] = &[
-    // Windows system directories
-    r"C:\Windows",
-    r"C:\Windows\System32",
-    r"C:\Windows\SysWOW64",
-    r"C:\Windows\WinSxS",
-    // Critical user directories
-    r"\Desktop",
-    r"\Documents",
-    r"\Downloads",
-    r"\Pictures",
-    r"\Videos",
-    r"\Music",
-    // System root directories
-    r"C:\Program Files",
-    r"C:\Program Files (x86)",
-    r"C:\ProgramData\Microsoft",
-    // Boot-related
-    r"C:\Boot",
-    r"C:\Recovery",
-    r"C:\$Recycle.Bin",
-    r"C:\System Volume Information",
-];
-
-/// Executable file extensions (Check 2)
+/// Executable file extensions (the executable check)
 const EXECUTABLE_EXTENSIONS: &[&str] = &["exe", "dll", "sys", "drv", "ocx", "cpl", "scr"];
 
 // ============================================================================
@@ -272,12 +250,13 @@ impl PermanentDeleteEngine {
     ) -> SafetyCheckResult {
         let path_str = path.to_string_lossy().to_string();
 
-        // C1 fix, gate 0: reject `..` / `.` traversal before any check.
-        // The protected-path matching below works on the literal string while
-        // remove_dir_all resolves `..`, so a traversal path must never get here.
-        if let Err(error) = crate::path_guard::validate_deletable(path) {
+        // S3a: traversal, the shared protection table, and the shell-folder rules
+        // for this scope are one call now. `Leftovers` is the strictest scope: a
+        // "leftover" inside Documents or on the Desktop is a scanner bug, so those
+        // subtrees are refused here even though large-file cleanup may touch them.
+        if let Err(error) = ensure_deletable(path, DeleteScope::Leftovers) {
             return SafetyCheckResult::InProtectedPath {
-                reason: error.to_string(),
+                reason: error.detail.unwrap_or(error.message),
             };
         }
 
@@ -286,26 +265,19 @@ impl PermanentDeleteEngine {
             Ok(entries) => entries,
             Err(error) => {
                 return SafetyCheckResult::InProtectedPath {
-                    reason: format!("无法读取用户白名单，已拒绝删除: {}", error),
+                    reason: format!("user whitelist could not be loaded: {error}"),
                 };
             }
         };
 
         if leftover_whitelist::contains_path(user_whitelist, path) {
             return SafetyCheckResult::InProtectedPath {
-                reason: format!("路径受用户白名单保护: {}", path_str),
+                reason: format!("path is on the user whitelist: {path_str}"),
             };
         }
 
         // ====================================================================
-        // Check 1: core whitelist check (runs first, strictest)
-        // ====================================================================
-        if let Some(reason) = self.check_protected_path(&path_str) {
-            return SafetyCheckResult::InProtectedPath { reason };
-        }
-
-        // ====================================================================
-        // Check 2: executable file check
+        // Executable file check
         // ====================================================================
         if !allow_executables {
             let executables = self.scan_executables(path);
@@ -323,7 +295,7 @@ impl PermanentDeleteEngine {
         SafetyCheckResult::Safe
     }
 
-    /// Check 2: scan the directory for executable files
+    /// Scan the directory for executable files
     ///
     /// Explanation
     /// Recursively scan the target directory for executable files such as .exe, .dll and .sys.
@@ -356,72 +328,6 @@ impl PermanentDeleteEngine {
         }
 
         executables
-    }
-
-    /// Check 3: check whether the path is inside a system-protected directory
-    ///
-    /// Explanation
-    /// Verify the target path is not inside critical system directories such as C:\Windows, Desktop or Documents.
-    /// This is the last line of defense, ensuring system files are never deleted by mistake.
-    ///
-    /// Path matching rules:
-    /// - Absolute paths (e.g. C:\Windows): only use starts_with plus a path-separator boundary check
-    /// - Relative paths (e.g. \Desktop, \Documents): use path-component matching (\Desktop\ or ends with \Desktop)
-    fn check_protected_path(&self, path: &str) -> Option<String> {
-        // C1 fix: normalize separators and strip the `\\?\` prefix before matching,
-        // so `C:/Windows/...` and `\\?\C:\Windows\...` can no longer bypass the
-        // `\`-based prefix checks below.
-        let normalized = crate::path_guard::normalize(Path::new(path));
-        // M13 fix: matching goes through the shared compare_key spelling.
-        let path_lower = crate::path_guard::compare_key(Path::new(path));
-
-        for protected in PROTECTED_PATHS {
-            let protected_lower = protected.to_lowercase();
-
-            // Determine whether it is an absolute path (with a drive letter) or a relative path (starting with \)
-            let is_absolute = protected_lower.len() >= 2
-                && protected_lower.as_bytes().get(1).copied() == Some(b':');
-
-            if is_absolute {
-                // Absolute path: only starts_with plus a path-separator boundary check
-                // For example C:\Windows matches C:\Windows\System32, but not C:\WindowsApp
-                if path_lower.starts_with(&protected_lower) {
-                    let next_char = path_lower[protected_lower.len()..].chars().next();
-                    if next_char.is_none() || next_char == Some('\\') {
-                        return Some(format!("路径包含受保护目录: {}", protected));
-                    }
-                }
-            } else {
-                // Relative path (e.g. \Desktop): match at the path-component level
-                // Check whether the path contains \Desktop\ or ends with \Desktop
-                // Prevent \Desktop from wrongly matching \DesktopApp
-                let comp_with_sep = format!("{}\\", protected_lower);
-                if path_lower
-                    .starts_with(&format!("{}\\", protected_lower.trim_start_matches('\\')))
-                    || path_lower.contains(&comp_with_sep)
-                    || path_lower.ends_with(&protected_lower)
-                {
-                    let reason =
-                        format!("路径包含受保护目录: {}", protected.trim_start_matches('\\'));
-                    return Some(reason);
-                }
-            }
-        }
-
-        // Extra check: do not allow deleting a drive root directory
-        if normalized.len() <= 3 {
-            return Some("不允许删除驱动器根目录".to_string());
-        }
-
-        // Check whether it is a direct child of a user directory (e.g. C:\Users\xxx itself)
-        if path_lower.starts_with(r"c:\users\") {
-            let parts: Vec<&str> = normalized.split('\\').collect();
-            if parts.len() <= 3 {
-                return Some("不允许删除用户根目录".to_string());
-            }
-        }
-
-        None
     }
 
     // ========================================================================
@@ -809,42 +715,37 @@ mod tests {
     }
 
     #[test]
-    fn test_protected_path_check() {
-        let engine = PermanentDeleteEngine::new();
+    fn protected_paths_come_from_the_shared_table() {
+        fn refused(path: &str) -> bool {
+            ensure_deletable(Path::new(path), DeleteScope::Leftovers).is_err()
+        }
 
         // Paths that should be protected
-        assert!(engine
-            .check_protected_path(r"C:\Windows\System32\test")
-            .is_some());
-        assert!(engine
-            .check_protected_path(r"C:\Users\test\Desktop\file")
-            .is_some());
-        assert!(engine.check_protected_path(r"C:\").is_some());
+        assert!(refused(r"C:\Windows\System32\test"));
+        assert!(refused(r"C:\Users\test\Desktop\file"));
+        assert!(refused(r"C:\"));
 
         // Paths that should be allowed
-        assert!(engine
-            .check_protected_path(r"C:\Users\test\AppData\Local\SomeApp")
-            .is_none());
+        assert!(!refused(r"C:\Users\test\AppData\Local\SomeApp"));
     }
 
     /// C1 regression: bypass spellings must not slip past the protected-path check.
     #[test]
     fn bypass_spellings_are_blocked() {
-        let engine = PermanentDeleteEngine::new();
+        fn refused(path: &str) -> bool {
+            ensure_deletable(Path::new(path), DeleteScope::Leftovers).is_err()
+        }
 
         // Forward slashes previously matched no `\`-based prefix at all
-        assert!(engine
-            .check_protected_path(r"C:/Windows/System32/test")
-            .is_some());
-        assert!(engine.check_protected_path(r"C:/").is_some());
+        assert!(refused(r"C:/Windows/System32/test"));
+        assert!(refused(r"C:/"));
 
         // Extended-length prefix previously kept `\\?\` in the string
-        assert!(engine
-            .check_protected_path(r"\\?\C:\Windows\System32\test")
-            .is_some());
-        assert!(engine.check_protected_path(r"\\?\C:\").is_some());
+        assert!(refused(r"\\?\C:\Windows\System32\test"));
+        assert!(refused(r"\\?\C:\"));
 
         // Traversal paths are rejected by the guard before any check runs
+        let engine = PermanentDeleteEngine::new();
         let result = engine.perform_safety_checks(Path::new(r"C:\Temp\..\Windows\System32\config"));
         assert!(matches!(result, SafetyCheckResult::InProtectedPath { .. }));
     }

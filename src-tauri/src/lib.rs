@@ -34,6 +34,7 @@ use commands::*;
 /// actually need. Everything else stays closed; `#[doc(hidden)]` keeps this layer out of public docs.
 pub mod bench_api {
     pub use crate::cleaner::DeleteEngine;
+    pub use crate::path_guard::{ensure_deletable, DeleteScope};
     pub use crate::scanner::deep_junk::{could_be_junk_path, normalize_into};
 }
 

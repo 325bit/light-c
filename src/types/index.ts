@@ -2,6 +2,8 @@
 // Type definitions - correspond to Rust backend data structures
 // ============================================================================
 
+import type { ErrorCode } from '../api/errors';
+
 /** Junk file categories */
 export type JunkCategory =
   | 'WindowsTemp'
@@ -157,8 +159,15 @@ export interface DeleteResult {
 export interface DeleteError {
   /** File path */
   path: string;
-  /** Error reason */
+  /**
+   * English diagnostic from the backend.
+   *
+   * Only a fallback: localize with {@link failureText} using `failure_code`, so a
+   * refused path does not surface as an English sentence to a zh/ja user.
+   */
   reason: string;
+  /** Machine-readable category; absent when the backend could not classify it. */
+  failure_code?: ErrorCode | null;
 }
 
 /** Disk info */

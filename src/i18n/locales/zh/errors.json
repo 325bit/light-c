@@ -3,7 +3,7 @@
   "permission_denied_hint": "请以管理员身份重新启动 LightC 后重试",
   "not_found": "目标已不存在",
   "not_found_hint": "可能已被其他程序删除，请刷新列表",
-  "invalid_path": "路径不合法，已拒绝操作",
+  "invalid_path": "该路径不允许删除",
   "invalid_path_hint": "路径不能为空，也不能包含 . 或 ..",
   "invalid_argument": "参数不合法",
   "invalid_argument_hint": "请检查输入内容后重试",

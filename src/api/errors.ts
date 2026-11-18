@@ -151,3 +151,18 @@ export function errorDetailLabel(): string {
 export function isErrorCodeOf(error: unknown, code: ErrorCode): boolean {
   return toAppError(error).code === code;
 }
+
+/**
+ * Localized text for a per-file failure that arrives as `(code, diagnostic)`.
+ *
+ * The backend splits `DeleteError` / `LeftoverDeleteResult` into a code and an
+ * English diagnostic so the copy can be translated. Falling back to the raw
+ * diagnostic keeps the line readable when a code is missing (older payloads).
+ */
+export function failureText(
+  code: ErrorCode | null | undefined,
+  message: string,
+): string {
+  if (!code) return message;
+  return errorText({ code, message });
+}

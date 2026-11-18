@@ -33,7 +33,7 @@ import { formatSize, formatDate, getRiskLevelColor, getRiskLevelBgColor, getRisk
 import { openSearchUrl } from '../../utils/searchEngine';
 import type { LargeFileEntry, LargeFileScanProgress } from '../../types';
 import type { ModuleRenderProps } from './moduleProps';
-import { errorText } from '../../api/errors';
+import { errorText, failureText } from '../../api/errors';
 
 // The backend currently returns fixed source labels; map only known enums and do not display unknown values, to avoid mistranslating real file info.
 function getLocalizedSourceLabel(sourceLabel: string, translate: (key: string) => string): string {
@@ -324,7 +324,9 @@ export function BigFilesModule({ isPageActive = true }: ModuleRenderProps) {
           path,
           size: file?.size || 0,
           success: !failedPathSet.has(path),
-          error_message: failedFile?.reason,
+          error_message: failedFile
+            ? failureText(failedFile.failure_code, failedFile.reason)
+            : undefined,
         };
       });
       recordCleanupAction(logEntries).catch((err) => {
