@@ -7,7 +7,7 @@
 
 use chrono::Local;
 use log::{info, warn};
-use quick_xml::{events::Event, Reader};
+use quick_xml::{events::Event, Reader, XmlVersion};
 use serde::Serialize;
 use std::cmp::Ordering;
 use std::collections::HashMap;
@@ -679,7 +679,10 @@ fn temporary_xml_path() -> PathBuf {
 fn parse_driver_xml(path: &Path) -> Result<Vec<RawDriverPackage>, String> {
     let mut reader = Reader::from_file(path)
         .map_err(|error| format!("读取 pnputil XML 失败 {}: {}", path.display(), error))?;
-    reader.config_mut().trim_text(true);
+    // trim_text stays off on purpose: quick-xml 0.42 emits entity references as their own
+    // `GeneralRef` events, so a value like `Realtek &amp; Co.` arrives as three events. Trimming
+    // each fragment would eat the spaces around the entity and yield `Realtek&Co.`; trimming is
+    // therefore done once on the assembled string instead.
     let mut buffer = Vec::new();
     let mut current_package: Option<RawDriverPackage> = None;
     let mut current_text_element: Option<String> = None;
@@ -690,21 +693,20 @@ fn parse_driver_xml(path: &Path) -> Result<Vec<RawDriverPackage>, String> {
     loop {
         match reader.read_event_into(&mut buffer) {
             Ok(Event::Start(event)) => {
-                let element_name = event.local_name().as_ref().to_vec();
-                if element_name == b"Driver" {
+                let element_name = event.local_name().as_ref().to_string();
+                if element_name == "Driver" {
                     current_package = Some(RawDriverPackage {
-                        published_name: read_attribute(&event, b"DriverName")?,
+                        published_name: read_attribute(&event, "DriverName")?,
                         ..RawDriverPackage::default()
                     });
                 } else if let Some(package) = current_package.as_mut() {
-                    if element_name == b"Device" {
+                    if element_name == "Device" {
                         package.device_count += 1;
                         current_device_open = true;
-                    } else if element_name == b"File" {
+                    } else if element_name == "File" {
                         package.file_count += 1;
                     } else if is_driver_text_element(&element_name) {
-                        current_text_element =
-                            Some(String::from_utf8_lossy(&element_name).to_string());
+                        current_text_element = Some(element_name.clone());
                         current_text.clear();
                     }
                 }
@@ -712,27 +714,31 @@ fn parse_driver_xml(path: &Path) -> Result<Vec<RawDriverPackage>, String> {
             Ok(Event::Empty(event)) => {
                 let element_name = event.local_name();
                 if let Some(package) = current_package.as_mut() {
-                    if element_name.as_ref() == b"Device" {
+                    if element_name.as_ref() == "Device" {
                         package.device_count += 1;
                         current_device_open = false;
-                    } else if element_name.as_ref() == b"File" {
+                    } else if element_name.as_ref() == "File" {
                         package.file_count += 1;
                     }
                 }
             }
             Ok(Event::Text(event)) => {
                 if current_text_element.is_some() {
-                    current_text.push_str(
-                        &event
-                            .decode()
-                            .map_err(|error| format!("解析 pnputil XML 文本失败: {}", error))?,
-                    );
+                    // quick-xml 0.42 dropped BytesText::decode(): text arrives as valid UTF-8
+                    // with entity references already split into their own events, so only EOL
+                    // normalization is left to do here.
+                    current_text.push_str(&event.xml10_content());
+                }
+            }
+            Ok(Event::GeneralRef(reference)) => {
+                if current_text_element.is_some() {
+                    push_general_ref(&mut current_text, reference.as_ref())?;
                 }
             }
             Ok(Event::End(event)) => {
                 let element_name = event.local_name();
                 if let Some(text_element) = current_text_element.as_deref() {
-                    if text_element.as_bytes() == element_name.as_ref() {
+                    if text_element == element_name.as_ref() {
                         if let Some(package) = current_package.as_mut() {
                             if text_element == "Status" && current_device_open {
                                 if is_active_device_status(&current_text) {
@@ -746,10 +752,10 @@ fn parse_driver_xml(path: &Path) -> Result<Vec<RawDriverPackage>, String> {
                         current_text.clear();
                     }
                 }
-                if element_name.as_ref() == b"Device" {
+                if element_name.as_ref() == "Device" {
                     current_device_open = false;
                 }
-                if element_name.as_ref() == b"Driver" {
+                if element_name.as_ref() == "Driver" {
                     if let Some(package) = current_package.take() {
                         packages.push(package);
                     }
@@ -767,7 +773,8 @@ fn parse_driver_xml(path: &Path) -> Result<Vec<RawDriverPackage>, String> {
 fn parse_device_matches_xml(path: &Path) -> Result<Vec<RawDeviceMatch>, String> {
     let mut reader = Reader::from_file(path)
         .map_err(|error| format!("读取设备匹配 XML 失败 {}: {}", path.display(), error))?;
-    reader.config_mut().trim_text(true);
+    // Same reasoning as parse_driver_xml: no per-fragment trimming, because entity references
+    // arrive as separate events and trimming each fragment would drop the surrounding spaces.
     let mut buffer = Vec::new();
     let mut current_device: Option<RawDeviceMatch> = None;
     let mut current_driver_name = String::new();
@@ -780,11 +787,11 @@ fn parse_device_matches_xml(path: &Path) -> Result<Vec<RawDeviceMatch>, String> 
     loop {
         match reader.read_event_into(&mut buffer) {
             Ok(Event::Start(event)) => {
-                let element_name = event.local_name().as_ref().to_vec();
-                if element_name == b"Device" {
+                let element_name = event.local_name().as_ref().to_string();
+                if element_name == "Device" {
                     current_device = Some(RawDeviceMatch::default());
-                } else if element_name == b"DriverName" {
-                    let driver_name = read_attribute(&event, b"DriverName")?;
+                } else if element_name == "DriverName" {
+                    let driver_name = read_attribute(&event, "DriverName")?;
                     if driver_name.is_empty() {
                         // The current driver of a device uses a text node, while the matching driver uses the DriverName attribute.
                         current_matching_driver = false;
@@ -795,24 +802,25 @@ fn parse_device_matches_xml(path: &Path) -> Result<Vec<RawDeviceMatch>, String> 
                         current_driver_name = driver_name;
                         current_driver_status.clear();
                     }
-                } else if element_name == b"Status" {
+                } else if element_name == "Status" {
                     current_text_element = Some("Status".to_string());
                     current_text.clear();
                 }
             }
             Ok(Event::Text(event)) => {
                 if current_text_element.is_some() {
-                    current_text.push_str(
-                        &event
-                            .decode()
-                            .map_err(|error| format!("解析设备匹配 XML 文本失败: {}", error))?,
-                    );
+                    current_text.push_str(&event.xml10_content());
+                }
+            }
+            Ok(Event::GeneralRef(reference)) => {
+                if current_text_element.is_some() {
+                    push_general_ref(&mut current_text, reference.as_ref())?;
                 }
             }
             Ok(Event::End(event)) => {
                 let element_name = event.local_name();
                 if let Some(text_element) = current_text_element.as_deref() {
-                    if text_element.as_bytes() == element_name.as_ref() {
+                    if text_element == element_name.as_ref() {
                         if text_element == "DriverName" {
                             if current_driver_name.is_empty() {
                                 current_driver_name = current_text.trim().to_string();
@@ -840,7 +848,7 @@ fn parse_device_matches_xml(path: &Path) -> Result<Vec<RawDeviceMatch>, String> 
                         current_text.clear();
                     }
                 }
-                if element_name.as_ref() == b"DriverName"
+                if element_name.as_ref() == "DriverName"
                     && !current_matching_driver
                     && !current_driver_name.is_empty()
                 {
@@ -851,7 +859,7 @@ fn parse_device_matches_xml(path: &Path) -> Result<Vec<RawDeviceMatch>, String> 
                     current_driver_name.clear();
                     current_driver_status.clear();
                 }
-                if element_name.as_ref() == b"Device" {
+                if element_name.as_ref() == "Device" {
                     if let Some(device) = current_device.take() {
                         matches.push(device);
                     }
@@ -866,17 +874,17 @@ fn parse_device_matches_xml(path: &Path) -> Result<Vec<RawDeviceMatch>, String> 
     Ok(matches)
 }
 
-fn is_driver_text_element(name: &[u8]) -> bool {
+fn is_driver_text_element(name: &str) -> bool {
     matches!(
         name,
-        b"OriginalName"
-            | b"ProviderName"
-            | b"ClassName"
-            | b"DriverVersion"
-            | b"FamilyId"
-            | b"SignerName"
-            | b"DriverPackageId"
-            | b"Status"
+        "OriginalName"
+            | "ProviderName"
+            | "ClassName"
+            | "DriverVersion"
+            | "FamilyId"
+            | "SignerName"
+            | "DriverPackageId"
+            | "Status"
     )
 }
 
@@ -1054,16 +1062,42 @@ fn build_driver_store_path(driver_package_id: &str) -> String {
     }
 }
 
-fn read_attribute(
-    event: &quick_xml::events::BytesStart<'_>,
-    name: &[u8],
-) -> Result<String, String> {
+/// Append the value of an `&...;` reference to `target`.
+///
+/// quick-xml 0.42 reports entity and character references as standalone `GeneralRef` events
+/// instead of leaving them inside the text, so they have to be resolved explicitly. Only the
+/// five predefined entities and numeric character references are accepted: pnputil emits
+/// nothing else, and silently dropping an unknown entity would corrupt a driver name.
+fn push_general_ref(target: &mut String, reference: &str) -> Result<(), String> {
+    let resolved = match reference {
+        "amp" => '&',
+        "lt" => '<',
+        "gt" => '>',
+        "quot" => '"',
+        "apos" => '\'',
+        other => {
+            let digits = other
+                .strip_prefix('#')
+                .ok_or_else(|| format!("无法识别的 XML 实体引用: &{};", other))?;
+            let parsed = match digits.strip_prefix(['x', 'X']) {
+                Some(hex) => u32::from_str_radix(hex, 16),
+                None => digits.parse::<u32>(),
+            };
+            let code_point = parsed.map_err(|_| format!("无法解析的 XML 字符引用: &{};", other))?;
+            char::from_u32(code_point).ok_or_else(|| format!("非法的 XML 字符引用: &{};", other))?
+        }
+    };
+    target.push(resolved);
+    Ok(())
+}
+
+fn read_attribute(event: &quick_xml::events::BytesStart<'_>, name: &str) -> Result<String, String> {
     for attribute in event.attributes().with_checks(false) {
         let attribute =
             attribute.map_err(|error| format!("解析 pnputil XML 属性失败: {}", error))?;
         if attribute.key.as_ref() == name {
             return attribute
-                .unescape_value()
+                .normalized_value(XmlVersion::Implicit1_0)
                 .map(|value| value.into_owned())
                 .map_err(|error| format!("解析 pnputil XML 属性值失败: {}", error));
         }
@@ -1273,11 +1307,105 @@ fn decode_windows_output(raw: &[u8]) -> String {
 mod tests {
     use super::{
         compare_versions, format_command_output, normalize_published_names,
-        parse_device_matches_xml, parse_driver_text, parse_driver_version, PnputilOutput,
+        parse_device_matches_xml, parse_driver_text, parse_driver_version, parse_driver_xml,
+        PnputilOutput,
     };
     use std::cmp::Ordering;
     use std::fs;
     use std::path::PathBuf;
+
+    /// Unique temp path per call, so tests running in parallel never collide.
+    fn temp_xml_path(label: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "lightc-driver-{}-{}-{}.xml",
+            label,
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|elapsed| elapsed.as_nanos())
+                .unwrap_or_default()
+        ))
+    }
+
+    #[test]
+    fn parses_driver_package_xml_text_nodes() {
+        // Regression guard for the quick-xml 0.38 -> 0.42 migration: 0.42 removed
+        // BytesText::decode(), so text events have to be EOL-normalized and unescaped
+        // explicitly. An escaped entity and a non-ASCII value are exactly what would
+        // break silently if that step were dropped, and nothing else covers this path.
+        let path = temp_xml_path("driver-packages");
+        fs::write(
+            &path,
+            r#"<?xml version="1.0" encoding="utf-8"?>
+<DriverPackages>
+  <Driver DriverName="oem12.inf">
+    <OriginalName>nvhda.inf</OriginalName>
+    <ProviderName>Realtek &amp; Co.</ProviderName>
+    <ClassName>音频驱动</ClassName>
+    <DriverVersion>02/08/2024 6.0.1.1</DriverVersion>
+    <FamilyId>0000</FamilyId>
+    <SignerName>Microsoft Windows Hardware Compatibility Publisher</SignerName>
+    <DriverPackageId>oem12.inf</DriverPackageId>
+    <Device>
+      <Status>Started</Status>
+    </Device>
+    <File>a.sys</File>
+    <File>b.sys</File>
+  </Driver>
+</DriverPackages>
+"#,
+        )
+        .expect("写入 driver XML 失败");
+
+        let packages = parse_driver_xml(&path).expect("解析 driver XML 失败");
+        let _ = fs::remove_file(&path);
+
+        assert_eq!(packages.len(), 1);
+        let package = &packages[0];
+        assert_eq!(package.published_name, "oem12.inf");
+        assert_eq!(package.original_name, "nvhda.inf");
+        // `&amp;` must come back as a literal ampersand
+        assert_eq!(package.provider_name, "Realtek & Co.");
+        assert_eq!(package.class_name, "音频驱动");
+        assert_eq!(package.driver_version, "02/08/2024 6.0.1.1");
+        assert_eq!(package.family_id, "0000");
+        assert_eq!(package.device_count, 1);
+        // A device whose status is "Started" counts as in use
+        assert_eq!(package.active_device_count, 1);
+        assert_eq!(package.file_count, 2);
+    }
+
+    #[test]
+    fn parses_device_match_xml_text_and_attribute_drivers() {
+        let path = temp_xml_path("device-matches");
+        fs::write(
+            &path,
+            r#"<?xml version="1.0" encoding="utf-8"?>
+<DeviceMatches>
+  <Device>
+    <DriverName>oem12.inf</DriverName>
+    <Status>BestRanked</Status>
+    <DriverName DriverName="oem99.inf">
+      <Status>Outranked</Status>
+    </DriverName>
+  </Device>
+</DeviceMatches>
+"#,
+        )
+        .expect("写入设备匹配 XML 失败");
+
+        let matches = parse_device_matches_xml(&path).expect("解析设备匹配 XML 失败");
+        let _ = fs::remove_file(&path);
+
+        assert_eq!(matches.len(), 1);
+        // The text-node form is the driver currently installed on the device
+        assert_eq!(matches[0].installed_driver_name, "oem12.inf");
+        // The attribute form under an "Outranked" status is a competing driver
+        assert_eq!(
+            matches[0].outranked_driver_names,
+            vec!["oem99.inf".to_string()]
+        );
+    }
 
     #[test]
     fn parses_pnputil_version_with_date_prefix() {
