@@ -124,6 +124,9 @@ export function JunkFileTreeModal({
                 isSelectable={isSelectable}
                 disabled={isSystemManaged}
                 getFileTitle={(file) => file.name}
+                // 弹窗是这个列表唯一"用来看"的地方，排序放这里；
+                // 卡片里那块 256px 的窄列表塞排序控件反而挤掉路径
+                sortable
                 height={Math.round(Math.min(560, Math.max(280, window.innerHeight * 0.5)))}
                 rowHeight={44}
                 renderFileActions={(file) => (

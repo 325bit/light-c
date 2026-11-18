@@ -9,17 +9,21 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
-import { ChevronRight, Folder, FolderOpen, File as FileIcon } from 'lucide-react';
+import { ArrowDown, ArrowUp, ChevronRight, Folder, FolderOpen, File as FileIcon } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import {
   buildFileTree,
   flattenFileTree,
   collectFolderKeys,
   computeSelectedCounts,
+  sortTree,
+  DEFAULT_SORT_DESC,
   type FileTreeNode,
+  type TreeSort,
+  type TreeSortKey,
   type TreeSourceFile,
 } from '../utils/fileTree';
-import { formatSize } from '../utils/format';
+import { formatDate, formatSize } from '../utils/format';
 
 export interface FileTreeListProps<T extends TreeSourceFile> {
   /** 当前这一组文件（一个分类，或筛选后的结果） */
@@ -45,10 +49,15 @@ export interface FileTreeListProps<T extends TreeSourceFile> {
   toolbarExtra?: ReactNode;
   /** 整片不可勾选（例如由系统托管的分类）：只剩浏览与展开，没有任何勾选入口 */
   disabled?: boolean;
+  /** 显示排序控件（名称 / 大小 / 修改时间）。卡片内那块窄列表默认不显示 */
+  sortable?: boolean;
   className?: string;
 }
 
 const INDENT_STEP = 14;
+
+/** 排序控件里的按键顺序：名称 / 大小 / 修改时间 */
+const SORT_KEYS: TreeSortKey[] = ['name', 'size', 'time'];
 
 export function FileTreeList<T extends TreeSourceFile>({
   files,
@@ -63,6 +72,7 @@ export function FileTreeList<T extends TreeSourceFile>({
   rowHeight = 44,
   toolbarExtra,
   disabled = false,
+  sortable = false,
   className,
 }: FileTreeListProps<T>) {
   const { t } = useTranslation('common');
@@ -77,7 +87,10 @@ export function FileTreeList<T extends TreeSourceFile>({
     用户手动展开/折叠过的状态不会被覆盖（只在跨过阈值、换了整批数据时才重置）。
   */
   const [expandedKeys, setExpandedKeys] = useState<Set<string>>(new Set());
-  const tree = useMemo(() => buildFileTree(files), [files]);
+  const [sort, setSort] = useState<TreeSort>({ key: 'name', desc: false });
+  const baseTree = useMemo(() => buildFileTree(files), [files]);
+  // 排序只重排各层子节点（不重建树），所以切换排序比换一批数据便宜得多
+  const tree = useMemo(() => sortTree(baseTree, sort), [baseTree, sort]);
   const autoExpandMode = tree.fileCount <= 30 ? 'expand' : 'collapse';
   const autoExpandRef = useRef<string | null>(null);
   useEffect(() => {
@@ -178,6 +191,24 @@ export function FileTreeList<T extends TreeSourceFile>({
     setExpandedKeys(new Set());
   }, []);
 
+  /**
+   * 点同一个键切换升/降序，点别的键换成那个键的默认方向
+   * （大小和时间默认从大到小/从新到旧，名称默认从小到大）。
+   */
+  const handleSort = useCallback((key: TreeSortKey) => {
+    setSort((previous) => (
+      previous.key === key
+        ? { key, desc: !previous.desc }
+        : { key, desc: DEFAULT_SORT_DESC[key] }
+    ));
+  }, []);
+
+  const sortLabel = useCallback((key: TreeSortKey) => {
+    if (key === 'size') return t('sortBySize');
+    if (key === 'time') return t('sortByTime');
+    return t('sortByName');
+  }, [t]);
+
   const virtualizer = useVirtualizer({
     count: rows.length,
     getScrollElement: () => scrollRef.current,
@@ -228,6 +259,16 @@ export function FileTreeList<T extends TreeSourceFile>({
           <span className="min-w-0 flex-1 truncate text-[0.93rem] font-medium text-[var(--text-primary)]">
             {node.name}
           </span>
+          {/* 按时间排序时目录也要给出日期，否则整列只有文件有值，看不出排序依据。
+              目录取的是「内部最新的一个文件」，不是目录本身的修改时间。 */}
+          {sortable && sort.key === 'time' && (
+            <span
+              className="hidden shrink-0 text-[0.79rem] tabular-nums text-[var(--text-faint)] sm:inline"
+              title={t('folderLatestTime')}
+            >
+              {node.latestModified > 0 ? formatDate(node.latestModified) : '—'}
+            </span>
+          )}
           <span className="shrink-0 text-[0.79rem] tabular-nums text-[var(--text-muted)]">
             {t('fileCount', { count: node.fileCount.toLocaleString() })}
             {node.totalSize > 0 && ` · ${formatSize(node.totalSize)}`}
@@ -263,6 +304,11 @@ export function FileTreeList<T extends TreeSourceFile>({
           {title}
         </span>
         {renderFileMeta?.(node.file)}
+        {sortable && sort.key === 'time' && (
+          <span className="hidden shrink-0 text-[0.79rem] tabular-nums text-[var(--text-faint)] sm:inline">
+            {node.modifiedTime > 0 ? formatDate(node.modifiedTime) : '—'}
+          </span>
+        )}
         <span className={`shrink-0 text-[0.86rem] tabular-nums ${selectable ? 'text-[var(--text-muted)]' : 'text-[var(--text-faint)]'}`}>
           {formatSize(node.file.size)}
         </span>
@@ -290,6 +336,31 @@ export function FileTreeList<T extends TreeSourceFile>({
           </span>
         </span>
         {toolbarExtra}
+        {sortable && (
+          <div className="flex shrink-0 items-center gap-0.5 rounded-lg bg-[var(--bg-hover)] p-0.5">
+            {SORT_KEYS.map((key) => {
+              const active = sort.key === key;
+              return (
+                <button
+                  key={key}
+                  onClick={() => handleSort(key)}
+                  title={active
+                    ? (sort.desc ? t('sortDescendingHint') : t('sortAscendingHint'))
+                    : t('sortSwitchHint')}
+                  className={`flex items-center gap-0.5 rounded-md px-1.5 py-0.5 text-[0.79rem] transition
+                    ${active
+                      ? 'bg-[var(--bg-card)] font-medium text-[var(--brand-green)] shadow-sm'
+                      : 'text-[var(--text-muted)] hover:text-[var(--brand-green)]'}`}
+                >
+                  {sortLabel(key)}
+                  {active && (sort.desc
+                    ? <ArrowDown className="h-3 w-3" />
+                    : <ArrowUp className="h-3 w-3" />)}
+                </button>
+              );
+            })}
+          </div>
+        )}
         {tree.hasBranches && (
           <span className="flex shrink-0 items-center gap-1">
             <button

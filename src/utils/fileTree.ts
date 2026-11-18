@@ -12,6 +12,8 @@ import { stripWindowsDevicePrefix } from './searchEngine';
 export interface TreeSourceFile {
   path: string;
   size: number;
+  /** 修改时间（Unix 秒）。没有这个字段的数据源按 0 处理，排序时统一排在最后 */
+  modified_time?: number;
 }
 
 export interface FileTreeFolder<T extends TreeSourceFile> {
@@ -28,6 +30,8 @@ export interface FileTreeFolder<T extends TreeSourceFile> {
   fileCount: number;
   /** 后代文件总大小 */
   totalSize: number;
+  /** 后代文件里最新的修改时间（Unix 秒）；"按时间排序"用它给目录排位 */
+  latestModified: number;
   /**
    * 全部后代文件的路径。
    *
@@ -44,12 +48,30 @@ export interface FileTreeFile<T extends TreeSourceFile> {
   path: string;
   depth: number;
   isDir: false;
+  /** 修改时间（Unix 秒）；数据源没给就是 0 */
+  modifiedTime: number;
   file: T;
 }
 
 export type FileTreeNode<T extends TreeSourceFile> =
   | FileTreeFolder<T>
   | FileTreeFile<T>;
+
+/** 排序依据：名称（自然序）/ 大小 / 修改时间 */
+export type TreeSortKey = 'name' | 'size' | 'time';
+
+export interface TreeSort {
+  key: TreeSortKey;
+  /** true = 由大到小、由新到旧；名称排序时 true = 逆序 */
+  desc: boolean;
+}
+
+/** 各排序键的默认方向：大小和时间默认"最大的/最新的先看" */
+export const DEFAULT_SORT_DESC: Record<TreeSortKey, boolean> = {
+  name: false,
+  size: true,
+  time: true,
+};
 
 export interface FileTree<T extends TreeSourceFile> {
   /** 所有文件的公共祖先目录（展示成树头，例如 C:\Users\x\AppData\Local\Temp） */
@@ -105,20 +127,24 @@ function aggregate<T extends TreeSourceFile>(node: FileTreeFolder<T>): void {
   }
   const paths: string[] = [];
   let size = 0;
+  let latest = 0;
   for (const child of node.children) {
     if (child.isDir) {
       aggregate(child);
       // 逐个 push 而不是展开传参：几万个后代路径用 spread 会顶到参数个数上限
       for (const path of child.paths) paths.push(path);
       size += child.totalSize;
+      if (child.latestModified > latest) latest = child.latestModified;
     } else {
       paths.push(child.path);
       size += child.file.size;
+      if (child.modifiedTime > latest) latest = child.modifiedTime;
     }
   }
   node.paths = paths;
   node.fileCount = paths.length;
   node.totalSize = size;
+  node.latestModified = latest;
 }
 
 /**
@@ -129,6 +155,7 @@ function aggregate<T extends TreeSourceFile>(node: FileTreeFolder<T>): void {
 export function buildFileTree<T extends TreeSourceFile>(
   files: T[],
   getPath: (file: T) => string = (file) => file.path,
+  getModified: (file: T) => number = (file) => file.modified_time ?? 0,
 ): FileTree<T> {
   const total = files.length;
   const paths = new Array<string>(total);
@@ -162,6 +189,7 @@ export function buildFileTree<T extends TreeSourceFile>(
     isDir: true,
     fileCount: 0,
     totalSize: 0,
+    latestModified: 0,
     paths: [],
     children: [],
   };
@@ -199,6 +227,7 @@ export function buildFileTree<T extends TreeSourceFile>(
           isDir: true,
           fileCount: 0,
           totalSize: 0,
+          latestModified: 0,
           paths: [],
           children: [],
         };
@@ -214,6 +243,7 @@ export function buildFileTree<T extends TreeSourceFile>(
       path: paths[index],
       depth: cursor.depth + 1,
       isDir: false,
+      modifiedTime: getModified(files[index]),
       file: files[index],
     });
   }
@@ -229,6 +259,50 @@ export function buildFileTree<T extends TreeSourceFile>(
     fileCount: root.fileCount,
     totalSize: root.totalSize,
   };
+}
+
+/**
+ * 按指定依据重排整棵树。
+ *
+ * 中文说明：不重新建树 —— 路径拆分、目录归并、体积聚合都与顺序无关，
+ * 重排只需把每一层的子节点数组按新依据排序（节点对象复用，只重建目录壳）。
+ *
+ * 两条口径：
+ * - 目录始终排在文件前面，和资源管理器一致；排序方向只作用于同类之间。
+ * - 目录的「大小」取后代总和、「时间」取后代里最新的一个 ——
+ *   否则装了八万文件的目录永远排不到前面，按大小排序就失去意义。
+ */
+export function sortTree<T extends TreeSourceFile>(
+  tree: FileTree<T>,
+  sort: TreeSort,
+): FileTree<T> {
+  const { key, desc } = sort;
+  // 名称升序就是建树时的默认顺序，不必再排一遍
+  if (key === 'name' && !desc) return tree;
+
+  const compare = (left: FileTreeNode<T>, right: FileTreeNode<T>): number => {
+    if (left.isDir !== right.isDir) return left.isDir ? -1 : 1;
+    let result: number;
+    if (key === 'name') {
+      result = collator.compare(left.name, right.name);
+    } else if (key === 'size') {
+      result = (left.isDir ? left.totalSize : left.file.size)
+        - (right.isDir ? right.totalSize : right.file.size);
+    } else {
+      result = (left.isDir ? left.latestModified : left.modifiedTime)
+        - (right.isDir ? right.latestModified : right.modifiedTime);
+    }
+    return desc ? -result : result;
+  };
+
+  const walk = (nodes: FileTreeNode<T>[]): FileTreeNode<T>[] => {
+    const next = nodes.map((node): FileTreeNode<T> => (
+      node.isDir ? { ...node, children: walk(node.children) } : node
+    ));
+    return next.sort(compare);
+  };
+
+  return { ...tree, nodes: walk(tree.nodes) };
 }
 
 /**
