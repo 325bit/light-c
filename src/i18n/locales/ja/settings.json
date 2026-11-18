@@ -154,6 +154,10 @@
     "unit": "件",
     "title": "保持するクリーンアップログの最大件数"
   },
+  "adminOnStartup": {
+    "label": "起動時に管理者権限を要求する",
+    "desc": "起動のたびに Windows の許可ダイアログが表示されます。キャンセルしても今回の起動は続行できますが、一部の機能は遅くなるか使えません"
+  },
   "dataDir": {
     "configLocation": "設定ファイルの場所",
     "webviewData": "WebViewデータ",

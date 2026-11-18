@@ -3,6 +3,7 @@ import { hydrateRoot } from "react-dom/client";
 import "./i18n";
 import App from "./App";
 import { ThemeProvider, WallpaperProvider } from "./contexts";
+import { requestAdminOnStartup } from "./utils/startupAdmin";
 import "./App.css";
 
 /**
@@ -36,6 +37,10 @@ if (import.meta.env.PROD) {
     true,
   );
 }
+
+// Raise UAC before React takes over when the user asked for it in settings: the request is
+// issued here so the system prompt does not pop up over an already interactive window.
+requestAdminOnStartup();
 
 // The static splash screen is painted before React, so use hydration to take over the original node and avoid replaying the animation on remount.
 hydrateRoot(document.getElementById("root") as HTMLElement,

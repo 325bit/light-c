@@ -154,6 +154,10 @@
     "unit": "logs",
     "title": "Max cleanup logs to retain"
   },
+  "adminOnStartup": {
+    "label": "Ask for administrator rights on startup",
+    "desc": "The Windows permission prompt appears on every launch. Cancelling keeps this session running, but some features are slower or unavailable"
+  },
   "dataDir": {
     "configLocation": "Config Location",
     "webviewData": "WebView Data",

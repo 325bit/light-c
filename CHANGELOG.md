@@ -2,6 +2,10 @@
 
 English is the default changelog. See [简体中文](CHANGELOG-zh.md).
 
+## v2.19.1
+
+- New setting to ask for administrator rights on startup, so you no longer restart manually from the modules that need them. Cancelling the prompt still lets the app run, with those features slower or unavailable.
+
 ## v2.19.0
 
 - New background wallpaper: pick any image from your computer as the background, with fill, fit, and original-size modes, plus separate clarity for light and dark themes.

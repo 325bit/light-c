@@ -154,6 +154,10 @@
     "unit": "条",
     "title": "清理日志最多保留条数"
   },
+  "adminOnStartup": {
+    "label": "启动时自动请求管理员权限",
+    "desc": "每次启动都会弹出系统授权提示；取消后本次照常使用，只是部分功能会变慢或不可用"
+  },
   "dataDir": {
     "configLocation": "配置位置",
     "webviewData": "界面数据",

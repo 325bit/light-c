@@ -5,7 +5,7 @@
 import { useEffect, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { useTranslation } from 'react-i18next';
-import { CheckCircle2, ClipboardList, ChevronRight, FolderOpen, HardDrive, History, Image as ImageIcon, Info, MonitorCog, RefreshCw, Rocket, Search, Trash2, Type } from 'lucide-react';
+import { CheckCircle2, ClipboardList, ChevronRight, FolderOpen, HardDrive, History, Image as ImageIcon, Info, MonitorCog, RefreshCw, Rocket, Search, ShieldCheck, Trash2, Type } from 'lucide-react';
 import { Select } from '../ui/Select';
 import { Switch } from '../ui/Switch';
 import { useFontSize, CUSTOM_FONT_SIZE_MIN, CUSTOM_FONT_SIZE_MAX, useSettings, useTheme, useWallpaper, type Language, type ThemeMode, type WallpaperFit } from '../../contexts';
@@ -481,6 +481,24 @@ export function GeneralSettings({ mode, setMode }: { mode: ThemeMode; setMode: (
               />
               <span className="text-xs text-[var(--text-muted)]">{t('logRetention.unit')}</span>
             </div>
+          </div>
+
+          {/* Startup elevation: users who always want the fast path (MFT read, protected paths)
+              should not have to click the in-module hint bar on every launch. Off by default —
+              a system prompt at each start is intrusive for people who only clean caches. */}
+          <div className="flex items-center justify-between gap-4 border-t border-[var(--border-color)] pt-4">
+            <div className="min-w-0">
+              <p className="text-sm font-medium text-[var(--text-primary)] flex items-center gap-1.5">
+                <ShieldCheck className="w-4 h-4 text-[var(--text-muted)]" />
+                {t('adminOnStartup.label')}
+              </p>
+              <p className="text-xs text-[var(--text-muted)] mt-1">{t('adminOnStartup.desc')}</p>
+            </div>
+            <Switch
+              checked={settings.requestAdminOnStartup}
+              onChange={(checked) => updateSettings({ requestAdminOnStartup: checked })}
+              aria-label={t('adminOnStartup.label')}
+            />
           </div>
         </div>
       </div>
