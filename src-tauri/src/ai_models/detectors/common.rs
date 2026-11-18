@@ -15,7 +15,7 @@ pub fn normalize_existing_path(path: PathBuf) -> Option<PathBuf> {
         return None;
     }
 
-    // canonicalize 可以合并同一路径的不同写法，失败时保留原路径避免权限问题中断扫描。
+    // canonicalize merges different spellings of the same path; on failure, keep the original path so a permission issue doesn't abort the scan.
     Some(path.canonicalize().unwrap_or(path))
 }
 
@@ -46,10 +46,10 @@ pub fn directory_size(path: &Path) -> u64 {
         .sum()
 }
 
-/// 读取文件的真实占用：符号链接要跟随到目标文件。
+/// Read a file's real usage: symlinks must be followed to the target file.
 ///
-/// HuggingFace 等工具的缓存目录里，实际文件放在 blobs 下，模型目录里全是符号链接。
-/// Windows 上符号链接自身的长度是 0，用 symlink_metadata 会把有数据的模型算成 0 字节。
+/// In caches of tools like HuggingFace, real files live under blobs while model directories are all symlinks.
+/// On Windows a symlink's own length is 0, so using symlink_metadata would count a data-bearing model as 0 bytes.
 pub fn file_size(path: &Path) -> Option<u64> {
     std::fs::metadata(path)
         .ok()
@@ -57,16 +57,16 @@ pub fn file_size(path: &Path) -> Option<u64> {
         .map(|metadata| metadata.len())
 }
 
-/// 目录遍历的安全上限。
+/// Safety cap on directory traversal.
 ///
-/// 统计对象可能是用户通过环境变量指定的目录（HF_HOME / OLLAMA_MODELS），
-/// 指向超大目录时不能让一次扫描无限展开，因此同时限制深度和条目数。
+/// The target may be a directory the user specified via environment variables (HF_HOME / OLLAMA_MODELS),
+/// so when it points to a huge directory a single scan must not expand forever; both depth and entry count are limited.
 const MAX_SIZE_WALK_DEPTH: usize = 12;
 const MAX_SIZE_WALK_ENTRIES: usize = 200_000;
 
-/// 目录自身的真实占用：只统计真实文件，不跟随重解析点。
+/// A directory's own real usage: count only real files, don't follow reparse points.
 ///
-/// 用于"缓存根目录"这类统计：其中的符号链接由目标目录负责计入，因此总额等于真实磁盘占用。
+/// Used for stats like "cache root": symlinks there are accounted for by their target directories, so the total equals real disk usage.
 pub fn directory_size_deduped(path: &Path) -> u64 {
     let mut budget = MAX_SIZE_WALK_ENTRIES;
     directory_size_with_budget(path, 0, &mut budget)
@@ -111,21 +111,21 @@ fn directory_size_with_budget(path: &Path, depth: usize, budget: &mut usize) -> 
     total
 }
 
-/// 解析一个重解析点（符号链接/联接）指向的真实路径。
+/// Resolve the real path a reparse point (symlink/junction) points to.
 ///
-/// HuggingFace 的快照文件是指向 blobs 的符号链接，需要按目标文件统计，
-/// 否则 Windows 上链接自身长度为 0，模型会被算成空模型。
+/// HuggingFace snapshot files are symlinks to blobs and must be counted by their target file,
+/// otherwise on Windows the link's own length is 0 and the model is counted as empty.
 pub fn resolve_reparse_target(path: &Path) -> Option<PathBuf> {
     let target = std::fs::read_link(path).ok()?;
     if target.is_absolute() {
         return Some(target);
     }
 
-    // 相对链接的基准是链接所在目录
+    // A relative link is based on the directory containing the link
     path.parent().map(|parent| parent.join(&target))
 }
 
-/// 解析模型目录里某个条目的真实体积：真实文件直接取大小，符号链接取目标文件大小。
+/// Resolve an entry's real size in a model directory: real files use their own size, symlinks use the target file's size.
 pub fn linked_file_size(path: &Path) -> Option<u64> {
     let metadata = std::fs::symlink_metadata(path).ok()?;
 
@@ -144,7 +144,7 @@ pub fn linked_file_size(path: &Path) -> Option<u64> {
         .map(|target_metadata| target_metadata.len())
 }
 
-/// 统计时需要跳过的目录名。
+/// Directory names to skip during counting.
 fn is_noise_directory_name(file_name: &str) -> bool {
     matches!(
         file_name,
@@ -160,11 +160,11 @@ pub fn collect_model_files(root: &Path) -> Vec<ModelItem> {
     collect_model_files_with_min_size(root, 0)
 }
 
-/// 按最小体积阈值收集模型文件。
+/// Collect model files with a minimum-size threshold.
 ///
-/// 已知平台目录（ComfyUI 各类型目录等）里文件语义明确，用 0 阈值即可；
-/// 但把用户自定义根目录（OLLAMA_MODELS / HF_HOME）直接挂进来时必须加阈值，
-/// 否则该目录下的 config.json 之类小文件会被当成模型资产。
+/// In known platform directories (ComfyUI's various folders, etc.) file semantics are clear, so a 0 threshold is fine;
+/// but when a user-defined root (OLLAMA_MODELS / HF_HOME) is mounted directly, a threshold is required,
+/// otherwise small files like config.json under it would be treated as model assets.
 pub fn collect_model_files_with_min_size(root: &Path, min_size: u64) -> Vec<ModelItem> {
     let mut models: Vec<ModelItem> = WalkDir::new(root)
         .follow_links(false)
@@ -174,7 +174,7 @@ pub fn collect_model_files_with_min_size(root: &Path, min_size: u64) -> Vec<Mode
         .filter_map(|entry| {
             let path = entry.path();
             if entry.file_type().is_dir() && is_model_package_directory(path) {
-                // Core ML 的 .mlpackage 是目录包，不会被文件扩展名逻辑命中，需要按目录整体计入资产。
+                // Core ML's .mlpackage is a directory bundle, it won't be hit by file-extension logic, so count it as a whole asset.
                 let size = directory_size(path);
                 if size > 0 {
                     return Some(ModelItem {
@@ -239,7 +239,7 @@ pub fn source_from_models(
     })
 }
 
-/// 带上来源前缀的模型文件收集：同名文件在不同模型目录里用"来源 / 文件名"区分，便于在列表里定位。
+/// Collect model files with a source prefix: same-named files in different model dirs are distinguished as "source / filename" for easier location in the list.
 pub fn collect_prefixed_model_files(root: &Path, prefix: &str) -> Vec<ModelItem> {
     let mut models = collect_model_files(root);
     for model in &mut models {
@@ -251,7 +251,7 @@ pub fn collect_prefixed_model_files(root: &Path, prefix: &str) -> Vec<ModelItem>
 fn skip_hidden_system_noise(entry: &DirEntry) -> bool {
     let file_name = entry.file_name().to_string_lossy();
 
-    // 这些目录不会承载用户可管理的模型资产，跳过可以减少递归成本和误判。
+    // These directories don't carry user-manageable model assets; skipping them reduces recursion cost and false positives.
     !matches!(
         file_name.as_ref(),
         ".git" | "node_modules" | "target" | "$RECYCLE.BIN" | "System Volume Information"

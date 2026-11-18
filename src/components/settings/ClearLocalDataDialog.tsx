@@ -1,5 +1,5 @@
 // ============================================================================
-// 本地数据清理确认弹窗
+// Local data cleanup confirmation dialog
 // ============================================================================
 
 import { createPortal } from 'react-dom';
@@ -19,7 +19,7 @@ const DATA_ITEM_TRANSLATION_KEYS: Record<string, string> = {
   driver_backups: 'clearDataItems.driverBackups',
 };
 
-// 使用后端稳定 ID 映射翻译，避免把当前语言状态传入数据目录和清理逻辑。
+// Map translations by stable backend IDs, avoiding passing the current language state into data-dir and cleanup logic.
 function localizeDataItem(item: ClearableDataItem, translate: (key: string, options?: Record<string, unknown>) => string) {
   const fixedKey = DATA_ITEM_TRANSLATION_KEYS[item.id];
   const snapshotPrefix = 'disk_growth_snapshots_';
@@ -65,7 +65,7 @@ export function ClearLocalDataDialog({
   return createPortal(
     <AnimatePresence>
       {isOpen && (
-        // 清理确认会打断用户操作流，入退场动画用于降低突然弹出/消失的割裂感。
+        // Cleanup confirmation interrupts the user's flow; enter/exit animations reduce the jarring feel of sudden appearance/disappearance.
         <motion.div
           className="fixed inset-0 z-[10050] flex items-center justify-center"
           initial={{ opacity: 0 }}
@@ -78,9 +78,9 @@ export function ClearLocalDataDialog({
             onClick={onCancel}
             {...MODAL_BACKDROP_MOTION}
           />
-          {/* 尺寸统一用 em：body 继承 :root 字号，弹窗随全局字号设置缩放，37.14em ≈ 520px。
-              高度必须叠加视口约束：此前只有列表自身的 41.43em 上限，窗口偏矮时整个弹窗会溢出上下边缘。
-              与「社交软件清理」的文件列表弹窗保持同一套写法：外壳限高 + 列表 flex-1 自己滚。 */}
+          {/* Sizes all use em: body inherits the :root font size, so the dialog scales with the global font setting, 37.14em ≈ 520px.
+              Height must also be clamped by the viewport: previously only the list's own 41.43em cap existed, and in a short window the whole dialog overflowed top and bottom.
+              Same approach as the social-cleanup file-list dialog: capped shell + list with flex-1 scrolling itself. */}
           <motion.div
             className="relative flex w-[37.14em] max-w-[calc(100vw-2em)] max-h-[80vh] flex-col overflow-hidden rounded-2xl border border-[var(--border-color)] bg-[var(--bg-card)] glass-dialog shadow-2xl"
             {...MODAL_CARD_MOTION}
@@ -103,7 +103,7 @@ export function ClearLocalDataDialog({
               </button>
             </div>
 
-            {/* flex-1：在外壳的 max-h 内收缩；41.43em 是宽屏下的列表高度上限，避免弹窗无限变高 */}
+            {/* flex-1: shrinks within the shell's max-h; 41.43em is the list-height cap on wide screens, preventing the dialog from growing indefinitely */}
             <div className="max-h-[41.43em] flex-1 overflow-y-auto px-[1.43em] py-[1.14em]">
               <div className="mb-[0.86em] rounded-xl border border-amber-500/20 bg-amber-500/10 p-[0.86em]">
                 <p className="text-[0.86em] leading-relaxed text-amber-700 dark:text-amber-300">
@@ -130,7 +130,7 @@ export function ClearLocalDataDialog({
                       } ${disabled ? 'cursor-not-allowed opacity-55' : ''}`}
                     >
                       <div className="flex items-start gap-[0.86em]">
-                        {/* 勾选标记用 em 跟随字号，与 ui/Checkbox 保持一致的观感 */}
+                        {/* The check mark uses em to follow font size, consistent with the look of ui/Checkbox */}
                         <span className={`mt-[0.14em] flex h-[1.14em] w-[1.14em] shrink-0 items-center justify-center rounded border ${
                           selected ? 'border-[var(--brand-green)] bg-[var(--brand-green)]' : 'border-[var(--border-color)]'
                         }`}>

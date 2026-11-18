@@ -1,6 +1,6 @@
 // ============================================================================
-// 扫描进度组件 - 居中弹窗样式
-// 特点：固定定位居中显示，扫描完成后显示结果并延迟消失
+// Scan progress component - centered modal style
+// Features: fixed centered display, shows results when scanning completes and disappears after a delay
 // ============================================================================
 
 import { useEffect, useState, useRef, memo } from 'react';
@@ -9,42 +9,42 @@ import { CheckCircle, FolderSearch, FileText, HardDrive } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
 // ============================================================================
-// 常量配置
+// Constant configuration
 // ============================================================================
 
-/** 完成状态显示时长（毫秒） */
+/** Duration to show the completed state (milliseconds) */
 const COMPLETION_DISPLAY_DURATION = 2000;
-/** 退出动画时长（毫秒） */
+/** Exit animation duration (milliseconds) */
 const EXIT_ANIMATION_DURATION = 300;
 
 // ============================================================================
-// 类型定义
+// Type definitions
 // ============================================================================
 
-/** 组件内部状态 */
+/** Component internal state */
 type ProgressState = 'idle' | 'scanning' | 'completing' | 'exiting';
 
 interface ScanProgressProps {
-  /** 是否正在扫描 */
+  /** Whether a scan is in progress */
   isScanning: boolean;
-  /** 当前扫描的分类名称 */
+  /** Name of the category currently being scanned */
   currentCategory?: string;
-  /** 已完成的分类数量 */
+  /** Number of completed categories */
   completedCategories?: number;
-  /** 总分类数量 */
+  /** Total number of categories */
   totalCategories?: number;
-  /** 当前已扫描的文件数量 */
+  /** Number of files scanned so far */
   scannedFileCount?: number;
-  /** 当前已扫描的文件大小 */
+  /** Size of files scanned so far */
   scannedSize?: number;
 }
 
 // ============================================================================
-// 工具函数
+// Utility functions
 // ============================================================================
 
 /**
- * 格式化文件大小
+ * Formats a file size
  */
 function formatSize(bytes: number): string {
   if (bytes === 0) return '0 B';
@@ -55,7 +55,7 @@ function formatSize(bytes: number): string {
 }
 
 // ============================================================================
-// 环形进度条组件
+// Ring progress bar component
 // ============================================================================
 
 interface CircularProgressProps {
@@ -76,12 +76,12 @@ const CircularProgress = memo(function CircularProgress({
   const radius = (size - strokeWidth) / 2;
   const circumference = radius * 2 * Math.PI;
   const offset = isIndeterminate 
-    ? circumference * 0.75  // 不确定进度时显示 25% 的弧
+    ? circumference * 0.75  // show 25% of the arc for indeterminate progress
     : circumference - (progress / 100) * circumference;
 
   return (
     <div className="relative" style={{ width: size, height: size }}>
-      {/* 背景圆环 */}
+      {/* Background ring */}
       <svg 
         className={`transform -rotate-90 ${isIndeterminate ? 'animate-spin' : ''}`}
         style={isIndeterminate ? { animationDuration: '1.5s' } : undefined}
@@ -96,7 +96,7 @@ const CircularProgress = memo(function CircularProgress({
           stroke="var(--bg-hover)"
           strokeWidth={strokeWidth}
         />
-        {/* 进度圆环 */}
+        {/* Progress ring */}
         <circle
           cx={size / 2}
           cy={size / 2}
@@ -116,7 +116,7 @@ const CircularProgress = memo(function CircularProgress({
           </linearGradient>
         </defs>
       </svg>
-      {/* 中心内容 */}
+      {/* Center content */}
       <div className="absolute inset-0 flex items-center justify-center">
         {isCompleted ? (
           <CheckCircle className="w-8 h-8 text-emerald-500" />
@@ -131,7 +131,7 @@ const CircularProgress = memo(function CircularProgress({
 });
 
 // ============================================================================
-// 主组件
+// Main component
 // ============================================================================
 
 export function ScanProgress({
@@ -144,27 +144,27 @@ export function ScanProgress({
 }: ScanProgressProps) {
   const { t } = useTranslation('common');
   const resolvedCategory = currentCategory ?? t('preparing');
-  // 组件内部状态管理
+  // Component internal state management
   const [state, setState] = useState<ProgressState>('idle');
   const [isVisible, setIsVisible] = useState(false);
   
-  // 保存完成时的扫描数据
+  // Save the scan data at completion
   const completedDataRef = useRef({
     scannedFileCount: 0,
     scannedSize: 0,
     totalCategories: 10,
   });
   
-  // 记录上一次的扫描状态
+  // Record the previous scan state
   const prevIsScanningRef = useRef(false);
 
-  // 状态机：处理扫描状态变化
+  // State machine: handles scan state changes
   useEffect(() => {
     const wasScanning = prevIsScanningRef.current;
     prevIsScanningRef.current = isScanning;
     
     if (isScanning && !wasScanning) {
-      // 刚开始扫描
+      // Scan just started
       setState('scanning');
       requestAnimationFrame(() => {
         requestAnimationFrame(() => {
@@ -172,7 +172,7 @@ export function ScanProgress({
         });
       });
     } else if (!isScanning && wasScanning) {
-      // 扫描刚结束
+      // Scan just ended
       completedDataRef.current = {
         scannedFileCount,
         scannedSize,
@@ -180,7 +180,7 @@ export function ScanProgress({
       };
       setState('completing');
       
-      // 完成状态显示后开始退出
+      // Start exiting after the completed state is shown
       const completionTimer = setTimeout(() => {
         setIsVisible(false);
         setState('exiting');
@@ -194,14 +194,14 @@ export function ScanProgress({
     }
   }, [isScanning, scannedFileCount, scannedSize, totalCategories]);
 
-  // 不渲染时返回 null
+  // Return null when not rendering
   if (state === 'idle') return null;
 
   const isCompleted = state === 'completing' || state === 'exiting';
   const displayFileCount = isCompleted ? completedDataRef.current.scannedFileCount : scannedFileCount;
   const displaySize = isCompleted ? completedDataRef.current.scannedSize : scannedSize;
   const displayTotal = isCompleted ? completedDataRef.current.totalCategories : totalCategories;
-  // -1 表示不确定进度（扫描中），使用模拟动画进度
+  // -1 means indeterminate progress (scanning), use a simulated animated progress
   const isIndeterminate = completedCategories < 0 && !isCompleted;
   const progress = isCompleted ? 100 : (isIndeterminate ? 0 : (totalCategories > 0 ? (completedCategories / totalCategories) * 100 : 0));
 
@@ -213,10 +213,10 @@ export function ScanProgress({
         ${isVisible ? 'opacity-100' : 'opacity-0 pointer-events-none'}
       `}
     >
-      {/* 半透明遮罩 */}
+      {/* Semi-transparent overlay */}
       <div className="absolute inset-0 bg-black/30 backdrop-blur-sm glass-backdrop" />
       
-      {/* 弹窗内容 */}
+      {/* Modal content */}
       <div 
         className={`
           glass-overlay relative bg-[var(--bg-elevated)] rounded-2xl glass-dialog shadow-2xl 
@@ -226,11 +226,11 @@ export function ScanProgress({
           ${isCompleted ? 'border-emerald-500/30' : ''}
         `}
       >
-        {/* 顶部：进度环 */}
+        {/* Top: progress ring */}
         <div className="flex flex-col items-center mb-5">
           <CircularProgress progress={progress} isCompleted={isCompleted} isIndeterminate={isIndeterminate} />
           
-          {/* 状态文字 */}
+          {/* Status text */}
           <h3 className="mt-4 text-base font-semibold text-[var(--fg-primary)]">
             {isCompleted ? t('scanCompleted') : t('scanning')}
           </h3>
@@ -239,7 +239,7 @@ export function ScanProgress({
           </p>
         </div>
 
-        {/* 统计信息卡片 */}
+        {/* Statistics cards */}
         <div className="grid grid-cols-3 gap-2">
           <div className="glass-block bg-[var(--bg-card)] rounded-lg p-3 text-center">
             <FileText className="w-4 h-4 text-emerald-500 mx-auto mb-1" />
@@ -266,7 +266,7 @@ export function ScanProgress({
           </div>
         </div>
 
-        {/* 扫描中的动画指示器 */}
+        {/* Animated indicator while scanning */}
         {!isCompleted && (
           <div className="mt-4 flex justify-center">
             <div className="flex gap-1">

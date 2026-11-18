@@ -1,50 +1,50 @@
 // ============================================================================
-// 模块删除进度状态
+// Module deletion progress state
 //
-// 两个由来：
-// 1. 删除原先用全屏遮罩（fixed inset-0 + createPortal）呈现，会盖住标题栏 ——
-//    删除期间既不能拖动窗口也不能与顶栏交互（有 issue 反馈）。删除本身在后端线程
-//    执行，没有理由阻塞界面。
-// 2. 呈现方式按模块的删除语义分两种：
+// Two origins:
+// 1. Deletion used to be shown with a full-screen overlay (fixed inset-0 + createPortal), which covered the title bar —
+//    during deletion you could neither drag the window nor interact with the top bar (reported in an issue). The deletion itself runs
+//    on a backend thread, so there's no reason to block the UI.
+// 2. Presentation splits into two forms based on each module's deletion semantics:
 //
-//    · variant="block"（垃圾清理）
-//      "放心全删"的模块 —— 默认预选风险 ≤ 2，删的时候用户不需要看着列表。
-//      于是把内容整体换成一个"正在干活"的面板：环形进度 + 阶段名与已处理数 +
-//      一条分隔线 + 已释放/失败/速度/剩余。块居中、字靠左（见 StatePanel）。
+//    · variant="block" (junk cleanup)
+//      Modules where "delete everything is safe" — risk ≤ 2 is preselected by default, users don't need to watch the list while deleting.
+//      So replace the whole content with a "working" panel: progress ring + phase name and processed count +
+//      a divider + freed / failed / speed / remaining. Block centered, text left-aligned (see StatePanel).
 //
-//      ⚠️ 历史上这里翻过两次车，都别再犯：
-//      ① 自绘「红框 + 玫红底 + 居中块」：和全站绿/白玻璃不是一套语言，而且没吃到
-//         flex 撑高，页面模式下 100 多像素就收尾、下面整片空白；
-//      ② 改成"和扫描中一模一样的骨架行"：删除不是"结果还没出来"，
-//         摆一排假列表反而像界面卡住了 —— 删除态要有自己的样子（别的软件也都是
-//         转圈/环形进度 + 数字，没人拿骨架屏表达删除）。
+//      ⚠️ This area failed twice before; don't repeat either mistake:
+//      ① Hand-drawing a "red box + magenta background + centered block": not the same language as the site-wide green/white glass, and it didn't get
+//         flex height, so in page mode it ended after 100-something pixels with a big blank area below;
+//      ② Switching to "skeleton rows exactly like scanning": deletion isn't "results not ready yet",
+//         a row of fake lists just looks like the UI froze — the deleting state needs its own look (other software also uses
+//         a spinner/progress ring + numbers; nobody expresses deletion with a skeleton screen).
 //
-//    · variant="floating"（社交专清 / 大文件 / 右键菜单 / 注册表）
-//      "用户自己挑子集删除"的模块 —— 删的过程中必须保留"我在删哪几条"的参照，
-//      所以列表不能动。这段内容由 ModuleOperationToolbar 承载：它是 position: fixed
-//      的悬浮层，**完全不占文档流**，因此列表既不被遮挡也不会被撑开/位移。
+//    · variant="floating" (social cleanup / big files / context menu / registry)
+//      Modules where "users pick the subset to delete" — during deletion the reference of "which items I'm deleting" must stay visible,
+//      so the list can't move. This content is carried by ModuleOperationToolbar: it is position: fixed
+//      floating layer, **completely out of document flow**, so the list is neither covered nor pushed/shifted.
 //
-// 文案由调用方传入：各模块的 i18n 命名空间和进度字段都不同，这里只负责排版。
+// Copy is passed in by callers: each module has its own i18n namespace and progress fields; this file only handles layout.
 // ============================================================================
 
 import { Loader2 } from 'lucide-react';
 import { StatePanel } from './StatePanel';
 
 interface ModuleDeleteProgressProps {
-  /** 已本地化的阶段名（如「正在清理垃圾文件」） */
+  /** Localized phase label (e.g. "Cleaning junk files") */
   phaseLabel: string;
-  /** 已本地化的进度说明（如「已处理 501 / 12,731 个文件」） */
+  /** Localized progress description (e.g. "Processed 501 / 12,731 files") */
   progressLabel: string;
   /**
-   * 已知进度时传 0-100；不传则显示不定进度条。
-   * 部分模块的删除命令不回报进度（只有"正在删除 N 项"），它们复用同一个面板。
+   * Pass 0-100 when progress is known; omit it to show an indeterminate bar.
+   * Some modules' delete commands don't report progress (only "deleting N items"), they reuse this same panel.
    */
   percent?: number;
-  /** 已本地化的附加统计（仅 block 形态展示），居中铺开、窄窗口自动折行 */
+  /** Localized extra stats (block variant only), spread centered, wrap automatically on narrow windows */
   details?: string[];
-  /** 可选的底部提示（仅 block 形态展示），如「请勿关闭窗口」 */
+  /** Optional bottom hint (block variant only), e.g. "Do not close the window" */
   hint?: string;
-  /** 呈现形态，见文件头说明。默认 block。 */
+  /** Presentation variant, see the file header. Defaults to block. */
   variant?: 'block' | 'floating';
 }
 
@@ -57,11 +57,11 @@ export function ModuleDeleteProgress({
   variant = 'block',
 }: ModuleDeleteProgressProps) {
   const hasPercent = typeof percent === 'number';
-  // 悬浮形态（删自己挑的那几条）保留危险色 —— 那个位置要的是"注意，正在永久删除"；
-  // 块形态（垃圾清理整块换成状态区）跟扫描态同一套语言，用品牌绿。
+  // The floating form (deleting the items the user picked) keeps the danger color — that spot calls for "attention, permanent deletion in progress";
+  // the block form (junk cleanup swaps the whole area for a status panel) uses the same language as the scanning state, i.e. brand green.
   const barColorClass = variant === 'floating' ? 'bg-[var(--color-danger)]' : 'bg-[var(--brand-green)]';
 
-  /** 进度条本体：有确定进度按比例填充，否则整条脉冲表示"进行中" */
+  /** The progress bar itself: fills proportionally when progress is known, otherwise pulses across the whole bar to mean "in progress" */
   const progressBar = (
     <div className={`w-full rounded-full bg-[var(--bg-hover)] overflow-hidden ${variant === 'floating' ? 'h-1' : 'h-1.5'}`}>
       {hasPercent ? (
@@ -75,8 +75,8 @@ export function ModuleDeleteProgress({
     </div>
   );
 
-  // 悬浮形态：塞进底部的 ModuleOperationToolbar（横向操作条，居中一块进度面板）。
-  // 宽度给足是为了让「阶段名 + 已处理数」两行都不被截断 —— 太窄会变成一串省略号。
+  // Floating form: placed in the bottom ModuleOperationToolbar (horizontal action bar, with a centered progress panel).
+  // Give it enough width so both lines "phase name + processed count" aren't truncated — too narrow turns them into a string of ellipses.
   if (variant === 'floating') {
     return (
       <div className="flex w-[20em] flex-col gap-1.5 px-1 py-0.5">
@@ -94,8 +94,8 @@ export function ModuleDeleteProgress({
     );
   }
 
-  // 块形态：环形进度 + 阶段名 + 统计。不画线性进度条 —— 环里已经有百分比了，
-  // 再放一条就是"两条进度线"（扫描态那条在卡片头部，这里也不该重复）。
+  // Block form: progress ring + phase name + stats. No linear bar — the ring already shows the percentage,
+  // adding another would mean "two progress lines" (the scanning one is in the card header, so it shouldn't be repeated here).
   return (
     <StatePanel>
       <div className="flex items-center gap-4">
@@ -120,11 +120,11 @@ export function ModuleDeleteProgress({
 }
 
 /**
- * 环形进度。
+ * Progress ring.
  *
- * 用环比用条的原因：扫描态的进度条固定在**卡片头部**（那条流光），
- * 正文里再来一条同形状的绿条，用户分不清哪个是这次操作的进度。
- * 环把百分比收在圆心，信息密度更高，也是"删除进行中"最普遍的样子。
+ * Why a ring instead of a bar: the scanning state's progress bar is fixed in the **card header** (the flowing highlight),
+ * another green bar of the same shape in the body makes it unclear which one is this operation's progress.
+ * The ring gathers the percentage in its center, is denser, and is the most common look for "deletion in progress".
  */
 function ProgressRing({ percent, indeterminate }: { percent?: number; indeterminate: boolean }) {
   const size = 56;
@@ -136,7 +136,7 @@ function ProgressRing({ percent, indeterminate }: { percent?: number; indetermin
 
   return (
     <div className="relative shrink-0" style={{ width: size, height: size }}>
-      {/* 旋转 -90° 让进度从 12 点方向开始画 */}
+      {/* Rotate -90° so progress starts drawing from 12 o'clock */}
       <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} className="-rotate-90" aria-hidden="true">
         <circle cx={size / 2} cy={size / 2} r={radius} fill="none" stroke="var(--bg-hover)" strokeWidth={stroke} />
         <circle
@@ -152,7 +152,7 @@ function ProgressRing({ percent, indeterminate }: { percent?: number; indetermin
         />
       </svg>
       <span className="absolute inset-0 flex items-center justify-center text-[0.79rem] font-semibold text-[var(--text-primary)] tabular-nums">
-        {/* 拿不到百分比（有的删除命令只回"正在删除 N 项"）就转圈，别硬凑一个 0% */}
+        {/* If no percentage is available (some delete commands only report "deleting N items"), spin instead of faking a 0% */}
         {indeterminate ? <Loader2 className="h-4 w-4 animate-spin text-[var(--brand-green)]" /> : `${clamped}%`}
       </span>
     </div>

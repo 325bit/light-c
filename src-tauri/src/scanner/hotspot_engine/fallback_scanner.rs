@@ -1,7 +1,7 @@
 // ============================================================================
-// 降级扫描引擎 — jwalk 文件系统遍历 + 祖先聚合
-// 当无法使用 MFT 直读（非管理员 / 非 NTFS）时的回退方案
-// 从 hotspot.rs 的 aggregate_ancestor_stats 迁移而来
+// Fallback scan engine - jwalk filesystem traversal + ancestor aggregation
+// Fallback when MFT direct read is unavailable (not admin / not NTFS)
+// Migrated from aggregate_ancestor_stats in hotspot.rs
 // ============================================================================
 
 use std::collections::HashMap;
@@ -14,16 +14,16 @@ use crate::scanner::hotspot::{
     is_heavy_system_dir, is_hidden_by_path, FolderStats, HotspotScanner,
 };
 
-/// jwalk 并行遍历 + 祖先聚合（核心扫描引擎）
+/// jwalk parallel traversal + ancestor aggregation (core scan engine)
 ///
-/// 使用 jwalk 替代 walkdir 的关键优势：
-/// - 多线程并行列出目录内容，抵消 Win11 Defender 单次 IO 延迟
-/// - DirEntry 内部缓存 metadata，后续 `.metadata()` 零开销
-/// - process_read_dir 回调在列目录阶段预过滤，防止进入 WinSxS 等巨型目录
+/// Key advantages of jwalk over walkdir:
+/// - Multi-threaded parallel directory listing, offsetting per-IO latency from Win11 Defender
+/// - DirEntry caches metadata internally, so later `.metadata()` calls are zero-cost
+/// - the process_read_dir callback pre-filters during the listing phase, preventing entry into huge directories like WinSxS
 ///
-/// 每个文件向上聚合到**所有**祖先目录，确保每层目录的 total_size 包含全部后代。
+/// Each file is aggregated upward to **all** ancestor directories, ensuring every directory level's total_size includes all descendants.
 ///
-/// 返回 (根目录统计, 所有祖先目录统计 map)
+/// Returns (root directory stats, a map of all ancestor directory stats)
 pub fn aggregate_ancestor_stats(
     root: &Path,
     max_depth: u8,
@@ -38,13 +38,13 @@ pub fn aggregate_ancestor_stats(
     };
     let mut ancestor_map: HashMap<PathBuf, FolderStats> = HashMap::new();
 
-    // jwalk 并行目录遍历，process_read_dir 在列目录后、递归前过滤
+    // jwalk parallel directory traversal; process_read_dir filters after listing and before recursion
     let walker = JWalkDir::new(root)
         .max_depth(max_depth as usize)
         .skip_hidden(false)
         .process_read_dir(move |_depth, _path, _state, children| {
-            // 预过滤：阻止 jwalk 进入巨型系统目录和隐藏目录
-            // 当用户关闭系统目录过滤时，WinSxS/DriverStore 等也允许进入扫描
+            // Pre-filter: prevent jwalk from entering huge system directories and hidden directories
+            // When the user disables system-directory filtering, WinSxS/DriverStore etc. are also allowed into the scan
             children.retain(|dir_entry_result| {
                 dir_entry_result
                     .as_ref()
@@ -53,35 +53,35 @@ pub fn aggregate_ancestor_stats(
                         let skip_heavy = ignore_system_dirs && is_heavy_system_dir(&p);
                         !skip_heavy && !is_hidden_by_path(&p)
                     })
-                    .unwrap_or(false) // 读取失败的条目无法进入，安全移除
+                    .unwrap_or(false) // Entries that fail to read cannot be entered; safely remove them
             });
         })
         .into_iter();
 
     for entry in walker {
-        // 取消检查
+        // Cancellation check
         if cancel_flag.load(Ordering::SeqCst) {
             break;
         }
 
         let e = match entry {
             Ok(e) => e,
-            Err(_) => continue, // 权限拒绝等错误静默跳过
+            Err(_) => continue, // Silently skip errors such as permission denied
         };
 
-        // 只处理文件
+        // Only process files
         if !e.file_type().is_file() {
             continue;
         }
 
-        // jwalk 的 metadata() 是缓存的，不会触发额外 syscall
+        // jwalk's metadata() is cached and does not trigger extra syscalls
         let metadata = match e.metadata() {
             Ok(m) => m,
             Err(_) => continue,
         };
         let file_size = metadata.len();
 
-        // 仅在 Accurate 模式下收集修改时间
+        // Only collect modification time in Accurate mode
         let modified_ts = if track_modified {
             metadata
                 .modified()
@@ -92,14 +92,14 @@ pub fn aggregate_ancestor_stats(
             0
         };
 
-        // 累加到根目录
+        // Accumulate into the root directory
         root_stats.total_size += file_size;
         root_stats.file_count += 1;
         if track_modified && modified_ts > root_stats.last_modified {
             root_stats.last_modified = modified_ts;
         }
 
-        // 向上聚合到所有祖先目录（确保每层目录都包含所有后代文件的大小）
+        // Aggregate upward to all ancestor directories (ensuring each level includes the size of all descendant files)
         if let Ok(relative) = e.path().strip_prefix(root) {
             let comp_count = relative.components().count();
             let dir_ancestors = comp_count.saturating_sub(1);

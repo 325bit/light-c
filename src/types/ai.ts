@@ -1,27 +1,27 @@
 // ============================================================================
-// AI 助手 - 前端类型
+// AI assistant - frontend types
 //
-// 与 src-tauri/src/ai/ 下的 Rust 结构一一对应（camelCase）。
-// ⚠️ 这里**没有**密钥字段：后端只返回掩码，前端拿不到明文 Key。
+// One-to-one correspondence with the Rust structures under src-tauri/src/ai/ (camelCase).
+// ⚠️ There is **no** key field here: the backend only returns the masked form, the frontend cannot get the plaintext Key.
 // ============================================================================
 
-/** 服务商使用的协议族。目前只需区分这两种，其余服务商都归入 OpenAI 兼容。 */
+/** The protocol family used by the provider. Currently only these two need to be distinguished; all other providers fall under OpenAI-compatible. */
 export type AiProtocol = 'openAi' | 'anthropic';
 
-/** 内置服务商预设（由后端下发，前端不做硬编码）。 */
+/** Built-in provider presets (delivered by the backend, not hard-coded in the frontend). */
 export interface AiProviderPreset {
   id: string;
   name: string;
   protocol: AiProtocol;
-  /** 默认接口地址（不带结尾斜杠） */
+  /** Default API address (without a trailing slash) */
   baseUrl: string;
-  /** 默认模型，仅作提示 */
+  /** Default model, used only as a hint */
   defaultModel: string;
-  /** 本地推理：界面据此提示"数据不会离开本机" */
+  /** Local inference: the UI uses this to hint "data does not leave this machine" */
   local: boolean;
 }
 
-/** 一份服务商档案的界面视图：密钥已掩码。 */
+/** UI view of a provider profile: the key is masked. */
 export interface AiPublicProfile {
   id: string;
   name: string;
@@ -30,30 +30,30 @@ export interface AiPublicProfile {
   model: string;
   apiKeyMasked: string;
   hasApiKey: boolean;
-  /** 上次成功拉取到的模型列表 */
+  /** Model list from the last successful fetch */
   models: string[];
   modelsFetchedAt: number;
-  /** 思考强度；空字符串 = 不发送该参数 */
+  /** Reasoning effort; an empty string means this parameter is not sent */
   reasoningEffort: string;
 }
 
-/** 后端返回给界面的配置视图：多份档案 + 当前选中。 */
+/** Config view returned by the backend to the UI: multiple profiles + the currently selected one. */
 export interface AiPublicConfig {
   activeProfileId: string;
   profiles: AiPublicProfile[];
-  /** 自定义 AI 数据目录；为空表示跟随主数据目录（全局设置，不属于某份档案） */
+  /** Custom AI data directory; empty means follow the main data directory (global setting, not belonging to a profile) */
   dataDir: string;
-  /** 解析后的真实目录，界面直接显示并支持一键打开 */
+  /** Resolved real directory, shown directly in the UI and supports one-click open */
   resolvedDataDir: string;
 }
 
 /**
- * 提交一份档案。
- * `id` 为空 = 新增；`apiKey` 为空 = 不改动已保存的密钥
- * （前端只拿得到掩码，回传不了明文，留空是唯一的"不改"表达方式）。
+ * Submit a profile.
+ * `id` empty = add new; `apiKey` empty = do not change the saved key
+ * (the frontend can only get the masked form and cannot send back the plaintext, so leaving it empty is the only way to express "no change").
  */
 export interface AiProfileInput {
-  /** 思考强度；空字符串 = 不发送该参数（默认）。并非所有模型都支持 */
+  /** Reasoning effort; an empty string means this parameter is not sent (default). Not all models support it */
   reasoningEffort: string;
   id: string;
   name: string;
@@ -63,75 +63,75 @@ export interface AiProfileInput {
   apiKey: string;
 }
 
-/** 对话消息。role 用 OpenAI 的写法（system / user / assistant），Anthropic 由后端转译。 */
+/** Chat message. role uses OpenAI's notation (system / user / assistant); Anthropic is translated by the backend. */
 /**
- * 图片附件（已压缩，见 components/ai/imageAttach.ts）。
- * 只在**发送**时携带：历史与显示仍以 content 为准。
+ * Image attachment (already compressed, see components/ai/imageAttach.ts).
+ * Only carried when **sending**: history and display are still based on content.
  */
 export interface AiChatImage {
-  /** 例如 image/jpeg */
+  /** For example image/jpeg */
   mediaType: string;
-  /** 不带 data: 前缀的纯 base64 */
+  /** Pure base64 without the data: prefix */
   dataBase64: string;
 }
 
 export interface AiChatMessage {
   role: 'system' | 'user' | 'assistant';
   content: string;
-  /** 图片附件；为空时按纯文本发送，与加入此功能之前的请求完全一致 */
+  /** Image attachment; when empty the request is sent as plain text, exactly the same as before this feature was added */
   images?: AiChatImage[];
   /**
-   * 思考模式下这一轮的思维链。**必须原样回传**给服务端 ——
-   * 请求带 tools 时，中间那轮 assistant 的 reasoning_content 不回传就直接 400。
-   * 它不显示、也不参与正文，只是跟着消息走。
+   * The chain of thought for this turn in reasoning mode. **It must be sent back unchanged** to the server —
+   * when a request carries tools, if the intermediate assistant turn's reasoning_content is not sent back, it directly returns 400.
+   * It is not displayed and does not participate in the body text; it just travels with the message.
    */
   reasoningContent?: string;
   /**
-   * 产出这条回复的**档案 id**。思维链只对产出它的那家服务商有意义 ——
-   * 换一家（尤其严格的第三方网关）就变成未知字段，可能被 400 拒掉，
-   * 所以发请求时只回传"当前档案自己产出的"那些。
+   * The **profile id** that produced this reply. Chain of thought is only meaningful to the provider that produced it —
+   * with another provider (especially a strict third-party gateway) it becomes an unknown field and may be rejected with 400,
+   * so when building requests only send back those "produced by the current profile itself".
    */
   producedByProfile?: string;
   /**
-   * 这条 assistant 消息是**本地生成的**（工具查询结果），不是模型说的话。
-   * 发请求时会按用户侧内容处理 —— 否则会变成"一条没有 reasoning_content 的 assistant"。
+   * This assistant message was **generated locally** (a tool query result), not something the model said.
+   * When building a request it is treated as user-side content — otherwise it becomes "an assistant with no reasoning_content".
    */
   localToolOutput?: boolean;
   /**
-   * 产出这条回复的**实际模型名**（后端回传的真值，只在界面显示）。
-   * 切换模型后逐条对照就能确认是否生效，而不是只能盲信输入框里的下拉值。
-   * 不进请求体：后端构造 messages 时只挑协议字段，界面专用字段会被丢掉。
+   * The **actual model name** that produced this reply (the truth returned by the backend, displayed in the UI only).
+   * Comparing entry by entry after switching models confirms whether it took effect, instead of blindly trusting the dropdown value in the input.
+   * Not included in the request body: when the backend builds messages it only picks protocol fields, and UI-only fields are dropped.
    */
   model?: string;
   /**
-   * Unix 毫秒时间戳（**只在界面用**：跨天加载后靠它插日期分隔线）。
-   * 请求构造不会带它 —— `toRequestMessage` 只挑 role/content 这类协议字段。
+   * Unix millisecond timestamp (**for UI use only**: used to insert date separators after loading across days).
+   * Request construction does not include it — `toRequestMessage` only picks protocol fields like role/content.
    */
   at?: number;
 }
 
-/** 模型请求调用某个工具。 */
+/** A model request invoking a tool. */
 export interface AiToolCall {
   callId: string;
   name: string;
-  /** 已解析成对象的参数；解析失败时为空对象 */
+  /** Arguments already parsed into an object; empty object if parsing fails */
   arguments: Record<string, unknown>;
 }
 
 export interface AiChatRequest {
   messages: AiChatMessage[];
-  /** 单次覆盖模型；不传则用设置里保存的 */
+  /** Override the model for a single call; if not provided, use the one saved in settings */
   model?: string;
   temperature?: number;
   /**
-   * 本次允许使用的工具名。
-   * **由前端按「该模块登记了哪些动作」决定** —— 只分析不删除的模块不会传
-   * propose_delete，模型也就看不到这个工具，无从提议删除。
+   * Tool names allowed for this request.
+   * **Determined by the frontend based on "which actions this module registered"** — a module that only analyzes but does not delete will not pass
+   * propose_delete, so the model cannot see that tool and has no way to propose deletion.
    */
   tools?: string[];
   /**
-   * 本次对话的会话 id。由前端按模块生成、「清空对话」时更换，
-   * 只在需要会话亲和的服务商那里变成请求头；不是配置项，也不落盘。
+   * The conversation id for this chat. Generated by the frontend per module and changed on "Clear Conversation",
+   * it only becomes a request header for providers that need session affinity; it is not a config item and is not persisted.
    */
   sessionId?: string;
 }
@@ -139,8 +139,8 @@ export interface AiChatRequest {
 export interface AiChatReply {
   content: string;
   model: string;
-  /** 思考模式下这一轮的思维链（不显示）；前端要把它存到下一条 assistant 消息上并回传 */
+  /** The chain of thought for this turn in reasoning mode (not displayed); the frontend must store it on the next assistant message and send it back */
   reasoningContent?: string;
-  /** 有值时表示模型想做某个动作而不是回话 */
+  /** When set, indicates the model wants to perform an action instead of replying */
   toolCalls?: AiToolCall[];
 }

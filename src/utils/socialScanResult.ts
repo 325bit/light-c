@@ -1,18 +1,18 @@
 // ============================================================================
-// 社交扫描结果的本地增量更新
+// Local incremental update of social scan results
 //
-// 删除成功后如果重跑一次全量扫描，代价是重新遍历所有软件的数据目录，
-// 而且会把用户的勾选状态整块重置（handleScan 会默认全选所有可删除文件）。
-// 这里在本地把已删除的文件从结果里摘掉并重算统计，让界面立即反映变化。
+// If a full rescan is rerun after a successful deletion, the cost is re-traversing every app's data directory,
+// and it would reset the user's selections wholesale (handleScan selects all deletable files by default).
+// Here we remove deleted files from the result locally and recompute statistics so the UI reflects the change immediately.
 //
-// 顶层总计按「各分类之和」重算 —— 后端 core.rs 就是这么汇总的
-// （total_files / total_size / deletable_* 都是 categories 的求和），
-// 所以本地重算与重新扫描的结果一致，不会引入语义差异。
+// Recompute the top-level totals as "the sum of categories" - that is exactly how the backend core.rs aggregates them
+// (total_files / total_size / deletable_* are all sums over categories),
+// so the local recomputation matches a rescan and introduces no semantic difference.
 // ============================================================================
 
 import type { SocialCategoryStats, SocialScanResult } from '../api/commands';
 
-/** 单个分类被移除的文件带来的统计变化 */
+/** Statistical changes caused by removed files in a single category */
 interface CategoryRemoval {
   count: number;
   size: number;
@@ -23,12 +23,12 @@ interface CategoryRemoval {
 const EMPTY_REMOVAL: CategoryRemoval = { count: 0, size: 0, deletableCount: 0, deletableSize: 0 };
 
 /**
- * 把已成功删除的路径从扫描结果中移除，并重算分类与顶层统计。
+ * Remove successfully deleted paths from the scan result and recompute category and top-level statistics.
  *
- * 只能传入**后端确认已删除**的路径：被标记为「重启后删除」的文件仍在磁盘上，
- * 算进来会让界面显示成已删除。调用方需自行排除这类路径。
+ * Only pass paths **confirmed deleted by the backend**: files marked "delete after reboot" are still on disk,
+ * counting them would make the UI show them as deleted. Callers must exclude such paths themselves.
  *
- * 返回新对象，不修改入参。
+ * Returns a new object; does not modify the input.
  */
 export function applyDeletedPaths(
   result: SocialScanResult,
@@ -68,7 +68,7 @@ export function applyDeletedPaths(
   };
 }
 
-/** 统计某个分类里将被移除的文件数量与大小 */
+/** Count the number and size of files to be removed in a category */
 function countRemoval(category: SocialCategoryStats, removedPaths: Set<string>): CategoryRemoval {
   let removal = EMPTY_REMOVAL;
 
@@ -88,13 +88,13 @@ function countRemoval(category: SocialCategoryStats, removedPaths: Set<string>):
 }
 
 /**
- * 从删除结果里挑出「后端确认已删除」的路径。
+ * Pick out the paths "confirmed deleted by the backend" from a delete result.
  *
- * 返回 null 表示无法安全地做本地更新，调用方应退回重新扫描：
- *   - 删除结果中存在「重启后删除」的文件：这类文件仍在磁盘上，且后端不返回它们的路径，
- *     无法把它们和已删除的区分开；
- *   - 成功 / 失败 / 待重启三项之和与请求数量对不上：说明有路径未被归类，
- *     此时本地更新可能漏删或多删。
+ * Returning null means a local update cannot be done safely; the caller should fall back to a rescan:
+ *   - The delete result contains files marked "delete after reboot": these are still on disk and the backend does not return their paths,
+ *     so they cannot be distinguished from actually deleted files;
+ *   - The sum of success / failure / reboot-pending does not match the requested count: some paths were not categorized,
+ *     in which case a local update could under- or over-delete.
  */
 export function resolveDeletedPaths(
   requestedPaths: string[],

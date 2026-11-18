@@ -1,5 +1,5 @@
 // ============================================================================
-// 扫描器模块 - 负责扫描Windows系统中的垃圾文件
+// Scanner module - responsible for scanning junk files in the Windows system
 // ============================================================================
 
 pub(crate) mod big_files;
@@ -20,7 +20,7 @@ mod scan_engine;
 pub(crate) mod shell_icons;
 mod ai_tool_cleaner;
 mod social_scanner;
-// [dev-cache] 开发空间清理：工具链缓存 + 多版本残留（补齐 light-c 原有模块未覆盖的部分）
+// [dev-cache] Development space cleanup: toolchain caches + multi-version leftovers (covering parts not handled by the original light-c module)
 pub(crate) mod dev_cache;
 
 pub use categories::*;

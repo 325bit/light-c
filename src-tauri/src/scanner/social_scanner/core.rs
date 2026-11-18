@@ -1,42 +1,42 @@
 // ============================================================================
-// 社交软件专清扫描器 - 智能路径溯源与文件类型深度分类
+// Dedicated social app scanner - smart path tracing and deep file-type classification
 // ============================================================================
 //
-// 支持的社交软件：
-// - 微信 (WeChat): 注册表 + 文档目录 + 全盘搜索定位数据目录，同时兼容旧版 3.x（WeChat Files）
-//   与新版 4.x（xwechat_files / db_storage + msg）两代目录结构
-// - QQ/NTQQ: 定位 nt_data 目录与 nt_qq\global，识别消息数据库；
-//   安装路径除注册表外还会从常见安装目录推断，覆盖自定义安装位置
-// - 钉钉 (DingTalk): 定位 storage 和 cache 目录
-// - 飞书 (Lark/Feishu): 扫描 LarkShell，定位 sdk_storage 和 file_storage
-// - 企业微信 (WXWork): 识别缓存和文件目录
-// - Telegram: 识别缓存目录
+// Supported social apps:
+// - WeChat: registry + documents directory + full-disk search to locate the data directory; also compatible with two generations of directory structures: legacy 3.x (WeChat Files)
+//   and new 4.x (xwechat_files / db_storage + msg)
+// - QQ/NTQQ: locate the nt_data directory and nt_qq\global, identify message databases;
+//   install paths are inferred from common install directories in addition to the registry, covering custom install locations
+// - DingTalk: locate the storage and cache directories
+// - Lark/Feishu: scan LarkShell, locate sdk_storage and file_storage
+// - WeCom (WXWork): identify cache and file directories
+// - Telegram: identify cache directories
 //
 // ============================================================================
-// 风险等级说明
+// Risk level description
 // ============================================================================
 //
-// CRITICAL (危险) - 聊天记录数据库，禁止删除
-//   识别规则：
-//   1. 路径包含: Msg/Database, Msg/Multi, nt_msg, nt_db, db_storage, tdata
-//   2. 文件后缀: .db, .db-wal, .db-shm, .sqlite, .sqlite-wal, .sqlite-shm
-//   3. 效果: is_deletable = false，前端禁用勾选
+// CRITICAL (danger) - chat record database, must not be deleted
+//   Identification rules:
+//   1. Path contains: Msg/Database, Msg/Multi, nt_msg, nt_db, db_storage, tdata
+//   2. File extensions: .db, .db-wal, .db-shm, .sqlite, .sqlite-wal, .sqlite-shm
+//   3. Effect: is_deletable = false, frontend disables the checkbox
 //
-// MEDIUM (提示) - 接收的文件，谨慎清理
-//   识别规则：
-//   1. 路径包含: FileStorage/File, FileRecv, MsgAttach, file_storage
-//   2. 效果: 提醒用户可能包含重要文档
+// MEDIUM (warning) - received files, clean with caution
+//   Identification rules:
+//   1. Path contains: FileStorage/File, FileRecv, MsgAttach, file_storage
+//   2. Effect: remind the user that it may contain important documents
 //
-// LOW (安全) - 加密图片/视频，建议清理
-//   识别规则：
-//   1. 微信 FileStorage/Image 下的 .dat 文件（加密图片）
-//   2. Image, Video, Pic, Ptt 目录下的媒体文件
-//   3. 效果: 建议清理，删除后可重新下载
+// LOW (safe) - encrypted images/videos, recommended for cleanup
+//   Identification rules:
+//   1. .dat files under WeChat FileStorage/Image (encrypted images)
+//   2. Media files in the Image, Video, Pic, Ptt directories
+//   3. Effect: recommended for cleanup; can be re-downloaded after deletion
 //
-// NONE (无风险) - 临时缓存与日志，安全清理
-//   识别规则：
-//   1. 路径包含: Cache, Temp, Log, WebView, Thumb, sdk_storage
-//   2. 效果: 安全清理，不影响正常使用
+// NONE (no risk) - temporary cache and logs, safe to clean
+//   Identification rules:
+//   1. Path contains: Cache, Temp, Log, WebView, Thumb, sdk_storage
+//   2. Effect: safe to clean, does not affect normal use
 //
 // ============================================================================
 
@@ -47,52 +47,52 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-/// 单条扫描路径的最大递归深度。
+/// Maximum recursion depth for a single scan path.
 ///
-/// 与原先 `walkdir` 的 `max_depth(16)` 保持一致：微信深层目录
-/// （`msg/attach/<hash>/<日期>/…`）很容易超过 10 层，调小会漏扫。
+/// Consistent with the original `walkdir` `max_depth(16)`: deep WeChat directories
+/// (`msg/attach/<hash>/<date>/…`) easily exceed 10 levels; lowering it would miss files.
 const SOCIAL_SCAN_MAX_DEPTH: usize = 16;
 
-/// 前几层把子目录交给 rayon 分叉。
+/// Fork subdirectories to rayon for the first few levels.
 ///
-/// 实测（本机 10.5 万文件 / 1.5 万目录）：只分 1 层时，一旦某个子目录占掉绝大部分
-/// 开销就毫无收益 —— QQ 的 `Image` 有 4388 个目录，其中 `Group2` 独占 1618 个，
-/// 分 1 层只有 1.0×；分到 3 层能到 1.8×～3.7×。
+/// Measured (105k files / 15k directories on this machine): with only 1 level forked, if a single subdirectory dominates the
+/// cost there is no benefit at all - QQ's `Image` has 4388 directories, of which `Group2` alone has 1618,
+/// forking 1 level gives only 1.0x; forking 3 levels reaches 1.8x-3.7x.
 const SOCIAL_SCAN_FORK_DEPTH: usize = 3;
 
-/// 耗时浮层里最多列几条最慢的扫描路径。
+/// Maximum number of slowest scan paths listed in the timing overlay.
 ///
-/// 取 5 条：一屏放得下，也足够判断「是某个软件的某个目录拖慢的」。
+/// Use 5: fits on one screen and is enough to determine "which app's directory is slowing things down".
 const SOCIAL_SLOW_PATH_LIMIT: usize = 5;
 
 // ============================================================================
-// 枚举定义
+// Enum definitions
 // ============================================================================
 
-/// 文件风险等级
-/// 用于标记文件的安全性，指导用户是否可以删除
+/// File risk level
+/// Used to mark file safety and guide the user on whether a file can be deleted
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RiskLevel {
-    /// 危险 - 聊天记录数据库，禁止删除
-    /// 特征：.db, .db-wal, .db-shm 文件，位于 Msg/Database/nt_msg 目录
+    /// Danger - chat record database, must not be deleted
+    /// Characteristics: .db, .db-wal, .db-shm files in the Msg/Database/nt_msg directory
     Critical,
 
-    /// 提示 - 接收的文件，谨慎清理
-    /// 特征：File, FileRecv, MsgAttach 目录下的文件
+    /// Warning - received files, clean with caution
+    /// Characteristics: files in the File, FileRecv, MsgAttach directories
     Medium,
 
-    /// 安全 - 加密图片/视频，建议清理（本地备份）
-    /// 特征：Image 目录下的 .dat 文件，视频缓存
+    /// Safe - encrypted images/videos, recommended for cleanup (local backup)
+    /// Characteristics: .dat files in the Image directory, video cache
     Low,
 
-    /// 无风险 - 临时缓存与日志，安全清理
-    /// 特征：Cache, Temp, Log, WebView, Thumb 目录
+    /// No risk - temporary cache and logs, safe to clean
+    /// Characteristics: Cache, Temp, Log, WebView, Thumb directories
     None,
 }
 
 impl RiskLevel {
-    /// 获取风险等级的中文描述
+    /// Get the Chinese description of the risk level
     pub fn description(&self) -> &'static str {
         match self {
             RiskLevel::Critical => "危险（聊天记录）",
@@ -102,7 +102,7 @@ impl RiskLevel {
         }
     }
 
-    /// 获取风险等级的提示信息
+    /// Get the hint text for the risk level
     pub fn tooltip(&self) -> &'static str {
         match self {
             RiskLevel::Critical => "此文件为聊天记录数据库，删除后将永久丢失聊天记录，强烈建议保留",
@@ -112,40 +112,40 @@ impl RiskLevel {
         }
     }
 
-    /// 是否允许用户勾选删除
+    /// Whether the user is allowed to check it for deletion
     pub fn is_deletable(&self) -> bool {
         !matches!(self, RiskLevel::Critical)
     }
 }
 
-/// 文件分类
-/// 根据目录特征和文件后缀进行分类
+/// File category
+/// Classify by directory characteristics and file extensions
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FileCategory {
-    /// 聊天记录数据库
-    /// 包含 .db, .db-wal, .db-shm 文件
+    /// Chat record database
+    /// Contains .db, .db-wal, .db-shm files
     ChatDatabase,
 
-    /// 图片视频缓存
-    /// 包含加密的 .dat 文件和常见图片/视频格式
+    /// Image and video cache
+    /// Contains encrypted .dat files and common image/video formats
     ImageVideo,
 
-    /// 传输文件
-    /// 用户接收的各类文件
+    /// Transferred files
+    /// Various files received by the user
     FileTransfer,
 
-    /// 临时缓存
-    /// 包含 Cache, Temp, Log, WebView, Thumb 等目录
+    /// Temporary cache
+    /// Includes Cache, Temp, Log, WebView, Thumb, and other directories
     TempCache,
 
-    /// 朋友圈/动态缓存
-    /// 包含 Sns, Moments 等目录
+    /// Moments/feed cache
+    /// Includes Sns, Moments, and other directories
     MomentsCache,
 }
 
 impl FileCategory {
-    /// 获取分类的中文名称
+    /// Get the Chinese name of the category
     pub fn display_name(&self) -> &'static str {
         match self {
             FileCategory::ChatDatabase => "聊天记录",
@@ -156,7 +156,7 @@ impl FileCategory {
         }
     }
 
-    /// 获取分类的描述
+    /// Get the description of the category
     pub fn description(&self) -> &'static str {
         match self {
             FileCategory::ChatDatabase => "聊天记录数据库文件，删除后无法恢复",
@@ -167,7 +167,7 @@ impl FileCategory {
         }
     }
 
-    /// 获取分类唯一标识符（用于前后端 key 匹配）
+    /// Get the unique category identifier (for frontend/backend key matching)
     pub fn id(&self) -> &'static str {
         match self {
             FileCategory::ChatDatabase => "chatdatabase",
@@ -178,7 +178,7 @@ impl FileCategory {
         }
     }
 
-    /// 获取该分类的默认风险等级
+    /// Get the default risk level for this category
     pub fn default_risk_level(&self) -> RiskLevel {
         match self {
             FileCategory::ChatDatabase => RiskLevel::Critical,
@@ -191,13 +191,13 @@ impl FileCategory {
 }
 
 // ============================================================================
-// 数据结构
+// Data structures
 // ============================================================================
 
-/// 文件最后修改时间（Unix 秒）。
+/// File last modified time (Unix seconds).
 ///
-/// 读不到（占用、权限、时钟早于 1970）一律按 0 返回 —— 界面上这类条目在
-/// 「按修改时间」排序时统一垫底，不会混进正常数据里。
+/// If unreadable (locked, permissions, clock before 1970), always return 0 - such entries are placed at the bottom in the UI when
+/// sorting by "modified time", so they never mix with normal data.
 fn modified_secs(metadata: &std::fs::Metadata) -> i64 {
     metadata
         .modified()
@@ -207,114 +207,114 @@ fn modified_secs(metadata: &std::fs::Metadata) -> i64 {
         .unwrap_or(0)
 }
 
-/// 社交软件文件条目
+/// Social app file entry
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SocialFileEntry {
-    /// 文件完整路径
+    /// Full file path
     pub path: String,
-    /// 文件大小（字节）
+    /// File size (bytes)
     pub size: u64,
-    /// 所属应用名称
+    /// Name of the owning app
     pub app_name: String,
-    /// 文件分类
+    /// File category
     pub category: FileCategory,
-    /// 风险等级
+    /// Risk level
     pub risk_level: RiskLevel,
-    /// 是否可删除（Critical 级别强制为 false）
+    /// Whether it can be deleted (forced to false for Critical level)
     pub deletable: bool,
-    /// 最后修改时间（Unix 秒）。明细弹窗的「按修改时间排序」用它；
-    /// 旧版本缓存里没有这个字段，反序列化时按 0 处理（排序垫底）。
+    /// Last modified time (Unix seconds). Used by "sort by modified time" in the detail modal;
+    /// older cached data lacks this field and is treated as 0 on deserialization (sorted last).
     #[serde(default)]
     pub modified_time: i64,
 }
 
-/// 社交软件分类统计
+/// Social app category statistics
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SocialCategoryStats {
-    /// 分类ID
+    /// Category ID
     pub id: String,
-    /// 分类名称
+    /// Category name
     pub name: String,
-    /// 分类描述
+    /// Category description
     pub description: String,
-    /// 文件数量
+    /// Number of files
     pub file_count: usize,
-    /// 总大小（字节）
+    /// Total size (bytes)
     pub total_size: u64,
-    /// 可删除的文件数量
+    /// Number of deletable files
     pub deletable_count: usize,
-    /// 可删除的文件大小
+    /// Size of deletable files
     pub deletable_size: u64,
-    /// 文件列表
+    /// File list
     pub files: Vec<SocialFileEntry>,
 }
 
-/// 社交软件扫描结果
+/// Social app scan result
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SocialScanResult {
-    /// 按分类统计
+    /// Statistics by category
     pub categories: Vec<SocialCategoryStats>,
-    /// 总文件数
+    /// Total number of files
     pub total_files: usize,
-    /// 总大小
+    /// Total size
     pub total_size: u64,
-    /// 可删除的文件数
+    /// Number of deletable files
     pub deletable_files: usize,
-    /// 可删除的文件大小
+    /// Size of deletable files
     pub deletable_size: u64,
-    /// 检测到的社交软件列表
+    /// List of detected social apps
     pub detected_apps: Vec<String>,
-    /// 阶段耗时明细（排查性能用，前端默认收在「秒表」浮层里，不点不显示）
+    /// Phase timing details (for performance troubleshooting; collapsed by default in the frontend "stopwatch" overlay and hidden until clicked)
     pub phase_durations: Vec<SocialPhaseDuration>,
-    /// 最慢的几条扫描路径（最多 5 条），用来回答「为什么这个用户扫得慢」
+    /// The slowest scan paths (up to 5), used to answer "why this user's scan is slow"
     pub slow_paths: Vec<SocialSlowPath>,
 }
 
-/// 单个扫描阶段的耗时
+/// Duration of a single scan phase
 ///
-/// 只在阶段边界取一次时间戳，不参与遍历循环 —— 十几次 `Instant::now()`
-/// 相对整次扫描（百毫秒级）完全可以忽略。
+/// Take a timestamp once at each phase boundary, not inside the traversal loop - a dozen or so `Instant::now()` calls
+/// are negligible compared with the whole scan (hundreds of milliseconds).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SocialPhaseDuration {
-    /// 阶段标识：detect（路径探测）/ categorize（遍历并分级）/ total
+    /// Phase identifier: detect (path detection) / categorize (traverse and classify) / total
     pub stage: String,
-    /// 阶段耗时，单位毫秒
+    /// Phase duration in milliseconds
     pub duration_ms: u64,
 }
 
-/// 单条扫描路径的耗时明细
+/// Duration details for a single scan path
 ///
-/// 同时给出目录数：这个模块的开销主要来自 `readdir` 次数，目录数远大于文件数时
-/// （比如 QQ 的 `Image`：4388 个目录只有 1803 个文件），慢的原因就是"列目录"
-/// 而不是"文件多"，看这一行就能判断，不用让用户装工具。
+/// Also give the directory count: this module's cost mainly comes from `readdir` calls; when directories far outnumber files,
+/// (e.g., QQ's `Image`: 4388 directories but only 1803 files), the reason for slowness is "listing directories"
+/// rather than "too many files"; this line alone tells you, without asking the user to install tools.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SocialSlowPath {
-    /// 扫描路径
+    /// Scan path
     pub path: String,
-    /// 所属应用
+    /// Owning app
     pub app_name: String,
-    /// 该路径耗时，单位毫秒
+    /// Duration of this path in milliseconds
     pub duration_ms: u64,
-    /// 该路径下的文件数
+    /// Number of files under this path
     pub file_count: usize,
-    /// 该路径下的目录数（含自身）
+    /// Number of directories under this path (including itself)
     pub directory_count: usize,
 }
 
-/// 一次子树遍历的产出：文件条目 + 走过的目录数
+/// Output of one subtree traversal: file entries + number of directories walked
 ///
-/// 目录数要单独返回，是因为这个模块的耗时几乎全在 `readdir` 上
-/// （见 `docs/dev/扫描性能优化.md` §6.1）：排查「为什么扫得慢」必须能区分
-/// 是「文件多」还是「目录多」—— 两者的单位成本差两个数量级。
+/// The directory count is returned separately because almost all of this module's time is spent on `readdir`
+/// (see `docs/dev/scan-performance-optimization.md` §6.1): troubleshooting "why the scan is slow" must distinguish
+/// "too many files" from "too many directories" - their per-unit costs differ by two orders of magnitude.
 struct DirectoryWalk {
-    /// 该子树下收集到的文件条目
+    /// File entries collected under this subtree
     entries: Vec<SocialFileEntry>,
-    /// 该子树下的目录数（含子树根自身）
+    /// Number of directories under this subtree (including the subtree root itself)
     directory_count: usize,
 }
 
 impl DirectoryWalk {
-    /// 空产出：深度超限或目录读不了时用，不参与目录统计
+    /// Empty output: used when the depth limit is exceeded or a directory cannot be read; not counted in directory statistics
     fn empty() -> Self {
         Self {
             entries: Vec::new(),
@@ -323,61 +323,61 @@ impl DirectoryWalk {
     }
 }
 
-/// 社交软件路径信息
+/// Social app path information
 #[derive(Debug, Clone)]
 pub struct SocialAppPath {
-    /// 应用名称
+    /// App name
     pub app_name: String,
-    /// 路径
+    /// Path
     pub path: PathBuf,
-    /// 文件分类
+    /// File category
     pub category: FileCategory,
-    /// 是否为用户自定义路径（通过注册表获取）
+    /// Whether it is a user-customized path (obtained from the registry)
     #[allow(dead_code)]
     pub is_custom_path: bool,
 }
 
-/// 注册表路径解析结果
-/// 用于处理微信等软件的自定义路径配置
+/// Registry path resolution result
+/// Used to handle custom path configuration for apps such as WeChat
 #[derive(Debug, Clone)]
 pub(super) enum RegistryPathResult {
-    /// 使用系统文档目录（注册表值为 "MyDocument:"）
+    /// Use the system documents directory (registry value is "MyDocument:")
     MyDocument,
-    /// 绝对路径（如 "E:\data\xwechat_files"）
+    /// Absolute path (e.g., "E:\data\xwechat_files")
     AbsolutePath(String),
 }
 
 // ============================================================================
-// 社交软件扫描器
+// Social app scanner
 // ============================================================================
 
-/// 社交软件扫描器
-/// 负责智能路径溯源和文件类型深度分类
+/// Social app scanner
+/// Responsible for smart path tracing and deep file-type classification
 pub struct SocialScanner {
-    /// 用户目录
+    /// User profile directory
     pub(super) user_profile: String,
-    /// LocalAppData 目录
+    /// LocalAppData directory
     pub(super) local_appdata: String,
-    /// Roaming AppData 目录
+    /// Roaming AppData directory
     pub(super) appdata: String,
-    /// 文档目录（可能在非系统盘）
+    /// Documents directory (may be on a non-system drive)
     pub(super) documents_dir: String,
-    /// 默认文档目录
+    /// Default documents directory
     pub(super) default_documents: String,
-    /// 所有可用盘符（用于全盘搜索）
+    /// All available drives (for full-disk search)
     pub(super) available_drives: Vec<String>,
-    /// 盘面目录缓存：目录路径 → 它的直接子目录列表。
+    /// Per-drive directory cache: directory path -> list of its direct subdirectories.
     ///
-    /// 微信和 QQ 的兜底搜索会把**同一批目录各 read_dir 一遍**，第二遍是纯重复 IO：
-    /// 实测探测阶段 2.3s 里大头就在这两次遍历。
-    /// 缓存只在 scanner 实例的生命周期内有效，每次重新扫描都是新实例 ——
-    /// 不影响"实时"，只是同一次扫描内不重复读盘。
+    /// WeChat's and QQ's fallback searches each call read_dir on **the same set of directories**; the second pass is pure duplicate IO:
+    /// Measured: most of the 2.3s detection phase is spent in these two traversals.
+    /// The cache is valid only for the lifetime of the scanner instance; every rescan creates a new instance -
+    /// this does not affect "realtime" behavior, it just avoids re-reading the disk within the same scan.
     pub(super) dir_cache:
         std::sync::Mutex<std::collections::HashMap<std::path::PathBuf, Vec<std::path::PathBuf>>>,
 }
 
 impl SocialScanner {
-    /// 创建新的扫描器实例
+    /// Create a new scanner instance
     pub fn new() -> Self {
         let user_profile =
             std::env::var("USERPROFILE").unwrap_or_else(|_| "C:\\Users\\Default".to_string());
@@ -386,14 +386,14 @@ impl SocialScanner {
         let appdata = std::env::var("APPDATA")
             .unwrap_or_else(|_| format!("{}\\AppData\\Roaming", user_profile));
 
-        // 获取真实的文档目录（可能在 D 盘等非系统盘）
+        // Get the real documents directory (may be on a non-system drive such as D:)
         let documents_dir = dirs::document_dir()
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_else(|| format!("{}\\Documents", user_profile));
 
         let default_documents = format!("{}\\Documents", user_profile);
 
-        // 获取所有可用盘符（用于全盘搜索备选）
+        // Get all available drives (for full-disk search fallback)
         let available_drives = Self::get_available_drives();
 
         info!("SocialScanner 初始化:");
@@ -413,10 +413,10 @@ impl SocialScanner {
         }
     }
 
-    /// 读一个目录的**直接子目录**，同一次扫描内只读一次盘。
+    /// Read the **direct subdirectories** of a directory, hitting the disk only once within the same scan.
     ///
-    /// 见 `dir_cache` 的说明：微信和 QQ 的兜底搜索范围完全重叠，
-    /// 第二个搜索命中缓存后基本不产生 IO。
+    /// See the `dir_cache` notes: the fallback search ranges of WeChat and QQ overlap completely,
+    /// the second search hits the cache and produces virtually no IO.
     pub(super) fn read_subdirectories_cached(&self, dir: &std::path::Path) -> Vec<std::path::PathBuf> {
         if let Ok(cache) = self.dir_cache.lock() {
             if let Some(hit) = cache.get(dir) {
@@ -441,14 +441,14 @@ impl SocialScanner {
     }
 
     // ========================================================================
-    // 系统工具方法
+    // System utility methods
     // ========================================================================
 
-    /// 获取所有可用的磁盘盘符
+    /// Get all available disk drives
     #[cfg(target_os = "windows")]
     fn get_available_drives() -> Vec<String> {
         let mut drives = Vec::new();
-        // 检查 A-Z 盘符
+        // Check drives A-Z
         for letter in b'C'..=b'Z' {
             let drive = format!("{}:\\", letter as char);
             if Path::new(&drive).exists() {
@@ -463,14 +463,14 @@ impl SocialScanner {
         vec!["/".to_string()]
     }
 
-    /// 执行扫描
+    /// Perform the scan
     pub fn scan(&self) -> SocialScanResult {
-        // 三个时间点就够定位问题：探测（跟数据量无关）、遍历（跟目录数相关）、合计
+        // Three time points are enough to locate issues: detection (independent of data volume), traversal (related to directory count), and total
         let scan_started = Instant::now();
         let mut all_paths = Vec::new();
         let mut detected_apps = Vec::new();
 
-        // 1. 微信路径检测（包括注册表溯源）
+        // 1. WeChat path detection (including registry tracing)
         if let Some(paths) = self.detect_wechat_paths() {
             if !paths.is_empty() {
                 detected_apps.push("微信".to_string());
@@ -478,7 +478,7 @@ impl SocialScanner {
             }
         }
 
-        // 2. QQ/NTQQ 路径检测
+        // 2. QQ/NTQQ path detection
         if let Some(paths) = self.detect_qq_paths() {
             if !paths.is_empty() {
                 detected_apps.push("QQ".to_string());
@@ -495,7 +495,7 @@ impl SocialScanner {
             }
         }
 
-        // 3. 钉钉路径检测
+        // 3. DingTalk path detection
         if let Some(paths) = self.detect_dingtalk_paths() {
             if !paths.is_empty() {
                 detected_apps.push("钉钉".to_string());
@@ -503,7 +503,7 @@ impl SocialScanner {
             }
         }
 
-        // 4. 飞书路径检测
+        // 4. Lark/Feishu path detection
         if let Some(paths) = self.detect_feishu_paths() {
             if !paths.is_empty() {
                 detected_apps.push("飞书".to_string());
@@ -511,7 +511,7 @@ impl SocialScanner {
             }
         }
 
-        // 5. 企业微信路径检测
+        // 5. WeCom path detection
         if let Some(paths) = self.detect_wxwork_paths() {
             if !paths.is_empty() {
                 detected_apps.push("企业微信".to_string());
@@ -519,7 +519,7 @@ impl SocialScanner {
             }
         }
 
-        // 6. Telegram 路径检测
+        // 6. Telegram path detection
         if let Some(paths) = self.detect_telegram_paths() {
             if !paths.is_empty() {
                 detected_apps.push("Telegram".to_string());
@@ -527,7 +527,7 @@ impl SocialScanner {
             }
         }
 
-        // LINE 和 WhatsApp 使用独立适配器，避免把海外客户端路径规则混入国内软件逻辑。
+        // LINE and WhatsApp use separate adapters to avoid mixing overseas client path rules into domestic app logic.
         if let Some(paths) = self.detect_line_paths() {
             if !paths.is_empty() {
                 detected_apps.push("LINE".to_string());
@@ -548,15 +548,15 @@ impl SocialScanner {
             all_paths.len()
         );
 
-        // 路径探测到此结束：这一段是注册表 + 全盘浅层搜索，与聊天数据大小无关
+        // Path detection ends here: this part is registry + shallow full-disk search, independent of chat data size
         let detect_duration = scan_started.elapsed();
 
-        // 执行文件扫描并分类
+        // Perform file scanning and classification
         let walk_started = Instant::now();
         let (categories, slow_paths) = self.scan_and_classify(&all_paths);
         let categorize_duration = walk_started.elapsed();
 
-        // 统计汇总
+        // Aggregate statistics
         let total_files: usize = categories.iter().map(|c| c.file_count).sum();
         let total_size: u64 = categories.iter().map(|c| c.total_size).sum();
         let deletable_files: usize = categories.iter().map(|c| c.deletable_count).sum();
@@ -590,15 +590,15 @@ impl SocialScanner {
     }
 
     // ========================================================================
-    // 文件扫描与分类
+    // File scanning and classification
     // ========================================================================
 
-    /// 扫描并分类文件
+    /// Scan and classify files
     fn scan_and_classify(
         &self,
         app_paths: &[SocialAppPath],
     ) -> (Vec<SocialCategoryStats>, Vec<SocialSlowPath>) {
-        // 初始化分类统计
+        // Initialize category statistics
         let mut category_map: HashMap<FileCategory, SocialCategoryStats> = HashMap::new();
 
         for cat in &[
@@ -623,23 +623,23 @@ impl SocialScanner {
             );
         }
 
-        // 扫描每个路径；适配器可能通过多个候选入口指向同一文件，统一去重。
+        // Scan each path; adapters may point to the same file via multiple candidate entries, so deduplicate uniformly.
         //
-        // ⚠️ 必须**深的路径先扫**：同一个文件被父目录和子目录同时覆盖时，先扫到的那个
-        // 分类说了算。Telegram 的 tdata（聊天记录）里就包着 user_data（缓存），
-        // 原来按 push 顺序先扫 tdata，1.1GB 缓存全被并进聊天记录，界面上没有独立缓存项。
-        // 按层级从深到浅排序后，子路径先拿到自己的分类，父路径再跳过重复文件。
+        // ⚠️ Must **scan deeper paths first**: when the same file is covered by both a parent and a child directory, the one scanned first
+        // determines the category. Telegram's tdata (chat records) contains user_data (cache),
+        // originally tdata was scanned first by push order, so 1.1GB of cache was merged into chat records and no separate cache item appeared in the UI.
+        // After sorting by depth from deep to shallow, child paths get their own category first and parent paths then skip duplicate files.
         let mut ordered_paths: Vec<_> = app_paths.iter().collect();
         ordered_paths.sort_by(|a, b| {
             b.path.components().count().cmp(&a.path.components().count())
         });
 
         let mut scanned_files = HashSet::new();
-        // 已经完整遍历过的子树。深的路径先扫，父路径后扫时直接跳过这些子目录，
-        // 免得同一批文件再走一遍目录树、再被去重全部丢掉。
-        // Telegram 的 tdata 里就包着 user_data（缓存），本机实测这一项白走 33 ms。
+        // Subtrees already fully traversed. Deeper paths are scanned first; when a parent path is scanned later, skip these subdirectories directly,
+        // so the same set of files does not walk the directory tree again only to be all discarded by deduplication.
+        // Telegram's tdata contains user_data (cache); measured on this machine, this item wasted 33 ms.
         let mut scanned_roots: Vec<PathBuf> = Vec::new();
-        // 每条路径的耗时都记下来（一百多条，开销可忽略），最后只留最慢的几条
+        // Record the duration of every path (over a hundred, negligible overhead), then keep only the slowest few
         let mut slow_paths: Vec<SocialSlowPath> = Vec::new();
         for app_path in ordered_paths {
             if !app_path.path.exists() {
@@ -667,14 +667,14 @@ impl SocialScanner {
             scanned_roots.push(app_path.path.clone());
         }
 
-        // 只留最慢的几条：浮层里放得下，也足够回答「慢在哪」
+        // Keep only the slowest few: they fit in the overlay and are enough to answer "where the slowness is"
         slow_paths.sort_by(|left, right| right.duration_ms.cmp(&left.duration_ms));
         slow_paths.truncate(SOCIAL_SLOW_PATH_LIMIT);
 
-        // 转换为 Vec 并排序
+        // Convert to Vec and sort
         let mut categories: Vec<SocialCategoryStats> = category_map.into_values().collect();
 
-        // 按风险等级排序：Critical > Medium > Low > None
+        // Sort by risk level: Critical > Medium > Low > None
         categories.sort_by(|a, b| {
             let risk_a = self.category_to_risk(&a.id);
             let risk_b = self.category_to_risk(&b.id);
@@ -684,11 +684,11 @@ impl SocialScanner {
         (categories, slow_paths)
     }
 
-    /// 扫描目录并添加到分类
+    /// Scan a directory and add it to categories
     ///
-    /// 遍历内部按层分叉并行（见 `SOCIAL_SCAN_FORK_DEPTH`），收集完再统一做跨路径去重。
-    /// 去重放到最后是安全的：一条扫描路径内部不可能出现同一个文件，跨路径的重复
-    /// 仍然按原有顺序判定"先扫到的分类说了算"。
+    /// Traversal forks by level internally (see `SOCIAL_SCAN_FORK_DEPTH`); after collection, do cross-path deduplication uniformly.
+    /// Deferring deduplication to the end is safe: the same file cannot appear within one scan path, and duplicates across paths
+    /// are still resolved by the original rule "the category scanned first wins".
     fn scan_directory(
         &self,
         path: &Path,
@@ -726,13 +726,13 @@ impl SocialScanner {
         (counted_files, walked.directory_count)
     }
 
-    /// 收集一个目录（含子目录）下的全部文件条目，顺带统计走过的目录数。
+    /// Collect all file entries under a directory (including subdirectories) and count the directories walked along the way.
     ///
-    /// 与原先 `walkdir` 的遍历等价：不跟随符号链接、只取普通文件、深度上限 16 层。
-    /// 唯一的差别是顺序（先直属文件、再各子目录），后端本来就不保证文件顺序，
-    /// 前端按分类整体展示、弹窗自己筛选，不依赖它。
+    /// Equivalent to the original `walkdir` traversal: do not follow symlinks, only regular files, max depth 16 levels.
+    /// The only difference is order (direct files first, then each subdirectory); the backend never guaranteed file order,
+    /// and the frontend displays by category as a whole and filters in the modal itself, so it does not depend on that order.
     ///
-    /// 并行只作用在**同一棵子树内**：子目录之间互不重叠，分给不同线程不会改变结果集合。
+    /// Parallelism only applies **within the same subtree**: subdirectories do not overlap, so assigning them to different threads does not change the result set.
     fn collect_directory_entries(
         &self,
         directory: &Path,
@@ -741,12 +741,12 @@ impl SocialScanner {
         depth: usize,
         scanned_roots: &[PathBuf],
     ) -> DirectoryWalk {
-        // 目录自身已经处在深度上限，再往下就超过原实现的 max_depth(16)
+        // The directory itself is already at the depth limit; going deeper would exceed the original max_depth(16)
         if depth >= SOCIAL_SCAN_MAX_DEPTH {
             return DirectoryWalk::empty();
         }
 
-        // 权限不足 / 目录刚被删掉：原实现同样静默跳过，不中断整次扫描
+        // Insufficient permissions / directory just deleted: the original implementation also skips silently without aborting the whole scan
         let Ok(read_dir) = std::fs::read_dir(directory) else {
             return DirectoryWalk::empty();
         };
@@ -760,7 +760,7 @@ impl SocialScanner {
 
             if file_type.is_dir() {
                 let child = dir_entry.path();
-                // 已被更深的扫描路径完整覆盖的子树直接跳过（结果会由那条路径产出）
+                // Skip subtrees already fully covered by a deeper scan path (results will be produced by that path)
                 let covered = scanned_roots.iter().any(|root| child.starts_with(root));
                 if !covered {
                     subdirectories.push(child);
@@ -768,12 +768,12 @@ impl SocialScanner {
                 continue;
             }
 
-            // 只要普通文件：符号链接、设备等一律不计入（与原 walkdir 的 is_file 过滤一致）
+            // Only regular files: symlinks, devices, etc. are not counted (consistent with the original walkdir is_file filter)
             if !file_type.is_file() {
                 continue;
             }
 
-            // Windows 上 read_dir 已经带回文件大小，metadata 不会额外发起系统调用
+            // On Windows, read_dir already returns the file size, so metadata makes no extra system call
             if let Ok(metadata) = dir_entry.metadata() {
                 entries.push(self.build_file_entry(
                     &dir_entry.path(),
@@ -785,7 +785,7 @@ impl SocialScanner {
             }
         }
 
-        // 只有前几层才分叉：再深就退回单线程，避免小目录派生出大量空任务
+        // Fork only the first few levels: deeper down, fall back to single-threaded to avoid spawning many empty tasks for small directories
         let child_walks: Vec<DirectoryWalk> =
             if depth < SOCIAL_SCAN_FORK_DEPTH && subdirectories.len() > 1 {
                 subdirectories
@@ -815,7 +815,7 @@ impl SocialScanner {
                     .collect()
             };
 
-        // 当前目录自身也算一个（下面累加子目录的数量）
+        // Count the current directory itself as one (subdirectory counts are added below)
         let mut directory_count = 1usize;
         for child_walk in child_walks {
             entries.extend(child_walk.entries);
@@ -828,7 +828,7 @@ impl SocialScanner {
         }
     }
 
-    /// 组装单个文件条目：分类与风险等级仍走 `classify_file`，规则一条都没动
+    /// Build a single file entry: classification and risk level still go through `classify_file`; no rule was changed
     fn build_file_entry(
         &self,
         path: &Path,
@@ -849,51 +849,51 @@ impl SocialScanner {
         }
     }
 
-    /// 根据文件特征分类并确定风险等级
+    /// Classify by file characteristics and determine the risk level
     ///
-    /// # 风险分级规则（按优先级排序）
+    /// # Risk classification rules (in priority order)
     ///
-    /// ## 1. CRITICAL (危险) - 聊天记录数据库，禁止删除
+    /// ## 1. CRITICAL (danger) - chat record database, must not be deleted
     ///
-    /// **路径特征匹配（高优先级）：**
-    /// - `Msg/Database` - 微信消息数据库目录
-    /// - `Msg/Multi` - 微信多开消息目录
-    /// - `nt_msg` - NTQQ 消息数据库
-    /// - `nt_db` - NTQQ 用户数据库
-    /// - `tdata` - Telegram 数据目录
-    /// - `Database` - 钉钉数据库目录
+    /// **Path pattern matching (high priority):**
+    /// - `Msg/Database` - WeChat message database directory
+    /// - `Msg/Multi` - WeChat multi-instance message directory
+    /// - `nt_msg` - NTQQ message database
+    /// - `nt_db` - NTQQ user database
+    /// - `tdata` - Telegram data directory
+    /// - `Database` - DingTalk database directory
     ///
-    /// **文件后缀匹配：**
-    /// - `.db`, `.db-wal`, `.db-shm` - SQLite 数据库文件
-    /// - `.sqlite`, `.sqlite-wal`, `.sqlite-shm` - SQLite 变体
+    /// **File extension matching:**
+    /// - `.db`, `.db-wal`, `.db-shm` - SQLite database files
+    /// - `.sqlite`, `.sqlite-wal`, `.sqlite-shm` - SQLite variants
     ///
-    /// **效果：** `is_deletable = false`，前端必须禁用勾选
+    /// **Effect:** `is_deletable = false`; the frontend must disable the checkbox
     ///
-    /// ## 2. MEDIUM (提示) - 传输文件，谨慎清理
+    /// ## 2. MEDIUM (warning) - transferred files, clean with caution
     ///
-    /// **路径特征匹配：**
-    /// - `FileStorage/File` - 微信传输文件
-    /// - `FileRecv` - QQ 接收文件
-    /// - `MsgAttach` - 微信消息附件
-    /// - `file_storage` - 飞书文件存储
+    /// **Path pattern matching:**
+    /// - `FileStorage/File` - WeChat transferred files
+    /// - `FileRecv` - QQ received files
+    /// - `MsgAttach` - WeChat message attachments
+    /// - `file_storage` - Lark file storage
     ///
-    /// **效果：** 提醒用户可能包含重要文档
+    /// **Effect:** remind the user that it may contain important documents
     ///
-    /// ## 3. LOW (安全) - 图片视频缓存，建议清理
+    /// ## 3. LOW (safe) - image/video cache, recommended for cleanup
     ///
-    /// **路径特征匹配：**
-    /// - `FileStorage/Image` - 微信图片（含 .dat 加密图片）
-    /// - `Image`, `Video`, `Pic`, `Ptt` - 各软件媒体目录
+    /// **Path pattern matching:**
+    /// - `FileStorage/Image` - WeChat images (including encrypted .dat images)
+    /// - `Image`, `Video`, `Pic`, `Ptt` - media directories of various apps
     ///
-    /// **效果：** 建议清理，删除后可重新下载
+    /// **Effect:** recommended for cleanup; can be re-downloaded after deletion
     ///
-    /// ## 4. NONE (无风险) - 临时缓存，安全清理
+    /// ## 4. NONE (no risk) - temporary cache, safe to clean
     ///
-    /// **路径特征匹配：**
+    /// **Path pattern matching:**
     /// - `Cache`, `Temp`, `Log`, `WebView`, `Thumb`
     /// - `sdk_storage`, `logs`
     ///
-    /// **效果：** 安全清理，不影响正常使用
+    /// **Effect:** safe to clean, does not affect normal use
     fn classify_file(&self, path: &Path, base_category: FileCategory) -> (FileCategory, RiskLevel) {
         let path_str = path.to_string_lossy().to_lowercase();
         let ext = path
@@ -903,10 +903,10 @@ impl SocialScanner {
             .to_lowercase();
 
         // ================================================================
-        // 规则 1: 聊天记录数据库 (CRITICAL) - 最高优先级
+        // Rule 1: chat-record database (CRITICAL) - highest priority
         // ================================================================
 
-        // 数据库文件后缀
+        // Database file extensions
         let db_extensions = [
             "db",
             "db-wal",
@@ -916,12 +916,12 @@ impl SocialScanner {
             "sqlite-shm",
         ];
 
-        // 数据库目录特征（精确匹配路径片段）
-        // 使用更精确的路径匹配，避免误判
+        // Database directory patterns (exact path-segment matching)
+        // Use more precise path matching to avoid false positives
         let critical_path_patterns = [
-            "\\msg\\database", // 微信: Msg/Database
-            "\\msg\\multi",    // 微信: Msg/Multi
-            "/msg/database",   // 兼容正斜杠
+            "\\msg\\database", // WeChat: Msg/Database
+            "\\msg\\multi",    // WeChat: Msg/Multi
+            "/msg/database",   // compatible with forward slashes
             "/msg/multi",
             "\\nt_msg", // NTQQ: nt_msg
             "\\nt_db",  // NTQQ: nt_db
@@ -929,58 +929,58 @@ impl SocialScanner {
             "/nt_db",
             "\\tdata\\", // Telegram: tdata
             "/tdata/",
-            "\\database\\", // 钉钉: Database
+            "\\database\\", // DingTalk: Database
             "/database/",
         ];
 
-        // Telegram 的缓存目录（user_data）在 tdata 里面，路径同样包含 "\tdata\"，
-        // 会被下面的特征误判成聊天记录 —— 把 1.1GB 缓存算进"不可删除"，
-        // 界面上就永远看不到独立的缓存项。这里先把它排除掉。
+        // Telegram's cache directory (user_data) is inside tdata, so its path also contains "\tdata\",
+        // and would be misclassified as chat records by the pattern below - counting 1.1GB of cache as "non-deletable",
+        // so a separate cache item would never appear in the UI. Exclude it first here.
         let is_telegram_cache =
             path_str.contains("\\tdata\\user_data") || path_str.contains("/tdata/user_data");
 
-        // 检查是否在数据库关键目录中
+        // Check whether it is in a critical database directory
         let in_critical_dir = !is_telegram_cache
             && critical_path_patterns
                 .iter()
                 .any(|pattern| path_str.contains(pattern));
 
-        // 如果在关键目录中，或者是数据库文件后缀
+        // If it is in a critical directory or has a database file extension
         if in_critical_dir {
             return (FileCategory::ChatDatabase, RiskLevel::Critical);
         }
 
-        // 数据库文件后缀 + 基础分类是数据库
+        // Database file extension + base category is a database
         if db_extensions.contains(&ext.as_str()) {
             if base_category == FileCategory::ChatDatabase {
                 return (FileCategory::ChatDatabase, RiskLevel::Critical);
             }
-            // 即使不在数据库目录，.db 文件也需要检查路径
+            // Even outside a database directory, .db files still need a path check
             let db_related_dirs = ["msg", "database", "nt_msg", "nt_db", "tdata"];
             if db_related_dirs.iter().any(|d| path_str.contains(d)) {
                 return (FileCategory::ChatDatabase, RiskLevel::Critical);
             }
         }
 
-        // 基础分类是数据库，所有文件都标记为 Critical
+        // Base category is a database, so all files are marked Critical
         if base_category == FileCategory::ChatDatabase {
             return (FileCategory::ChatDatabase, RiskLevel::Critical);
         }
 
         // ================================================================
-        // 规则 1.5: 文档类扩展名 → 传输文件 (MEDIUM)
+        // Rule 1.5: document extensions -> transferred files (MEDIUM)
         //
-        // 放在缓存规则之前，是因为「文档」的语义比「它躺在哪个目录」更强：
-        // 微信 4.x 收到的文档不一定落到 msg\file，用户自己转存、截图工具导出、
-        // 聊天窗口临时落盘的文件都可能出现在 temp\RWTemp 等缓存目录里。
-        // 这些是真文件，被规则 2 当缓存一键清掉就是丢用户数据。
+        // Placed before the cache rules because "document" is a stronger signal than "which directory it sits in":
+        // Documents received by WeChat 4.x do not always land in msg\file; user-saved files, screenshot-tool exports,
+        // and files temporarily written by the chat window can all appear in cache directories such as temp\RWTemp.
+        // These are real files; cleaning them up as cache by rule 2 would lose user data.
         //
-        // 刻意不收 txt / log / json / xml：它们在缓存目录里绝大多数是日志与配置，
-        // 收进来会把「可安全清理」的量整体降下去，收益是负的。
+        // Deliberately exclude txt / log / json / xml: in cache directories they are mostly logs and config,
+        // including them would lower the overall "safe to clean" amount, which is counterproductive.
         //
-        // 还要排除程序自带的资源包（QQ 的表情 zip、皮肤、WebView 内核…）：
-        // 它们扩展名和用户文档一样，但删掉只会让客户端重新下载资源，
-        // 本机实测这一条会把 QQ 表情的 130 MB 从「可清理」里抢走。
+        // Also exclude bundled program resource packs (QQ emoji zips, skins, WebView cores...):
+        // they share extensions with user documents, but deleting them only makes the client re-download resources,
+        // measured on this machine, this rule alone would pull 130 MB of QQ emoji out of the "cleanable" amount.
         // ================================================================
 
         const DOCUMENT_EXTENSIONS: [&str; 16] = [
@@ -995,10 +995,10 @@ impl SocialScanner {
         }
 
         // ================================================================
-        // 规则 2: 临时缓存 (NONE)
-        // 仅当 base_category 本身是 TempCache 时，才允许 cache 路径匹配生效；
-        // 若 base_category 是 ImageVideo / FileTransfer / MomentsCache，
-        // 则信任 base_category，不因路径含 "cache" 而被拦截
+        // Rule 2: temporary cache (NONE)
+        // Only when base_category itself is TempCache is cache path matching allowed to take effect;
+        // if base_category is ImageVideo / FileTransfer / MomentsCache,
+        // trust base_category and do not block the file just because the path contains "cache"
         // ================================================================
 
         let cache_path_patterns = [
@@ -1024,14 +1024,14 @@ impl SocialScanner {
             .iter()
             .any(|pattern| path_str.contains(pattern));
 
-        // 仅当调用方明确给了 TempCache 分类时才按 cache 路径归类
+        // Only classify by cache path when the caller explicitly gave the TempCache category
         if base_category == FileCategory::TempCache {
             return (FileCategory::TempCache, RiskLevel::None);
         }
 
         // ================================================================
-        // 规则 3: 朋友圈/动态缓存 (NONE)
-        // 先于媒体规则判断，是因为 Sns 目录里常见图片/视频缩略数据，不能被普通媒体规则抢走。
+        // Rule 3: Moments/feed cache (NONE)
+        // Checked before the media rule because Sns directories often contain image/video thumbnail data that must not be claimed by the generic media rule.
         // ================================================================
 
         let moments_path_patterns = [
@@ -1039,7 +1039,7 @@ impl SocialScanner {
             "/sns/",
             "\\moments\\",
             "/moments/",
-            "\\filestorage\\sns", // 微信朋友圈完整路径
+            "\\filestorage\\sns", // WeChat Moments full path
             "/filestorage/sns",
         ];
 
@@ -1052,21 +1052,21 @@ impl SocialScanner {
         }
 
         // ================================================================
-        // 规则 4: 图片视频 (LOW)
+        // Rule 4: images and videos (LOW)
         // ================================================================
 
-        // 媒体文件后缀
+        // Media file extensions
         let image_video_extensions = [
-            // 图片
+            // Images
             "jpg", "jpeg", "png", "gif", "bmp", "webp", "heic", "heif", "tiff", "ico",
-            // 视频
+            // Videos
             "mp4", "avi", "mov", "wmv", "flv", "mkv", "webm", "m4v", "3gp", "ts",
-            // 音频
+            // Audio
             "mp3", "wav", "aac", "flac", "ogg", "wma", "m4a",
-            // 微信特有格式
-            "dat",  // 微信加密图片
-            "silk", // 微信语音
-            "amr",  // 语音格式
+            // WeChat-specific formats
+            "dat",  // WeChat encrypted images
+            "silk", // WeChat voice messages
+            "amr",  // voice format
         ];
 
         let image_video_path_patterns = [
@@ -1086,7 +1086,7 @@ impl SocialScanner {
             .iter()
             .any(|pattern| path_str.contains(pattern));
 
-        // 微信加密图片特殊处理：FileStorage/Image 下的 .dat 文件
+        // Special handling for WeChat encrypted images: .dat files under FileStorage/Image
         let is_wechat_encrypted_image = ext == "dat"
             && (path_str.contains("filestorage\\image") || path_str.contains("filestorage/image"));
 
@@ -1103,19 +1103,19 @@ impl SocialScanner {
         }
 
         // ================================================================
-        // 规则 5: 传输文件 (MEDIUM)
+        // Rule 5: transferred files (MEDIUM)
         // ================================================================
 
         let file_transfer_path_patterns = [
-            "\\filestorage\\file\\", // 微信: FileStorage/File
+            "\\filestorage\\file\\", // WeChat: FileStorage/File
             "/filestorage/file/",
             "\\filerecv\\", // QQ: FileRecv
             "/filerecv/",
-            "\\msgattach\\", // 微信: MsgAttach
+            "\\msgattach\\", // WeChat: MsgAttach
             "/msgattach/",
-            "\\file_storage\\", // 飞书: file_storage
+            "\\file_storage\\", // Lark: file_storage
             "/file_storage/",
-            "\\file\\", // 通用 File 目录
+            "\\file\\", // generic File directory
             "/file/",
         ];
 
@@ -1128,25 +1128,25 @@ impl SocialScanner {
         }
 
         // ================================================================
-        // 规则 6: 兜底 cache 匹配（移到末尾）
-        // 走到这里说明 base_category 不是 TempCache，
-        // 但路径确实含 cache 特征（如企业微信 Cache\File 下的子目录）
+        // Rule 6: fallback cache matching (moved to the end)
+        // Reaching here means base_category is not TempCache,
+        // but the path does contain cache patterns (e.g., subdirectories under WeCom Cache\File)
         // ================================================================
         if is_cache_dir {
             return (FileCategory::TempCache, RiskLevel::None);
         }
 
         // ================================================================
-        // 默认：使用基础分类的默认风险等级
+        // Default: use the base category's default risk level
         // ================================================================
         (base_category, base_category.default_risk_level())
     }
 
-    /// 路径是否属于「程序自带资源」，而不是用户文件。
+    /// Whether a path belongs to "bundled program resources" rather than user files.
     ///
-    /// 只看扩展名会把 QQ 表情包、皮肤、WebView 内核这些 zip/apk 也算成「传输文件」，
-    /// 既误导用户（以为是收到的文件），又把它们从可清理项里挪走。这里用关键词兜底：
-    /// 客户端把这类资源放在固定命名的目录下，扩展名不参与判断。
+    /// Looking only at extensions would count QQ emoji packs, skins, and WebView cores (zip/apk) as "transferred files",
+    /// misleading users (into thinking they received files) and moving them out of cleanable items. Use a keyword fallback here:
+    /// The client puts such resources in fixed-named directories; extensions are not considered.
     fn is_program_resource_path(path_str: &str) -> bool {
         const RESOURCE_KEYWORDS: [&str; 12] = [
             "\\emoji",
@@ -1167,7 +1167,7 @@ impl SocialScanner {
             .any(|keyword| path_str.contains(keyword))
     }
 
-    /// 分类ID转风险等级（用于排序）
+    /// Convert category ID to risk level (for sorting)
     fn category_to_risk(&self, id: &str) -> u8 {
         match id {
             "chatdatabase" => 4,
@@ -1187,7 +1187,7 @@ impl Default for SocialScanner {
 }
 
 // ============================================================================
-// 单元测试
+// Unit tests
 // ============================================================================
 
 #[cfg(test)]
@@ -1195,10 +1195,10 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    /// 同一进程内并发跑用例时会重名，加序号保证每个 fixture 独占路径。
+    /// Concurrent test cases in one process would collide on names; a sequence number gives each fixture its own path.
     static FIXTURE_SEQUENCE: AtomicUsize = AtomicUsize::new(0);
 
-    /// 构造一个临时目录，测试结束后由调用方清理。
+    /// Build a temporary directory; the caller cleans it up after the test.
     fn fixture(name: &str) -> PathBuf {
         let sequence = FIXTURE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
         let dir = std::env::temp_dir().join(format!(
@@ -1240,11 +1240,11 @@ mod tests {
         );
     }
 
-    /// 文档类文件不管落在哪个目录（含缓存目录）都要归「传输文件」。
+    /// Document files must be classified as "transferred files" no matter which directory they land in (including cache directories).
     ///
-    /// 微信 4.x 把收到的图片放 `msg/attach`、文档放 `msg/file`，但用户转存、
-    /// 导出、临时落盘的文件常常出现在 `temp/RWTemp` 里；按缓存一键清掉就是丢用户文件。
-    /// 反例同样要守：这才是「不误伤可清理量」的边界。
+    /// WeChat 4.x puts received images in `msg/attach` and documents in `msg/file`, but user-saved,
+    /// exported, and temporarily written files often appear in `temp/RWTemp`; cleaning them as cache would lose user files.
+    /// The negative case must hold too: this is the boundary of "not harming the cleanable amount".
     #[test]
     fn classifies_documents_in_cache_dirs_as_file_transfer() {
         let root = fixture("doc-in-cache");
@@ -1253,7 +1253,7 @@ mod tests {
         for name in ["report.docx", "photo.png", "debug.log"] {
             std::fs::write(cache.join(name), [0u8; 8]).expect("写入测试文件失败");
         }
-        // 程序自带资源同样是 zip，但它是客户端下载的表情包资源，不该进「传输文件」
+        // Bundled program resources are also zips, but they are emoji-pack resources downloaded by the client and should not be "transferred files"
         let emoji = root.join("nt_qq/nt_data/Emoji/emoji-resource");
         std::fs::create_dir_all(&emoji).expect("创建表情资源目录失败");
         std::fs::write(emoji.join("emoji_res.zip"), [0u8; 8]).expect("写入测试文件失败");
@@ -1271,9 +1271,9 @@ mod tests {
 
         assert_eq!(find("report.docx").category, FileCategory::FileTransfer);
         assert_eq!(find("report.docx").risk_level, RiskLevel::Medium);
-        // 图片在缓存目录里仍算缓存（规则 2 优先），只有文档类才被认领出来
+        // Images in cache directories still count as cache (rule 2 takes priority); only document types are claimed
         assert_eq!(find("photo.png").category, FileCategory::TempCache);
-        // 日志留在缓存里，否则「可安全清理」的量会被这类文件吃掉
+        // Logs stay in cache, otherwise the "safe to clean" amount would be eaten by such files
         assert_eq!(find("debug.log").category, FileCategory::TempCache);
         assert_eq!(find("emoji_res.zip").category, FileCategory::TempCache);
 
@@ -1287,13 +1287,13 @@ mod tests {
         assert_eq!(first, second);
     }
 
-    /// 并行分叉之后仍然要收全：多层、多子目录（超过分叉阈值）一个文件都不能漏。
+    /// All files must still be collected after parallel forking: multiple levels and subdirectories (beyond the fork threshold), not a single file missed.
     #[test]
     fn collects_every_file_of_nested_directories() {
         let root = fixture("collect-nested");
         for group in 0..3 {
             for account in 0..4 {
-                // 每层 4 个子目录，确保走的是并行分支而不是单线程
+                // 4 subdirectories per level to ensure the parallel branch is taken rather than single-threaded
                 let dir = root.join(format!("group{}/account{}", group, account));
                 std::fs::create_dir_all(&dir).expect("创建子目录失败");
                 for index in 0..5 {
@@ -1321,13 +1321,13 @@ mod tests {
                     && entry.risk_level == RiskLevel::Low),
             "分类仍由 classify_file 决定，jpg 属于图片视频"
         );
-        // 目录统计要能反映真实遍历量：root + 3 个 group + 12 个 account
+        // Directory statistics must reflect the real traversal volume: root + 3 groups + 12 accounts
         assert_eq!(walked.directory_count, 16, "目录数 = 1 + 3 + 12");
 
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// 已被更深的扫描路径完整覆盖的子树必须跳过，否则同一批文件会被遍历两遍。
+    /// Subtrees fully covered by a deeper scan path must be skipped, otherwise the same files are traversed twice.
     #[test]
     fn skips_subdirectory_covered_by_deeper_scan() {
         let root = fixture("skip-covered");
@@ -1350,13 +1350,13 @@ mod tests {
 
         assert_eq!(walked.entries.len(), 1, "被覆盖的子目录不应再产出条目");
         assert!(walked.entries[0].path.ends_with("keep.bin"));
-        // root、msg、msg/other 三个目录；被跳过的 user_data 不计入
+        // Three directories: root, msg, msg/other; the skipped user_data is not counted
         assert_eq!(walked.directory_count, 3, "被跳过的子树不应计入目录数");
 
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// 深度上限必须和原来的 walkdir max_depth(16) 一致：第 16 层之后的文件不收集。
+    /// Depth limit must match the original walkdir max_depth(16): files beyond level 16 are not collected.
     #[test]
     fn stops_collecting_beyond_sixteen_levels() {
         let root = fixture("depth-limit");
@@ -1372,7 +1372,7 @@ mod tests {
         let walked =
             scanner.collect_directory_entries(&root, "微信", FileCategory::TempCache, 0, &[]);
 
-        // root 是第 0 层，level0 里的文件在第 2 层……第 16 层是 level14 里的文件
+        // root is level 0, files in level0 are at level 2... level 16 corresponds to files in level14
         assert_eq!(walked.entries.len(), 15, "只收集深度不超过 16 层的文件");
 
         let _ = std::fs::remove_dir_all(&root);

@@ -1,6 +1,6 @@
 // ============================================================================
-// 页面过渡动画组件
-// iOS 风格的滑动过渡效果
+// Page transition animation component
+// iOS-style slide transition effect
 // ============================================================================
 
 import { useEffect, useState, useRef } from 'react';
@@ -18,11 +18,11 @@ export function PageTransition({ children, pageKey, direction = 'forward' }: Pag
 
   useEffect(() => {
     if (pageKey !== prevKeyRef.current) {
-      // 页面切换，开始退出动画
+      // Page switch, start the exit animation
       setTransitionStage('exit');
       
       const exitTimer = setTimeout(() => {
-        // 退出动画结束，更新内容并开始进入动画
+        // Exit animation finished, update content and start the enter animation
         setDisplayChildren(children);
         setTransitionStage('enter');
         prevKeyRef.current = pageKey;
@@ -36,12 +36,12 @@ export function PageTransition({ children, pageKey, direction = 'forward' }: Pag
       
       return () => clearTimeout(exitTimer);
     } else {
-      // 同一页面，直接更新内容
+      // Same page, just update the content
       setDisplayChildren(children);
     }
   }, [children, pageKey]);
 
-  // 根据方向和阶段计算动画类名
+  // Computes the animation class name based on direction and phase
   const getAnimationClass = () => {
     if (transitionStage === 'idle') return '';
     

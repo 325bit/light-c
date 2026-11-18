@@ -1,49 +1,49 @@
 // ============================================================================
-// AI 删除请求确认卡片（独立可复用）
+// AI delete request confirmation card (standalone, reusable)
 //
-// 刻意做成**纯展示组件**：不认识 AI、不认识任何模块，只认 props。
-//   - 文案全部由调用方传入（标题、每项说明、合计、警示、按钮）→ 天然支持多语言与变化
-//   - 按钮动作由调用方给（onConfirm / onCancel）→ "删除"是谁来执行由模块决定
-//   - 不自己发请求、不自己弹窗、不自己跳转设置
+// Deliberately a **pure presentation component**: it knows nothing about AI or any module, only props.
+//   - All copy comes from the caller (title, per-item detail, total, warning, buttons) → naturally supports multiple languages and changes
+//   - Button actions come from the caller (onConfirm / onCancel) → which module performs the "delete" is decided by that module
+//   - Doesn't send requests itself, pop up dialogs itself, or navigate to settings itself
 //
-// 这样同一个卡片可以被任意模块复用：垃圾清理、旧驱动、大文件……
-// 它们各自提供"删什么、怎么删"，卡片只负责把范围讲清楚、把确认门槛立住。
+// So the same card can be reused by any module: junk cleanup, old driver, big files...
+// Each provides "what to delete and how", while the card only makes the scope clear and holds the confirmation threshold.
 //
-// ⚠️ 设计约束：**这是写操作的最后一道门**。所以
-//   1. 必须逐项列出范围，不能只说"帮你清一下"；
-//   2. 不可恢复的项要单独标注（回收站这类）；
-//   3. 确认按钮用危险色，和模块里原有的删除按钮保持一致。
+// ⚠️ Design constraint: **this is the last gate for write operations**. Therefore
+//   1. The scope must be listed item by item, not just "we'll clean it up for you";
+//   2. Irrecoverable items must be marked separately (like the Recycle Bin);
+//   3. The confirm button uses the danger color, consistent with the module's original delete buttons.
 // ============================================================================
 
 import { AlertTriangle, Loader2, ShieldAlert } from 'lucide-react';
 
 export interface AiDeleteRequestItem {
-  /** 稳定标识，回调时原样带回，模块据此定位真实目标 */
+  /** Stable identifier, passed back verbatim in callbacks; the module uses it to locate the real target */
   id: string;
-  /** 主文案：名称 */
+  /** Main copy: name */
   label: string;
-  /** 次要说明：大小、项数等，由调用方格式化好（组件不做单位换算） */
+  /** Secondary detail: size, item count, etc., formatted by the caller (this component does no unit conversion) */
   detail?: string;
-  /** 该项删除后不可恢复：会单独标注，提醒用户这不是普通缓存 */
+  /** This item cannot be recovered after deletion: marked separately to remind the user it's not an ordinary cache */
   irreversible?: boolean;
 }
 
 export interface AiDeleteRequestCardProps {
   title: string;
   items: AiDeleteRequestItem[];
-  /** 合计说明，例如 "合计 616.14 MB / 1,235 项" */
+  /** Total description, e.g. "Total 616.14 MB / 1,235 items" */
   totalLabel: string;
-  /** 风险提示；不传则不显示这一段 */
+  /** Risk warning; if omitted, this section isn't shown */
   warning?: string;
-  /** 被禁用时展示的原因（例如"需先在设置 - AI 助手中开启"）。
-   * 有值时确认按钮禁用 —— 关着开关时**仍显示卡片**，比让 AI 装作不会更清楚。
+  /** Reason shown when disabled (e.g. "Enable it first in Settings - AI Assistant").
+   * When present the confirm button is disabled — the card is **still shown** when the toggle is off, which is clearer than asking AI to pretend it can't.
    */
   disabledReason?: string;
-  /** 「不可恢复」标记的文案。有 irreversible 项时**必须**由调用方传入（保证多语言）。 */
+  /** Copy for the "irrecoverable" marker. When there are irreversible items it **must** be passed by the caller (for i18n). */
   irreversibleLabel?: string;
   confirmLabel: string;
   cancelLabel: string;
-  /** 正在执行：两个按钮都禁用并转圈，避免重复提交 */
+  /** Executing: both buttons are disabled and spin, to avoid duplicate submission */
   busy?: boolean;
   onConfirm: () => void;
   onCancel: () => void;

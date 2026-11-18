@@ -1,5 +1,5 @@
 // ============================================================================
-// 轻量图表组件 - 不引入图表库，保持模块渲染成本和打包体积可控
+// Lightweight chart component - no chart library, keeping module rendering cost and bundle size under control
 // ============================================================================
 
 import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent } from 'react';
@@ -61,7 +61,7 @@ function calculateTooltipPosition(clientX: number, clientY: number, containerRec
     ? pointerY - TOOLTIP_OFFSET - TOOLTIP_ESTIMATED_HEIGHT
     : pointerY + TOOLTIP_OFFSET;
 
-  // tooltip 必须留在图表容器内部，否则卡片右侧/底部会把浮层裁掉。
+  // The tooltip must stay inside the chart container, otherwise the card right/bottom edges will clip the popup.
   return {
     x: Math.round(clamp(rawX, TOOLTIP_EDGE_PADDING, Math.max(TOOLTIP_EDGE_PADDING, containerRect.width - TOOLTIP_WIDTH - TOOLTIP_EDGE_PADDING))),
     y: Math.round(clamp(rawY, TOOLTIP_EDGE_PADDING, Math.max(TOOLTIP_EDGE_PADDING, containerRect.height - TOOLTIP_ESTIMATED_HEIGHT - TOOLTIP_EDGE_PADDING))),
@@ -94,7 +94,7 @@ function useChartHover() {
         previousTooltip.x === position.x &&
         previousTooltip.y === position.y;
 
-      // 鼠标移动频率远高于界面需要，位置没变时不触发 React 重渲染。
+      // Mouse movement is far more frequent than the UI needs; do not trigger a React re-render when the position has not changed.
       if (unchanged) return previousTooltip;
 
       return {
@@ -118,7 +118,7 @@ function useChartHover() {
     };
 
     if (animationFrameRef.current === null) {
-      // 用 RAF 合并 mousemove，避免每个鼠标事件都 setState 导致图表掉帧。
+      // Use RAF to coalesce mousemove, avoiding a setState on every mouse event that would drop chart frames.
       animationFrameRef.current = window.requestAnimationFrame(flushTooltip);
     }
   }, [flushTooltip]);

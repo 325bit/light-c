@@ -1,9 +1,9 @@
 // ============================================================================
-// AI 对话面板
+// AI chat panel
 //
-// 交互要求（Evan 明确提过）：可收缩、**不能挡住各个模块的主页面**。
-// 因此这里刻意做成：非模态浮层 + 可收缩成细条 + 不拦截底层交互。
-// 只负责展示与输入，会话状态与请求都在 AiAssistant 里。
+// Interaction requirements (Evan explicitly mentioned): collapsible, and **must not block any module's main page**.
+// So this is deliberately: non-modal floating layer + collapsible into a thin strip + doesn't intercept underlying interaction.
+// Only handles display and input; session state and requests all live in AiAssistant.
 // ============================================================================
 
 import { useEffect, useRef, useState } from 'react';
@@ -26,10 +26,10 @@ import { BetaBadge } from '../BetaBadge';
 import { formatSize } from '../../utils/format';
 
 /**
- * 消息所属日期的显示文案（跨天加载后的日期分隔线用）。
+ * Display text for a message's date (used for the date separator after cross-day loading).
  *
- * 用 `Intl.DateTimeFormat` 跟界面语言走，不自己拼"月/日"（各语言写法不同）。
- * 没有时间戳的旧数据返回空串 —— 那就干脆不插分隔线，比插错一条好。
+ * Use `Intl.DateTimeFormat` to follow the UI language, instead of hand-assembling "month/day" (each language writes it differently).
+ * Old data without a timestamp returns an empty string — then just skip the separator; better than inserting a wrong one.
  */
 function formatDayLabel(at: number | undefined): string {
   if (typeof at !== 'number' || !Number.isFinite(at) || at <= 0) return '';
@@ -45,40 +45,40 @@ function formatDayLabel(at: number | undefined): string {
 
 interface AiChatPanelProps {
   messages: AiChatMessage[];
-  /** 正在流式生成的内容；为空表示这一轮还没开始出字 */
+  /** Content currently streaming in; empty means this round hasn't started producing text yet */
   streamingText: string;
-  /** 待确认的删除提案；非空时在消息列表下方显示确认卡片 */
+  /** Pending delete proposal; when non-empty, show the confirmation card below the message list */
   pendingDelete: AiDeleteRequestItem[] | null;
-  /** 最近一次删除结果 */
+  /** Most recent delete result */
   deleteResult: AiDeleteOutcome | null;
-  /** 删除执行中：两个按钮都会禁用并转圈 */
+  /** Delete in progress: both buttons are disabled and spin */
   isDeleting: boolean;
   onConfirmDelete: () => void;
   onCancelDelete: () => void;
-  /** 重试某条用户消息（网络或接口出错时用）：组件只上报序号，截断与重发由上层决定 */
+  /** Retry a user message (on network/API errors): the component only reports the index; truncation and resend are decided by the upper layer */
   onRetry: (index: number) => void;
-  /** 重试最近一次提问 —— 错误提示旁边那个按钮用，用户不用去上面找 */
+  /** Retry the most recent question — used by the button next to the error hint, so users don't have to scroll up */
   onRetryLast: () => void;
   isSending: boolean;
   errorMessage: string;
-  /** 当前模块显示名，只用于标题，让用户知道在跟"哪个模块的助手"说话 */
+  /** Current module display name, used only in the title so users know "which module's assistant" they're talking to */
   moduleName: string;
-  /** 当前档案可选的模型，用于输入框旁的就地切换 */
+  /** Models available for the current profile, for in-place switching next to the input */
   modelOptions: string[];
   activeModel: string;
   onSwitchModel: (model: string) => void;
-  /** 是否已配置密钥。没配置时不允许输入，也不允许发送 —— 否则用户白打一串再吃一个报错 */
+  /** Whether an API key is configured. When not configured, no input or send allowed — otherwise users type a whole message only to get an error */
   canChat: boolean;
-  /** images 为空时就是纯文字发送 */
+  /** When images is empty, it's a text-only send */
   onSend: (text: string, images: AttachedImage[]) => void;
   onCollapse: () => void;
-  /** 点「清空」：只负责**弹出二次确认**，不直接清 */
+  /** Click "Clear": only **shows the second confirmation**, doesn't clear directly */
   onClear: () => void;
-  /** 是否还有更早的历史没加载（顶部「加载更早」按钮） */
+  /** Whether there is earlier history not yet loaded (top "Load earlier" button) */
   hasEarlier: boolean;
   isLoadingEarlier: boolean;
   onLoadEarlier: () => void;
-  /** 「清空对话」二次确认的开关与回调（清空的是**所有日期**，必须确认） */
+  /** Toggle and callbacks for the "Clear conversation" second confirmation (clears **all dates**, must be confirmed) */
   isClearConfirmOpen: boolean;
   onConfirmClear: () => void;
   onCancelClear: () => void;
@@ -115,18 +115,18 @@ export function AiChatPanel({
   const [draft, setDraft] = useState('');
   const listRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  /** 输入框节点：高度要跟着内容长，所以需要拿到它量 scrollHeight */
+  /** Textarea node: its height must grow with content, so we need to measure its scrollHeight */
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   /**
-   * 输入框随内容长高。
+   * Textarea grows with its content.
    *
-   * 顺序有讲究：**先归零再按 scrollHeight 设高** —— 直接设 scrollHeight 的话，
-   * 删字时高度只会增不会减（scrollHeight 不会自己变小）。
+   * Order matters: **reset to zero first, then set height from scrollHeight** — setting scrollHeight directly makes the height only grow, never shrink
+   * when deleting text (scrollHeight doesn't shrink on its own).
    *
-   * 上下限交给 CSS 的 min-h / max-h，这里只给"自然高度"：
-   * 将来调边界不用改这段逻辑。⚠️ max-h 里额外叠了 30vh ——
-   * 窗口很矮时不能让它把上面的消息列表整个挤没（与弹窗尺寸同一套写法）。
+   * Lower/upper bounds are left to CSS min-h / max-h; here we only provide the "natural height":
+   * future tweaks to bounds don't need to touch this logic. ⚠️ max-h additionally stacks 30vh —
+   * in a very short window it must not squeeze the message list above out of existence (same approach as the dialog sizing).
    */
   useEffect(() => {
     const element = textareaRef.current;
@@ -134,14 +134,14 @@ export function AiChatPanel({
     element.style.height = 'auto';
     element.style.height = `${element.scrollHeight}px`;
   }, [draft]);
-  /** 待发送的图片（已压缩）。发出去即清空 —— 图片不进会话历史。 */
+  /** Images pending send (compressed). Cleared once sent — images don't enter session history. */
   const [attachments, setAttachments] = useState<AttachedImage[]>([]);
-  /** 附件相关的提示（压缩失败、超出张数等），显示在输入区左下角 */
+  /** Attachment-related hints (compression failure, too many images, etc.), shown at the bottom-left of the input area */
   const [attachError, setAttachError] = useState('');
-  /** 正在放大预览的图片（data URL）；为空表示没有预览 */
+  /** Image currently being previewed enlarged (data URL); empty means no preview */
   const [previewUrl, setPreviewUrl] = useState('');
 
-  /** 单条消息最多带几张：再多对模型没有帮助，只会让每轮请求越来越重。 */
+  /** Max images per message: more doesn't help the model, only makes each request heavier. */
   const MAX_ATTACHMENTS = 4;
 
   const handleAddImages = async (files: File[]) => {
@@ -159,7 +159,7 @@ export function AiChatPanel({
       try {
         compressed.push(await compressImage(file));
       } catch (error) {
-        // 逐张处理：一张失败不该把其余几张也丢掉
+        // Handle one by one: one failure shouldn't discard the rest
         setAttachError(error instanceof Error ? error.message : String(error));
       }
     }
@@ -168,9 +168,9 @@ export function AiChatPanel({
       if (files.length <= room) setAttachError('');
     }
   };
-  /** 刚复制成功的那条消息序号：图标短暂变成对勾，给"确实复制了"一个反馈 */
+  /** Index of the message just copied: icon briefly becomes a check mark, giving feedback that "it really copied" */
   const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
-  /** 复制反馈的定时器句柄：卸载时要清掉，否则面板收起后回调还会跑，连点还会叠出好几个 */
+  /** Timer handle for copy feedback: must be cleared on unmount, otherwise the callback still runs after the panel collapses, and rapid clicks stack several */
   const copyResetHandleRef = useRef<number | undefined>(undefined);
 
   useEffect(() => () => window.clearTimeout(copyResetHandleRef.current), []);
@@ -179,7 +179,7 @@ export function AiChatPanel({
     try {
       await navigator.clipboard.writeText(content);
       setCopiedIndex(index);
-      // 先清掉上一个：连点两次不该留下两个回调
+      // Clear the previous one first: two rapid clicks shouldn't leave two callbacks
       window.clearTimeout(copyResetHandleRef.current);
       copyResetHandleRef.current = window.setTimeout(
         () => setCopiedIndex((previous) => (previous === index ? null : previous)),
@@ -191,34 +191,34 @@ export function AiChatPanel({
   };
 
   /**
-   * 是否跟随到底部。
+   * Whether to stick to the bottom.
    *
-   * 为什么需要这个开关：流式输出时**每个增量都会触发跟随** —— 无条件拉到底的话，
-   * 用户想往回读上半段会被每一帧拽回来，等于没法回看。所以只在"他本来就贴着底部"
-   * 时跟随；往上滚就停止跟随，自己滚回底部（或重新发消息）才恢复。
+   * Why this switch is needed: during streaming **every delta triggers following** — unconditional scrolling to bottom means
+   * when the user wants to read back earlier text, every frame yanks them back down, making review impossible. So only follow "when they were already at the bottom";
+   * scrolling up stops following, and scrolling back down themselves (or sending a new message) resumes it.
    */
   const stickToBottomRef = useRef(true);
 
-  /** 距底部多少像素以内算"还贴着底"。字号缩放与浮点累积都可能差几像素。 */
+  /** Within this many pixels of the bottom counts as "still at bottom". Font scaling and float accumulation can differ by a few pixels. */
   const FOLLOW_BOTTOM_THRESHOLD_PX = 24;
 
   const handleListScroll = () => {
     const node = listRef.current;
     if (!node) return;
-    // scrollHeight - clientHeight - scrollTop 就是"离底部还有多远"
+    // scrollHeight - clientHeight - scrollTop is "how far from the bottom"
     const overflow = node.scrollHeight - node.clientHeight;
-    // 内容不足一屏时不存在"贴不贴底"，直接恢复跟随 ——
-    // 否则清空会话之后会一直卡在"不跟随"，新回答不再自动滚动。
+    // When content is shorter than the screen there's no "stuck to bottom"; restore following directly —
+    // otherwise after clearing the conversation it would stay stuck in "not following" and new answers wouldn't auto-scroll.
     stickToBottomRef.current =
       overflow <= FOLLOW_BOTTOM_THRESHOLD_PX ||
       overflow - node.scrollTop <= FOLLOW_BOTTOM_THRESHOLD_PX;
   };
 
-  // 消息、流式增量、发送状态变化时跟随到底部；用 scrollTop 而不是 scrollIntoView，
-  // 避免连带滚动整个页面。
+  // Follow to bottom when messages, streaming deltas, or send state change; use scrollTop instead of scrollIntoView,
+  // to avoid scrolling the whole page along with it.
   //
-  // ⚠️ 依赖里必须有 streamingText：正文是一段段追加的，而 messages 在整轮结束前
-  // 不会变 —— 少了它，流式输出期间就完全不会滚动，只有回答落定那一下才跳到底部。
+  // ⚠️ streamingText must be in the deps: the body is appended piece by piece, while messages doesn't change until the whole round ends —
+  // without it, there'd be no scrolling at all during streaming, only one jump to bottom when the answer settles.
   useEffect(() => {
     const node = listRef.current;
     if (!node || !stickToBottomRef.current) return;
@@ -227,9 +227,9 @@ export function AiChatPanel({
 
   const handleSubmit = () => {
     const text = draft.trim();
-    // 只有图片没有文字也允许发送：用户常常是截个图问"这些能删吗"
+    // Allow sending images without text: users often take a screenshot and ask "can these be deleted"
     if ((!text && attachments.length === 0) || isSending || !canChat) return;
-    // 用户主动发了消息：无论刚才翻到哪儿都回到跟随状态，否则自己的消息会落在视口外
+    // User actively sent a message: resume following no matter where they had scrolled, otherwise their own message lands off-screen
     stickToBottomRef.current = true;
     onSend(text, attachments);
     setDraft('');
@@ -239,23 +239,23 @@ export function AiChatPanel({
 
   const visibleMessages = messages.filter((message) => message.role !== 'system');
 
-  // 尺寸可拖拽调整并持久化；未调整时用 CSS 里的 em + 视口计算值
+  // Size is draggable and persisted; when untouched, use the em + viewport calculation from CSS
   const { sizeStyle, hasCustomSize, startResize, resetSize } = usePanelSize();
 
   /**
-   * 整块 portal 到 `document.body`。
+   * Portal the whole block to `document.body`.
    *
-   * 为什么：面板是 `position: fixed`，DOM 位置不影响布局；但留在 App 根节点里时，
-   * 它和模块卡共享同一套合成上下文 —— WebView2 会把模块卡的 `backdrop-filter` 层
-   * 画到面板之上（"幽灵残影"）。移到 body 下，两者彻底解耦。
+   * Why: the panel is `position: fixed`, so DOM position doesn't affect layout; but if left in the App root node,
+   * it shares the same compositing context as module cards — WebView2 paints the card's `backdrop-filter` layer
+   * on top of the panel ("ghost artifact"). Moving under body fully decouples the two.
    *
-   * ⚠️ 不会丢样式/上下文：主题类挂在 `<html>` 上，CSS 变量照样继承；
-   * React 的 portal 也保留 context。预览浮层一起搬（它本来就该在最顶层）。
+   * ⚠️ No styles/context lost: the theme class is on `<html>`, so CSS variables still inherit;
+   * React portals preserve context too. The preview layer moves along (it belongs at the very top anyway).
    */
   return createPortal(
     <>
-    {/* 放大预览。刻意放在面板**之外**：面板用了 framer-motion（带 transform），
-        一旦有 transform，内部 position:fixed 的元素会被它的 overflow-hidden 裁掉。 */}
+    {/* Enlarged preview. Deliberately placed **outside** the panel: the panel uses framer-motion (with transform),
+        and once there's a transform, inner position:fixed elements get clipped by its overflow-hidden. */}
     {previewUrl ? (
       <div
         className="fixed inset-0 z-[60] flex items-center justify-center bg-black/70 glass-backdrop p-6"
@@ -266,17 +266,17 @@ export function AiChatPanel({
         <img src={previewUrl} alt="" className="max-h-full max-w-full rounded-xl shadow-2xl" />
       </div>
     ) : null}
-    {/* 尺寸全部用 em + vw/vh 计算，不写死像素：em 跟随全局字号设置缩放，
-        上限再被视口夹住，窗口变小会自动收窄。
-        ⚠️ calc 里的减号必须带空格 —— Tailwind 里要写成下划线形式，
-        否则整条属性会被浏览器丢掉（这个坑踩过）。
-        ⚠️ 上面这两句原本写成 JS 注释，自从 return 被包进 Fragment 之后，
-        它就成了 JSX 的兄弟节点；而 JSX 里裸写 JS 注释会被当**文本渲染到界面上**。
-        所以这里必须是花括号包起来的形式。（注释里也不能出现闭合符本身，
-        否则这段注释会提前结束。） */}
+    {/* All sizes use em + vw/vh, no hard-coded pixels: em follows the global font-size setting,
+        and the cap is clamped by the viewport, so a smaller window narrows it automatically.
+        ⚠️ The minus sign in calc must have spaces — in Tailwind write it as underscores,
+        otherwise the whole property is dropped by the browser (hit before).
+        ⚠️ The two lines above were originally JS comments; ever since return was wrapped in a Fragment,
+        they became JSX sibling nodes; a bare JS comment in JSX gets **rendered as text onto the UI**.
+        So it must be in brace-wrapped form here. (The comment also can't contain its own closing token,
+        or this comment would end early.) */}
     <motion.div
-      /* 应用根节点设了 select-none（防止界面像网页一样被拖选），
-         但对话内容**必须能选中复制** —— 这里显式覆盖回来。 */
+      /* The App root sets select-none (to stop the UI being text-selected like a web page),
+         but conversation content **must be selectable and copyable** — explicitly override that here. */
       initial={{ opacity: 0, y: 12, scale: 0.96 }}
       animate={{ opacity: 1, y: 0, scale: 1 }}
       exit={{ opacity: 0, y: 8, scale: 0.97 }}
@@ -284,24 +284,24 @@ export function AiChatPanel({
       style={sizeStyle}
       className="ai-panel fixed right-5 bottom-5 z-40 flex w-[min(28em,calc(100vw_-_2.5em))] max-h-[min(38em,calc(100vh_-_8em))] min-h-[22em] flex-col overflow-hidden rounded-2xl border border-[var(--border-color)] bg-[var(--bg-elevated)] shadow-lg select-text"
     >
-      {/* 左上角拖拽手柄：面板固定在右下角，所以「左上角」才是符合直觉的缩放角。
-          双击恢复默认尺寸（回到跟随字号与窗口的自适应状态）。 */}
+      {/* Top-left drag handle: the panel is fixed at bottom-right, so the "top-left" is the intuitive resize corner.
+          Double-click restores the default size (back to following font size and window auto-fit). */}
       <div
         onPointerDown={startResize}
         onDoubleClick={resetSize}
         title={hasCustomSize ? t('resizeHintCustom') : t('resizeHint')}
         className="group absolute left-0 top-0 z-10 h-5 w-5 cursor-nwse-resize"
       >
-        {/* 极简的缩放标记：一个角括号，不抢视觉但能让人知道这里可以拖。
-            颜色走品牌绿而不是 --text-muted —— 后者是深灰，在浅色面板上看着像一块黑斑，
-            跟整个面板的绿色调也不搭。悬停时加深，暗示"这里能拖"。
-            （侧边栏那个拖拽手柄同样用品牌绿，保持一致。） */}
+        {/* Minimal resize marker: a corner bracket, not attention-grabbing but signals it's draggable.
+            Color uses brand green rather than --text-muted — the latter is dark gray and looks like a black smudge on a light panel,
+            and clashes with the panel's green tone. Darkens on hover to hint "you can drag here".
+            (The sidebar's drag handle uses brand green too, for consistency.) */}
         <div className="pointer-events-none absolute left-1 top-1 h-2.5 w-2.5 border-l border-t border-[var(--brand-green)] opacity-40 transition-opacity group-hover:opacity-90" />
       </div>
 
-      {/* ⚠️ 这里**不能**挂 glass-block：「去边框去底色」是给"卡片里的子区块"用的，
-          挂到浮层的头部上就等于让头部完全透明，背后的模块内容会清晰透上来（看着像一块幽灵）。
-          头部现在跟面板共用同一层底色，分隔线也保留。 */}
+      {/* ⚠️ Must **not** attach glass-block here: "remove border and background" is for "child blocks inside a card",
+          applying it to a floating layer's header makes the header fully transparent, with module content clearly showing through (looks like a ghost).
+          The header now shares the panel's background layer, and the separator is kept. */}
       <header className="flex shrink-0 items-center gap-2 border-b border-[var(--border-color)] px-3 py-2">
         <AiMarkIcon className="h-3.5 w-3.5 shrink-0 text-[var(--brand-green)]" />
         <span className="min-w-0 flex-1 truncate text-xs font-medium text-[var(--text-primary)]">
@@ -330,7 +330,7 @@ export function AiChatPanel({
       </header>
 
       <div ref={listRef} onScroll={handleListScroll} className="min-h-0 flex-1 space-y-2.5 overflow-y-auto px-3 py-3">
-        {/* 加载更早：历史是跨天读取的，到底或到内存上限时按钮就消失 */}
+        {/* Load earlier: history is read across days; the button disappears at the end or at the in-memory cap */}
         {hasEarlier && visibleMessages.length > 0 ? (
           <button
             type="button"
@@ -351,7 +351,7 @@ export function AiChatPanel({
         ) : (
           visibleMessages.map((message, index) => {
             const isUser = message.role === 'user';
-            // 跨天加载后插一条日期分隔线：不然看不出这段是昨天还是今天
+            // Insert a date separator after cross-day loading: otherwise you can't tell if this chunk is yesterday or today
             const dayLabel = formatDayLabel(message.at);
             const previousDayLabel = index > 0 ? formatDayLabel(visibleMessages[index - 1]?.at) : '';
             return (
@@ -360,8 +360,8 @@ export function AiChatPanel({
                 className={`group flex flex-col gap-0.5 ${isUser ? 'items-end' : 'items-start'}`}
               >
                 {dayLabel && dayLabel !== previousDayLabel ? (
-                  /* 首条消息的日期不画横线：它紧贴面板头部的下边框，
-                     两条线离得太近，看起来像重复的边框。只留文字并居中。 */
+                  /* The first message's date has no horizontal rule: it sits right against the panel header's bottom border,
+                     two lines so close look like a duplicated border. Keep only the text and center it. */
                   <div className="flex w-full items-center justify-center gap-2 py-1 text-[0.72rem] text-[var(--text-faint)]">
                     {index > 0 && <span className="h-px flex-1 bg-[var(--border-color)]" />}
                     <span className="shrink-0">{dayLabel}</span>
@@ -383,8 +383,8 @@ export function AiChatPanel({
                       isUser ? 'bg-[var(--brand-green)] text-white' : 'bg-[var(--ai-bubble-bg)] text-[var(--text-primary)]'
                     }`}
                   >
-                    {/* 用户发的图片：缩略图在上、文字在下，点击放大。
-                        这里显示的是随消息一起存下来的图，所以重开面板也还在。 */}
+                    {/* User-sent images: thumbnail on top, text below, click to enlarge.
+                        These are the images saved with the message, so they persist after reopening the panel. */}
                     {isUser && message.images && message.images.length > 0 ? (
                       <div className="mb-1.5 flex flex-wrap gap-1.5">
                         {message.images.map((image, imageIndex) => (
@@ -404,18 +404,18 @@ export function AiChatPanel({
                         ))}
                       </div>
                     ) : null}
-                    {/* 助手返回的是 Markdown，要渲染（走 React 节点，不用内联 HTML）；
-                        用户自己的输入按纯文本放，不解析 —— 免得手打的标记被吃掉。 */}
+                    {/* Assistant replies are Markdown and must be rendered (via React nodes, not inline HTML);
+                        the user's own input is placed as plain text, unparsed — so hand-typed markers aren't eaten. */}
                     {isUser ? message.content : renderMarkdown(message.content)}
                   </div>
                 </div>
-                {/* 本轮实际使用的模型（后端回传的真值）：常驻显示，不跟着动作条一起等 hover。
-                    切换模型后前后两条回答并排一看就知道有没有生效。 */}
+                {/* The model actually used this round (truth returned by backend): always visible, not hidden behind hover like the action bar.
+                    After switching models, comparing the before/after replies shows at a glance whether it took effect. */}
                 {!isUser && message.model ? (
                   <span className="pl-8 text-xs text-[var(--text-faint)]">{message.model}</span>
                 ) : null}
-                {/* 动作条放在**气泡下方**（悬停出现）：复制每条、重试仅对用户消息。
-                    放在上方会和头像挤在一起，也不符合这类界面的习惯。 */}
+                {/* Action bar sits **below the bubble** (appears on hover): copy for every message, retry only for user messages.
+                    Placing it above would crowd the avatar and doesn't match the conventions of this kind of UI. */}
                 <div
                   className={`flex items-center gap-0.5 pl-8 pr-1 opacity-0 transition-opacity group-hover:opacity-100 ${
                     isUser ? 'justify-end self-end' : ''
@@ -448,17 +448,17 @@ export function AiChatPanel({
           })
         )}
 
-        {/* 正在生成的回答：边收边显示，让人看到"它在写字"而不是干等 */}
+        {/* Answer being generated: shown as it arrives, so users see "it's writing" instead of waiting blindly */}
         {streamingText ? (
           <div className="flex items-start gap-2">
             <div className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-[var(--brand-green-10)] text-[var(--brand-green)]">
               <AiMarkIcon className="h-3.5 w-3.5" />
             </div>
-            {/* 流式过程中的气泡必须与落定后的**同一个底色**：
-                否则回答结束的一瞬间气泡会变一次色，很跳。 */}
+            {/* The streaming bubble must have the **same background** as the settled one:
+                otherwise the bubble changes color the instant the answer finishes, which is jarring. */}
             <div className="max-w-[80%] whitespace-pre-wrap break-words rounded-xl bg-[var(--ai-bubble-bg)] px-2.5 py-1.5 text-sm leading-relaxed text-[var(--text-primary)]">
               {renderMarkdown(streamingText)}
-              {/* 光标：暗示还在继续输出 */}
+              {/* Cursor: hints that output is still ongoing */}
               <span className="ml-0.5 inline-block h-3 w-1 translate-y-0.5 animate-pulse bg-[var(--brand-green)]" />
             </div>
           </div>
@@ -470,7 +470,7 @@ export function AiChatPanel({
         ) : null}
       </div>
 
-      {/* 删除提案：**不执行、只确认**。AI 只能提案，执行权在用户手里。 */}
+      {/* Delete proposal: **do not execute, only confirm**. The AI can only propose; execution power lies with the user. */}
       {pendingDelete && pendingDelete.length > 0 ? (
         <div className="shrink-0 px-3 pb-2">
           <AiDeleteRequestCard
@@ -488,7 +488,7 @@ export function AiChatPanel({
         </div>
       ) : null}
 
-      {/* 删除结果：数字全部来自后端返回，不由模型转述 */}
+      {/* Delete result: all numbers come from the backend, not narrated by the model */}
       {deleteResult ? (
         <div className="shrink-0 px-3 pb-2">
           <AiDeleteResultCard
@@ -515,10 +515,10 @@ export function AiChatPanel({
       {errorMessage ? (
         <div className="mx-3 mb-2 flex shrink-0 items-start gap-2 rounded-xl border border-[var(--color-danger)]/30 bg-[var(--color-danger)]/5 p-2 text-[0.79rem] text-[var(--color-danger)]">
           <AlertCircle className="mt-0.5 h-3 w-3 shrink-0" />
-          {/* break-all 会把服务商返回的英文长句切得很难读，用 normal 断词 + 允许换行 */}
+          {/* break-all cuts long English sentences from providers into unreadable pieces; use normal word-breaking + allow wrapping */}
           <span className="min-w-0 whitespace-pre-wrap break-words select-text">{errorMessage}</span>
-          {/* 出错时最可能想做的就是"再试一次"。让用户去上面悬停找重试按钮，
-              等于把最有用的动作藏起来了。 */}
+          {/* The most likely thing to do on an error is "retry". Making users hover above to find the retry button
+              would hide the most useful action. */}
           <button
             type="button"
             onClick={onRetryLast}
@@ -529,10 +529,10 @@ export function AiChatPanel({
         </div>
       ) : null}
 
-      {/* 输入区：**整体一个容器**，文字在上、底部一行放模型与发送 —— 与 ds harness 一致。
-          模型放在右下角，因为它属于"这条消息用什么发"，和输入内容是一体的。 */}
+      {/* Input area: **one container overall**, text on top, bottom row for model and send — consistent with the ds harness.
+          The model sits at bottom-right because it belongs to "what this message is sent with", part of the input itself. */}
       <div className="mx-2.5 mb-2.5 flex shrink-0 flex-col gap-1.5 rounded-2xl border border-[var(--border-color)] bg-[var(--bg-card)] p-2.5 transition-colors focus-within:border-[var(--brand-green)]">
-        {/* 已附加的图片：缩略图 + 移除。放在输入框上方，一眼能看到自己带了什么 */}
+        {/* Attached images: thumbnail + remove. Placed above the input so users see at a glance what they've attached */}
         {attachments.length > 0 ? (
           <div className="flex flex-wrap gap-1.5">
             {attachments.map((image, index) => (
@@ -556,16 +556,16 @@ export function AiChatPanel({
           </div>
         ) : null}
 
-        {/* ⚠️ 注释不能写在属性之间（rows={1} 那一带是属性位置，只能放属性）。
-            rows 只是初始值：真实高度由上面的 effect 按内容算。
-            真正定边界的是 min-h / max-h —— 少了 max-h，长提示词会一直长到把消息区挤没。 */}
+        {/* ⚠️ Comments can't go between attributes (around rows={1} is attribute position, only attributes allowed).
+            rows is only the initial value: real height is computed by the effect above from content.
+            What really sets bounds is min-h / max-h — without max-h, a long prompt grows until it squeezes the message area out. */}
         <textarea
           ref={textareaRef}
           value={draft}
           disabled={!canChat}
           onChange={(event) => setDraft(event.target.value)}
           onPaste={(event) => {
-            // 粘贴截图是最顺手的入口：用户刚截完图直接 Ctrl+V
+            // Pasting a screenshot is the handiest entry: user just took a shot and hits Ctrl+V
             const files = collectImageFiles(event.clipboardData?.files);
             if (files.length > 0) {
               event.preventDefault();
@@ -573,7 +573,7 @@ export function AiChatPanel({
             }
           }}
           onKeyDown={(event) => {
-            // Enter 发送、Shift+Enter 换行：长问题可以分行写
+            // Enter sends, Shift+Enter adds a newline: long questions can be written across lines
             if (event.key === 'Enter' && !event.shiftKey) {
               event.preventDefault();
               handleSubmit();
@@ -584,12 +584,12 @@ export function AiChatPanel({
           className="min-h-[3em] max-h-[min(13em,30vh)] w-full resize-none overflow-y-auto bg-transparent px-0.5 text-sm leading-relaxed text-[var(--text-primary)] outline-none placeholder:text-[var(--text-muted)] disabled:cursor-not-allowed disabled:opacity-60"
         />
         <div className="flex items-center justify-between gap-2">
-          {/* 左侧：附件出错优先显示（刚发生的事），否则是未配置指引，都为空时保持安静 */}
+          {/* Left side: attachment errors take priority (just happened), otherwise the not-configured guidance; stay quiet when both empty */}
           <span className="min-w-0 truncate text-[0.72rem] text-[var(--text-muted)]">
             {attachError || (canChat ? '' : t('needConfig'))}
           </span>
           <div className="flex shrink-0 items-center gap-1.5">
-            {/* 选图入口。放在左下角，与 ds harness 的位置一致 */}
+            {/* Image-picker entry. Placed bottom-left, consistent with the ds harness position */}
             <input
               ref={fileInputRef}
               type="file"
@@ -598,7 +598,7 @@ export function AiChatPanel({
               className="hidden"
               onChange={(event) => {
                 void handleAddImages(collectImageFiles(event.target.files));
-                // 清空 value：否则连续选同一张图不会触发 change
+                // Clear value: otherwise selecting the same image twice won't trigger change
                 event.target.value = '';
               }}
             />
@@ -639,7 +639,7 @@ export function AiChatPanel({
         </div>
       </div>
     </motion.div>
-      {/* 清空对话的二次确认：清空的是该模块**所有日期**的历史，不能点一下就执行 */}
+      {/* Second confirmation for clearing conversation: clears **all dates** of history for this module, can't be done with one click */}
       <ConfirmDialog
         isOpen={isClearConfirmOpen}
         title={t('clearTitle')}

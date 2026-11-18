@@ -1,25 +1,25 @@
 // ============================================================================
-// 字体大小上下文 - 支持预设档位和自定义字号
+// Font size context - supports presets and custom sizes
 // ============================================================================
 
 import { createContext, useContext, useEffect, useState, useCallback, type ReactNode } from 'react';
 
-/** 字体大小档位 */
+/** Font size presets */
 export type FontSizeLevel = 'standard' | 'medium' | 'large' | 'custom';
 
 export const CUSTOM_FONT_SIZE_MIN = 10;
-// 放宽自定义字号上限，满足大屏和视力辅助场景，同时保留整数像素便于布局稳定。
+// Raise the custom font size cap to support large screens and visual accessibility, while keeping integer pixels for stable layout.
 export const CUSTOM_FONT_SIZE_MAX = 36;
 export const DEFAULT_CUSTOM_FONT_SIZE = 14;
 
-/** 字体大小配置 */
+/** Font size config */
 interface FontSizeConfig {
   label: string;
   offset: number; // px
   baseSize: number; // px
 }
 
-/** 字体大小档位配置 */
+/** Font size preset config */
 export const FONT_SIZE_CONFIGS: Record<FontSizeLevel, FontSizeConfig> = {
   standard: { label: '标准', offset: 0, baseSize: 14 },
   medium: { label: '适中', offset: 1, baseSize: 14 },
@@ -28,13 +28,13 @@ export const FONT_SIZE_CONFIGS: Record<FontSizeLevel, FontSizeConfig> = {
 };
 
 interface FontSizeContextValue {
-  /** 当前字体大小档位 */
+  /** Current font size preset */
   level: FontSizeLevel;
-  /** 设置字体大小档位 */
+  /** Set the font size preset */
   setLevel: (level: FontSizeLevel) => void;
-  /** 当前自定义字号，单位为 px */
+  /** Current custom font size, in px */
   customFontSize: number;
-  /** 设置自定义字号，内部会限制在允许范围内 */
+  /** Set the custom font size, internally clamped to the allowed range */
   setCustomFontSize: (size: number) => void;
 }
 
@@ -48,7 +48,7 @@ interface FontSizeProviderProps {
 }
 
 export function FontSizeProvider({ children }: FontSizeProviderProps) {
-  // 从 localStorage 读取保存的字体大小档位
+  // Read the saved font size preset from localStorage
   const [level, setLevelState] = useState<FontSizeLevel>(() => {
     if (typeof window !== 'undefined') {
       const saved = localStorage.getItem(STORAGE_KEY);
@@ -56,7 +56,7 @@ export function FontSizeProvider({ children }: FontSizeProviderProps) {
         return saved;
       }
     }
-    return 'standard'; // 默认标准字号
+    return 'standard'; // default standard font size
   });
   const [customFontSize, setCustomFontSizeState] = useState<number>(() => {
     if (typeof window !== 'undefined') {
@@ -69,7 +69,7 @@ export function FontSizeProvider({ children }: FontSizeProviderProps) {
     return DEFAULT_CUSTOM_FONT_SIZE;
   });
 
-  // 设置字体大小档位
+  // Set the font size preset
   const setLevel = useCallback((newLevel: FontSizeLevel) => {
     setLevelState(newLevel);
     localStorage.setItem(STORAGE_KEY, newLevel);
@@ -81,12 +81,12 @@ export function FontSizeProvider({ children }: FontSizeProviderProps) {
     localStorage.setItem(CUSTOM_SIZE_STORAGE_KEY, String(normalizedSize));
   }, []);
 
-  // 应用字体大小到 document
+  // Apply font size to document
   useEffect(() => {
     const offset = level === 'custom'
       ? customFontSize - FONT_SIZE_CONFIGS.standard.baseSize
       : FONT_SIZE_CONFIGS[level].offset;
-    // 基础字号保持 14px，只调整偏移量，避免自定义字号被计算两次。
+    // Keep the base font size at 14px and only adjust the offset, so a custom size is not applied twice.
     document.documentElement.style.setProperty('--font-size-offset', `${offset}px`);
     document.documentElement.style.setProperty('--base-font-size', `${FONT_SIZE_CONFIGS.standard.baseSize}px`);
   }, [customFontSize, level]);
@@ -98,7 +98,7 @@ export function FontSizeProvider({ children }: FontSizeProviderProps) {
   );
 }
 
-/** 使用字体大小 Hook */
+/** Font size hook */
 export function useFontSize() {
   const context = useContext(FontSizeContext);
   if (!context) {

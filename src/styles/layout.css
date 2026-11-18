@@ -1,24 +1,24 @@
 /* ============================================================================
-   内容区宽度容器
-   顶部统计栏、主内容列、底部区域共用同一宽度规则：**跟着窗口走，左对齐，不封顶**。
+   Content width container
+   The top stats bar, main content column, and bottom area share one width rule: **follow the window, left-aligned, no max cap**.
 
-   ⚠️ 原来这里是 `max-width: min(96vw, 1600px)` + `margin-inline: auto` —— 全屏 1920 时
-   内容停在 1600 并被居中，左右各空一大块：顶栏的 C 盘进度条也跟着缩在中间，
-   看起来像整页没铺开（Evan 在 1920 全屏下反馈）。
-   现在顶栏和内容一起铺满，C 盘那条 `flex-1` 的进度条才能真正吃到剩余宽度。
+   ⚠️ This used to be `max-width: min(96vw, 1600px)` + `margin-inline: auto` — at 1920 full screen
+   content stopped at 1600 and was centered, leaving big gaps on both sides; the C drive progress bar in the top bar shrank into the middle too,
+   making the whole page look unstretched (reported by Evan at 1920 full screen).
+   Now the top bar and content fill the width together, so the C drive's `flex-1` progress bar can actually take the remaining space.
    ============================================================================ */
 .dashboard-container {
   width: 100%;
   margin-inline: 0;
 }
 
-/* 单页形态的纵向高度全部交给 flex 链决定（App.tsx 内容层 → 模块层 → 卡片 → 卡片 body），
-   这里不再用 `calc(100vh - N)` 给空状态凑高度。
-   原因：那个魔法数字对每个模块都不一样（头部行数不同），凑出来的底部落点也就各不相同 ——
-   Evan 反馈的"有的太高有的又太低"就是这么来的。现在卡片 flex-1 吃满剩余高度，
-   空状态只要跟着 flex 伸展即可，短内容也不会提前结束。 */
+/* In single-page mode, vertical height is entirely determined by the flex chain (App.tsx content layer → module layer → card → card body),
+   no longer using `calc(100vh - N)` here to fudge the empty state height.
+   Reason: that magic number differs per module (different header line counts), so the resulting bottom alignment varied —
+   which is where Evan's report of "some too high, some too low" came from. Now cards use flex-1 to fill remaining height,
+   the empty state just stretches with flex, and short content will not end early. */
 
-/* 单页形态下单个内容根节点需要参与纵向伸缩，长结果仍由外层滚动区承载。 */
+/* In single-page mode, individual content root nodes must participate in vertical stretching; long results are still carried by the outer scroll area. */
 .module-card__body > :has(.empty-state),
 [data-layout-mode="sidebar"] .module-card__body > :has(.empty-state) {
   flex: 1 1 auto;
@@ -26,7 +26,7 @@
   flex-direction: column;
 }
 
-/* 兼容模块内部额外包裹一层内边距的空状态，让填充高度继续传递到占位卡片。 */
+/* Supports empty states wrapped with an extra padding layer inside modules, keeping the fill height propagated to the placeholder card. */
 .module-card__body > :has(.empty-state) > :has(.empty-state),
 [data-layout-mode="sidebar"] .module-card__body > :has(.empty-state) > :has(.empty-state) {
   flex: 1 1 auto;
@@ -40,18 +40,18 @@
 }
 
 /* ----------------------------------------------------------------------------
-   模块内联扫描状态（ModuleScanProgress）
+   Module inline scan state (ModuleScanProgress)
 
-   旧版是"整块淡绿底 + 转圈"，高度写死 220px：窗口一高就剩一条矮绿带悬在卡片顶部，
-   下面一大片空白；大面积品牌色又比内容还抢眼，还和"已清理"的绿色成功态撞色。
+   The old version was "a light green block + spinner" with a hard-coded 220px height: on a tall window it left a short green strip hanging at the top of the card,
+   with a large blank area below; a big brand-color area was more eye-catching than the content and clashed with the green success state of "cleaned".
 
-   现在：极淡描边的占位区（透明底，不抢眼）+ 单页形态铺满正文 + 顶部一条扫动进度条。
-   进度条是唯一在动的元素，信息居中，留白交给卡片自己。
+   Now: a very faint outlined placeholder (transparent background, understated) + fills the body in single-page mode + a sweeping progress bar at the top.
+   The progress bar is the only moving element, information is centered, and whitespace is left to the card.
 
-   ⚠️ `.module-scan-progress-area` 这个**通用**类还有 5 个模块在自己的扫描/删除布局里
-   直接用（大文件、垃圾清理、热点、磁盘变化、删除进度），它们各自带 Tailwind 的底色与
-   内边距。所以外观一律写在新增的 `.scan-state` 上，通用类只保留"最小高度"兜底，
-   不要往通用类里加 border/background —— 会连带改掉那五处。
+   ⚠️ The **generic** class `.module-scan-progress-area` is still used directly in the scan/delete layouts of 5 modules
+   (big files, junk cleanup, hotspot, disk growth, delete progress), each with its own Tailwind background and
+   padding. So all appearance goes on the new `.scan-state`; the generic class keeps only a "minimum height" fallback,
+   do not add border/background to the generic class — that would change those five places too.
    ---------------------------------------------------------------------------- */
 .module-scan-progress-area {
   min-height: 220px;
@@ -61,7 +61,7 @@
   position: relative;
   display: flex;
   flex-direction: column;
-  /* 阶段行 + 骨架整体居中；不写死内容高度，靠下面 skeleton 的 flex 把空间吃掉 */
+  /* Phase row + skeleton centered as a whole; do not hard-code content height, let the skeleton's flex below consume the space */
   justify-content: center;
   min-height: 11em;
   padding: 1.25em 1.5em;
@@ -74,7 +74,7 @@
   justify-content: center;
   gap: 1.15em;
   width: 100%;
-  /* 从内容区左边缘起排：限宽+居中会让左边空出一块，看着像"浮在中间" */
+  /* Start from the content area's left edge: limiting width + centering would leave a gap on the left, looking like "floating in the middle" */
   flex: 1 1 auto;
 }
 
@@ -99,7 +99,7 @@
   background: var(--brand-green-10);
 }
 
-/* 骨架列表占满剩余高度：行距随空间拉开，而不是缩成中间一小撮再上下各留一大片空 */
+/* Skeleton list fills remaining height: row spacing expands with available space, rather than shrinking into a small cluster in the middle with big empty areas above and below */
 .scan-state__skeleton {
   display: flex;
   flex-direction: column;
@@ -108,7 +108,7 @@
   flex: 1 1 auto;
 }
 
-/* 一行 = 图标位 + 主标题 + 右侧数值，对应真实结果行的形状 */
+/* One row = icon slot + main title + right-side value, matching the shape of a real result row */
 .scan-state__skeleton-row {
   display: flex;
   align-items: center;
@@ -122,7 +122,7 @@
   display: block;
   overflow: hidden;
   border-radius: 0.35em;
-  /* --bg-hover 在白卡上几乎看不见，用文字色的低透明度混合，深浅主题都吃得到 */
+  /* --bg-hover is barely visible on white cards; use a low-opacity blend of the text color so both light and dark themes pick it up */
   background: color-mix(in srgb, var(--text-primary) 8%, transparent);
 }
 
@@ -157,7 +157,7 @@
   animation: shimmer 1.8s ease-in-out infinite;
 }
 
-/* 逐行错开，避免六行同时闪 */
+/* Stagger row by row to avoid all six rows flashing at once */
 .scan-state__skeleton-row:nth-child(2) > i::after {
   animation-delay: 0.1s;
 }
@@ -178,7 +178,7 @@
   width: 100%;
 }
 
-/* 系统开了"减少动态效果"：流光直接关掉，静态骨架已经够表达"还没内容" */
+/* When the system has "reduce motion" enabled: turn off the shimmer entirely; a static skeleton already conveys "no content yet" */
 @media (prefers-reduced-motion: reduce) {
   .scan-state__skeleton-row > i::after {
     animation: none;
@@ -186,7 +186,7 @@
   }
 }
 
-/* 单页形态：扫描态也要铺满卡片正文，和空状态、结果态保持同一个底部落点 */
+/* Single-page mode: the scanning state must also fill the card body, keeping the same bottom alignment as the empty and result states */
 .module-card__body > :has(.module-scan-progress-area),
 [data-layout-mode="sidebar"] .module-card__body > :has(.module-scan-progress-area) {
   display: flex;
@@ -199,7 +199,7 @@
   flex: 1 1 auto;
 }
 
-/* 侧边栏模式把导航从悬浮层移入主内容布局，右侧内容继续独立滚动。 */
+/* Sidebar mode moves navigation from a floating layer into the main content layout; the right-side content keeps scrolling independently. */
 .sidebar-layout {
   display: flex;
   min-width: 0;
@@ -227,9 +227,9 @@
   align-items: center;
   justify-content: flex-end;
   min-height: 3.5em;
-  /* 左内边距 = 列表内边距(0.55) + 项内边距(0.7) = 1.25em，
-     让标题和下面的图标**共用同一条左边缘**（原来三条参考线各差几个像素，
-     是整个侧边栏看起来散的直接原因）。 */
+  /* Left padding = list padding (0.55) + item padding (0.7) = 1.25em,
+     so the title and the icon below **share the same left edge** (originally the three reference lines were each off by a few pixels,
+     the direct reason the whole sidebar looked scattered). */
   padding: 0.5em 0.65em 0.5em 1.25em;
   border-bottom: 1px solid var(--border-color);
 }
@@ -238,8 +238,8 @@
   flex: 1;
   min-width: 0;
   overflow: hidden;
-  /* 用弱化色 + 小字号 + 字距：它是这一栏叫什么的标签，
-     不是内容区的一级标题。原来 0.92em/600/主文字色，跟模块标题撞了权重。 */
+  /* Use a muted color + small font size + letter spacing: it is a label for what this column is called,
+     not a top-level heading for the content area. Originally 0.92em/600/main text color, which clashed in weight with module titles. */
   color: var(--fg-muted);
   font-size: 0.8em;
   font-weight: 600;
@@ -272,7 +272,7 @@
   outline-offset: 1px;
 }
 
-/* 自绘图标是 20×16 的横长方形，不能强行套 1:1 —— 那样会被压扁变形 */
+/* The custom icon is a 20×16 horizontal rectangle; do not force a 1:1 ratio — that would squash and distort it */
 .sidebar-nav__toggle svg {
   width: 1.25em;
   height: 1em;
@@ -296,9 +296,9 @@
   gap: 0.7em;
   padding: 0.28em 0.7em;
   border-radius: 0.7em;
-  /* 用主文字色而不是次要色：中文只有 400/700 两档字重，'加粗一点'会直接跳到伪粗体
-     （笔画粘连、发糊），实测 600/700 都不如'同一个字重 + 更深一档'清楚。
-     选中态靠胶囊底色区分，不靠颜色差。 */
+  /* Use the main text color rather than the secondary one: Chinese has only 400/700 weights, so "slightly bolder" jumps straight to fake bold
+     (strokes stick together and blur); in practice 600/700 are less legible than "same weight + a darker shade".
+     The selected state is distinguished by the pill background, not by color difference. */
   color: var(--fg-primary);
   text-align: left;
   transition: background-color 150ms ease, color 150ms ease;
@@ -329,7 +329,7 @@
   white-space: nowrap;
 }
 
-/* 将拖拽热区放在边框两侧，既容易命中又不会改变菜单内容宽度。 */
+/* Place the drag hot zone on both sides of the border: easy to hit without changing the menu's content width. */
 .sidebar-nav__resize-handle {
   position: absolute;
   top: 0;
@@ -380,7 +380,7 @@
   padding-inline: 0.5em;
 }
 
-/* 折叠菜单的提示挂到 body，避免被侧边栏滚动容器裁剪；颜色沿用应用主题变量。 */
+/* Attach the collapsed-menu tooltip to body to avoid being clipped by the sidebar scroll container; colors follow the app theme variables. */
 .sidebar-nav__tooltip {
   position: fixed;
   z-index: 10001;
@@ -451,9 +451,9 @@
 }
 
 
-/* ===== 侧边栏分组 =====
-   组标签沿用 header 标题的样式语言（弱化色 + 小字号 + 字距），但再小一档、
-   左内边距和 item 的 padding 一致 —— 这样"组标签 / 图标 / 标题"共用同一条左边缘。 */
+/* ===== Sidebar groups =====
+   Group labels follow the header title's style language (muted color + small font size + letter spacing), but one notch smaller,
+   with left padding matching the item padding — so "group label / icon / title" share the same left edge. */
 .sidebar-nav__group-block {
   display: flex;
   flex-direction: column;
@@ -473,12 +473,12 @@
   white-space: nowrap;
 }
 
-/* 第一个组标签不要顶出额外间距（列表自身已有 padding） */
+/* The first group label should not add extra spacing (the list already has padding) */
 .sidebar-nav__group-block:first-child .sidebar-nav__group {
   padding-top: 0.05em;
 }
 
-/* 折叠态没有文字：把组标签变成一根极淡的分组线 —— 靠留白分组，不靠文字 */
+/* In collapsed mode there is no text: turn group labels into a very faint divider line — group by whitespace, not by text */
 .sidebar-nav--collapsed .sidebar-nav__group {
   height: 1px;
   margin: 0.5em 0.55em 0.45em;
@@ -491,15 +491,15 @@
   display: none;
 }
 
-/* ===== 侧边栏底部：一行「官网 + 版本」 =====
-   排版照抄菜单项（同左边缘、同图标-文字间距），让它成为菜单的收尾，
-   而不是两块散落在角落的元信息。
-   ⚠️ 分隔线**内缩**（用 margin-inline 收进来），不碰面板的圆角 ——
-   上一版是通栏 border-top，横穿底部圆角，看着像塞错的边框。 */
+/* ===== Sidebar bottom: one row "website + version" =====
+   Layout copies menu items (same left edge, same icon-text gap), making it the menu's finishing touch,
+   rather than two pieces of meta info scattered in a corner.
+   ⚠️ The divider is **inset** (pulled in with margin-inline) and does not touch the panel's rounded corners —
+   the previous version used a full-width border-top crossing the bottom rounded corners, looking like a misplaced border. */
 .sidebar-nav__footer {
   display: flex;
-  /* 四个图标 + 版本号在 180px 的窄栏里放不下：允许换行，版本号落到第二行，
-     总比溢出面板或者把图标挤变形好。 */
+  /* Four icons + the version number do not fit in a 180px narrow column: allow wrapping, with the version number dropping to the second line,
+     better than overflowing the panel or squashing the icons. */
   flex-wrap: wrap;
   align-items: center;
   flex: 0 0 auto;
@@ -509,7 +509,7 @@
   border-top: 1px solid var(--border-color);
 }
 
-/* 图标入口：只有 15px 的图标，用 1.6em 的命中区保证好点；hover 变品牌绿 */
+/* Icon entries: icons are only 15px, use a 1.6em hit area for easy clicking; hover turns brand green */
 .sidebar-nav__footer-icon {
   display: inline-flex;
   align-items: center;
@@ -524,15 +524,15 @@
   color: var(--brand-green);
 }
 
-/* 支持作者入口。
-   ⚠️ 不要加 `margin-left: auto`：那样它会被推到最右，和前面四个图标之间空出一大块，
-   和侧边栏其他图标的间距对不上。和它们一样参与 flex gap 排布。
-   hover 用暖红而不是品牌绿 —— 心形配绿色读起来像「收藏」，不像「赞助」。 */
+/* Support author entry.
+   ⚠️ Do not add `margin-left: auto`: that would push it to the far right, leaving a big gap from the previous four icons,
+   mismatching the spacing of other sidebar icons. Let it participate in the flex gap layout like them.
+   hover uses warm red instead of brand green — a heart in green reads like "favorite", not "sponsor". */
 .sidebar-nav__footer-support:hover {
   color: var(--color-danger);
 }
 
-/* 折叠态：只剩地球图标，居中 */
+/* Collapsed mode: only the globe icon remains, centered */
 .sidebar-nav--collapsed .sidebar-nav__footer {
   justify-content: center;
   margin-inline: 0.35em;

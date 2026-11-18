@@ -1,5 +1,5 @@
 // ============================================================================
-// 设置页面共享配置
+// Shared configuration for the settings page
 // ============================================================================
 
 import { BookOpen, HardDrive, Info, MessageSquare, Monitor, Moon, Settings, ShieldCheck, SlidersHorizontal, Sparkles, Sun, type LucideIcon } from 'lucide-react';
@@ -30,5 +30,5 @@ export const FONT_SIZE_OPTIONS: { level: FontSizeLevel; label: string }[] = [
   { level: 'custom', label: 'fontSize.custom' },
 ];
 
-// 保留统一导出，页面组件只从一个配置入口读取字号提示所需配置。
+// Keep a unified export so page components read the font-size hint config from a single entry point.
 export { FONT_SIZE_CONFIGS };

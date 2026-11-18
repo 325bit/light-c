@@ -1,40 +1,40 @@
 // ============================================================================
-// AI 工具调用（function calling）
+// AI tool calling (function calling)
 //
-// 工具本身的"能力"在**模块**手里，这里只负责两件事：
-//   1. 声明：把允许使用的工具按协议形状拼进请求
-//   2. 解析：把模型返回的调用意图取出来，交给前端执行
+// The "capability" of a tool itself lives in the **module**; this file only handles two things:
+//   1. Declaration: assemble the allowed tools into the request in the protocol's shape
+//   2. Parsing: extract the call intent returned by the model and hand it to the frontend for execution
 //
-// 设计上刻意只有**两个通用工具**，且都以"模块自己给出的 id"为参数：
-//   select_items(ids)     —— P3a：改勾选态，无风险
-//   propose_delete(ids)   —— P3b：申请删除，必须由用户确认后才执行
+// By design there are deliberately only **two general-purpose tools**, both taking "the id given by the module itself" as a parameter:
+//   select_items(ids)     —— P3a: change the checked state, no risk
+//   propose_delete(ids)   —— P3b: request deletion, must be confirmed by the user before execution
 //
-// 这样后端**不需要知道任何模块的细节** —— 模型要操作谁，看的是模块在摘要里给出的
-// 带 id 的可操作项。新增模块只要提供 targets，工具侧一行都不用改。
+// This way the backend **doesn't need to know any module's details** — which object the model operates on is determined by the
+// actionable items with ids that the module gives in the summary. Adding a new module only requires providing targets; nothing on the tool side needs to change.
 // ============================================================================
 
 use super::presets::AiProtocol;
 use serde::Serialize;
 use serde_json::Value;
 
-/// 模型请求调用某个工具。
+/// A request from the model to call a tool.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AiToolCall {
-    /// 协议给的调用 id（Anthropic 回喂结果时要用；当前不回喂，先留着）
+    /// Call id given by the protocol (needed when Anthropic feeds results back; currently not fed back, kept for now)
     pub call_id: String,
     pub name: String,
-    /// 已解析成对象的参数；解析失败时为空对象，调用方按"没有 id"处理
+    /// Arguments parsed into an object; on parse failure it is an empty object, and the caller treats it as "no id"
     pub arguments: Value,
 }
 
-/// 允许使用的工具名。由前端按「该模块登记了哪些动作」决定传哪些。
+/// Names of the allowed tools. The frontend decides which to pass based on "which actions the module registered".
 pub const TOOL_SELECT_ITEMS: &str = "select_items";
 pub const TOOL_PROPOSE_DELETE: &str = "propose_delete";
 pub const TOOL_READ_ITEMS: &str = "read_items";
 pub const TOOL_READ_ITEM_DETAIL: &str = "read_item_detail";
 
-/// 单个工具的描述与参数 schema（两种协议共用这段内容，只是外层包装不同）。
+/// Description and parameter schema of a single tool (shared by both protocols, only the outer wrapper differs).
 fn tool_spec(name: &str) -> Option<(&'static str, Value)> {
     match name {
         TOOL_SELECT_ITEMS => Some((
@@ -98,12 +98,12 @@ fn tool_spec(name: &str) -> Option<(&'static str, Value)> {
                 "required": ["item_id"]
             }),
         )),
-        // 不认识的工具名直接忽略：前端传错不该让整个请求失败
+        // Ignore unrecognized tool names directly: a mistake by the frontend shouldn't fail the whole request
         _ => None,
     }
 }
 
-/// OpenAI 兼容协议的工具声明。
+/// Tool declarations for the OpenAI-compatible protocol.
 pub fn openai_tools(names: &[String]) -> Vec<Value> {
     names
         .iter()
@@ -118,7 +118,7 @@ pub fn openai_tools(names: &[String]) -> Vec<Value> {
         .collect()
 }
 
-/// Anthropic 协议的工具声明（schema 放在 input_schema，没有 function 外层）。
+/// Tool declarations for the Anthropic protocol (schema goes in input_schema, no function wrapper).
 pub fn anthropic_tools(names: &[String]) -> Vec<Value> {
     names
         .iter()
@@ -134,11 +134,11 @@ pub fn anthropic_tools(names: &[String]) -> Vec<Value> {
         .collect()
 }
 
-/// 从响应里取出工具调用。
+/// Extracts tool calls from a response.
 ///
-/// OpenAI 兼容：choices[0].message.tool_calls[] = {id, function:{name, arguments}}，
-/// 其中 arguments 是**字符串形式的 JSON**，需要二次解析 —— 这一步经常被漏掉。
-/// Anthropic：content[] 里 type == "tool_use" 的块，input 已经是对象。
+/// OpenAI-compatible: choices[0].message.tool_calls[] = {id, function:{name, arguments}},
+/// where arguments is **JSON in string form** and needs a second parse — this step is often missed.
+/// Anthropic: blocks in content[] with type == "tool_use"; input is already an object.
 pub fn parse_tool_calls(protocol: AiProtocol, value: &Value) -> Vec<AiToolCall> {
     match protocol {
         AiProtocol::OpenAi => parse_openai_tool_calls(value),
@@ -147,7 +147,7 @@ pub fn parse_tool_calls(protocol: AiProtocol, value: &Value) -> Vec<AiToolCall> 
 }
 
 fn parse_arguments_string(raw: &str) -> Value {
-    // 参数解析失败时给空对象：调用方会按"没有 id"处理，不会误删
+    // Give an empty object on argument parse failure: the caller treats it as "no id" and won't delete by mistake
     serde_json::from_str(raw).unwrap_or_else(|_| serde_json::json!({}))
 }
 
@@ -202,7 +202,7 @@ fn parse_anthropic_tool_calls(value: &Value) -> Vec<AiToolCall> {
         .collect()
 }
 
-/// 从参数里取 ids；过滤掉空串与非字符串，保证交给模块的是干净列表。
+/// Extracts ids from arguments; filters out empty strings and non-strings so the module gets a clean list.
 pub fn extract_ids(arguments: &Value) -> Vec<String> {
     arguments
         .get("ids")
@@ -225,7 +225,7 @@ mod tests {
 
     #[test]
     fn openai_tool_calls_parse_arguments_from_string() {
-        // arguments 是字符串形式的 JSON —— 忘了二次解析就永远拿不到 ids
+        // arguments is JSON in string form — forget the second parse and you'll never get the ids
         let value = serde_json::json!({
             "choices": [{
                 "message": {
@@ -271,12 +271,12 @@ mod tests {
         });
         let calls = parse_tool_calls(AiProtocol::OpenAi, &value);
         assert_eq!(calls.len(), 1);
-        // 解析失败 → 空对象 → 没有 id → 调用方不会拿它去删任何东西
+        // Parse failure → empty object → no id → the caller won't use it to delete anything
         assert!(extract_ids(&calls[0].arguments).is_empty());
     }
 
-    /// 实测：deepseek-flash 会把调用写成 `<tool_call>{"name":…}</tool_call>` 的 JSON 文本。
-    /// 不认的话，用户会在聊天里看到这段原文，而且那次调用根本不执行（Evan 截图反馈过）。
+    /// Tested: deepseek-flash writes calls as JSON text like `<tool_call>{"name":…}</tool_call>`.
+    /// If not recognized, the user sees this raw text in chat and the call isn't executed at all (Evan reported this with a screenshot).
     #[test]
     fn json_style_tool_call_is_recognized_and_never_shown() {
         let raw = "这个驱动包可以安全清理。\n<tool_call>\n{\"name\": \"read_item_detail\", \"arguments\": {\"id\": \"oem7.inf\"}}\n</tool_call>";
@@ -291,7 +291,7 @@ mod tests {
         assert!(cleaned.contains("可以安全清理"), "正文必须保留，实际: {}", cleaned);
     }
 
-    /// 认不出的工具名：不执行，但那段文本也必须消失 —— 用户不该看到工具语法。
+    /// Unrecognized tool names: not executed, but that text must also disappear — the user shouldn't see tool syntax.
     #[test]
     fn unknown_json_tool_call_is_dropped_from_text() {
         let raw = "说明。\n<tool_call>{\"name\": \"rm_rf\", \"arguments\": {}}</tool_call>";
@@ -300,7 +300,7 @@ mod tests {
         assert_eq!(cleaned, "说明。");
     }
 
-    /// arguments 写成 JSON 字符串（OpenAI 风格）也要能接住。
+    /// arguments written as a JSON string (OpenAI style) must also be accepted.
     #[test]
     fn json_style_tool_call_accepts_string_arguments() {
         let raw = "<tool_call>{\"name\": \"read_items\", \"arguments\": \"{\\\"path\\\": \\\"D:/models\\\"}\"}</tool_call>";
@@ -314,18 +314,18 @@ mod tests {
 
     #[test]
     fn inline_xml_tool_call_is_recognized_and_stripped_from_text() {
-        // 实测：deepseek 轻量档会把调用写成这样的文本，既不会变成 tool_calls，
-        // 还会原样显示给用户。这里必须能认出来，并从正文里剔除。
+        // Tested: deepseek's lightweight tier writes calls as text like this, which neither becomes tool_calls
+        // nor is shown to the user verbatim. It must be recognized here and stripped from the body.
         let raw = "I'll read the item list.\n<invoke name=\"read_items\">\n<parameter name=\"module\">AI 模型空间</parameter>\n</invoke>";
         let (calls, cleaned) = extract_inline_tool_calls(raw);
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].name, "read_items");
-        // module 是模型自己起的参数名，要映射回 target_id
+        // module is a parameter name the model made up; map it back to target_id
         assert_eq!(
             calls[0].arguments.get("target_id").and_then(|v| v.as_str()),
             Some("AI 模型空间")
         );
-        // 正文里不能再留着那段 XML，否则用户会看到"模型在表演调工具"
+        // The XML must not remain in the body, otherwise the user would see "the model pretending to call a tool"
         assert!(!cleaned.contains("<invoke"));
         assert!(cleaned.contains("I'll read the item list"));
     }
@@ -341,7 +341,7 @@ mod tests {
 
     #[test]
     fn inline_unknown_tool_is_dropped_entirely() {
-        // 没声明过的工具：既不执行，也不该把这段留在正文里
+        // Undeclared tools: neither executed nor left in the body
         let raw = "看看这个 <invoke name=\"run_shell\"><parameter name=\"cmd\">rm -rf /</parameter></invoke>";
         let (calls, cleaned) = extract_inline_tool_calls(raw);
         assert!(calls.is_empty());
@@ -373,12 +373,12 @@ mod tests {
         assert!(anthropic[0].get("function").is_none());
     }
 
-    // ---- 手写解析器的边界：这几条都是曾经出过问题、或者一改就容易踩的地方 ----
+    // ---- Edge cases of the hand-written parser: these have all caused problems before, or are easy to trip over when changing ----
 
     #[test]
     fn attributes_are_matched_on_whole_names_only() {
-        // `username=` 里也含 "name=" —— 必须按属性名边界匹配，
-        // 否则会把 "admin" 当成 name，真正的 name 反而取不到。
+        // `username=` also contains "name=" — must match on attribute-name boundaries,
+        // otherwise "admin" is taken as name and the real name can't be retrieved.
         let tag = "<invoke username=\"admin\" name=\"read_items\"";
         assert_eq!(attribute(tag, "name").as_deref(), Some("read_items"));
         assert_eq!(
@@ -404,8 +404,8 @@ mod tests {
 
     #[test]
     fn an_unclosed_invoke_tag_keeps_the_text_before_it() {
-        // 模型吐了半个标签时，开标签之前的正文**不能丢** ——
-        // 早先那里只推进 cursor、不把正文补回来，整段会被吞掉（而正文是要显示也要入库的）。
+        // When the model emits half a tag, the body before the opening tag **must not be lost** —
+        // earlier, that spot only advanced cursor without restoring the body, so the whole segment was swallowed (and the body must be displayed and stored).
         let content = "这一段必须留下来。\n<invoke name=\"read_items\">";
         let (calls, cleaned) = extract_inline_tool_calls(content);
         assert!(calls.is_empty(), "残缺的调用不该被执行");
@@ -418,7 +418,7 @@ mod tests {
 
     #[test]
     fn paragraph_breaks_in_the_body_are_preserved() {
-        // 剔掉调用块之后只能压多余空行；正文自己的空行是 Markdown 的段落分隔，要留着。
+        // After removing the call block, only collapse extra blank lines; the body's own blank lines are Markdown paragraph separators and must be kept.
         let content = "第一段\n\n第二段\n\n<invoke name=\"read_items\"></invoke>";
         let (calls, cleaned) = extract_inline_tool_calls(content);
         assert_eq!(calls.len(), 1);
@@ -431,7 +431,7 @@ mod tests {
 
     #[test]
     fn an_unclosed_invoke_tag_does_not_swallow_the_tail() {
-        // 连 '>' 都没有的碎片：整段都得原样留下，不能因为"找不到开标签结尾"就丢内容
+        // A fragment without even '>': the whole segment must be kept verbatim, don't drop content just because "the opening tag's end wasn't found"
         let content = "前面的正文。\n<invoke name=\"read_items\"";
         let (calls, cleaned) = extract_inline_tool_calls(content);
         assert!(calls.is_empty());
@@ -441,8 +441,8 @@ mod tests {
 
     #[test]
     fn dsml_markup_is_recognized_and_removed_from_the_body() {
-        // 实测（deepseek-flash 思考模式 + 没声明工具时）它用自己的 DSML 标记表达工具调用。
-        // 原样贴过来的形态 —— 必须能认出来，而且**不能显示给用户**。
+        // Tested (deepseek-flash in thinking mode + no tools declared) it uses its own DSML markup to express tool calls.
+        // Forwarded verbatim like this — it must be recognized, and **must not be shown to the user**.
         let content = "我来查一下。\n\
              <｜｜DSML｜｜ calls>\n\
              <｜｜DSML｜｜ invoke name=\"read_items\">\n\
@@ -452,7 +452,7 @@ mod tests {
         let (calls, cleaned) = extract_inline_tool_calls(content);
         assert_eq!(calls.len(), 1, "DSML 标记应当被认成一次调用，实际: {}", cleaned);
         assert_eq!(calls[0].name, "read_items");
-        // `path` 是实测会被写出来的别名，不认它参数就丢了
+        // `path` is an alias we've observed in the wild; not recognizing it loses the parameter
         assert_eq!(
             calls[0].arguments.get("target_id").and_then(|value| value.as_str()),
             Some("C:\\Users\\chunyu\\AppData\\Roaming\\devin")
@@ -464,7 +464,7 @@ mod tests {
 
     #[test]
     fn dsml_wrapper_alone_leaves_no_leftovers() {
-        // 只有外层包装、没有真正的调用：不该产出调用，也不该把 `<calls>` 留在正文里
+        // Only the outer wrapper with no real call: should produce no call, and shouldn't leave `<calls>` in the body
         let content = "说明文字\n<｜｜DSML｜｜ calls>\n</｜｜DSML｜｜ calls>";
         let (calls, cleaned) = extract_inline_tool_calls(content);
         assert!(calls.is_empty());
@@ -474,31 +474,31 @@ mod tests {
 }
 
 // ---------------------------------------------------------------------------
-// 文本兜底：不是所有模型都老老实实走 function calling
+// Text fallback: not all models dutifully go through function calling
 //
-// 实测（deepseek 的轻量档）会把工具调用**当普通文本吐出来**：
+// Tested (deepseek's lightweight tier) it emits tool calls **as plain text**:
 //
 //   I'll read the item list.
 //   <invoke name="read_items">
-//   <parameter name="module">AI 模型空间</parameter>
+//   <parameter name="module">AI model space</parameter>
 //   </invoke>
 //
-// 后果有三重，而且都很隐蔽：
-//   1. tool_calls 是空的 → 工具不会被执行；
-//   2. 这段文本会**原样显示给用户**，看起来像模型在"表演调工具"；
-//   3. 模型随后还会给自己找台阶（"系统没给我查询接口"）。
+// There are three consequences, all subtle:
+//   1. tool_calls is empty → the tool isn't executed;
+//   2. this text is **shown verbatim to the user**, looking like the model is "performing a tool call";
+//   3. the model then makes excuses for itself ("the system didn't give me a query interface").
 //
-// 所以这里做一层兜底：认出这种写法、还原成标准工具调用，并把它从正文里剔除。
-// ⚠️ 只认我们声明过的工具，参数名也做有限别名映射 —— 宁可漏认，不要乱认。
+// So we add a fallback layer here: recognize this form, restore it to a standard tool call, and remove it from the body.
+// ⚠️ Only recognize tools we've declared, with limited alias mapping for parameter names — better to miss than to misrecognize.
 // ---------------------------------------------------------------------------
 
-/// 参数别名 → 标准参数名。模型写的是"它觉得应该叫什么"，不是我们的 schema。
+/// Parameter alias → standard parameter name. What the model writes is "what it thinks it should be called", not our schema.
 fn canonical_argument(tool: &str, raw_name: &str) -> Option<&'static str> {
     let name = raw_name.trim().to_ascii_lowercase();
     match tool {
         TOOL_READ_ITEMS => {
-            // `path` / `folder` 是实测会写出来的别名：模型想"读这个文件夹里面有什么"，
-            // 就会把路径写成 path（DSML 那段就是这么写的）。不认它，参数会被直接丢掉。
+            // `path` / `folder` are aliases we've observed: the model wants to "read what's inside this folder",
+            // so it writes the path as path (that's how the DSML case does it). Not recognizing it drops the parameter.
             if matches!(
                 name.as_str(),
                 "target_id" | "targetid" | "id" | "module" | "category" | "path" | "folder" | "dir"
@@ -530,8 +530,8 @@ fn canonical_argument(tool: &str, raw_name: &str) -> Option<&'static str> {
     }
 }
 
-/// 把一段 `<parameter>` 的取值整理成参数值。
-/// ids 这类列表允许模型写成逗号或换行分隔的多个值。
+/// Normalizes the value of a `<parameter>` into a parameter value.
+/// Lists like ids may be written by the model as multiple values separated by commas or newlines.
 fn argument_value(canonical: &str, raw: &str) -> Value {
     let trimmed = raw.trim();
     if canonical == "ids" {
@@ -551,10 +551,10 @@ fn argument_value(canonical: &str, raw: &str) -> Value {
     serde_json::json!(trimmed)
 }
 
-/// 把 DeepSeek 的 **DSML** 标记归一化成标准 `<invoke>` / `<parameter>` 形状。
+/// Normalizes DeepSeek's **DSML** markup into standard `<invoke>` / `<parameter>` shape.
 ///
-/// 思考模式下**没有声明工具**时，它不会（也没有工具可）走 function calling，
-/// 而是用自己的标记表达同一件事：
+/// In thinking mode with **no tools declared**, it won't (and has no tools to) go through function calling,
+/// but expresses the same thing with its own markup:
 ///
 /// ```text
 /// <｜｜DSML｜｜ calls>
@@ -564,29 +564,29 @@ fn argument_value(canonical: &str, raw: &str) -> Value {
 /// </｜｜DSML｜｜ calls>
 /// ```
 ///
-/// ⚠️ 不认它有两个后果，都很糟：**工具不执行**、**这段标记原样显示给用户**。
-/// 归一化之后复用同一套解析器 —— 刻意不写第二套解析器。
+/// ⚠️ Not recognizing it has two consequences, both bad: **the tool isn't executed** and **the markup is shown verbatim to the user**.
+/// After normalization we reuse the same parser — deliberately not writing a second parser.
 fn normalize_dsml(content: &str) -> String {
     if !content.contains("DSML") {
         return content.to_string();
     }
     content
-        // ⚠️ 顺序很关键：DSML 前缀后面**带一个空格**（`<｜｜DSML｜｜ invoke`），
-        // 所以带空格的写法必须先替换 —— 先替换不带空格的，剩下的 `< invoke` 就再也匹配不上了。
+        // ⚠️ Order matters: the DSML prefix is followed by **one space** (`<｜｜DSML｜｜ invoke`),
+        // so the spaced form must be replaced first — replace the unspaced form first and the remaining `< invoke` will never match.
         .replace("</｜｜DSML｜｜ ", "</")
         .replace("</｜｜DSML｜｜", "</")
         .replace("<｜｜DSML｜｜ ", "<")
         .replace("<｜｜DSML｜｜", "<")
-        // 外层 `<calls>` 只是包装（解析器只认 `<invoke>`），去掉免得残留在正文里
+        // The outer `<calls>` is just a wrapper (the parser only recognizes `<invoke>`); remove it so it doesn't linger in the body
         .replace("<calls>", "")
         .replace("</calls>", "")
 }
 
 /// `<tool_call>{"name": "...", "arguments": {...}}</tool_call>`
 ///
-/// 第三种内联形式：Hermes 系模板和一些 OpenAI 兼容网关会把调用写成这种**JSON 文本**。
-/// 实测 deepseek-flash 会这么干 —— 不认的话，用户会在聊天记录里看到一段 `<tool_call>` 原文，
-/// 而且那次调用**不会被执行**（问"这个驱动是什么"，答案里带个查目录的调用，看起来像坏了）。
+/// A third inline form: Hermes-style templates and some OpenAI-compatible gateways write calls as this **JSON text**.
+/// Tested: deepseek-flash does this — if not recognized, the user sees a `<tool_call>` raw text in the chat history,
+/// and that call **won't be executed** (ask "what is this driver" and the answer contains a directory-query call, which looks broken).
 fn extract_json_style_tool_calls(content: &str) -> (Vec<AiToolCall>, String) {
     const OPEN: &str = "<tool_call>";
     const CLOSE: &str = "</tool_call>";
@@ -598,13 +598,13 @@ fn extract_json_style_tool_calls(content: &str) -> (Vec<AiToolCall>, String) {
     while let Some(open_rel) = content[cursor..].find(OPEN) {
         let open_at = cursor + open_rel;
         let Some(close_rel) = content[open_at..].find(CLOSE) else {
-            // 没有结束标签 = 半截调用，正文原样保留（和 invoke 那套的处理保持一致）
+            // No closing tag = a half call, keep the body verbatim (consistent with how the invoke case is handled)
             break;
         };
         let body_end = open_at + close_rel;
         let body = &content[open_at + OPEN.len()..body_end];
 
-        // 只认声明过的工具；认不出就不执行
+        // Only recognize declared tools; don't execute if unrecognized
         let parsed = serde_json::from_str::<Value>(body.trim()).ok();
         let name = parsed
             .as_ref()
@@ -620,14 +620,14 @@ fn extract_json_style_tool_calls(content: &str) -> (Vec<AiToolCall>, String) {
         if declared {
             let mut arguments = serde_json::Map::new();
             if let Some(raw) = parsed.as_ref().and_then(|value| value.get("arguments")) {
-                // arguments 既可能是对象，也可能是（OpenAI 风格的）JSON 字符串
+                // arguments may be an object or a (OpenAI-style) JSON string
                 let object = match raw {
                     Value::String(text) => serde_json::from_str::<Value>(text).ok(),
                     other => Some(other.clone()),
                 };
                 if let Some(Value::Object(map)) = object {
                     for (key, value) in map {
-                        // 和 invoke 那套用同一份别名映射，避免两套解析器对参数名理解不一致
+                        // Use the same alias map as the invoke path, to avoid the two parsers disagreeing on parameter names
                         if let Some(canonical) = canonical_argument(&name, &key) {
                             arguments.insert(canonical.to_string(), value);
                         }
@@ -641,7 +641,7 @@ fn extract_json_style_tool_calls(content: &str) -> (Vec<AiToolCall>, String) {
             });
         }
 
-        // 无论认不认得，这段 `<tool_call>` 都不能留在正文里 —— 它不是给人看的内容
+        // Whether recognized or not, this `<tool_call>` must not stay in the body — it's not content meant for humans
         remaining.push_str(&content[cursor..open_at]);
         cursor = body_end + CLOSE.len();
     }
@@ -650,12 +650,12 @@ fn extract_json_style_tool_calls(content: &str) -> (Vec<AiToolCall>, String) {
     (calls, remaining)
 }
 
-/// 从正文里认出内联的工具调用，返回 (调用列表, 清理过的正文)。
+/// Recognizes inline tool calls in the body, returning (list of calls, cleaned body).
 ///
-/// 支持两种写法：`<invoke name="x"><parameter name="y">…</parameter></invoke>`（含 DSML 变体），
-/// 以及 `<tool_call>{"name":…, "arguments":…}</tool_call>`（Hermes 系 JSON 文本）。
+/// Supports two forms: `<invoke name="x"><parameter name="y">…</parameter></invoke>` (including DSML variants),
+/// and `<tool_call>{"name":…, "arguments":…}</tool_call>` (Hermes-style JSON text).
 pub fn extract_inline_tool_calls(content: &str) -> (Vec<AiToolCall>, String) {
-    // 先把 DeepSeek 的 DSML 标记归一化成标准形状，后面就只需要一套解析器
+    // First normalize DeepSeek's DSML markup into the standard shape, so only one parser is needed afterwards
     let normalized = normalize_dsml(content);
     let content = normalized.as_str();
 
@@ -665,14 +665,14 @@ pub fn extract_inline_tool_calls(content: &str) -> (Vec<AiToolCall>, String) {
 
     while let Some(open) = content[cursor..].find("<invoke") {
         let open_at = cursor + open;
-        // 开标签连 '>' 都没有：后面不可能再出现完整调用，剩下的正文交给循环外收尾
+        // If the opening tag doesn't even have '>': no complete call can follow, let the code outside the loop finish the remaining body
         let Some(tag_end) = content[open_at..].find('>').map(|relative| open_at + relative) else {
             break;
         };
         let name = attribute(&content[open_at..tag_end], "name");
-        // 结束标签同样必须在 —— 缺 name 或缺结束标签，都说明这段不构成调用。
-        // ⚠️ 这时**必须把开标签之前的正文原样补回去**：早先这里只推进 cursor 不补正文，
-        // 模型吐了半个标签的时候，它前面那整段正文会被静默丢掉（而这段是要显示、也要入库的）。
+        // The closing tag must also be present — missing name or missing closing tag both mean this isn't a call.
+        // ⚠️ Here you **must restore the body before the opening tag verbatim**: earlier, this spot only advanced cursor without restoring the body,
+        // so when the model emitted half a tag, the entire body before it was silently dropped (and that body must be displayed and stored).
         let (Some(name), Some(close_rel)) = (name, content[tag_end..].find("</invoke>")) else {
             remaining.push_str(&content[cursor..=tag_end]);
             cursor = tag_end + 1;
@@ -682,7 +682,7 @@ pub fn extract_inline_tool_calls(content: &str) -> (Vec<AiToolCall>, String) {
         let body = &content[tag_end + 1..body_end];
         let block_end = body_end + "</invoke>".len();
 
-        // 只认声明过的工具；不认识的整段丢弃（它既不该执行，也不该显示）
+        // Only recognize declared tools; discard the whole block for unrecognized ones (neither executed nor displayed)
         if matches!(
             name.as_str(),
             TOOL_SELECT_ITEMS | TOOL_PROPOSE_DELETE | TOOL_READ_ITEMS | TOOL_READ_ITEM_DETAIL
@@ -708,30 +708,30 @@ pub fn extract_inline_tool_calls(content: &str) -> (Vec<AiToolCall>, String) {
             });
         }
 
-        // 正文里保留前面已确定的部分，跳过整段调用（含前面那行提示语之外的内容自己处理）
+        // Keep the part of the body already determined, skip the whole call block (content other than the leading hint line is handled separately)
         remaining.push_str(&content[cursor..open_at]);
         cursor = block_end;
     }
     remaining.push_str(&content[cursor..]);
 
-    // 第二遍：`<tool_call>{json}</tool_call>` 形式（Hermes 系）。放在后面是因为
-    // 它和 `<invoke>` 的块结构完全不同，各自一套扫描比混在一个循环里好读也好测。
+    // Second pass: the `<tool_call>{json}</tool_call>` form (Hermes-style). Placed later because
+    // its block structure is completely different from `<invoke>`; a separate scan for each is easier to read and test.
     let (json_calls, remaining) = extract_json_style_tool_calls(&remaining);
     calls.extend(json_calls);
 
-    // 只压掉"剔除调用块"留下的多余空行。**不能一路 filter 掉所有空行** ——
-    // 那会把正文自己本来就有的空行也删掉，Markdown 的段落分隔就没了。
+    // Only collapse the extra blank lines left by "removing call blocks". **Do not filter out all blank lines** —
+    // that would also delete the body's own blank lines, removing Markdown's paragraph separators.
     (calls, collapse_blank_lines(&remaining).trim().to_string())
 }
 
-/// 把连续空行压成一个：剔除调用块之后容易留下成片空白。
+/// Collapses consecutive blank lines into one: removing call blocks tends to leave stretches of whitespace.
 fn collapse_blank_lines(text: &str) -> String {
     let mut lines: Vec<&str> = Vec::new();
     let mut consecutive_blank = 0usize;
     for line in text.lines() {
         if line.trim().is_empty() {
             consecutive_blank += 1;
-            // 最多留一个空行，多出来的直接不要
+            // Keep at most one blank line, discard the rest
             if consecutive_blank > 1 {
                 continue;
             }
@@ -743,13 +743,13 @@ fn collapse_blank_lines(text: &str) -> String {
     lines.join("\n")
 }
 
-/// 从标签里取属性值，支持双引号与单引号。
+/// Gets an attribute value from a tag, supporting double and single quotes.
 ///
-/// ⚠️ 必须按**属性名边界**查找：直接 `find("name=")` 会被 `username=`、`data-name=`
-/// 这类属性命中，把它们的值当成 name。
+/// ⚠️ Must look up by **attribute-name boundary**: a direct `find("name=")` would match `username=` or `data-name=`
+/// and take their values as name.
 fn attribute(tag: &str, key: &str) -> Option<String> {
     let needle = format!("{}=", key);
-    // 从前往后逐个候选位置试，只接受"前面是空白、或者就在标签开头"的那个
+    // Try each candidate position from the front, accepting only the one "preceded by whitespace or at the very start of the tag"
     let mut search_from = 0usize;
     let start = loop {
         let found = tag[search_from..].find(&needle)? + search_from;

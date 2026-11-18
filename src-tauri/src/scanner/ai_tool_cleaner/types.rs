@@ -1,42 +1,42 @@
-//! AI 工具清理的数据结构。
+//! Data structures for AI tool cleanup.
 //!
-//! 只放 serde 结构体，不放逻辑 —— 前端 `src/types/aiToolCleanup.ts` 与本文件一一对应。
+//! Only serde structs, no logic — the frontend `src/types/aiToolCleanup.ts` corresponds one-to-one with this file.
 
 use serde::Serialize;
 
 use crate::scanner::reparse::LinkInfo;
 
-/// 单个缓存目录的统计结果。
+/// Statistics for a single cache directory.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AiCacheEntry {
-    /// 目录名（用于界面展示，如 "Cache" / "media_cache"）
+    /// Directory name (for UI display, e.g. "Cache" / "media_cache")
     pub name: String,
     pub path: String,
     pub size: u64,
     pub file_count: usize,
-    /// 这条路径上有没有 junction / symlink（用 FolderMove 之类把目录搬到别的盘之后，
-    /// 原地留下的是链接）。有值时界面要同时显示**真实落点**，否则用户看到 `C:\...`
-    /// 会以为自己 C 盘被占了这么多。没有链接时不序列化，省得前端到处判空对象。
+    /// Whether this path has a junction / symlink (after moving a directory to another drive with a tool like FolderMove,
+    /// a link is left in place). When present, the UI must also show the **real landing location**, otherwise users seeing `C:\...`
+    /// would think their C drive is occupied that much. When there is no link, do not serialize it, so the frontend does not have to check for empty objects everywhere.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub link: Option<LinkInfo>,
 }
 
-/// 缓存目录里的单个文件，供明细弹窗按需拉取。
+/// A single file in a cache directory, fetched on demand by the detail modal.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AiCacheFile {
     pub path: String,
     pub size: u64,
-    /// 最后修改时间（Unix 秒）。明细弹窗的「按修改时间排序」用它；
-    /// 读不到按 0 传，排序时垫底。
+    /// Last modification time (Unix seconds). Used by the detail modal's "sort by modification time";
+    /// pass 0 if unreadable, so it sorts last.
     pub modified_time: u64,
 }
 
-/// 明细弹窗的文件列表。
+/// File list for the detail modal.
 ///
-/// `truncated` 是必须的：目录规模不可控，截断后不告诉用户，
-/// 他会以为"就这么多文件"，和大小的差距对不上。
+/// `truncated` is required: directory size is unpredictable, and if truncated without telling the user,
+/// they would think "that is all the files", which would not match the size.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AiCacheFileList {
@@ -44,7 +44,7 @@ pub struct AiCacheFileList {
     pub truncated: bool,
 }
 
-/// 一个工具的汇总。界面按工具分组展示，用户先看到"哪个工具占了多少"。
+/// Summary for one tool. The UI groups by tool so users first see "how much each tool occupies".
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AiToolGroup {
@@ -52,7 +52,7 @@ pub struct AiToolGroup {
     pub tool_name: String,
     pub total_size: u64,
     pub file_count: usize,
-    /// 该工具下命中的缓存目录，按体积从大到小
+    /// Matched cache directories for this tool, sorted by size descending
     pub entries: Vec<AiCacheEntry>,
 }
 
@@ -64,10 +64,10 @@ pub struct AiToolScanResult {
     pub total_files: usize,
 }
 
-/// 单个删除失败的目录。
+/// A single directory that failed to delete.
 ///
-/// 必须带原因：工具开着时缓存文件被占用是最常见的失败场景，
-/// 界面要能说清"是没删掉，不是没东西可删"。
+/// Must include a reason: cache files being in use while a tool is running is the most common failure scenario,
+/// so the UI must make clear "it was not deleted, not that there was nothing to delete".
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AiCacheDeleteFailure {
@@ -75,12 +75,12 @@ pub struct AiCacheDeleteFailure {
     pub reason: String,
 }
 
-/// 批量删除的结果。
+/// Result of a batch deletion.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AiCacheDeleteResult {
-    /// 成功删掉的目录数
+    /// Number of directories successfully deleted
     pub deleted: usize,
-    /// 没删掉的目录及原因
+    /// Directories not deleted and their reasons
     pub failed: Vec<AiCacheDeleteFailure>,
 }

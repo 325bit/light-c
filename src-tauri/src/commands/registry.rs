@@ -1,5 +1,5 @@
 // ============================================================================
-// 注册表和右键菜单清理命令
+// Registry and context-menu cleanup commands
 // ============================================================================
 
 use crate::scanner::{
@@ -8,10 +8,10 @@ use crate::scanner::{
 use log::info;
 
 // ============================================================================
-// 注册表冗余
+// Registry junk
 // ============================================================================
 
-/// 扫描注册表冗余
+/// Scan registry junk
 #[tauri::command]
 pub async fn scan_registry_redundancy() -> Result<RegistryScanResult, String> {
     info!("开始扫描注册表冗余...");
@@ -28,7 +28,7 @@ pub async fn scan_registry_redundancy() -> Result<RegistryScanResult, String> {
     Ok(result)
 }
 
-/// 备份并删除注册表条目
+/// Back up and delete registry entries
 #[tauri::command]
 pub async fn delete_registry_entries(
     entries: Vec<RegistryEntry>,
@@ -77,7 +77,7 @@ pub async fn delete_registry_entries(
     Ok(result)
 }
 
-/// 打开注册表备份目录
+/// Open the registry backup directory
 #[tauri::command]
 pub async fn open_registry_backup_dir() -> Result<(), String> {
     let backup_dir = RegistryBackup::get_backup_dir();
@@ -96,10 +96,10 @@ pub async fn open_registry_backup_dir() -> Result<(), String> {
 }
 
 // ============================================================================
-// 右键菜单
+// Context menu
 // ============================================================================
 
-/// 扫描 Windows 注册表中的右键菜单条目
+/// Scan context-menu entries in the Windows registry
 #[tauri::command]
 pub async fn scan_context_menu() -> Result<crate::scanner::ContextMenuScanResult, String> {
     use crate::scanner::ContextMenuScanner;
@@ -123,7 +123,7 @@ pub async fn scan_context_menu() -> Result<crate::scanner::ContextMenuScanResult
     Ok(result)
 }
 
-/// 删除选中的右键菜单注册表条目
+/// Delete selected context-menu registry entries
 #[tauri::command]
 pub async fn delete_context_menu_entries(
     entries: Vec<crate::scanner::ContextMenuDeleteRequest>,
@@ -144,10 +144,10 @@ pub async fn delete_context_menu_entries(
     Ok(result)
 }
 
-/// 打开右键菜单的注册表备份目录。
+/// Open the registry backup directory for context menus.
 ///
-/// 误删之后唯一的恢复手段就是这里面的 `.reg` 文件 —— 用户得能找得到它，
-/// 而不是听一句"已备份"然后自己去 AppData 里翻。
+/// The only way to recover after an accidental deletion is the `.reg` files in here — users must be able to find them,
+/// rather than hearing "backed up" and then having to hunt through AppData themselves.
 #[tauri::command]
 pub async fn open_context_menu_backup_dir() -> Result<(), String> {
     let backup_dir = crate::scanner::context_menu_backup_dir();

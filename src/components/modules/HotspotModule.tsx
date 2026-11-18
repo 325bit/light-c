@@ -2,8 +2,8 @@ import { useAiModuleBridge } from '../ai/useAiModuleBridge';
 import { AiAskButton } from '../ai/AiAskButton';
 import { buildItemQuestion } from '../ai/aiQuestions';
 // ============================================================================
-// 大目录分析模块
-// 深度分析 AppData 目录，定位占用空间的元凶
+// Big directory analysis module
+// Deep-analyzes the AppData directory to pinpoint what's eating space
 // ============================================================================
 
 import { useState, useCallback, useEffect, useRef } from 'react';
@@ -35,15 +35,15 @@ import { DrillDownModal } from './DrillDownModal';
 import type { ModuleRenderProps } from './moduleProps';
 
 // ============================================================================
-// 工具函数
+// Utility functions
 // ============================================================================
 
 /**
- * 格式化时间戳为 YYYY-MM-DD HH:mm
+ * Format a timestamp as YYYY-MM-DD HH:mm
  */
 function formatDateTime(timestamp: number): string {
   if (!timestamp) return '-';
-  // MFT 引擎返回 Unix 秒，常规遍历返回毫秒；这里做兼容，避免秒级时间戳被解析到 1970 年。
+  // The MFT engine returns Unix seconds, regular traversal returns milliseconds; normalize here to avoid second-level timestamps being read as 1970.
   const normalizedTimestamp = timestamp < 10_000_000_000 ? timestamp * 1000 : timestamp;
   const date = new Date(normalizedTimestamp);
   if (Number.isNaN(date.getTime())) return '-';
@@ -56,23 +56,23 @@ function formatDateTime(timestamp: number): string {
 }
 
 /**
- * 中间省略长路径
- * 例如: C:\Users\xxx\AppData\Local\VeryLongFolderName -> C:\Users\...\VeryLongFolderName
+ * Ellipsize the middle of a long path
+ * e.g.: C:\Users\xxx\AppData\Local\VeryLongFolderName -> C:\Users\...\VeryLongFolderName
  */
 function middleEllipsis(path: string, maxLength: number = 45): string {
   if (path.length <= maxLength) return path;
   
   const parts = path.split('\\');
   if (parts.length <= 3) {
-    // 路径太短，直接截断
+    // Path is too short, just truncate
     return path.slice(0, maxLength - 3) + '...';
   }
   
-  // 保留前两部分和最后一部分
+  // Keep the first two parts and the last part
   const start = parts.slice(0, 2).join('\\');
   const end = parts[parts.length - 1];
   
-  // 如果结尾部分太长，也需要截断
+  // If the tail is too long, truncate it too
   const availableForEnd = maxLength - start.length - 5; // 5 = "\\...\\".length
   const truncatedEnd = end.length > availableForEnd 
     ? end.slice(0, availableForEnd - 3) + '...'
@@ -87,8 +87,8 @@ function formatDuration(ms?: number): string {
 }
 
 function getProgressStageLabel(stage?: string): string {
-  // 传空盘符做兜底：阶段文案里若带 {{drive}} 占位符，缺参数时会被替换成空串，
-  // 而不是把 "{{drive}}" 原样显示出来。热点扫描的进度事件不带盘符，实际用不到该占位符。
+  // Pass an empty drive letter as a fallback: if the stage text contains a {{drive}} placeholder, a missing param becomes an empty string,
+  // instead of showing "{{drive}}" verbatim. Hotspot scan progress events carry no drive letter, so the placeholder is unused in practice.
   return i18n.t(`scanStages.${stage || 'scanning'}`, {
     ns: 'common',
     drive: '',
@@ -97,7 +97,7 @@ function getProgressStageLabel(stage?: string): string {
 }
 
 /**
- * 获取父目录类型的显示颜色
+ * Get the display color for a parent directory type
  */
 function getParentTypeColor(type: string): string {
   switch (type) {
@@ -122,12 +122,12 @@ function getParentTypeColor(type: string): string {
 }
 
 /**
- * 在热区结果里按路径找条目（递归整棵树，含子目录）。
+ * Find an entry by path in hotspot results (recurses the whole tree, including subdirectories).
  *
- * 中文说明：read_items 只列出顶级条目，但模型常会顺着上一条详情里的子目录路径继续追问，
- * 而子目录数据本来就在内存里（后端对超大目录做了智能下钻），所以必须递归找。
- * 命中判据取"路径前缀最长"的那一条：它同时覆盖精确相等，也能兜住模型把行尾的大小、
- * 文件数说明一起当成路径带过来的情况；取最长是为了避免认成更上层的祖先目录。
+ * Note: read_items lists only top-level entries, but the model often follows up on subdirectory paths from a previous detail,
+ * and that subdirectory data is already in memory (the backend does smart drill-down for huge dirs), so we must search recursively.
+ * The match criterion is the one with the **longest path prefix**: this also covers exact equality and tolerates the model passing trailing size
+ * and file-count text along as part of the path; taking the longest avoids mistaking a higher-level ancestor for the match.
  */
 function findHotspotEntry(entries: HotspotEntry[], wanted: string): HotspotEntry | null {
   let best: HotspotEntry | null = null;
@@ -142,11 +142,11 @@ function findHotspotEntry(entries: HotspotEntry[], wanted: string): HotspotEntry
 }
 
 /**
- * 把一条热区目录渲染成给模型看的详情文本。
+ * Render a hotspot directory as detail text for the model.
  *
- * 中文说明：只吐内存里已有的字段 —— 这些数字界面上本来就展示，模型照着念不会和用户
- * 看到的不一致。子目录一条不落地列出：后端只对超大目录做智能下钻，每层本来就只给
- * 几个，再截断就把"哪个子目录最占地方"这个用户最常问的答案切掉了。
+ * Note: only emit fields already in memory — these numbers are shown in the UI anyway, so the model reading them can't disagree with what the user
+ * sees. List every subdirectory without truncation: the backend only smart-drills huge dirs and gives a few per level anyway; truncating further
+ * would cut the answer to the user's most common question, "which subdirectory takes the most space".
  */
 function buildHotspotEntryDetail(entry: HotspotEntry): string {
   const flags = [
@@ -174,8 +174,8 @@ function buildHotspotEntryDetail(entry: HotspotEntry): string {
       ),
     );
   } else {
-    // ⚠️ "没有子目录"必须**说出来**。不说的话模型会以为"还没读到"，
-    // 于是反复调用 read_items 去要同一份数据，直到轮次用尽、一句结论都没有（实测踩过）。
+    // ⚠️ "No subdirectories" must be **said out loud**. Otherwise the model thinks "not read yet",
+    // so it repeatedly calls read_items for the same data until rounds run out with no conclusion (hit in practice).
     lines.push(
       '',
       '子目录：无（这一层已经到底了）。',
@@ -187,47 +187,47 @@ function buildHotspotEntryDetail(entry: HotspotEntry): string {
 }
 
 // ============================================================================
-// 大目录分析条目组件
+// Big directory analysis entry component
 // ============================================================================
 
 interface HotspotItemProps {
   entry: HotspotEntry;
   rank: number;
   maxSize: number;
-  isFullScan: boolean; // 是否为深度扫描模式
+  isFullScan: boolean; // Whether this is deep scan mode
   onOpenFolder: (path: string) => void;
   onCleanup: (entry: HotspotEntry) => void;
   onSearch: (path: string) => void;
-  /** 父目录名称（用于路径简写展示） */
+  /** Parent directory name (for abbreviated path display) */
   parentName?: string;
-  /** 是否为子目录（下钻结果） */
+  /** Whether this is a subdirectory (drill-down result) */
   isChild?: boolean;
-  /** 当前在树中的绝对深度（0=顶级） */
+  /** Absolute depth in the tree (0 = top level) */
   treeDepth?: number;
-  /** 下钻回调：点击后进入 drilldown 模式 */
+  /** Drill-down callback: click to enter drilldown mode */
   onDrillDown?: (path: string) => void;
 }
 
 function HotspotItem({ entry, rank, maxSize, isFullScan, onOpenFolder, onCleanup, onSearch, parentName, isChild, treeDepth = 0, onDrillDown }: HotspotItemProps) {
   const { t: moduleT } = useTranslation('modules');
   const { settings } = useSettings();
-  // 子目录默认折叠：一次扫描可能带出上百行，默认全展开会让用户先看到一大片层级噪音。
-  // 这里按行各自记录展开状态（手风琴是过渡形式，不是"同时只允许一行展开"），用户自己控制看哪一支。
+  // Subdirectories are collapsed by default: one scan can yield hundreds of rows, and expanding all by default shows a wall of hierarchy noise.
+  // Expansion state is tracked per row (accordion is a transition, not "only one row open at a time"); the user chooses which branch to view.
   const [isChildrenExpanded, setIsChildrenExpanded] = useState(false);
-  // 根据用户设置的展示深度动态控制树形展开层数：treeDepth 0 为顶级，settings.hotspotDepth 限制最多展示层数
+  // Dynamically control the number of expanded tree levels from the user's display depth setting: treeDepth 0 is top level, settings.hotspotDepth caps the levels
   const maxTreeDepth = settings.hotspotDepth;
-  // 是否还有可展开的下一层：到达深度上限后改由下钻弹窗承接
+  // Whether there is a deeper level to expand: once the depth cap is reached, the drill-down modal takes over
   const hasNestedChildren = treeDepth < maxTreeDepth - 1 && Boolean(entry.children?.length);
-  // 计算占比条宽度
+  // Calculate the percentage bar width
   const percentage = maxSize > 0 ? (entry.total_size / maxSize) * 100 : 0;
   
-  // 【安全措施】深度扫描模式下，或者 is_safe_to_clean 为 false 时，禁用清理按钮
+  // [Safety measure] Disable the cleanup button in deep-scan mode, or when is_safe_to_clean is false
   const canCleanup = !isFullScan && entry.is_safe_to_clean && entry.is_cache && !entry.is_program && !entry.is_protected;
   
-  // 生成路径简写：父目录 > 子目录
+  // Build the abbreviated path: parent directory > subdirectory
   const displayName = parentName ? `${parentName} > ${entry.name}` : entry.name;
   
-  // 树形结构渐进缩进：每层递进 24px，随用户设置的深度动态调整上限
+  // Progressive indentation for the tree: 24px per level, with the cap adjusted dynamically by the user's depth setting
   const indentStyle = treeDepth > 0
     ? { paddingLeft: `${Math.min(treeDepth, maxTreeDepth) * 24}px`, borderLeft: '2px solid var(--border-color)' }
     : {};
@@ -235,27 +235,27 @@ function HotspotItem({ entry, rank, maxSize, isFullScan, onOpenFolder, onCleanup
   const toggleChildren = () => setIsChildrenExpanded((current) => !current);
 
   /**
-   * 判断点击是否落在行内的按钮上。
-   * 右侧下钻/清理/搜索/打开各自已有独立行为，整行点击不能把它们吞掉，
-   * 否则会出现"点清理却只展开列表"这类误操作；子行里的按钮冒泡到父行时同样要放行。
-   * 只匹配 button/a/表单控件，不匹配 [role="button"]：行自身为了键盘可达也带 role="button"，
-   * 把它算进来会导致整行点击反而被判定成"点在按钮上"而失效。
+   * Determine whether a click landed on a button inside the row.
+   * Drill-down/cleanup/search/open on the right each have their own behavior; a whole-row click must not swallow them,
+   * otherwise you get mistakes like "clicked cleanup but only expanded the list"; buttons in child rows bubbling to the parent must also pass through.
+   * Match only button/a/form controls, not [role="button"]: the row itself carries role="button" for keyboard accessibility,
+   * and counting it would make whole-row clicks be misjudged as "clicked on a button" and fail.
    */
   const isInteractiveTarget = (target: EventTarget | null) => (
     target instanceof Element
     && Boolean(target.closest('button, a, input, select, textarea'))
   );
 
-  /** 整行点击展开/折叠：只对有下级的行生效，没有下级时保持纯展示，不产生误导性的可点观感。 */
+  /** Whole-row click to expand/collapse: only affects rows with children; childless rows stay purely informational, with no misleading clickable look. */
   const handleRowClick = (event: React.MouseEvent<HTMLDivElement>) => {
     if (!hasNestedChildren || isInteractiveTarget(event.target)) return;
-    // 用户正在选中路径文本时不触发折叠，避免复制路径时列表突然收起。
-    // 注意顺序：按钮先放行，否则"选中文字后点按钮"会因为选中态而点不动按钮。
+    // Don't collapse while the user is selecting path text, to avoid the list suddenly folding while copying a path.
+    // Order matters: let buttons pass first, otherwise "select text then click a button" won't click the button due to the selection state.
     if (window.getSelection()?.toString()) return;
     toggleChildren();
   };
 
-  /** 键盘可达：Enter / Space 等价于点击整行 */
+  /** Keyboard accessible: Enter / Space is equivalent to clicking the whole row */
   const handleRowKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
     if (!hasNestedChildren || event.target !== event.currentTarget) return;
     if (event.key !== 'Enter' && event.key !== ' ') return;
@@ -277,8 +277,8 @@ function HotspotItem({ entry, rank, maxSize, isFullScan, onOpenFolder, onCleanup
         } ${
         entry.is_protected ? 'border border-[var(--hotspot-danger-border)]' : ''
       } ${isChild ? 'bg-opacity-50' : ''}`}>
-      {/* 占比背景条。危险目录用 `--hotspot-danger-fill`（主题变量，明暗各一份）——
-          不要用 `bg-red-100 dark:…`：本项目没启用 dark 变体，深色下会命中浅色的红 ✗ */}
+      {/* Percentage background bar. Dangerous dirs use `--hotspot-danger-fill` (theme variable, one for light and one for dark) —
+          do not use `bg-red-100 dark:…`: this project doesn't enable the dark variant, so in dark mode it picks the light red ✗ */}
       <div 
         className={`absolute inset-0 rounded-xl opacity-50 transition-all ${
           entry.is_protected ? 'bg-[var(--hotspot-danger-fill)]' : 'bg-[var(--brand-green-10)]'
@@ -287,8 +287,8 @@ function HotspotItem({ entry, rank, maxSize, isFullScan, onOpenFolder, onCleanup
       />
       
       <div className="relative flex items-center gap-3">
-        {/* 展开/折叠指示：整行都可点击，这里只承担"有下级/已展开"的视觉提示。
-            去掉 click 处理，避免和整行点击叠加成一次点击切换两次。 */}
+        {/* Expand/collapse indicator: the whole row is clickable; this is only the visual cue for "has children / expanded".
+            No click handler here, to avoid stacking with the whole-row click and toggling twice on one click. */}
         {hasNestedChildren && (
           <span
             className="flex-shrink-0 flex items-center gap-1 px-1.5 py-1 rounded-lg text-[var(--text-muted)]"
@@ -301,7 +301,7 @@ function HotspotItem({ entry, rank, maxSize, isFullScan, onOpenFolder, onCleanup
           </span>
         )}
 
-        {/* 文件夹徽标：用文件夹作为主视觉，序号作为角标，避免纯序号块和树线抢视觉焦点。 */}
+        {/* Folder badge: use a folder as the main visual and the rank as a corner badge, avoiding a plain rank block competing with the tree lines. */}
         <div className="flex-shrink-0 relative w-10 h-9 flex items-center justify-center">
           <div className={`relative w-9 h-7 rounded-md shadow-sm ${
             entry.is_protected
@@ -326,13 +326,13 @@ function HotspotItem({ entry, rank, maxSize, isFullScan, onOpenFolder, onCleanup
           </span>
         </div>
         
-        {/* 文件夹信息 */}
+        {/* Folder info */}
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 flex-wrap">
             <span className="font-medium text-sm text-[var(--text-primary)] truncate">
               {isChild ? displayName : entry.name}
             </span>
-            {/* 下钻深度指示器 */}
+            {/* Drill-down depth indicator */}
             {entry.depth > 0 && (
               <span className="flex-shrink-0 text-[0.71rem] px-1.5 py-0.5 rounded status-chip text-purple-500">
                 L{entry.depth}
@@ -341,28 +341,28 @@ function HotspotItem({ entry, rank, maxSize, isFullScan, onOpenFolder, onCleanup
             <span className={`flex-shrink-0 text-[0.71rem] px-1.5 py-0.5 rounded ${getParentTypeColor(entry.parent_type)}`}>
               {entry.parent_type}
             </span>
-            {/* 系统保护目录标签 - 深度扫描时显示 */}
+            {/* System-protected directory tag - shown during deep scan */}
             {entry.is_protected && (
               <span className="flex-shrink-0 flex items-center gap-0.5 text-[0.71rem] px-1.5 py-0.5 rounded status-chip text-red-500">
                 <Shield className="w-3 h-3" />
                 {moduleT('hotspot.systemProtected')}
               </span>
             )}
-            {/* 程序目录标签 - 红色警告，禁止删除 */}
+            {/* Program directory tag - red warning, deletion forbidden */}
             {entry.is_program && !entry.is_protected && (
               <span className="flex-shrink-0 flex items-center gap-0.5 text-[0.71rem] px-1.5 py-0.5 rounded status-chip text-red-500">
                 <ShieldAlert className="w-3 h-3" />
                 {moduleT('hotspot.systemProgram')}
               </span>
             )}
-            {/* 缓存目录标签 - 建议清理（仅非深度扫描模式显示） */}
+            {/* Cache directory tag - recommended for cleanup (only shown in non-deep-scan mode) */}
             {entry.is_cache && !entry.is_program && !entry.is_protected && !isFullScan && (
               <span className="flex-shrink-0 flex items-center gap-0.5 text-[0.71rem] px-1.5 py-0.5 rounded status-chip text-orange-500">
                 <Trash2 className="w-3 h-3" />
                 {moduleT('hotspot.temporaryCache')}
               </span>
             )}
-            {/* 深度扫描只读提示 */}
+            {/* Deep-scan read-only hint */}
             {isFullScan && !entry.is_protected && (
               <span className="flex-shrink-0 flex items-center gap-0.5 text-[0.71rem] px-1.5 py-0.5 rounded status-chip text-blue-500">
                 <Eye className="w-3 h-3" />
@@ -378,30 +378,30 @@ function HotspotItem({ entry, rank, maxSize, isFullScan, onOpenFolder, onCleanup
           </div>
         </div>
         
-        {/* 统计信息 */}
+        {/* Statistics */}
         <div className="flex-shrink-0 flex items-center gap-4 text-xs">
-          {/* 文件数 */}
+          {/* File count */}
           <div className="hidden sm:flex items-center gap-1 text-[var(--text-muted)]">
             <HardDrive className="w-3 h-3" />
             <span>{moduleT('hotspot.fileCount', { count: entry.file_count.toLocaleString() })}</span>
           </div>
           
-          {/* 最后修改时间 */}
+          {/* Last modified time */}
           <div className="hidden md:flex items-center gap-1 text-[var(--text-muted)]">
             <Clock className="w-3 h-3" />
             <span>{formatDateTime(entry.last_modified)}</span>
           </div>
           
-          {/* 大小 */}
+          {/* Size */}
           <div className={`font-semibold min-w-[5.0rem] text-right ${
             entry.is_protected ? 'text-red-500' : 'text-[var(--brand-green)]'
           }`}>
             {formatSize(entry.total_size)}
           </div>
           
-          {/* 操作按钮组 */}
+          {/* Action button group */}
           <div className="flex items-center gap-1">
-            {/* 下钻按钮 — 始终显示，已展示3个子节点时用户可能还想继续探索 */}
+            {/* Drill-down button — always shown; after 3 children are displayed the user may still want to explore further */}
             {onDrillDown && (
               <button
                 onClick={(e) => {
@@ -415,7 +415,7 @@ function HotspotItem({ entry, rank, maxSize, isFullScan, onOpenFolder, onCleanup
               </button>
             )}
 
-            {/* 清理按钮 - 仅在非深度扫描模式且可清理时显示 */}
+            {/* Cleanup button - only shown in non-deep-scan mode and when cleanable */}
             {canCleanup && (
               <button
                 onClick={(e) => {
@@ -429,7 +429,7 @@ function HotspotItem({ entry, rank, maxSize, isFullScan, onOpenFolder, onCleanup
               </button>
             )}
             
-            {/* 搜索按钮 - 搜索该文件夹是否可以删除 全路径用.path，文件夹名称用.name */}
+            {/* Search button - check whether this folder can be deleted; use .path for the full path, .name for the folder name */}
             <button
               onClick={(e) => {
                 e.stopPropagation();
@@ -440,13 +440,13 @@ function HotspotItem({ entry, rank, maxSize, isFullScan, onOpenFolder, onCleanup
             >
               <Search className="w-4 h-4" />
             </button>
-            {/* 快捷提问：与大目录分析里的搜索按钮同级，行为保持一致 */}
+            {/* Quick question: at the same level as the search button in big directory analysis, behavior kept consistent */}
             <AiAskButton
               question={buildItemQuestion(entry.path, 'folder')}
               className="inline-flex h-7 w-7 items-center justify-center"
             />
             
-            {/* 打开文件夹按钮 */}
+            {/* Open folder button */}
             <button
               onClick={(e) => {
                 e.stopPropagation();
@@ -462,10 +462,10 @@ function HotspotItem({ entry, rank, maxSize, isFullScan, onOpenFolder, onCleanup
       </div>
       </div>
       
-      {/* 递归渲染子目录 — 默认折叠，展开时用手风琴过渡；最多展示 maxTreeDepth 层树形结构 */}
+      {/* Recursively render subdirectories — collapsed by default, with an accordion transition when expanded; up to maxTreeDepth levels of tree */}
       {hasNestedChildren && (
-        // 缩进与树线放在动画容器外层：AccordionContent 需要 overflow:hidden，
-        // 若边框和左内边距放在里面会被裁掉。
+        // Put indentation and the tree line outside the animation container: AccordionContent needs overflow:hidden,
+        // so a border and left padding inside would be clipped.
         <div
           className="mt-1"
           style={{ paddingLeft: `${Math.min(treeDepth + 1, maxTreeDepth) * 24}px`, borderLeft: '2px solid var(--border-color)' }}
@@ -497,7 +497,7 @@ function HotspotItem({ entry, rank, maxSize, isFullScan, onOpenFolder, onCleanup
 }
 
 // ============================================================================
-// 主组件
+// Main component
 // ============================================================================
 
 export function HotspotModule({ isPageActive = true }: ModuleRenderProps) {
@@ -514,21 +514,21 @@ export function HotspotModule({ isPageActive = true }: ModuleRenderProps) {
   const cancelRequestedRef = useRef(false);
   const scanRunIdRef = useRef(0);
 
-  // 本地状态
+  // Local state
   const [scanResult, setScanResult] = useState<HotspotScanResult | null>(null);
-  // 接入 AI 助手（**只读**：大目录分析只做分析，不提供删除动作）。
+  // Hook up the AI assistant (**read-only**: big directory analysis only analyzes, no delete action).
   useAiModuleBridge('hotspot', {
-    // 只读读取：让助手能"往下看"到底有哪些条目（一次一页，由模型决定要不要继续）。
+    // Read-only read: lets the assistant "look deeper" at what entries exist (one page at a time, model decides whether to continue).
     readItems: (targetId, offset, limit) => {
       const all = scanResult?.entries ?? [];
-      // ⚠️ **必须认 targetId**：用户问的是"这个文件夹里有什么"，
-      // 只回顶层列表等于没回答，模型会反复调用去要同一份东西，直到轮次用尽、
-      // 一句结论都没有（实测踩过）。给了 targetId 就读那一条的**子目录**。
+      // ⚠️ **Must honor targetId**: the user is asking "what's in this folder",
+      // replying with only the top-level list is no answer; the model will repeatedly request the same thing until rounds run out
+      // with no conclusion (hit in practice). When targetId is given, read that entry's **subdirectories**.
       const wanted = targetId.trim();
       const list = wanted ? (findHotspotEntry(all, wanted)?.children ?? []) : all;
       if (list.length === 0) {
         if (!wanted) return null;
-        // 说清"这儿没有下一层"，否则模型会一直要
+        // Say clearly "there is no deeper level here", otherwise the model will keep asking
         return {
           total: 0,
           lines: [
@@ -544,8 +544,8 @@ export function HotspotModule({ isPageActive = true }: ModuleRenderProps) {
         ),
       };
     },
-    // 只读：单条详情。itemId 就是 read_items 里行首那个完整路径 ——
-    // 找不到时返回 null，让公共层统一说明"没有读到内容"，不在这里编理由。
+    // Read-only: single-item detail. itemId is the full path at the start of a read_items line —
+    // return null when not found, letting the common layer say "no content read" uniformly instead of inventing a reason here.
     readItemDetail: (itemId) => {
       const wanted = itemId.trim();
       if (!wanted) return null;
@@ -563,21 +563,21 @@ export function HotspotModule({ isPageActive = true }: ModuleRenderProps) {
 
   const [error, setError] = useState<string | null>(null);
   const [showAll, setShowAll] = useState(false);
-  // 深度扫描开关状态
+  // Deep-scan toggle state
   const [fullScanEnabled, setFullScanEnabled] = useState(false);
   const [selectedDriveLetter, setSelectedDriveLetter] = useState('C:');
-  // 清理确认对话框状态
+  // Cleanup confirmation dialog state
   const [cleanupTarget, setCleanupTarget] = useState<HotspotEntry | null>(null);
   const [isCleaning, setIsCleaning] = useState(false);
 
-  // ====== 扫描进度状态（仅深度扫描时有效） ======
+  // ====== Scan progress state (only valid during deep scan) ======
   const [progressLogs, setProgressLogs] = useState<HotspotScanProgress[]>([]);
 
-  // ====== 下钻模态框状态 ======
-  /** 选中的路径：非空时弹出 DrillDownModal */
+  // ====== Drill-down modal state ======
+  /** Selected path: opens DrillDownModal when non-empty */
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
 
-  // 是否展开
+  // Whether expanded
   const selectedDrive = drives.find((drive) => drive.drive_letter === selectedDriveLetter) ?? null;
   const selectedDriveLabel = driveDisplayName(selectedDriveLetter);
 
@@ -592,23 +592,23 @@ export function HotspotModule({ isPageActive = true }: ModuleRenderProps) {
     }
   }, [drives]);
 
-  /** 点击下钻按钮 → 打开模态框 */
+  /** Click the drill-down button → open the modal */
   const handleDrillDown = useCallback((targetPath: string) => {
     setSelectedPath(targetPath);
   }, []);
 
-  /** 模态框内发生清理后的同步回调 → 重新扫描主列表 */
+  /** Sync callback after cleanup happens inside the modal → rescan the main list */
   const handleModalCleanupDone = useCallback(() => {
-    // 延迟触发重新扫描，避免与模态框关闭动画冲突
+    // Delay the rescan slightly to avoid conflicting with the modal's close animation
     setTimeout(() => {
       handleScanRef.current?.();
     }, 100);
   }, []);
 
-  // 使用 ref 打破 handleScan ↔ handleModalCleanupDone 的循环依赖
+  // Use a ref to break the circular dependency handleScan ↔ handleModalCleanupDone
   const handleScanRef = useRef<(() => void) | null>(null);
 
-  // ====== 监听扫描进度事件 ======
+  // ====== Listen for scan progress events ======
   useEffect(() => {
     let unlistenProgress: (() => void) | null = null;
     let unlistenCancelled: (() => void) | null = null;
@@ -618,7 +618,7 @@ export function HotspotModule({ isPageActive = true }: ModuleRenderProps) {
         const progress = event.payload;
         setProgressLogs((prev) => {
           const last = prev[prev.length - 1];
-          // 相同阶段只保留最新一条，避免 MFT 每 10k 条刷屏导致前端日志噪音过大。
+          // Keep only the latest entry for the same stage, to avoid MFT flooding every 10k items and making frontend logs noisy.
           if (last?.stage === progress.stage) {
             return [...prev.slice(0, -1), progress].slice(-6);
           }
@@ -626,7 +626,7 @@ export function HotspotModule({ isPageActive = true }: ModuleRenderProps) {
         });
       });
       unlistenCancelled = await listen('hotspot-scan:cancelled', () => {
-        // 扫描被取消，UI 由 handleScan 的 catch/finally 处理
+        // Scan cancelled; UI is handled by handleScan's catch/finally
       });
     };
 
@@ -638,7 +638,7 @@ export function HotspotModule({ isPageActive = true }: ModuleRenderProps) {
     };
   }, []);
 
-  // 执行扫描
+  // Run the scan
   const handleScan = useCallback(async () => {
     if (scanningRef.current) return;
     if (fullScanEnabled && selectedDrive && !selectedDrive.is_ntfs) {
@@ -659,7 +659,7 @@ export function HotspotModule({ isPageActive = true }: ModuleRenderProps) {
     setProgressLogs([]);
 
     try {
-      // 根据深度扫描开关决定扫描模式（全盘扫描条目更多）
+      // Choose scan mode based on the deep-scan toggle (full-disk scan yields more entries)
       const topN = fullScanEnabled ? 80 : 50;
       const result = await scanHotspot(
         topN,
@@ -670,12 +670,12 @@ export function HotspotModule({ isPageActive = true }: ModuleRenderProps) {
         selectedDriveLetter,
       );
       if (cancelRequestedRef.current || scanRunId !== scanRunIdRef.current) {
-        // 用户主动停止时不接收后端可能返回的半截结果，避免列表只剩一级目录造成误判。
+        // When the user actively stops, don't accept a partial result the backend may return, avoiding a list with only one level of dirs causing misjudgment.
         return;
       }
       setScanResult(result);
 
-      // 卡片摘要：展示的目录数 + 扫描覆盖总大小（与内部统计行一致）
+      // Card summary: number of directories shown + total scan coverage (consistent with the internal stats row)
       updateModuleState('hotspot', {
         status: 'done',
         fileCount: result.entries.length,
@@ -711,7 +711,7 @@ export function HotspotModule({ isPageActive = true }: ModuleRenderProps) {
     resetHotspotResult();
   }, [resetHotspotResult]);
 
-  // 取消扫描
+  // Cancel the scan
   const handleStopScan = useCallback(async () => {
     cancelRequestedRef.current = true;
     scanRunIdRef.current += 1;
@@ -725,10 +725,10 @@ export function HotspotModule({ isPageActive = true }: ModuleRenderProps) {
     }
   }, [showToast, updateModuleState]);
 
-  // 同步 handleScanRef 供模态框清理回调使用
+  // Sync handleScanRef for the modal's cleanup callback
   handleScanRef.current = handleScan;
 
-  // 响应一键扫描
+  // Respond to one-click scan
   useEffect(() => {
     if (oneClickScanTrigger > 0 && oneClickScanTrigger !== lastScanTriggerRef.current) {
       lastScanTriggerRef.current = oneClickScanTrigger;
@@ -738,14 +738,14 @@ export function HotspotModule({ isPageActive = true }: ModuleRenderProps) {
 
   useEffect(() => {
     if (stopScanTrigger > 0 && scanningRef.current) {
-      // 全局停止按钮已经通知后端取消，这里只负责阻止旧 Promise 回写半截结果。
+      // The global stop button has already told the backend to cancel; here we only prevent an old Promise from writing back a partial result.
       cancelRequestedRef.current = true;
       scanRunIdRef.current += 1;
       scanningRef.current = false;
     }
   }, [stopScanTrigger]);
 
-  // 打开文件夹
+  // Open folder
   const handleOpenFolder = useCallback(async (path: string) => {
     try {
       await openInFolder(path);
@@ -754,12 +754,12 @@ export function HotspotModule({ isPageActive = true }: ModuleRenderProps) {
     }
   }, []);
 
-  // 触发清理确认对话框
+  // Trigger the cleanup confirmation dialog
   const handleCleanupClick = useCallback((entry: HotspotEntry) => {
     setCleanupTarget(entry);
   }, []);
 
-  // 执行清理操作
+  // Run the cleanup operation
   const handleCleanupConfirm = useCallback(async () => {
     if (!cleanupTarget) return;
     
@@ -773,7 +773,7 @@ export function HotspotModule({ isPageActive = true }: ModuleRenderProps) {
           title: moduleT('hotspot.cleanupDone'),
           description: moduleT('hotspot.cleanupDoneDesc', { count: result.deleted_count, size: formatSize(result.freed_size) }),
         });
-        // 清理完成后重新扫描以更新数据
+        // Rescan after cleanup to refresh the data
         handleScan();
       } else if (result.failed_count > 0) {
         showToast({
@@ -801,7 +801,7 @@ export function HotspotModule({ isPageActive = true }: ModuleRenderProps) {
     }
   }, [cleanupTarget, handleScan, showToast, moduleT]);
 
-  // 搜索文件夹是否可以删除 - 使用 Tauri opener 插件打开浏览器
+  // Search whether a folder can be deleted - uses the Tauri opener plugin to open a browser
   const handleSearch = useCallback(async (path: string) => {
     try {
       await openSearchUrl(`${moduleT('hotspotExtra.searchPrefix')} ${path} ${moduleT('hotspotExtra.searchSuffix')}`);
@@ -810,12 +810,12 @@ export function HotspotModule({ isPageActive = true }: ModuleRenderProps) {
     }
   }, [moduleT]);
 
-  // 显示的条目（默认显示 10 条，展开显示全部）
+  // Entries to display (10 by default, all when expanded)
   const displayedEntries = showAll 
     ? scanResult?.entries || []
     : (scanResult?.entries || []).slice(0, 10);
 
-  // 最大大小（用于计算占比条）
+  // Max size (used to calculate the percentage bar)
   const maxSize = scanResult?.entries[0]?.total_size || 0;
   const driveSelector = (
     <div className="flex items-center gap-2 shrink-0" onClick={(event) => event.stopPropagation()}>
@@ -828,7 +828,7 @@ export function HotspotModule({ isPageActive = true }: ModuleRenderProps) {
     </div>
   );
 
-  // 结果页原来挂一整套阶段耗时卡片，发版后收进浮层：数字留着，位置还给结果列表
+  // The result page used to show a whole set of stage-timing cards; after release they moved into a popover: numbers kept, space returned to the result list
   const stageRows = progressLogs
     .filter((log) => log.stage && log.stage !== 'result')
     .map((log) => ({
@@ -862,8 +862,8 @@ export function HotspotModule({ isPageActive = true }: ModuleRenderProps) {
       error={error}
       titleExtra={fullScanEnabled ? driveSelector : null}
       headerExtra={
-        // 深度扫描开关 + 停止按钮。停止按钮和"扫描中…"按钮同一行：
-        // 用户要中断时视线在右上角，不该去正文里找。
+        // Deep-scan toggle + stop button. The stop button sits on the same row as the "scanning…" button:
+        // when a user wants to interrupt, their eyes are at the top-right; they shouldn't have to look in the body.
         <div className="flex items-center gap-2">
           <button
             onClick={() => setFullScanEnabled(!fullScanEnabled)}
@@ -883,14 +883,14 @@ export function HotspotModule({ isPageActive = true }: ModuleRenderProps) {
         </div>
       }
     >
-      {/* 非管理员时全盘分析会退回逐目录遍历（几十秒 vs 几秒）。
-          这里只说「可加速」而不是「需要权限」—— 不提权也能完成，说成必需会让人以为功能坏了。
-          左右留白跟本模块其他状态块的 p-5 对齐。 */}
+      {/* Without admin rights, full-disk analysis falls back to per-directory traversal (tens of seconds vs seconds).
+          Phrase it as "can be accelerated", not "requires permission" — it works without elevation, and saying required would make users think the feature is broken.
+          Left/right margins align with the p-5 of this module's other status blocks. */}
       <AdminRequiredHint className="mx-5 mt-4" variant="performance" />
 
-      {/* 扫描中状态：统一走公共组件。
-          引擎模式（MFT / 常规遍历）、逐阶段诊断面板都属于实现细节 ——
-          排查耗时有结果的 ScanTimingPopover，扫描中只留"在扫什么"和用户该知道的提示。 */}
+      {/* Scanning state: use the common component. Engine mode (MFT / regular traversal) and the per-stage diagnostics panel are implementation details —
+          ScanTimingPopover covers elapsed-time investigation when there's a result; during scanning, keep only "what's being scanned"
+          and the hints the user needs. */}
       {moduleState.status === 'scanning' && (
         <div className="p-4">
           <ModuleScanProgress
@@ -919,12 +919,12 @@ export function HotspotModule({ isPageActive = true }: ModuleRenderProps) {
         </div>
       )}
 
-      {/* 扫描结果 */}
+      {/* Scan results */}
       {moduleState.status === 'done' && scanResult && (
         <div className="space-y-3">
-          {/* 深度扫描安全提示。底色/文字走主题变量 ——
-              原来写 `bg-blue-50 dark:bg-blue-900/20`，而 dark 变体不跟应用主题，
-              深色下就是一条亮蓝色横幅 ✗ */}
+          {/* Deep-scan safety notice. Background/text go through theme variables —
+              previously written as `bg-blue-50 dark:bg-blue-900/20`, but the dark variant doesn't follow the app theme,
+              giving a bright blue banner in dark mode ✗ */}
           {scanResult.is_full_scan && (
             <div className="flex items-center gap-2 px-3 py-2 bg-[var(--notice-info-fill)] rounded-lg text-xs text-[var(--notice-info-text)]">
               <Eye className="w-4 h-4 flex-shrink-0" />
@@ -932,7 +932,7 @@ export function HotspotModule({ isPageActive = true }: ModuleRenderProps) {
             </div>
           )}
 
-          {/* 统计摘要 */}
+          {/* Stats summary */}
           <div className="flex items-center justify-between px-1 text-xs text-[var(--text-muted)]">
             <div className="flex items-center gap-4 mt-4">
               <span>{moduleT('hotspot.folderCount', { count: scanResult.total_folders_scanned.toLocaleString() })}</span>
@@ -947,7 +947,7 @@ export function HotspotModule({ isPageActive = true }: ModuleRenderProps) {
             </div>
           </div>
 
-          {/* 目录列表：左右留出内边距，避免行卡片与模块边框贴在一起 */}
+          {/* Directory list: left/right padding so row cards don't stick to the module border */}
           <div className="space-y-2 px-2">
             {displayedEntries.map((entry, index) => (
               <HotspotItem
@@ -965,7 +965,7 @@ export function HotspotModule({ isPageActive = true }: ModuleRenderProps) {
             ))}
           </div>
 
-          {/* 展开/收起按钮 */}
+          {/* Expand/collapse button */}
           {scanResult.entries.length > 10 && (
             <button
               onClick={() => setShowAll(!showAll)}
@@ -976,7 +976,7 @@ export function HotspotModule({ isPageActive = true }: ModuleRenderProps) {
             </button>
           )}
 
-          {/* 空状态 */}
+          {/* Empty state */}
           {scanResult.entries.length === 0 && (
             <div className="p-4">
               <EmptyState
@@ -990,7 +990,7 @@ export function HotspotModule({ isPageActive = true }: ModuleRenderProps) {
         </div>
       )}
 
-      {/* 初始状态 */}
+      {/* Initial state */}
       {moduleState.status === 'idle' && !scanResult && (
         <div className="p-4">
           <EmptyState
@@ -1001,7 +1001,7 @@ export function HotspotModule({ isPageActive = true }: ModuleRenderProps) {
         </div>
       )}
 
-      {/* 清理确认对话框 */}
+      {/* Cleanup confirmation dialog */}
       {cleanupTarget && createPortal(
         <ConfirmDialog
           isOpen={!!cleanupTarget}
@@ -1017,7 +1017,7 @@ export function HotspotModule({ isPageActive = true }: ModuleRenderProps) {
         document.body
       )}
 
-      {/* 下钻模态框 - Portal 渲染到 body */}
+      {/* Drill-down modal - rendered via Portal to body */}
       {selectedPath && (
         <DrillDownModal
           initialPath={selectedPath}

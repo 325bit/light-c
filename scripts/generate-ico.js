@@ -1,5 +1,5 @@
 /**
- * 生成 Windows ICO 文件
+ * Generate Windows ICO file
  */
 
 import pngToIco from 'png-to-ico';
@@ -15,7 +15,7 @@ const iconsDir = path.join(__dirname, '../src-tauri/icons');
 async function generateIco() {
   console.log('生成 Windows ICO 文件...');
   
-  // 使用多个尺寸的PNG生成ICO
+  // Generate the ICO from PNGs of multiple sizes
   const pngFiles = [
     path.join(iconsDir, '32x32.png'),
     path.join(iconsDir, '48x48.png'),

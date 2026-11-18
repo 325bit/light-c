@@ -1,6 +1,6 @@
 // ============================================================================
-// 大文件扫描模块
-// 负责遍历用户选择的磁盘，用最小堆收集 Top N 最大文件
+// Big file scanning module
+// Traverses the user-selected disks and uses a min-heap to collect the top N largest files
 // ============================================================================
 
 use serde::{Deserialize, Serialize};
@@ -23,26 +23,26 @@ pub(crate) fn has_cloud_placeholder_attributes(file_attributes: u32) -> bool {
 fn is_cloud_placeholder(metadata: &std::fs::Metadata) -> bool {
     use std::os::windows::fs::MetadataExt;
 
-    // 仅依据“访问时需要从云端召回数据”的属性，避免误伤其他类型的离线文件。
+    // Only rely on the attribute "data must be recalled from the cloud on access", to avoid hurting other types of offline files.
     has_cloud_placeholder_attributes(metadata.file_attributes())
 }
 
-// 全局取消标志，跨线程共享
+// Global cancellation flag, shared across threads
 static LARGE_FILE_SCAN_CANCELLED: AtomicBool = AtomicBool::new(false);
 
 // ============================================================================
-// 数据结构
+// Data structures
 // ============================================================================
 
-/// 大文件扫描结果条目
+/// Big file scan result entry
 #[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq)]
 pub struct LargeFileEntry {
     pub path: String,
     pub size: u64,
     pub modified: i64,
-    /// 风险等级 (1-5)，由后端路径规则计算
+    /// Risk level (1-5), computed by backend path rules
     pub risk_level: u8,
-    /// 来源标签（如"微信文件"、"虚拟机磁盘"、"系统临时文件"）
+    /// Source label (e.g. "WeChat files", "virtual machine disk", "system temp files")
     pub source_label: String,
 }
 
@@ -60,13 +60,13 @@ impl PartialOrd for LargeFileEntry {
     }
 }
 
-/// 扫描进度事件负载
+/// Scan progress event payload
 #[derive(Debug, Clone, Serialize)]
 pub struct LargeFileScanProgress {
     pub current_path: String,
     pub scanned_count: u64,
     pub found_count: usize,
-    /// 扫描引擎标识: "mft" / "walkdir"
+    /// Scan engine identifier: "mft" / "walkdir"
     #[serde(default)]
     pub backend: String,
     #[serde(default)]
@@ -75,21 +75,21 @@ pub struct LargeFileScanProgress {
     pub message: String,
     #[serde(default)]
     pub elapsed_ms: u64,
-    /// 当前阶段的关键数字（分段/读盘/解析、记录数、候选数…）
+    /// Key numbers for the current stage (segmentation / read / parse, record count, candidate count…)
     #[serde(default)]
     pub detail: String,
 }
 
 // ============================================================================
-// 命令入口
+// Command entry points
 // ============================================================================
 
-/// 重置取消标志
+/// Reset the cancellation flag
 pub fn reset_cancelled() {
     LARGE_FILE_SCAN_CANCELLED.store(false, AtomicOrdering::SeqCst);
 }
 
-/// 设置取消标志
+/// Set the cancellation flag
 pub fn cancel() {
     log::info!("收到取消大文件扫描请求");
     LARGE_FILE_SCAN_CANCELLED.store(true, AtomicOrdering::SeqCst);
@@ -99,7 +99,7 @@ pub(crate) fn is_cancelled() -> bool {
     LARGE_FILE_SCAN_CANCELLED.load(AtomicOrdering::SeqCst)
 }
 
-/// 执行大文件扫描（阻塞，应在 spawn_blocking 中调用）
+/// Run the big file scan (blocking; should be called inside spawn_blocking)
 pub fn scan(
     window: &Window,
     top_n: usize,
@@ -110,20 +110,20 @@ pub fn scan(
         use std::time::Instant;
 
         let drive_letter = drive_letter.to_ascii_uppercase();
-        // 所有扫描引擎共享同一个盘符根路径，避免前端切盘后 MFT 与 WalkDir 扫描目标不一致。
+        // All scan engines share the same drive-letter root path, to avoid MFT and WalkDir targeting different places after the frontend switches drives.
         let root = format!("{}:\\", drive_letter);
 
         log::info!("开始扫描大文件: {} (Top {})", root, top_n);
 
         // ========================================================================
-        // 尝试 MFT 全量直读引擎（管理员 + NTFS 时秒级完成）
+        // Try the MFT full direct-read engine (completes in seconds with admin + NTFS)
         // ========================================================================
         {
             use crate::scanner::big_files_engine::mft_core;
             let is_admin = mft_core::is_elevated();
             let is_ntfs_drive = mft_core::is_ntfs(drive_letter);
 
-            // 通过 progress event 告知前端 MFT 状态（release 无控制台）
+            // Inform the frontend of MFT status via a progress event (no console in release)
             let _ = window.emit(
                 "large-file-scan:progress",
                 LargeFileScanProgress {
@@ -229,7 +229,7 @@ pub fn scan(
         }
 
         // ========================================================================
-        // 降级：WalkDir 遍历（原有方案）
+        // Fallback: WalkDir traversal (the original approach)
         // ========================================================================
         let mut heap: BinaryHeap<Reverse<LargeFileEntry>> = BinaryHeap::new();
         let mut file_count: u64 = 0;
@@ -339,16 +339,16 @@ pub fn scan(
 }
 
 // ============================================================================
-// 风险等级 & 来源标签
+// Risk levels & source labels
 // ============================================================================
 
-/// 根据文件路径计算风险等级 (1-5)
+/// Compute the risk level (1-5) from a file path
 ///
-/// 1 = 安全 (临时文件/缓存)
-/// 2 = 低风险 (媒体文件/下载)
-/// 3 = 中等风险 (数据库/文档)
-/// 4 = 较高风险 (程序文件/Windows 非 Temp)
-/// 5 = 系统关键 (System32/驱动/页面文件)
+/// 1 = safe (temp files / caches)
+/// 2 = low risk (media files / downloads)
+/// 3 = medium risk (databases / documents)
+/// 4 = higher risk (program files / Windows outside Temp)
+/// 5 = system critical (System32 / drivers / page files)
 pub(crate) fn compute_file_risk_level(path: &str) -> u8 {
     let lower = path.to_lowercase();
     let file_name = std::path::Path::new(path)
@@ -358,7 +358,7 @@ pub(crate) fn compute_file_risk_level(path: &str) -> u8 {
     let file_name_lower = file_name.to_lowercase();
     let ext = file_name_lower.rsplit('.').next().unwrap_or("");
 
-    // 5 — 系统关键
+    // 5 - system critical
     if lower.contains("\\windows\\system32\\")
         || lower.contains("\\windows\\syswow64\\")
         || lower.contains("\\windows\\winsxs\\")
@@ -375,8 +375,8 @@ pub(crate) fn compute_file_risk_level(path: &str) -> u8 {
     if critical_files.contains(&file_name_lower.as_str()) {
         return 5;
     }
-    // sys 文件仅锁定核心系统目录（system32/syswow64/drivers），
-    // Temp 等目录下的 .sys 临时文件不锁定
+    // sys files only lock down core system directories (system32/syswow64/drivers);
+    // .sys temp files under Temp and similar directories are not locked
     if ext == "sys"
         && (lower.contains("\\system32\\")
             || lower.contains("\\syswow64\\")
@@ -385,12 +385,12 @@ pub(crate) fn compute_file_risk_level(path: &str) -> u8 {
         return 5;
     }
 
-    // Windows 更新缓存可安全清理，必须在规则 4 之前特判
+    // Windows update cache can be cleaned safely; must be special-cased before rule 4
     if lower.contains("\\windows\\softwaredistribution\\download\\") {
         return 1;
     }
 
-    // 4 — 较高风险
+    // 4 - higher risk
     if (lower.contains("\\program files\\") || lower.contains("\\program files (x86)\\"))
         && ["exe", "dll", "ocx", "msi"].contains(&ext)
     {
@@ -400,7 +400,7 @@ pub(crate) fn compute_file_risk_level(path: &str) -> u8 {
         return 4;
     }
 
-    // 3 — 中等风险
+    // 3 - medium risk
     let data_exts = [
         "db", "sqlite", "mdf", "ldf", "accdb", "mdb", "vmdk", "vdi", "vhd", "vhdx", "doc", "docx",
         "xls", "xlsx", "ppt", "pptx", "pdf",
@@ -409,7 +409,7 @@ pub(crate) fn compute_file_risk_level(path: &str) -> u8 {
         return 3;
     }
 
-    // 2 — 低风险
+    // 2 - low risk
     let media_exts = [
         "mp4", "mkv", "avi", "mov", "wmv", "flv", "webm", "m4v", "mp3", "wav", "flac",
     ];
@@ -420,7 +420,7 @@ pub(crate) fn compute_file_risk_level(path: &str) -> u8 {
         return 2;
     }
 
-    // 1 — 安全
+    // 1 - safe
     if lower.contains("\\temp\\") || lower.contains("\\tmp\\") || lower.contains("\\cache\\") {
         return 1;
     }
@@ -432,7 +432,7 @@ pub(crate) fn compute_file_risk_level(path: &str) -> u8 {
     3
 }
 
-/// 根据文件路径识别来源标签
+/// Identify the source label from a file path
 pub(crate) fn compute_source_label(path: &str) -> String {
     let lower = path.to_lowercase();
     let file_name = std::path::Path::new(path)
@@ -442,7 +442,7 @@ pub(crate) fn compute_source_label(path: &str) -> String {
     let file_name_lower = file_name.to_lowercase();
     let ext = file_name_lower.rsplit('.').next().unwrap_or("");
 
-    // 按扩展名识别
+    // Identify by extension
     if ["vmdk", "vdi", "vhd", "vhdx"].contains(&ext) {
         return "虚拟机磁盘".to_string();
     }
@@ -466,7 +466,7 @@ pub(crate) fn compute_source_label(path: &str) -> String {
         return "日志文件".to_string();
     }
 
-    // 按路径模式识别
+    // Identify by path pattern
     if lower.contains("\\windows\\temp\\") || lower.contains("\\appdata\\local\\temp\\") {
         return "系统临时文件".to_string();
     }
@@ -498,7 +498,7 @@ pub(crate) fn compute_source_label(path: &str) -> String {
         return "回收站".to_string();
     }
 
-    // 媒体文件
+    // Media files
     if ["mp4", "mkv", "avi", "mov", "wmv"].contains(&ext) {
         return "视频文件".to_string();
     }

@@ -1,42 +1,42 @@
 // ============================================================================
-// 文件目录树
-// 把扫描结果里的扁平文件列表按路径折叠成目录树
+// File directory tree
+// Folds the flat file list from scan results into a directory tree by path
 //
-// 中文说明：扫描结果原本是一行一个文件，用户想"把这个文件夹里的都删掉"只能一个个点。
-// 这里按路径的公共前缀建树，勾选目录就能一次性选中整棵子树。
+// Note: scan results were originally one file per line, so "delete everything in this folder" meant clicking one by one.
+// Here we build a tree by common path prefixes; checking a directory selects the whole subtree at once.
 // ============================================================================
 
 import { stripWindowsDevicePrefix } from './searchEngine';
 
-/** 建树只需要「路径 + 大小」，其余字段原样带在叶子上 */
+/** Building the tree only needs "path + size"; other fields are carried on the leaf as is */
 export interface TreeSourceFile {
   path: string;
   size: number;
-  /** 修改时间（Unix 秒）。没有这个字段的数据源按 0 处理，排序时统一排在最后 */
+  /** Modification time (Unix seconds). Sources without this field use 0 and sort last uniformly */
   modified_time?: number;
 }
 
 export interface FileTreeFolder<T extends TreeSourceFile> {
-  /** 稳定 key：目录用 `d|完整路径`，文件用 `f|完整路径` */
+  /** Stable key: directories use `d|full path`, files use `f|full path` */
   key: string;
-  /** 展示名（路径最后一段） */
+  /** Display name (last path segment) */
   name: string;
-  /** 完整路径（目录不带结尾反斜杠） */
+  /** Full path (directories without trailing backslash) */
   path: string;
-  /** 相对树根的层级，0 = 第一层 */
+  /** Level relative to the tree root, 0 = first level */
   depth: number;
   isDir: true;
-  /** 后代文件数 */
+  /** Number of descendant files */
   fileCount: number;
-  /** 后代文件总大小 */
+  /** Total size of descendant files */
   totalSize: number;
-  /** 后代文件里最新的修改时间（Unix 秒）；"按时间排序"用它给目录排位 */
+  /** Newest modification time among descendant files (Unix seconds); used by "sort by time" to rank directories */
   latestModified: number;
   /**
-   * 全部后代文件的路径。
+   * Paths of all descendant files.
    *
-   * 中文说明：勾选目录要靠它一次性提交整批路径 —— 逐条 toggle 会触发几十次
-   * setState，几百个文件时肉眼可见地卡。建树时一次算好，勾选时直接批量提交。
+   * Note: checking a directory relies on this to submit a whole batch of paths at once — toggling individually would trigger dozens of
+   * setState calls, visibly lagging with hundreds of files. Computed once at tree build, submitted in bulk when checked.
    */
   paths: string[];
   children: FileTreeNode<T>[];
@@ -48,7 +48,7 @@ export interface FileTreeFile<T extends TreeSourceFile> {
   path: string;
   depth: number;
   isDir: false;
-  /** 修改时间（Unix 秒）；数据源没给就是 0 */
+  /** Modification time (Unix seconds); 0 if the source did not provide it */
   modifiedTime: number;
   file: T;
 }
@@ -57,16 +57,16 @@ export type FileTreeNode<T extends TreeSourceFile> =
   | FileTreeFolder<T>
   | FileTreeFile<T>;
 
-/** 排序依据：名称（自然序）/ 大小 / 修改时间 */
+/** Sort key: name (natural order) / size / modification time */
 export type TreeSortKey = 'name' | 'size' | 'time';
 
 export interface TreeSort {
   key: TreeSortKey;
-  /** true = 由大到小、由新到旧；名称排序时 true = 逆序 */
+  /** true = largest to smallest, newest to oldest; for name sort, true = reverse order */
   desc: boolean;
 }
 
-/** 各排序键的默认方向：大小和时间默认"最大的/最新的先看" */
+/** Default direction for each sort key: size and time default to "largest/newest first" */
 export const DEFAULT_SORT_DESC: Record<TreeSortKey, boolean> = {
   name: false,
   size: true,
@@ -74,20 +74,20 @@ export const DEFAULT_SORT_DESC: Record<TreeSortKey, boolean> = {
 };
 
 export interface FileTree<T extends TreeSourceFile> {
-  /** 所有文件的公共祖先目录（展示成树头，例如 C:\Users\x\AppData\Local\Temp） */
+  /** Common ancestor directory of all files (shown as the tree header, e.g. C:\Users\x\AppData\Local\Temp) */
   rootPath: string;
-  /** 根下的第一层节点 */
+  /** First-level nodes under the root */
   nodes: FileTreeNode<T>[];
-  /** 是否有真正的层级结构；全在同一层时没必要画树 */
+  /** Whether there is a real hierarchy; no need to draw a tree if everything is on one level */
   hasBranches: boolean;
   fileCount: number;
   totalSize: number;
 }
 
-/** 统一分隔符与设备前缀，保证比较时同一路径只有一种写法 */
+/** Normalize separators and device prefixes so a given path has only one form when compared */
 function normalizePath(value: string): string {
-  // stripWindowsDevicePrefix 内部是两次 split+join，几万个路径时开销明显；
-  // 设备前缀只出现在少数扫描结果里，先判开头，绝大多数路径直接跳过。
+  // stripWindowsDevicePrefix internally does two split+join passes, which is costly for tens of thousands of paths;
+  // device prefixes appear only in a few scan results, so check the start first and skip the vast majority directly.
   let path = value.startsWith('\\\\') || value.startsWith('\\??\\')
     ? stripWindowsDevicePrefix(value)
     : value;
@@ -96,7 +96,7 @@ function normalizePath(value: string): string {
   return path;
 }
 
-/** 段比较：大小写不敏感（Windows 路径不区分大小写），先走等值快路径避免无谓的 toLowerCase */
+/** Segment comparison: case-insensitive (Windows paths are case-insensitive), with an equality fast path to avoid needless toLowerCase */
 function sameSegment(left: string, right: string): boolean {
   return left === right || left.toLowerCase() === right.toLowerCase();
 }
@@ -105,7 +105,7 @@ function joinPath(parent: string, name: string): string {
   return parent ? `${parent}\\${name}` : name;
 }
 
-/** 对比器：目录在前、同类按名称自然序（2 排在 10 前面） */
+/** Comparator: directories first, then by natural name order within the same kind (2 before 10) */
 const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
 
 function sortNodes<T extends TreeSourceFile>(nodes: FileTreeNode<T>[]): void {
@@ -118,10 +118,10 @@ function sortNodes<T extends TreeSourceFile>(nodes: FileTreeNode<T>[]): void {
   }
 }
 
-/** 自底向上聚合目录的文件数与体积，同时收集后代文件路径 */
+/** Aggregate file count and size bottom-up for directories, while collecting descendant file paths */
 function aggregate<T extends TreeSourceFile>(node: FileTreeFolder<T>): void {
   if (node.children.length === 0) {
-    // 空目录不会出现在扫描结果里，但保留兜底避免除零或空数组异常
+    // Empty directories never appear in scan results, but keep a fallback to avoid division by zero or empty-array exceptions
     node.paths = [];
     return;
   }
@@ -131,7 +131,7 @@ function aggregate<T extends TreeSourceFile>(node: FileTreeFolder<T>): void {
   for (const child of node.children) {
     if (child.isDir) {
       aggregate(child);
-      // 逐个 push 而不是展开传参：几万个后代路径用 spread 会顶到参数个数上限
+      // Push one by one rather than spread into arguments: spreading tens of thousands of descendant paths hits the argument-count limit
       for (const path of child.paths) paths.push(path);
       size += child.totalSize;
       if (child.latestModified > latest) latest = child.latestModified;
@@ -148,9 +148,9 @@ function aggregate<T extends TreeSourceFile>(node: FileTreeFolder<T>): void {
 }
 
 /**
- * 由扁平文件列表建树。
+ * Build a tree from a flat file list.
  *
- * `getPath` 默认取 `file.path`；社交清理等模块的文件对象结构不同，可自行指定。
+ * `getPath` defaults to `file.path`; modules like social cleanup with a different file object shape can supply their own.
  */
 export function buildFileTree<T extends TreeSourceFile>(
   files: T[],
@@ -166,8 +166,8 @@ export function buildFileTree<T extends TreeSourceFile>(
     segmentLists[index] = path.split('\\').filter(Boolean);
   }
 
-  // 公共祖先目录：只保留「目录段」，逐个文件收窄前缀长度。
-  // 这里用下标而不是每次 slice 数组，34k 个文件时能省掉几万次临时数组分配。
+  // Common ancestor directory: keep only "directory segments", narrowing the prefix length per file.
+  // Use indices instead of slicing the array each time; with 34k files this saves tens of thousands of temporary array allocations.
   let prefixLength = total === 0 ? 0 : Math.max(0, segmentLists[0].length - 1);
   const firstSegments = segmentLists[0] ?? [];
   for (let index = 1; index < total && prefixLength > 0; index += 1) {
@@ -195,16 +195,16 @@ export function buildFileTree<T extends TreeSourceFile>(
   };
 
   /*
-    子目录索引：父节点 → 小写目录名 → 子节点。
+    Child directory index: parent node → lowercase directory name → child node.
 
-    中文说明：原来每个层级都用 children.find 线性扫，一个父目录下有上千个子目录时
-    退化成平方级（34k 个文件要 200ms 以上）。改成 Map 之后每层都是 O(1)。
+    Note: originally each level used children.find for a linear scan; with thousands of child directories under one parent
+    it degraded to quadratic (34k files took over 200ms). With a Map, each level is O(1).
   */
   const childIndex = new Map<FileTreeFolder<T>, Map<string, FileTreeFolder<T>>>();
 
   for (let index = 0; index < total; index += 1) {
     const segments = segmentLists[index];
-    // 文件名之后的段就是目录层级；路径本身正好等于根目录时没有文件名，跳过
+    // Segments after the file name are directory levels; a path equal to the root itself has no file name, skip it
     if (segments.length <= prefixLength) continue;
 
     let cursor = root;
@@ -254,7 +254,7 @@ export function buildFileTree<T extends TreeSourceFile>(
   return {
     rootPath,
     nodes: root.children,
-    // 全都是「根目录下的文件」时树没有意义，调用方直接平铺渲染
+    // If everything is "files directly under the root" the tree is meaningless; the caller just renders flat
     hasBranches: root.children.some((child) => child.isDir),
     fileCount: root.fileCount,
     totalSize: root.totalSize,
@@ -262,22 +262,22 @@ export function buildFileTree<T extends TreeSourceFile>(
 }
 
 /**
- * 按指定依据重排整棵树。
+ * Reorder the whole tree by the given key.
  *
- * 中文说明：不重新建树 —— 路径拆分、目录归并、体积聚合都与顺序无关，
- * 重排只需把每一层的子节点数组按新依据排序（节点对象复用，只重建目录壳）。
+ * Note: do not rebuild the tree — path splitting, directory merging and size aggregation are order-independent,
+ * reordering only sorts each level's child array by the new key (nodes are reused, only the directory shell is rebuilt).
  *
- * 两条口径：
- * - 目录始终排在文件前面，和资源管理器一致；排序方向只作用于同类之间。
- * - 目录的「大小」取后代总和、「时间」取后代里最新的一个 ——
- *   否则装了八万文件的目录永远排不到前面，按大小排序就失去意义。
+ * Two rules:
+ * - Directories always come before files, matching Explorer; sort direction only applies within the same kind.
+ * - A directory's "size" is the sum of descendants and its "time" is the newest among them —
+ *   otherwise a directory with 80,000 files would never rank high and sorting by size would be pointless.
  */
 export function sortTree<T extends TreeSourceFile>(
   tree: FileTree<T>,
   sort: TreeSort,
 ): FileTree<T> {
   const { key, desc } = sort;
-  // 名称升序就是建树时的默认顺序，不必再排一遍
+  // Ascending name is already the default order from tree building, no need to sort again
   if (key === 'name' && !desc) return tree;
 
   const compare = (left: FileTreeNode<T>, right: FileTreeNode<T>): number => {
@@ -306,12 +306,12 @@ export function sortTree<T extends TreeSourceFile>(
 }
 
 /**
- * 扁平列表排序（不建树的「全部文件」弹窗用）。
+ * Flat list sort (used by the "All files" modal that does not build a tree).
  *
- * 中文说明：AI 缓存明细这类地方拿到的就是一堆文件，没有目录层级可折，
- * 排序口径要和目录树弹窗完全一致，否则同一个「按大小」在两个窗口里含义不同。
- * 三条口径同样照搬：名称自然序、大小按字节、时间按 Unix 秒；
- * 时间缺失（0）的一律排在最后，不随升降序翻到前面去。
+ * Note: places like AI cache details get a plain set of files with no directory levels to fold,
+ * and the sort rules must match the directory-tree modal exactly, otherwise "by size" means different things in the two windows.
+ * The same three rules apply: natural name order, size by bytes, time by Unix seconds;
+ * missing times (0) always sort last, never flipped to the front by ascending/descending.
  */
 export function sortFileList<T>(
   files: T[],
@@ -336,7 +336,7 @@ export function sortFileList<T>(
     const leftTime = accessors.getTime(left);
     const rightTime = accessors.getTime(right);
     if (leftTime === rightTime) return 0;
-    // 没有时间戳的数据无论升序降序都垫底：把它们当成"最旧"会在降序时冒到最前面
+    // Items without timestamps go last in both ascending and descending order: treating them as "oldest" would push them to the front in descending
     if (leftTime === 0) return 1;
     if (rightTime === 0) return -1;
     return desc ? rightTime - leftTime : leftTime - rightTime;
@@ -345,10 +345,10 @@ export function sortFileList<T>(
 }
 
 /**
- * 把树摊平成可见行（已折叠目录的后代不出现），供虚拟列表消费。
+ * Flatten the tree into visible rows (descendants of collapsed directories are omitted) for the virtual list.
  *
- * 展开状态由调用方持有：目录 key 稳定（就是完整路径），重新扫描后同一批目录
- * 仍然保持展开，用户不用每次重新点开。
+ * Expansion state is held by the caller: directory keys are stable (the full path), so after a rescan the same directories
+ * remain expanded and users do not have to click them open again.
  */
 export function flattenFileTree<T extends TreeSourceFile>(
   nodes: FileTreeNode<T>[],
@@ -367,7 +367,7 @@ export function flattenFileTree<T extends TreeSourceFile>(
   return rows;
 }
 
-/** 收集所有目录节点的 key，供「全部展开」使用 */
+/** Collect keys of all directory nodes, for "expand all" */
 export function collectFolderKeys<T extends TreeSourceFile>(
   nodes: FileTreeNode<T>[],
 ): string[] {
@@ -384,10 +384,10 @@ export function collectFolderKeys<T extends TreeSourceFile>(
 }
 
 /**
- * 一次性算出每个目录下已选中的文件数，用于三态复选框。
+ * Compute once how many selected files are under each directory, for tri-state checkboxes.
  *
- * 中文说明：不能对每个目录都遍历一遍后代路径（行数 × 文件数会退化成平方级），
- * 这里只走一遍树，把叶子的选中状态向上汇总。
+ * Note: do not traverse descendant paths for every directory (rows × files degenerates to quadratic),
+ * instead walk the tree once and aggregate leaf selection status upward.
  */
 export function computeSelectedCounts<T extends TreeSourceFile>(
   nodes: FileTreeNode<T>[],

@@ -1,37 +1,37 @@
 // ============================================================================
-// 图片附件：压缩与转换
+// Image attachment: compression and conversion
 //
-// **为什么必须压缩**：图片是以 base64 放进请求里的，比原文件大 ~1/3；
-// 而对话是无状态的 —— 整个历史**每一轮都会重发**。一张 2MB 的截图会让每轮请求
-// 多背 2.7MB，几轮之后又慢又贵。压到长边 1280 / 质量 0.8，通常落在 200~400KB。
+// **Why compression is mandatory**: images are put into requests as base64, ~1/3 larger than the original file;
+// and conversations are stateless — the whole history **is resent every turn**. A 2MB screenshot adds 2.7MB to every request,
+// after a few turns it is both slow and expensive. Compress to long edge 1280 / quality 0.8, usually landing at 200~400KB.
 //
-// 用 canvas 而不是引入图像库：需求只有"缩放 + 转 JPEG"这一件事，
-// 浏览器原生完全够用，也符合项目"能用原生就不加依赖"的约定。
+// Use canvas instead of pulling in an image library: the only need is "resize + convert to JPEG",
+// native browser APIs are fully sufficient, and it follows the project convention "no new dependency if native will do".
 //
-// ⚠️ 统一输出 JPEG：截图没有透明通道，压成 JPEG 体积小得多。
-//    代价是带透明背景的图会变成黑底/白底 —— 对当前用途（截图提问）可以接受。
+// ⚠️ Always output JPEG: screenshots have no transparency channel, JPEG is much smaller.
+//    The cost is that images with transparent backgrounds become black/white — acceptable for the current use (screenshot questions).
 // ============================================================================
 
-/** 压缩后的图片附件，直接可用于发给后端。 */
+/** Compressed image attachment, ready to send to the backend. */
 export interface AttachedImage {
-  /** 例如 image/jpeg */
+  /** e.g. image/jpeg */
   mediaType: string;
-  /** 不带 data: 前缀的纯 base64 */
+  /** Pure base64 without the data: prefix */
   base64: string;
-  /** 用于界面上的缩略图预览 */
+  /** For thumbnail preview in the UI */
   previewUrl: string;
 }
 
-/** 长边上限：再大对"看懂截图"没有帮助，只会让每轮请求变重。 */
+/** Long-edge limit: any larger does not help "understanding the screenshot", only makes each request heavier. */
 const MAX_EDGE = 1280;
 const JPEG_QUALITY = 0.8;
 
-/** 单张图的上限：超过就拒绝，避免用户误选一张几十 MB 的图。 */
+/** Per-image limit: reject above this, to avoid users accidentally picking an image of tens of MB. */
 export const MAX_SOURCE_BYTES = 20 * 1024 * 1024;
 
 /**
- * 把一张图片压到可发送的尺寸。
- * 失败（不是图片、解码不了）时抛错，调用方负责提示 —— 不静默丢弃。
+ * Compress an image to a sendable size.
+ * Throw on failure (not an image, cannot decode); the caller handles the prompt — do not silently drop.
  */
 export async function compressImage(file: File): Promise<AttachedImage> {
   if (!file.type.startsWith('image/')) {
@@ -53,7 +53,7 @@ export async function compressImage(file: File): Promise<AttachedImage> {
   if (!context) {
     throw new Error('无法处理图片');
   }
-  // 白底：JPEG 没有透明通道，直接画会在透明区域留下黑块
+  // White background: JPEG has no transparency channel, drawing directly would leave black blocks in transparent areas
   context.fillStyle = '#ffffff';
   context.fillRect(0, 0, width, height);
   context.drawImage(bitmap, 0, 0, width, height);
@@ -68,7 +68,7 @@ export async function compressImage(file: File): Promise<AttachedImage> {
   return { mediaType: 'image/jpeg', base64, previewUrl: dataUrl };
 }
 
-/** 从粘贴板或文件选择里取出图片文件。 */
+/** Extract an image file from the clipboard or file picker. */
 export function collectImageFiles(list: FileList | File[] | null | undefined): File[] {
   if (!list) return [];
   return Array.from(list).filter((file) => file.type.startsWith('image/'));

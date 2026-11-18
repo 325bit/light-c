@@ -14,10 +14,10 @@ impl HuggingFaceDetector {
     }
 }
 
-/// 一处 HuggingFace 缓存：`hub_dir` 直接包含 `models--*`，`size_root` 是统计总占用时用的根目录。
+/// One HuggingFace cache: `hub_dir` directly contains `models--*`, `size_root` is the root used for total-usage stats.
 ///
-/// 两个字段不总是同一个值：`HF_HOME` 指向缓存根（其下才是 `hub`），
-/// 而 `HF_HUB_CACHE` 直接指向 `hub` 本身。
+/// The two fields aren't always the same: `HF_HOME` points to the cache root (with `hub` beneath it),
+/// while `HF_HUB_CACHE` points directly at `hub` itself.
 struct HubCache {
     hub_dir: PathBuf,
     size_root: PathBuf,
@@ -33,7 +33,7 @@ impl ModelDetector for HuggingFaceDetector {
         let mut source_path = None;
 
         for cache in &caches {
-            // 展示用的来源路径取缓存根目录，和用户自己设的环境变量对得上
+            // The source path shown to users is the cache root, matching the environment variable they set themselves
             source_path.get_or_insert_with(|| cache.size_root.clone());
             models.append(&mut collect_huggingface_models(&cache.hub_dir));
 
@@ -43,8 +43,8 @@ impl ModelDetector for HuggingFaceDetector {
             }
         }
 
-        // 各模型体积按"自己引用的数据"累加，共享同一个 blob 时总数会大于磁盘占用，
-        // 因此整体占用单独按缓存目录的真实文件统计（符号链接不计入，由 blobs 负责）。
+        // Each model's size is summed from "the data it references"; when a blob is shared, the total will exceed disk usage,
+        // so overall usage is counted separately from the cache directory's real files (symlinks excluded, blobs account for them).
         let total_size: u64 = size_roots
             .iter()
             .map(|root| directory_size_deduped(root))
@@ -61,11 +61,11 @@ impl ModelDetector for HuggingFaceDetector {
     }
 }
 
-/// 收集所有可能的缓存位置（未校验存在性、未去重）。
+/// Collect all possible cache locations (existence unverified, not deduped).
 fn huggingface_cache_candidates() -> Vec<HubCache> {
     let mut candidates = Vec::new();
 
-    // 这两个变量直接指向 hub 目录，其下就是 models--*，不能再拼一层 hub
+    // These two variables point directly at the hub directory, which already contains models--*; don't append another hub layer
     for key in ["HF_HUB_CACHE", "HUGGINGFACE_HUB_CACHE"] {
         if let Ok(value) = std::env::var(key) {
             let hub_dir = PathBuf::from(value);
@@ -76,7 +76,7 @@ fn huggingface_cache_candidates() -> Vec<HubCache> {
         }
     }
 
-    // HF_HOME 指向缓存根，hub 是它的子目录
+    // HF_HOME points to the cache root, hub is its subdirectory
     if let Ok(hf_home) = std::env::var("HF_HOME") {
         let root = PathBuf::from(hf_home);
         candidates.push(HubCache {
@@ -96,13 +96,13 @@ fn huggingface_cache_candidates() -> Vec<HubCache> {
     candidates
 }
 
-/// 只保留真实存在、且 hub 目录去重后的缓存位置。
+/// Keep only caches that really exist, with hub directories deduped.
 fn unique_hub_caches(candidates: Vec<HubCache>) -> Vec<HubCache> {
     let mut seen_hubs = HashSet::new();
     let mut caches = Vec::new();
 
     for HubCache { hub_dir, size_root } in candidates {
-        // 多个环境变量可能指向同一处（比如 HF_HUB_CACHE 就设成 HF_HOME\hub）
+        // Multiple environment variables may point to the same place (e.g. HF_HUB_CACHE set to HF_HOME\hub)
         let Some(hub_dir) = normalize_existing_path(hub_dir) else {
             continue;
         };
@@ -115,11 +115,11 @@ fn unique_hub_caches(candidates: Vec<HubCache>) -> Vec<HubCache> {
     caches
 }
 
-/// 收集 HuggingFace 缓存里的模型。
+/// Collect models from the HuggingFace cache.
 ///
-/// 单个模型的体积等于"目录内真实文件"加上"该目录内符号链接指向的目标文件"：
-/// 快照文件全部是指向 blobs 的链接，Windows 上链接自身长度为 0，必须按目标解析，
-/// 否则模型会被算成 0 字节并从列表里丢掉。
+/// A single model's size equals "real files in the directory" plus "files targeted by symlinks inside that directory":
+/// snapshot files are all links to blobs; on Windows a link's own length is 0, so it must be resolved to its target,
+/// otherwise the model is counted as 0 bytes and dropped from the list.
 fn collect_huggingface_models(hub_dir: &Path) -> Vec<ModelItem> {
     let mut models = Vec::new();
 
@@ -144,7 +144,7 @@ fn collect_huggingface_models(hub_dir: &Path) -> Vec<ModelItem> {
             continue;
         }
 
-        // 缓存未下载完成时目录存在但没有任何权重，这种空壳不该出现在模型列表里
+        // An incomplete download has a directory but no weights at all; such an empty shell shouldn't appear in the model list
         let size = model_cache_size(&model_dir);
         if size == 0 {
             continue;
@@ -161,11 +161,11 @@ fn collect_huggingface_models(hub_dir: &Path) -> Vec<ModelItem> {
     models
 }
 
-/// 统计单个模型缓存的体积。
+/// Count the size of a single model cache.
 ///
-/// 快照里的权重都是指向 blobs 的符号链接，这里按"链接指向的目标"计入，
-/// 但**不**再递归统计 blobs 目录本身：否则同一份数据会被算两次
-/// （blobs 里的真实文件一次、快照链接一次）。
+/// Weights in snapshots are symlinks to blobs; count "the target the link points to" here,
+/// but do **not** recurse into the blobs directory itself: otherwise the same data is counted twice
+/// (once as the real file in blobs, once as the snapshot link).
 fn model_cache_size(model_dir: &Path) -> u64 {
     let mut total = 0u64;
     let snapshots_dir = model_dir.join("snapshots");
@@ -174,7 +174,7 @@ fn model_cache_size(model_dir: &Path) -> u64 {
         .map(|entries| entries.filter_map(Result::ok).collect::<Vec<_>>())
         .unwrap_or_default()
     {
-        // 只取最新一轮快照：同一模型可能有多个版本目录，逐版本累加会重复计算共享权重
+        // Only take the latest snapshot: one model may have several version dirs, summing per version would double-count shared weights
         let Ok(files) = std::fs::read_dir(version_dir.path()) else {
             continue;
         };
@@ -190,7 +190,7 @@ fn model_cache_size(model_dir: &Path) -> u64 {
         return total;
     }
 
-    // 没有标准快照结构的缓存（旧版本或手工放置）：退化为统计目录内的真实文件
+    // Caches without a standard snapshot structure (old versions or manually placed): fall back to counting real files in the directory
     directory_size_deduped(model_dir)
 }
 
@@ -225,8 +225,8 @@ mod tests {
         dir
     }
 
-    /// 复刻 HuggingFace 的缓存结构：真实文件在 blobs，snapshots 里全是指向它的符号链接。
-    /// 修复前按目录逐层累加会把模型算成 0 字节并从列表里丢掉。
+    /// Recreate HuggingFace's cache structure: real files in blobs, snapshots all symlinks to them.
+    /// Before the fix, summing directory by directory counted models as 0 bytes and dropped them from the list.
     #[cfg(target_os = "windows")]
     #[test]
     fn counts_symlinked_model_weights_from_blobs() {
@@ -239,11 +239,11 @@ mod tests {
         std::fs::create_dir_all(&blobs_dir).unwrap();
         std::fs::create_dir_all(&snapshot_dir).unwrap();
 
-        // 权重 1MB，配置 1KB
+        // 1MB weights, 1KB config
         std::fs::write(blobs_dir.join("weight-blob"), vec![0u8; 1024 * 1024]).unwrap();
         std::fs::write(blobs_dir.join("config-blob"), vec![0u8; 1024]).unwrap();
 
-        // 无法创建符号链接（未开启开发者模式）时跳过，避免测试环境误报失败
+        // Skip when symlinks can't be created (developer mode off), to avoid false failures in test environments
         if std::os::windows::fs::symlink_file(
             blobs_dir.join("weight-blob"),
             snapshot_dir.join("model.bin"),
@@ -274,7 +274,7 @@ mod tests {
 
     #[test]
     fn counts_plain_files_when_blobs_are_not_used() {
-        // 旧版本或手工放置的缓存没有 blobs，直接放真实文件
+        // Old or manually placed caches have no blobs, real files are placed directly
         let root = fixture("plain");
         let model_dir = root.join("hub").join("models--org--model");
         std::fs::create_dir_all(model_dir.join("snapshots").join("v1")).unwrap();
@@ -304,7 +304,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// HF_HUB_CACHE 直接指向 hub 目录；同一处缓存被多个环境变量命中时只能算一次。
+    /// HF_HUB_CACHE points straight at the hub directory; the same cache hit by multiple environment variables counts only once.
     #[test]
     fn dedupes_hub_dirs_and_skips_missing_ones() {
         let root = fixture("hub-cache");
@@ -316,12 +316,12 @@ mod tests {
                 hub_dir: hub_dir.clone(),
                 size_root: root.clone(),
             },
-            // HF_HUB_CACHE 常见写法：直接指到 hub
+            // Common form of HF_HUB_CACHE: points directly at hub
             HubCache {
                 hub_dir: hub_dir.clone(),
                 size_root: hub_dir.clone(),
             },
-            // 不存在的路径要丢掉，否则会把不存在的目录算进总占用
+            // Non-existent paths must be dropped, otherwise missing directories get counted in total usage
             HubCache {
                 hub_dir: root.join("missing-hub"),
                 size_root: root.clone(),
@@ -329,7 +329,7 @@ mod tests {
         ]);
 
         assert_eq!(caches.len(), 1, "同一个 hub 目录只应保留一处");
-        // Windows 的 canonicalize 会带上 `\\?\` 前缀，比字符串要拿规范化后的值
+        // Windows canonicalize adds a `\\?\` prefix, so compare canonicalized values rather than raw strings
         assert_eq!(caches[0].hub_dir, hub_dir.canonicalize().unwrap());
         assert_eq!(caches[0].size_root, root, "先命中的候选决定统计口径");
 

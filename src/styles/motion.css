@@ -1,10 +1,10 @@
 /* ============================================================================
-   动画效果
+   Animation effects
    ============================================================================ */
 
 /* ============================================================================
-   设置弹窗左右分栏宽度拖拽
-   与主界面侧边栏保持一致：热区压在分界线上，悬停/拖拽时只显示一条 1px 绿线。
+   Settings modal left/right column width dragging
+   Consistent with the main UI sidebar: the hot zone sits on the divider, showing only a 1px green line on hover/drag.
    ============================================================================ */
 .settings-modal__nav-resize-handle {
   position: absolute;
@@ -33,16 +33,16 @@
   background: var(--brand-green);
 }
 
-/* 拖拽过程中统一指针和选区，避免鼠标越过分栏后光标抖动或选中文字。 */
+/* Unify cursor and selection during dragging, avoiding cursor jitter or text selection when the mouse crosses the divider. */
 .settings-modal--resizing,
 .settings-modal--resizing * {
   cursor: col-resize;
   user-select: none;
 }
 
-/* ── 模态框弹入动画 ──────────────────────────────────────────────────────────
-   cubic-bezier(0.16, 1, 0.3, 1) 弹簧曲线：快速加速后回弹收敛，
-   与 Windows 11 / 微信桌面版窗口弹出质感一致 */
+/* ── Modal pop-in animation ──────────────────────────────────────────────────────────
+   cubic-bezier(0.16, 1, 0.3, 1) spring curve: quick acceleration then rebound settle,
+   matching the pop-in feel of Windows 11 / WeChat desktop windows */
 @keyframes modal-content-in {
   from {
     opacity: 0;
@@ -54,8 +54,8 @@
   }
 }
 
-/* ── 模态框弹出动画 ──────────────────────────────────────────────────────────
-   cubic-bezier(0.4, 0, 1, 1) 快速收缩曲线：立即加速消失，避免拖拉感 */
+/* ── Modal pop-out animation ──────────────────────────────────────────────────────────
+   cubic-bezier(0.4, 0, 1, 1) quick shrink curve: accelerate away immediately, avoiding a dragging feel */
 @keyframes modal-content-out {
   from {
     opacity: 1;
@@ -67,7 +67,7 @@
   }
 }
 
-/* ── 遮罩淡入 / 淡出 ─────────────────────────────────────────────────────── */
+/* ── Overlay fade in / fade out ─────────────────────────────────────────────────────── */
 @keyframes modal-overlay-in {
   from { opacity: 0; }
   to   { opacity: 1; }
@@ -78,16 +78,16 @@
   to   { opacity: 0; }
 }
 
-/* ── 工具类 ─────────────────────────────────────────────────────────────────
-   animation-fill-mode: both 确保：
-   - 动画开始前元素保持 from 关键帧状态（避免闪现最终态）
-   - 动画结束后元素保持 to  关键帧状态（避免复位闪烁） */
+/* ── Utility classes ─────────────────────────────────────────────────────────────────
+   animation-fill-mode: both ensures:
+   - before the animation starts, the element keeps the from keyframe state (avoiding a flash of the final state)
+   - after the animation ends, the element keeps the to keyframe state (avoiding a reset flash) */
 .modal-overlay-in  { animation: modal-overlay-in  220ms ease both; }
 .modal-overlay-out { animation: modal-overlay-out 185ms ease both; }
 .modal-content-in  { animation: modal-content-in  280ms cubic-bezier(0.16, 1, 0.3, 1) both; }
 .modal-content-out { animation: modal-content-out 185ms cubic-bezier(0.4, 0, 1, 1) both; }
 
-/* 流光动画 - 用于进度条 */
+/* Shimmer animation - for progress bars */
 @keyframes shimmer {
   0% {
     transform: translateX(-100%);
@@ -101,7 +101,7 @@
   animation: shimmer 1.5s infinite;
 }
 
-/* 脉冲发光动画 - 用于按钮 */
+/* Pulse glow animation - for buttons */
 @keyframes pulse-glow {
   0%, 100% {
     box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.4);
@@ -115,7 +115,7 @@
   animation: pulse-glow 2s ease-in-out infinite;
 }
 
-/* 渐变流动动画 - 用于按钮背景 */
+/* Gradient flow animation - for button backgrounds */
 @keyframes gradient-flow {
   0% {
     background-position: 0% 50%;
@@ -134,10 +134,10 @@
 }
 
 /* ============================================================================
-   页面过渡动画 - 桌面应用风格（淡入淡出 + 轻微缩放）
+   Page transition animation - desktop app style (fade in/out + slight scale)
    ============================================================================ */
 
-/* 淡出（退出页面） */
+/* Fade out (leaving a page) */
 @keyframes fade-out {
   from {
     opacity: 1;
@@ -154,7 +154,7 @@
   animation: fade-out 0.15s ease-out forwards;
 }
 
-/* 淡入（进入页面） */
+/* Fade in (entering a page) */
 @keyframes fade-in {
   from {
     opacity: 0;
@@ -171,7 +171,7 @@
   animation: fade-in 0.2s ease-out forwards;
 }
 
-/* 页面模式入场动画只作用于当前页容器，避免 Framer Motion 重新协调所有常驻模块树。 */
+/* Page-mode entrance animation applies only to the current page container, avoiding Framer Motion re-reconciling all persistent module trees. */
 @keyframes page-content-enter {
   from {
     opacity: 0;
@@ -183,11 +183,11 @@
   }
 }
 
-/* 两个等价 class 交替使用，让同一个模块实例在不卸载的情况下也能稳定重播动画。
-   ⚠️ **不要在这里常驻 `will-change`**：动画只有 220ms，常驻会让整个模块容器
-   永久保留一个合成层 —— 浮在它上面的 AI 面板会被这层的旧像素"串"到，
-   表现为 hover 时出现一块半透明的模块残影（Evan 反复反馈过，且只在模块卡片大面积浅色时可见）。
-   动画运行期间浏览器会自行提升，结束后让它回到普通绘制即可。 */
+/* Two equivalent classes are used alternately so the same module instance can replay the animation reliably without unmounting.
+   ⚠️ **Do not keep `will-change` permanently here**: the animation is only 220ms; keeping it would give the whole module container
+   a permanent compositing layer — the AI panel floating above it would pick up stale pixels from this layer,
+   showing up as a semi-transparent module ghost on hover (repeatedly reported by Evan, and only visible when module cards are largely light-colored).
+   The browser promotes it automatically during the animation; let it return to normal painting afterwards. */
 .page-content-enter-even,
 .page-content-enter-odd {
   animation: page-content-enter 220ms cubic-bezier(0.22, 1, 0.36, 1) both;
@@ -201,11 +201,11 @@
   }
 }
 
-/* 可点击提示：向右轻推 3px，**持续循环**，一轮 2.4s。
-   用途是"这一列能点开看明细"的常驻提示（磁盘变化分析的「变化量」）——
-   原先只有鼠标悬停时才出现下划线，不悬停完全看不出可点击。
-   周期刻意拉长到 2.4s：列表一次能出几十行，箭头又是同时循环，
-   周期太短会明显成"一片在闪"；2.4s + 只用 3px 位移，读起来接近呼吸而不是闪烁。 */
+/* Clickable hint: nudge 3px to the right, **looping continuously**, 2.4s per cycle.
+   Used as a persistent hint that "this column can be clicked to view details" (the "change amount" in disk growth analysis) —
+   previously an underline appeared only on hover; without hovering there was no indication it was clickable.
+   The cycle is deliberately lengthened to 2.4s: a list can show dozens of rows at once, and all arrows loop simultaneously,
+   too short a cycle would look like "a field of flashing"; with 2.4s and only 3px of movement, it reads more like breathing than blinking. */
 @keyframes hint-nudge {
   0%,
   55%,

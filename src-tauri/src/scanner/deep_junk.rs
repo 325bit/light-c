@@ -1,11 +1,11 @@
 // ============================================================================
-// 垃圾清理深度扫描器
+// Junk cleanup deep scanner
 //
-// 深度扫描在快速扫描的已知垃圾目录基础上，覆盖全部分区、全部用户，并通过
-// MFT/USN 与受控遍历补扫缓存目录；命中规则只识别高置信度的临时文件、缓存
-// 和报告目录，不使用全盘扩展名泛匹配，避免把用户的日志、下载文件或项目
-// 文件误判为垃圾。深度扫描与快速扫描一样不按文件修改时间过滤，保证深度
-// 扫描结果（数量与体积）始终是快速扫描的超集。
+// Building on the quick scan's known junk directories, deep scanning covers all partitions and all users, and uses
+// MFT/USN plus controlled traversal to supplement cache directories; matching rules identify only high-confidence temp
+// files, caches, and report directories, without whole-disk extension wildcards, so the user's logs, downloads, or project
+// files are not misjudged as junk. Like the quick scan, deep scanning does not filter by file modification time, ensuring deep
+// scan results (count and size) are always a superset of the quick scan.
 // ============================================================================
 
 use std::collections::{HashMap, HashSet};
@@ -24,20 +24,20 @@ use super::{CategoryScanResult, FileInfo, JunkCategory};
 
 const DEEP_JUNK_PAGE_SIZE: usize = 500;
 
-/// 单次最多返回的条数上限。
+/// Maximum number of entries returned in a single call.
 ///
-/// 中文说明：界面上的「查看全部文件」要一次拿到整类结果（几万条），
-/// 一次一条 IPC 太慢；但仍保留一个上限，避免前端误传 usize::MAX 时把
-/// 整个结果序列化成几百 MB。
+/// Note: the UI's "View all files" needs to fetch an entire category at once (tens of thousands of entries),
+/// and fetching one entry at a time over IPC is too slow; a cap is still kept so that a mistaken usize::MAX from the
+/// frontend cannot serialize the whole result into hundreds of MB.
 const MAX_CATEGORY_PAGE: usize = 100_000;
-// 深度扫描耗时长，用户扫描后还需浏览分类和翻页，会话保留 60 分钟避免过早失效。
+// A deep scan takes a long time, and the user then needs to browse categories and pages, so sessions are kept for 60 minutes to avoid expiring too early.
 const DEEP_JUNK_SESSION_TTL: Duration = Duration::from_secs(60 * 60);
-// 允许保留的深度扫描会话数，避免用户连续多次扫描时旧会话被立即挤出。
+// Number of deep scan sessions to keep, so old sessions are not immediately evicted when the user runs several scans in a row.
 const MAX_DEEP_JUNK_SESSIONS: usize = 4;
 
 static DEEP_JUNK_SCAN_CANCELLED: AtomicBool = AtomicBool::new(false);
 
-/// 深度扫描阶段进度，前端用它显示当前分区和 MFT 阶段。
+/// Deep scan stage progress; the frontend uses it to show the current partition and MFT stage.
 #[derive(Debug, Clone, Serialize)]
 pub struct DeepJunkScanProgress {
     pub stage: String,
@@ -48,7 +48,7 @@ pub struct DeepJunkScanProgress {
     pub elapsed_ms: u64,
 }
 
-/// 单个分区的深度扫描摘要。
+/// Summary of a single partition's deep scan.
 #[derive(Debug, Clone, Serialize)]
 pub struct DeepJunkDriveSummary {
     pub drive_letter: String,
@@ -57,26 +57,26 @@ pub struct DeepJunkDriveSummary {
     pub matched_file_count: usize,
     pub matched_size: u64,
     pub warning: Option<String>,
-    /// 各阶段耗时，用来定位一次扫描慢在哪一段。
+    /// Duration of each stage, used to locate which part of a scan is slow.
     pub stage_durations: Vec<DeepJunkStageDuration>,
-    /// 本盘从开始到结束的总耗时（含未单独计时的零碎开销）。
+    /// Total time for this drive from start to finish (including small untracked overhead).
     pub total_duration_ms: u64,
-    /// `$MFT` 的 data run 个数。段数越多说明表越碎，顺序读的预读越容易失效。
+    /// Number of data runs in `$MFT`. More fragments mean a more fragmented table and less effective sequential-read prefetching.
     pub mft_fragments: usize,
-    /// 读 `$MFT` 时等磁盘的时间，与下面的解析时间分开计。
+    /// Time spent waiting on disk while reading `$MFT`, tracked separately from the parsing time below.
     pub mft_io_ms: u64,
-    /// 解析 `$MFT` 记录（fixup + 属性）的时间。
+    /// Time spent parsing `$MFT` records (fixups + attributes).
     pub mft_parse_ms: u64,
 }
 
-/// 单个扫描阶段的耗时。
+/// Duration of a single scan stage.
 #[derive(Debug, Clone, Serialize)]
 pub struct DeepJunkStageDuration {
     pub stage: String,
     pub duration_ms: u64,
 }
 
-/// 深度垃圾扫描结果。快速扫描继续使用原有 ScanResult，避免破坏旧调用协议。
+/// Deep junk scan result. The quick scan keeps using the original ScanResult to avoid breaking the old calling protocol.
 #[derive(Debug, Clone, Serialize)]
 pub struct DeepJunkScanResult {
     pub scan_mode: String,
@@ -87,12 +87,12 @@ pub struct DeepJunkScanResult {
     pub scan_duration_ms: u64,
     pub scan_timestamp: i64,
     pub drives: Vec<DeepJunkDriveSummary>,
-    /// 各盘之外的开销：发现分区、回收站、并行等待、汇总。
+    /// Overhead outside the drives: partition discovery, recycle bin, parallel waits, and aggregation.
     ///
-    /// 之前只有单盘内部的耗时，第一次扫描 26.9 秒而四盘相加才 12.8 秒，
-    /// 中间十几秒落在哪个环节完全看不出来。
+    /// Previously only per-drive timings were available: the first scan took 26.9 seconds while the four drives summed to just 12.8,
+    /// so there was no way to tell where the other ten-plus seconds went.
     pub outer_stages: Vec<DeepJunkStageDuration>,
-    /// 进度上报累计等待（多线程求和）。用来判断发进度是否在阻塞扫描线程。
+    /// Cumulative wait for progress reporting (summed across threads). Used to tell whether emitting progress is blocking the scan threads.
     pub emit_wait_ms: u64,
 }
 
@@ -110,12 +110,12 @@ static DEEP_JUNK_SESSIONS: LazyLock<Mutex<HashMap<String, DeepJunkScanSession>>>
     LazyLock::new(|| Mutex::new(HashMap::new()));
 static DEEP_JUNK_SESSION_COUNTER: AtomicU64 = AtomicU64::new(1);
 
-/// 重置深度扫描取消标志。
+/// Reset the deep scan cancel flag.
 pub fn reset_cancelled() {
     DEEP_JUNK_SCAN_CANCELLED.store(false, Ordering::SeqCst);
 }
 
-/// 设置深度扫描取消标志，MFT 和降级遍历都会检查它。
+/// Set the deep scan cancel flag; both MFT and fallback traversal check it.
 pub fn cancel() {
     DEEP_JUNK_SCAN_CANCELLED.store(true, Ordering::SeqCst);
 }
@@ -124,22 +124,22 @@ fn is_cancelled() -> bool {
     DEEP_JUNK_SCAN_CANCELLED.load(Ordering::SeqCst)
 }
 
-/// 深度扫描的递归层数上限，由设置页的「深度发现扫描深度」传入。
+/// Recursion depth limit for deep scanning, passed in from the settings page's "deep discovery scan depth".
 ///
-/// 用模块级状态而不是逐层传参：扫描链路要经过 MFT 补扫、受控遍历补扫等多条路径，
-/// 逐层加参数会散落到五六个函数签名上；这里和取消标志放在一起，与文件既有写法一致，
-/// 也保证"本次扫描用哪个深度"只有一处真相。
+/// Module-level state is used instead of passing the depth down at every level: the scan chain goes through MFT
+/// supplementation and controlled traversal, so adding a parameter would scatter it across five or six function
+/// signatures; keeping it beside the cancel flag matches the file's existing style and guarantees a single source of truth for "which depth this scan uses".
 static DEEP_SCAN_MAX_DEPTH: AtomicU64 = AtomicU64::new(DEFAULT_DEEP_SCAN_DEPTH);
 
-/// 默认层数，与前端 `junkDeepScanDepth` 的默认值保持一致（设置页默认 16）。
-/// 原先写死 12 层偏保守 —— 深度扫描本来就是为了找藏得深的缓存，太浅会漏。
+/// Default depth, kept in sync with the frontend `junkDeepScanDepth` default (16 on the settings page).
+/// The old hard-coded 12 was too conservative — deep scanning exists precisely to find deeply hidden caches, so too shallow a depth misses them.
 const DEFAULT_DEEP_SCAN_DEPTH: u64 = 16;
 
-/// 上限兜底：即使前端传了异常值，也不会让遍历深度失控导致扫描时间爆炸。
+/// Upper-bound fallback: even if the frontend sends an abnormal value, traversal depth cannot run away and make scan time explode.
 const MAX_DEEP_SCAN_DEPTH: u64 = 24;
 
-/// 设置本次深度扫描的递归层数。命令入口在 `reset_cancelled()` 之后调用。
-/// 传 `None`（老前端或直接调用命令）时退回默认值，保证行为可预期。
+/// Set the recursion depth for this deep scan. The command entry point calls this after `reset_cancelled()`.
+/// When `None` is passed (old frontend or a direct command call), fall back to the default for predictable behavior.
 pub fn set_scan_depth(depth: Option<u32>) {
     let resolved = depth
         .map(|value| (value as u64).clamp(1, MAX_DEEP_SCAN_DEPTH))
@@ -147,12 +147,12 @@ pub fn set_scan_depth(depth: Option<u32>) {
     DEEP_SCAN_MAX_DEPTH.store(resolved, Ordering::SeqCst);
 }
 
-/// 读取本次扫描的递归层数上限。
+/// Read the recursion depth limit for this scan.
 fn scan_depth() -> usize {
     DEEP_SCAN_MAX_DEPTH.load(Ordering::SeqCst) as usize
 }
 
-/// 执行所有固定分区的深度垃圾扫描。
+/// Run the deep junk scan across all fixed partitions.
 pub fn scan_all(window: &Window) -> Result<DeepJunkScanResult, String> {
     let started_at = std::time::Instant::now();
     let mut outer_stages: Vec<DeepJunkStageDuration> = Vec::new();
@@ -182,16 +182,16 @@ pub fn scan_all(window: &Window) -> Result<DeepJunkScanResult, String> {
             started_at,
         );
 
-        // 各盘之间互不依赖，必须并行扫：串行时总耗时等于各盘之和
-        // （实测 C 7.3s + D 2.7s + E 6.9s + F 1.1s = 18s），
-        // 并行后总耗时接近最慢的那个盘，剩下的时间就是白等的。
-        // 磁盘相互独立时收益最大；若两个盘符在同一块物理盘上，会共享带宽，收益打折。
+        // Drives are independent of each other and must be scanned in parallel: serially the total is the sum of all drives
+        // (measured C 7.3s + D 2.7s + E 6.9s + F 1.1s = 18s),
+        // while in parallel the total approaches the slowest drive; any remaining time is wasted waiting.
+        // The gain is largest when the disks are independent; if two drive letters are on the same physical disk they share bandwidth, reducing the benefit.
         let stage = std::time::Instant::now();
         let (drive_results, recycle_result, recycle_ms) =
             std::thread::scope(|scope| {
-                // 深度模式仍保留回收站的 Explorer 可见条目，不能用 MFT 直接枚举内部文件。
-                // 它和各盘互不依赖，所以放进同一个 scope —— 原来串行跑在并行块之前，
-                // 实测要 1.5 秒，那 1.5 秒纯属排队。
+                // Deep mode still keeps the Explorer-visible recycle bin entries and must not enumerate internal files directly via MFT.
+                // It is independent of the drives, so it goes in the same scope — previously it ran serially before the parallel block,
+                // which measured 1.5 seconds of pure queueing.
                 let recycle_handle = scope.spawn(|| {
                     let recycle_started = std::time::Instant::now();
                     let mut result = CategoryScanResult::new(JunkCategory::RecycleBin);
@@ -244,7 +244,7 @@ pub fn scan_all(window: &Window) -> Result<DeepJunkScanResult, String> {
                         })
                     })
                     .collect();
-                // join 顺序与创建顺序一致，结果仍按盘符顺序返回
+                // Join order matches creation order, so results still come back in drive-letter order
                 let drives: Vec<(char, Result<DriveScanResult, String>)> = handles
                     .into_iter()
                     .map(|handle| handle.join().expect("扫描线程异常退出"))
@@ -254,8 +254,8 @@ pub fn scan_all(window: &Window) -> Result<DeepJunkScanResult, String> {
                 (drives, recycle, recycle_ms)
             });
 
-        // 回收站和各盘在同一个并行窗口里跑，所以它不再累加到总时间上；
-        // 仍然单独记一笔，用来判断它是否成了最慢的那个分支。
+        // The recycle bin and drives run in the same parallel window, so it no longer adds to total time;
+        // it is still recorded separately to tell whether it became the slowest branch.
         outer_stages.push(DeepJunkStageDuration {
             stage: "recycle".to_string(),
             duration_ms: recycle_ms,
@@ -312,8 +312,8 @@ pub fn scan_all(window: &Window) -> Result<DeepJunkScanResult, String> {
     result.total_size = result.categories.iter().map(|item| item.total_size).sum();
     result.total_file_count = result.categories.iter().map(|item| item.file_count).sum();
 
-    // 深度结果按分区先后合并，分区内又按路径排序，顺序对用户没有意义。
-    // 在建立会话前统一按大小倒序，保证前端分页拿到的是“最大的文件先出现”。
+    // Deep results are merged by partition order and sorted by path within a partition; the order means nothing to the user.
+    // Sort all categories by size descending before creating the session, so the frontend's pagination shows "the largest files first".
     for category in &mut result.categories {
         category.sort_files_by_size_desc();
     }
@@ -337,7 +337,7 @@ pub fn scan_all(window: &Window) -> Result<DeepJunkScanResult, String> {
     Ok(result)
 }
 
-/// 保存完整深度结果并只返回首屏数据，避免一次性把大量路径传入 WebView。
+/// Save the full deep result but return only the first screen of data, to avoid passing a huge number of paths into the WebView at once.
 pub fn create_session(mut result: DeepJunkScanResult) -> Result<DeepJunkScanResult, String> {
     let session_id = format!(
         "deep-{}-{}",
@@ -371,7 +371,7 @@ pub fn create_session(mut result: DeepJunkScanResult) -> Result<DeepJunkScanResu
     Ok(response)
 }
 
-/// 获取某个深度扫描分类的下一页文件。
+/// Get the next page of files for a deep scan category.
 pub fn get_category_page(
     scan_id: &str,
     category_name: &str,
@@ -397,7 +397,7 @@ pub fn get_category_page(
     page_category(category, offset, limit.clamp(1, MAX_CATEGORY_PAGE))
 }
 
-/// 从短期扫描会话中取出完整分类路径，供删除命令处理分页未返回的文件。
+/// Retrieve the complete category paths from the short-lived scan session so the delete command can handle files not returned by pagination.
 pub fn get_paths_for_categories(
     scan_id: &str,
     category_names: &[String],
@@ -446,8 +446,8 @@ fn page_result(
     offset: usize,
     limit: usize,
 ) -> Result<DeepJunkScanResult, String> {
-    // 注意：不能先 `result.clone()` 再替换 categories —— 那会把全部分类的
-    // 完整文件列表（可能十几万条）复制一遍后立刻丢弃，分页反而比分页更贵。
+    // Note: do not call `result.clone()` first and then replace categories — that would copy the complete file
+    // lists of all categories (possibly hundreds of thousands of entries) only to discard them immediately, making pagination more expensive than no pagination.
     Ok(DeepJunkScanResult {
         scan_mode: result.scan_mode.clone(),
         scan_id: result.scan_id.clone(),
@@ -479,7 +479,7 @@ fn page_category(
         description: category.description.clone(),
         risk_level: category.risk_level,
         system_managed: category.system_managed,
-        // 同样只复制这一页，不先克隆整类
+        // Likewise, copy only this page, without cloning the whole category first
         files: category.files[start..end].to_vec(),
         total_size: category.total_size,
         file_count: category.file_count,
@@ -508,9 +508,9 @@ fn scan_ntfs_drive(
         started_at,
     );
 
-    // 一次顺序读 $MFT 就能同时拿到名字（$FILE_NAME 属性）、父子关系和大小（$DATA 属性）。
-    // 原先先走一次 USN 枚举拿名字、再读一遍 $MFT 拿大小，同一份数据过了两遍；
-    // 实测 USN 枚举是内核遍历整张表，比用户态顺序读慢 6 倍，所以这里只读一遍。
+    // One sequential read of $MFT yields names ($FILE_NAME attribute), parent-child relationships, and sizes ($DATA attribute) together.
+    // Previously it first ran a USN enumeration to get names, then read $MFT again for sizes, passing the same data twice;
+    // measurements showed USN enumeration walks the whole table in the kernel and is 6x slower than a sequential read in user mode, so here we read only once.
     let stage = std::time::Instant::now();
     let metadata_reader = mft_core::NtfsFileMetadataReader::open(drive_letter)?;
     let (entries, mft_stats) = metadata_reader.read_all_records(&|processed| {
@@ -555,18 +555,18 @@ fn scan_ntfs_drive(
     let directory_paths =
         mft_core::rebuild_paths_for_records(&entries, drive_letter, &parent_ids);
     record_stage(&mut stage_durations, "path", stage);
-    // 候选只记下标，不克隆整条记录：命中规则的文件通常只有几千条，
-    // 但记录的字段（含文件名字符串）在组装阶段还要用，存下标最省。
+    // Candidates store only indices, not whole records: files matching the rules are usually only a few thousand,
+    // but record fields (including filename strings) are still needed during assembly, so indices are cheapest.
     let stage = std::time::Instant::now();
-    // 规则匹配是纯 CPU：全盘上百万条路径逐条比对字符串，单线程要两秒多。
-    // 按块切分后交给 rayon，块内仍用两块复用缓冲，块间互不影响。
+    // Rule matching is pure CPU: comparing strings for millions of paths across the disk takes over two seconds single-threaded.
+    // Splitting into chunks and handing them to rayon keeps two reusable buffers per chunk, with no interaction between chunks.
     const FILTER_CHUNK: usize = 16_384;
     let per_chunk: Vec<Vec<(usize, JunkCategory, String)>> = entries
         .par_chunks(FILTER_CHUNK)
         .enumerate()
         .map(|(chunk_index, chunk)| {
             let mut local: Vec<(usize, JunkCategory, String)> = Vec::new();
-            // 每块自带缓冲，避免线程间共享
+            // Each chunk has its own buffer to avoid sharing between threads
             let mut path_buffer = String::with_capacity(512);
             let mut normalize_buffer: Vec<u8> = Vec::with_capacity(512);
             for (offset, entry) in chunk.iter().enumerate() {
@@ -579,14 +579,14 @@ fn scan_ntfs_drive(
                 let Some(parent_path) = directory_paths.get(&entry.parent_id) else {
                     continue;
                 };
-                // MFT 已经给出父目录字符串；直接拼接可以省掉 PathBuf 和 OsString 的中间转换。
+                // MFT already provides the parent directory string; direct concatenation avoids intermediate PathBuf and OsString conversions.
                 join_mft_path_into(parent_path, &entry.name, &mut path_buffer);
                 let Some(category) =
                     match_deep_junk_category_reusing(&path_buffer, &mut normalize_buffer)
                 else {
                     continue;
                 };
-                // 走到这里才说明真的命中了，这时候才值得分配一份路径
+                // Reaching this point means a real match, and only now is it worth allocating a path
                 local.push((
                     chunk_index * FILTER_CHUNK + offset,
                     category,
@@ -597,7 +597,7 @@ fn scan_ntfs_drive(
         })
         .collect();
 
-    // 去重放在合并之后串行做：par_chunks 保证按块顺序返回，结果与串行一致
+    // Deduplication is done serially after merging: par_chunks preserves chunk order, so the result matches the serial version
     let mut candidates: Vec<(usize, JunkCategory, String)> = Vec::new();
     let mut candidate_paths = HashSet::new();
     for chunk in per_chunk {
@@ -642,7 +642,7 @@ fn scan_ntfs_drive(
         });
     }
 
-    // 大小和修改时间在顺序读 $MFT 时已经解析好，这里不再二次读盘
+    // Size and modification time are already parsed during the sequential $MFT read, so there is no second disk read here
     let mut files = Vec::new();
     for (index, category, path) in candidates {
         let record = &entries[index];
@@ -659,8 +659,8 @@ fn scan_ntfs_drive(
         ));
     }
 
-    // MFT/USN 枚举只覆盖变更日志中尚存的记录，老且长期未变的系统缓存文件会被跳过；
-    // 这里对所有白名单缓存根目录做一次受控遍历，与 MFT 结果按小写路径去重后补齐缺口。
+    // MFT/USN enumeration only covers records still present in the change journal; old, long-unchanged system cache files are skipped;
+    // here a controlled traversal is done over all whitelisted cache roots, deduplicated with MFT results by lowercase path to fill the gaps.
     let stage = std::time::Instant::now();
     scan_supplement_roots(drive_letter, window, started_at, &mut files);
     record_stage(&mut stage_durations, "walkdir", stage);
@@ -727,7 +727,7 @@ fn scan_non_ntfs_drive(
         }
 
         for entry in WalkDir::new(root)
-            // 递归层数改由设置页控制（默认 16、上限 24），不再写死。
+            // Recursion depth is now controlled by the settings page (default 16, max 24), no longer hard-coded.
             .max_depth(scan_depth())
             .follow_links(false)
             .into_iter()
@@ -783,7 +783,7 @@ fn scan_non_ntfs_drive(
             matched_file_count: files.len(),
             matched_size,
             warning,
-            // 常规遍历只有一次完整扫描，不再细分阶段；没有 MFT 也就没有这些统计
+            // Regular traversal does a single full scan with no stage breakdown; without MFT there are no such statistics either
             stage_durations: Vec::new(),
             total_duration_ms: drive_started.elapsed().as_millis() as u64,
             mft_fragments: 0,
@@ -837,33 +837,33 @@ fn system_level_cache_roots(root: &Path) -> Vec<PathBuf> {
         root.join("ProgramData\\Microsoft\\Windows\\WER"),
         root.join("ProgramData\\Microsoft\\Windows Defender\\LocalCopy"),
         root.join("ProgramData\\Microsoft\\Windows Defender\\Support"),
-        // Defender 扫描历史目录（扫描结束后自动重建），与 Windows 清理向导的 Defender 项一致。
+        // Defender scan history directory (automatically rebuilt after scanning), consistent with the Defender item in the Windows cleanup wizard.
         root.join("ProgramData\\Microsoft\\Windows Defender\\Scans\\History\\Service"),
         root.join("Windows\\ServiceProfiles\\LocalService\\AppData\\Local\\FontCache"),
         root.join("Windows\\Installer\\$PatchCache$"),
         root.join("Windows\\System32\\d3d_cache"),
-        // 系统级临时缓存：更新回滚暂存、内核崩溃报告（深度受限，见下）、
-        // Windows Update 与应用商店日志。这些目录只包含可重建的诊断/更新数据。
+        // System-level temporary caches: update rollback staging, kernel crash reports (depth-limited, see below),
+        // and Windows Update / app store logs. These directories contain only rebuildable diagnostic/update data.
         root.join("Windows\\SystemTemp"),
         root.join("Windows\\Logs\\WindowsUpdate"),
         root.join("Windows\\ServiceProfiles\\LocalService\\AppData\\Local\\Packages\\Microsoft.WindowsStore_8wekyb3d8bbwe\\LocalCache"),
-        // 以下为此前未覆盖、但同样只含可重建数据的目录。
-        // ⚠️ Windows\Logs\CBS **刻意不加** —— is_windows_log 里明确排除了它，
-        //    因为组件安装日志是排查更新故障的依据，属于"有用"而非垃圾。
-        root.join("Windows\\Panther"),                        // 安装/升级日志与残留
-        root.join("Windows\\Performance\\WinSAT"),            // 体验指数（Windows 体验评分）数据，可重建
-        root.join("Windows\\ServiceProfiles\\LocalService\\AppData\\Local\\Temp"), // 服务账户临时目录，会持续堆积
-        root.join("ProgramData\\USOShared\\Logs"),            // 更新协调器日志
-        root.join("ProgramData\\NVIDIA Corporation\\NV_Cache"), // 显卡着色器缓存，驱动会自行重建
-        root.join("ProgramData\\NVIDIA\\Downloader"),          // 驱动安装包残留
+        // The following directories were not covered before but likewise contain only rebuildable data.
+        // ⚠️ Windows\Logs\CBS is **deliberately excluded** — is_windows_log explicitly rejects it,
+        //    because component installation logs are the basis for troubleshooting update failures and are "useful", not junk.
+        root.join("Windows\\Panther"),                        // install/upgrade logs and leftovers
+        root.join("Windows\\Performance\\WinSAT"),            // experience index (Windows Experience Rating) data, rebuildable
+        root.join("Windows\\ServiceProfiles\\LocalService\\AppData\\Local\\Temp"), // service account temp directory, keeps accumulating
+        root.join("ProgramData\\USOShared\\Logs"),            // update coordinator logs
+        root.join("ProgramData\\NVIDIA Corporation\\NV_Cache"), // graphics shader cache, rebuilt by the driver
+        root.join("ProgramData\\NVIDIA\\Downloader"),          // driver installer leftovers
     ]
 }
 
-/// 需要限制遍历深度的补充根目录。
+/// Supplement root directories that need a traversal depth limit.
 ///
-/// 中文说明：这些目录本身是可重建缓存，但内部可能包含大量嵌套的小文件（例如 WER 的报告队列
-/// 会按应用/时间建多层子目录）。限制深度可以在覆盖真实垃圾的同时，避免深度扫描把时间花在
-/// 深不见底的目录树上。
+/// Note: these directories are themselves rebuildable caches, but may contain many deeply nested small files (for example WER's report queue
+/// creates multiple subdirectory levels by app/time). Limiting depth covers real junk while preventing deep scanning from spending time on
+/// bottomless directory trees.
 #[cfg(windows)]
 fn depth_limited_system_cache_roots(root: &Path) -> Vec<(PathBuf, usize)> {
     vec![
@@ -872,8 +872,8 @@ fn depth_limited_system_cache_roots(root: &Path) -> Vec<(PathBuf, usize)> {
     ]
 }
 
-/// 每个用户配置目录下的明确高置信缓存子目录。
-/// 只遍历可重建缓存，避免触碰 WebView/Chromium 持久化 Profile 数据。
+/// Explicit high-confidence cache subdirectories under each user profile.
+/// Only rebuildable caches are traversed, avoiding WebView/Chromium persistent Profile data.
 #[cfg(windows)]
 fn user_level_cache_roots(profile: &Path) -> Vec<PathBuf> {
     let local = profile.join("AppData\\Local");
@@ -892,8 +892,8 @@ fn user_level_cache_roots(profile: &Path) -> Vec<PathBuf> {
         local.join("Microsoft\\Windows\\WebCache"),
         local.join("Microsoft\\Windows\\Clipboard"),
         local.join("Microsoft\\Windows\\WER"),
-        // Firefox 崩溃恢复缓存放在 Roaming 下；Chromium 系浏览器的 Service Worker / 媒体缓存
-        // 位于各浏览器 user data 之下，由深度规则覆盖。
+        // Firefox crash-recovery caches live under Roaming; Service Worker / media caches of Chromium-based browsers
+        // are under each browser's user data and are covered by the deep rules.
         roaming.join("Mozilla\\Firefox\\Crash Reports"),
     ]
 }
@@ -903,7 +903,7 @@ fn non_ntfs_scan_roots(drive_letter: char) -> Vec<PathBuf> {
     let root = PathBuf::from(format!("{}:\\", drive_letter));
     let mut roots = system_level_cache_roots(&root);
 
-    // 非 NTFS 分区无 MFT，需要覆盖整个 AppData\Local 才能发现 AppCache 等分散缓存。
+    // Non-NTFS partitions have no MFT, so the entire AppData\Local must be covered to find scattered caches such as AppCache.
     let users_root = root.join("Users");
     if let Ok(users) = std::fs::read_dir(users_root) {
         for user in users.filter_map(Result::ok) {
@@ -916,10 +916,10 @@ fn non_ntfs_scan_roots(drive_letter: char) -> Vec<PathBuf> {
     roots
 }
 
-/// NTFS 深度扫描的补扫根目录。
-/// MFT/USN 枚举只返回变更日志中尚存的记录，老且长期未变、或祖先目录记录被淘汰的
-/// 系统缓存文件会被静默跳过；这里对每个用户只列出明确的高置信缓存子目录做受控遍历，
-/// 与 MFT 结果去重合并，保证传递优化、更新缓存、缩略图等系统目录稳定覆盖。
+/// Supplement root directories for NTFS deep scanning.
+/// MFT/USN enumeration only returns records still present in the change journal; old, long-unchanged or
+/// orphaned system cache files are silently skipped; here we list only explicit high-confidence cache subdirectories per user
+/// for controlled traversal, and deduplicate/merge with MFT results to reliably cover directories such as Delivery Optimization, update caches, and thumbnails.
 #[cfg(windows)]
 fn supplement_ntfs_scan_roots(drive_letter: char) -> Vec<PathBuf> {
     let root = PathBuf::from(format!("{}:\\", drive_letter));
@@ -937,8 +937,8 @@ fn supplement_ntfs_scan_roots(drive_letter: char) -> Vec<PathBuf> {
     roots
 }
 
-/// 对补扫根目录做受控遍历，把 MFT 枚举遗漏的高置信缓存文件补充进结果。
-/// 已存在于 results 中的路径（小写比较）直接跳过，避免与 MFT 结果重复统计。
+/// Run a controlled traversal over supplement roots, adding high-confidence cache files missed by MFT enumeration to the results.
+/// Paths already in `results` (case-insensitive comparison) are skipped to avoid double counting with MFT results.
 #[cfg(windows)]
 fn scan_supplement_roots(
     drive_letter: char,
@@ -964,8 +964,8 @@ fn scan_supplement_roots(
 
     let drive_root = PathBuf::from(format!("{}:\\", drive_letter));
 
-    // 先把补扫根筛成一份待办清单，再并行跑。
-    // 筛选（去掉被父目录覆盖的根）必须串行 —— 它依赖"已经收下哪些根"的顺序。
+    // First filter the supplement roots into a to-do list, then run them in parallel.
+    // Filtering (removing roots covered by a parent) must be serial — it depends on the order in which roots were accepted.
     let mut jobs: Vec<(PathBuf, usize)> = Vec::new();
     let mut scanned_roots = Vec::new();
     for root in supplement_ntfs_scan_roots(drive_letter) {
@@ -975,12 +975,12 @@ fn scan_supplement_roots(
         if is_redundant_supplement_root(&root, &scanned_roots) {
             continue;
         }
-        // 没有单独限深的补扫根目录，跟着设置页的层数走。
+        // Supplement roots without their own depth limit follow the settings page's depth.
         jobs.push((root.clone(), scan_depth()));
         scanned_roots.push(root);
     }
 
-    // 深度受限的补充根：只覆盖根目录附近的真实垃圾，避免深入无意义的多层子目录。
+    // Depth-limited supplement roots: cover only real junk near the root, avoiding meaningless deep subdirectories.
     for (root, max_depth) in depth_limited_system_cache_roots(&drive_root) {
         if is_cancelled() {
             return;
@@ -988,26 +988,26 @@ fn scan_supplement_roots(
         if is_redundant_supplement_root(&root, &scanned_roots) {
             continue;
         }
-        // 这些根目录自带限深（避免在超深的目录树里跑太久），取两者较大值：
-        // 设置页调大时能生效，调小时仍保留各根目录自己的下限，不会因为用户调小就漏扫。
+        // These roots carry their own depth limits (to avoid running too long in overly deep trees); take the larger of the two:
+        // raising the setting takes effect, while lowering it still keeps each root's own minimum so nothing is missed due to a smaller user setting.
         jobs.push((root.clone(), max_depth.max(scan_depth())));
         scanned_roots.push(root);
     }
 
-    // 各根目录互不依赖，并行走：实测 C 盘这一阶段 1.5 秒，原来是单线程把几十个
-    // 目录排队遍历完，而它们分布在不同的子树里，本身没有先后关系。
+    // Roots are independent, so they run in parallel: on C drive this stage measured 1.5 seconds; previously a single thread queued dozens of
+    // directories that live in different subtrees with no inherent ordering.
     let batches: Vec<Vec<(JunkCategory, FileInfo)>> = jobs
         .par_iter()
         .map(|(root, max_depth)| {
             let mut local = Vec::new();
-            // 每个根自带一份去重集：根之间可能有嵌套，合并时再统一去重
+            // Each root has its own dedup set: roots may be nested, so deduplication happens again at merge time
             let mut local_visited = HashSet::new();
             scan_supplement_root(root, *max_depth, &mut local, &mut local_visited);
             local
         })
         .collect();
 
-    // 合并按待办清单顺序做，重复路径以先出现的为准，结果和串行一致
+    // Merging follows the to-do list order, with the first occurrence of a duplicate path winning, so the result matches the serial version
     for batch in batches {
         for (category, file) in batch {
             let key = file.path.to_ascii_lowercase();
@@ -1021,8 +1021,8 @@ fn scan_supplement_roots(
 
 #[cfg(windows)]
 fn join_mft_path_into(parent: &str, name: &str, buffer: &mut String) {
-    // 写进调用方的缓冲：全盘几百万条路径逐条分配 String 是这步的主要开销，
-    // 只有命中规则的那几千条才需要真正拥有一份路径。
+    // Write into the caller's buffer: allocating a String for each of millions of paths is the main cost here,
+    // and only the few thousand matching entries actually need to own a path.
     buffer.clear();
     buffer.reserve(parent.len() + 1 + name.len());
     buffer.push_str(parent);
@@ -1045,8 +1045,8 @@ fn is_redundant_supplement_root(root: &Path, scanned_roots: &[PathBuf]) -> bool 
     })
 }
 
-/// 对单个补扫根做受控遍历，把命中的高置信缓存文件追加到 results。
-/// max_depth 为 0 时只检查根目录自身，不做递归。
+/// Run a controlled traversal over a single supplement root, appending matching high-confidence cache files to `results`.
+/// When `max_depth` is 0, only check the root directory itself, without recursion.
 #[cfg(windows)]
 fn scan_supplement_root(
     root: &Path,
@@ -1058,13 +1058,13 @@ fn scan_supplement_root(
         return;
     }
 
-    // 1) 目录树内并行收集文件路径。
-    // 补扫的开销几乎全压在单个大目录上（实测 Temp 19671 项 / 1.4 秒，
-    // 其余三十多个根加起来 10 毫秒），跨根并行救不了它，必须在树内部分叉。
+    // 1) Collect file paths within the directory tree in parallel.
+    // The cost of supplementation falls almost entirely on one large directory (measured Temp: 19,671 entries / 1.4 seconds,
+    // while the other thirty-plus roots together took 10 ms); cross-root parallelism cannot help it, so we must branch within the tree.
     let mut files: Vec<PathBuf> = Vec::new();
     collect_files_parallel(root, max_depth, &mut files);
 
-    // 2) 规则匹配也是纯 CPU，跟着并行；不命中的文件到此为止，不碰 stat
+    // 2) Rule matching is also pure CPU, so it is parallel too; non-matching files stop here and never touch stat
     let hits: Vec<(JunkCategory, PathBuf)> = files
         .into_par_iter()
         .filter_map(|path| {
@@ -1075,7 +1075,7 @@ fn scan_supplement_root(
         })
         .collect();
 
-    // 3) 去重和取元数据串行做：走到这里的只有命中的条目，量级是几千而不是几万
+    // 3) Deduplication and metadata reads are serial: only matching entries reach here, on the order of thousands rather than tens of thousands
     for (category, path) in hits {
         let path = path.to_string_lossy().into_owned();
         if !visited.insert(path.to_ascii_lowercase()) {
@@ -1101,8 +1101,8 @@ fn scan_supplement_root(
     }
 }
 
-/// 收集 `dir` 下这一层的文件，子目录追加到 `subdirs`（`remaining` 为 1 时不往下走）。
-/// 只认真实文件：符号链接和重解析点一律跳过，和原来 `WalkDir::follow_links(false)` 一致。
+/// Collect files at this level under `dir`, appending subdirectories to `subdirs` (do not descend when `remaining` is 1).
+/// Only real files count: symlinks and reparse points are always skipped, consistent with the original `WalkDir::follow_links(false)`.
 #[cfg(windows)]
 fn collect_level(
     dir: &Path,
@@ -1131,7 +1131,7 @@ fn collect_level(
     }
 }
 
-/// 串行遍历一棵子树（并行分支内部用）。
+/// Traverse a subtree serially (used inside parallel branches).
 #[cfg(windows)]
 fn collect_tree_serial(dir: &Path, remaining: usize, out: &mut Vec<PathBuf>) {
     if remaining == 0 {
@@ -1144,10 +1144,10 @@ fn collect_tree_serial(dir: &Path, remaining: usize, out: &mut Vec<PathBuf>) {
     }
 }
 
-/// 只在根目录的第一层分叉，各子树内部串行。
+/// Branch only at the first level of the root, with each subtree traversed serially.
 ///
-/// 只分叉一层是有意的：更深的递归会让任务碎到调度开销超过收益，
-/// 而这一层的分布本来就是不均的（大目录各自成任务，正好被分到不同线程）。
+/// Branching only one level is intentional: deeper recursion would fragment tasks until scheduling overhead exceeds the benefit,
+/// while this level's distribution is already uneven (large directories each become a task and land on different threads).
 #[cfg(windows)]
 fn collect_files_parallel(root: &Path, max_depth: usize, out: &mut Vec<PathBuf>) {
     let mut subdirs = Vec::new();
@@ -1168,9 +1168,9 @@ fn collect_files_parallel(root: &Path, max_depth: usize, out: &mut Vec<PathBuf>)
     }
 }
 
-/// 记录一个阶段的耗时。
+/// Record the duration of a stage.
 ///
-/// 阶段之间是串行的，单独计时才看得出哪一段是大头 —— 之前只能靠猜。
+/// Stages run serially, so timing them individually is the only way to see which one dominates — previously we could only guess.
 fn record_stage(
     durations: &mut Vec<DeepJunkStageDuration>,
     stage: &str,
@@ -1182,7 +1182,7 @@ fn record_stage(
     });
 }
 
-/// 进度上报累计等待毫秒。四个盘并发上报，这里存的是各线程等待之和。
+/// Cumulative milliseconds spent waiting for progress reporting. Four drives report concurrently, so this stores the sum of per-thread waits.
 static EMIT_WAIT_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 fn emit_progress(
@@ -1202,8 +1202,8 @@ fn emit_progress(
         matched_count,
         elapsed_ms: started_at.elapsed().as_millis() as u64,
     };
-    // 计时包住 emit：如果它内部要等主线程处理，扫描线程就会被拖住，
-    // 这也是"第一次扫描特别慢"的一个候选原因（首次启动时 WebView 还在初始化）。
+    // Timing wraps emit: if it needs to wait for the main thread to handle the event, the scan thread is dragged down,
+    // which is one candidate cause of "the first scan is especially slow" (the WebView is still initializing at first launch).
     let emit_started = std::time::Instant::now();
     if let Err(error) = window.emit("junk-clean:progress", &progress) {
         warn!("发送垃圾深度扫描进度失败: {}", error);
@@ -1221,7 +1221,7 @@ fn current_unix_timestamp() -> i64 {
         .unwrap_or(0)
 }
 
-/// 判断路径是否属于深度清理允许的高置信度目录。
+/// Determine whether a path belongs to a high-confidence directory allowed for deep cleanup.
 pub fn is_deep_junk_path(path: &str) -> bool {
     super::recycle_bin::is_current_user_entry_path(path) || match_deep_junk_category(path).is_some()
 }
@@ -1231,21 +1231,21 @@ fn match_deep_junk_category(path: &str) -> Option<JunkCategory> {
     match_deep_junk_category_reusing(path, &mut buffer)
 }
 
-/// 规则命中的必要条件：规范化（小写）后的路径必须含以下之一。
+/// Necessary condition for a rule match: the normalized (lowercase) path must contain one of the following.
 ///
-/// 这份清单是从下面全部规则反推出来的，**每一条规则都至少需要其中一个**，
-/// 漏一个就会让那一类垃圾扫不出来。改动规则时必须同步检查这里。
+/// This list is reverse-engineered from all the rules below; **every rule needs at least one of these**,
+/// and missing one means that category of junk will never be found. It must be checked in sync whenever rules change.
 const JUNK_PATH_HINTS: &[&str] = &[
-    // 三个系统级根目录，覆盖绝大多数规则
+    // Three system-level root directories, covering the vast majority of rules
     "\\appdata\\",
     "\\windows\\",
     "\\programdata\\",
-    // 旧系统残留：目录名本身就是关键字，不以 \windows\ 开头
+    // Legacy system leftovers: the directory name itself is a keyword and does not start with \windows\
     "\\windows.old\\",
     "\\$windows.~bt\\",
     "\\$windows.~ws\\",
-    // 浏览器与第三方应用的缓存不一定放在 AppData 下
-    // （实测用例：E://Google//Chrome//User Data\Default\Cache 同样要算浏览器缓存）
+    // Browser and third-party app caches are not necessarily under AppData
+    // (measured case: E://Google//Chrome//User Data\Default\Cache must also count as a browser cache)
     "\\google\\",
     "\\microsoft\\edge\\",
     "\\bravesoftware\\",
@@ -1270,21 +1270,21 @@ const JUNK_PATH_HINTS: &[&str] = &[
     "\\tencent\\qqmusic\\",
 ];
 
-/// 粗筛：路径里是否可能出现上面某个前缀。只做字节比较，不分配、不转换大小写。
+/// Coarse filter: whether the path may contain one of the prefixes above. Byte comparison only, no allocation or case conversion.
 ///
-/// 全盘百万级路径里，绝大多数跟垃圾规则无关。先在这里挡掉，
-/// 后面那几个字符串分配和十几条规则就不用跑了。
+/// Of the millions of paths on a disk, the vast majority are unrelated to junk rules. Filtering them out here first means
+/// the several string allocations and dozen-plus rules below do not have to run.
 fn could_be_junk_path(path: &str) -> bool {
     let bytes = path.as_bytes();
     for (index, &byte) in bytes.iter().enumerate() {
-        // 前缀都以分隔符开头
+        // Prefixes all begin with a separator
         if byte != b'\\' && byte != b'/' {
             continue;
         }
         let Some(&next) = bytes.get(index + 1) else {
             continue;
         };
-        // 先看首字母，对不上就不用做完整比较
+        // Check the first letter first; if it does not match, skip the full comparison
         match next.to_ascii_lowercase() {
             b'a' | b'b' | b'c' | b'd' | b'e' | b'g' | b'l' | b'm' | b'n' | b'o' | b'p' | b's'
             | b't' | b'u' | b'v' | b'w' | b'y' | b'$' | b'2' | b'3' => {}
@@ -1311,10 +1311,10 @@ fn starts_with_ignore_ascii_case(haystack: &[u8], needle: &[u8]) -> bool {
         .all(|(left, right)| left.to_ascii_lowercase() == *right)
 }
 
-/// 把路径写进可复用的字节缓冲：`/` 统一成 `\`，ASCII 大写转小写。
+/// Write a path into a reusable byte buffer: normalize `/` to `\` and uppercase ASCII to lowercase.
 ///
-/// 逐字节处理，非 ASCII 字节原样保留，所以中文路径不会被破坏；
-/// 缓冲复用让百万次调用只分配一次，而不是每次两个 String。
+/// It processes byte by byte and preserves non-ASCII bytes as-is, so paths containing non-ASCII characters are not corrupted;
+/// buffer reuse means a million calls allocate only once, instead of two Strings each time.
 fn normalize_into(path: &str, buffer: &mut Vec<u8>) {
     buffer.clear();
     buffer.reserve(path.len());
@@ -1327,9 +1327,9 @@ fn normalize_into(path: &str, buffer: &mut Vec<u8>) {
     }
 }
 
-/// 与 `match_deep_junk_category` 相同，但复用调用方的缓冲做规范化。
+/// Same as `match_deep_junk_category`, but reuses the caller's buffer for normalization.
 ///
-/// 深度扫描是对全盘每个文件调用一次，这里的分配次数直接反映在耗时上。
+/// Deep scanning calls this once for every file on the disk, so the allocation count here shows up directly in the timing.
 fn match_deep_junk_category_reusing(
     path: &str,
     normalize_buffer: &mut Vec<u8>,
@@ -1345,9 +1345,9 @@ fn match_deep_junk_category_reusing(
         return None;
     }
 
-    // 这三个白名单目录必须早于系统排除规则判断：
-    // d3d_cache 位于 System32 下，Defender 目录位于被排除的 Defender 根目录下，
-    // 而 Windows.old 内部本身还有一份 \Windows\System32\，晚了就会被当成系统目录整片丢掉。
+    // These three whitelist directories must be checked before the system exclusion rules:
+    // d3d_cache is under System32, the Defender directories are under the excluded Defender root,
+    // and Windows.old itself contains a \Windows\System32\, so checking later would discard it wholesale as a system directory.
     if is_shader_cache(normalized) {
         return Some(JunkCategory::ShaderCache);
     }
@@ -1366,7 +1366,7 @@ fn match_deep_junk_category_reusing(
         &[
             "\\appdata\\local\\temp\\",
             "\\windows\\temp\\",
-            // Windows 10/11 提供的系统级临时目录，只存放可清理的安装/更新解包数据。
+            // Windows 10/11 system-level temp directory, containing only cleanable installation/update unpacking data.
             "\\windows\\systemtemp\\",
         ],
     ) {
@@ -1382,7 +1382,7 @@ fn match_deep_junk_category_reusing(
         return Some(JunkCategory::DeliveryOptimization);
     }
     if is_windows_internet_cache(normalized) {
-        // 旧版 IE/WinINet 的缓存属于浏览器资源缓存，Cookies 使用独立目录并不会命中这里。
+        // Legacy IE/WinINet caches are browser resource caches; Cookies use a separate directory and do not match here.
         return Some(JunkCategory::BrowserCache);
     }
     if contains_any(
@@ -1390,7 +1390,7 @@ fn match_deep_junk_category_reusing(
         &[
             "\\windows\\prefetch\\",
             "\\appdata\\local\\microsoft\\windows\\caches\\",
-            // 体验指数数据与显卡着色器缓存，都是删掉后系统/驱动自行重建的内容。
+            // Experience index data and graphics shader caches are both content the system/driver rebuilds after deletion.
             "\\windows\\performance\\winsat\\",
             "\\programdata\\nvidia corporation\\nv_cache\\",
         ],
@@ -1401,13 +1401,13 @@ fn match_deep_junk_category_reusing(
         return Some(JunkCategory::BrowserCache);
     }
     if is_user_profile_cache(normalized) {
-        // 第三方应用通常把可重建缓存放在用户配置目录下；仅匹配明确的缓存目录名，
-        // 不把整个 AppData 当作垃圾，也不触碰 MSIX/WebView 持久化数据。
+        // Third-party apps usually put rebuildable caches under the user profile; only explicit cache directory names are matched,
+        // without treating all of AppData as junk or touching MSIX/WebView persistent data.
         return Some(JunkCategory::AppCache);
     }
     if is_third_party_app_cache(normalized) {
-        // 补充已知应用的非常规缓存目录名（如 Steam htmlcache、Epic webcache），
-        // 这些目录删除后应用会自动重建，归入独立分类便于用户识别。
+        // Supplement known apps' unconventional cache directory names (e.g. Steam htmlcache, Epic webcache);
+        // these directories are automatically rebuilt after deletion and are put in a separate category for easy identification.
         return Some(JunkCategory::ThirdPartyAppCache);
     }
     if contains_any(
@@ -1431,7 +1431,7 @@ fn match_deep_junk_category_reusing(
         return Some(JunkCategory::WindowsErrorReports);
     }
     if normalized.ends_with("\\windows\\memory.dmp")
-        // 内核崩溃报告目录（WATCHDOG 等子目录）里的转储文件同样是可清理的诊断数据。
+        // Dump files in kernel crash report directories (WATCHDOG and other subdirectories) are also cleanable diagnostic data.
         || normalized.contains("\\windows\\livekernelreports\\")
     {
         return Some(JunkCategory::MemoryDump);
@@ -1442,8 +1442,8 @@ fn match_deep_junk_category_reusing(
     if contains_any(
         normalized,
         &[
-            // 安装/升级日志（Windows\Panther）与更新协调器日志（USOShared\Logs）：
-            // 同属排障历史记录，删掉不影响功能，但体积会随更新持续增长。
+            // Installation/upgrade logs (Windows\Panther) and update coordinator logs (USOShared\Logs):
+            // both troubleshooting history; deleting them does not affect functionality, but their size grows with each update.
             "\\windows\\panther\\",
             "\\programdata\\usoshared\\logs\\",
         ],
@@ -1455,7 +1455,7 @@ fn match_deep_junk_category_reusing(
         &[
             "\\appdata\\local\\downloaded installations\\",
             "\\windows\\installer\\$patchcache$\\",
-            // NVIDIA 驱动下载器留下的安装包，装完即无用。
+            // Installer packages left by the NVIDIA driver downloader, useless after installation.
             "\\programdata\\nvidia\\downloader\\",
         ],
     ) {
@@ -1478,9 +1478,9 @@ fn contains_any(path: &str, markers: &[&str]) -> bool {
     markers.iter().any(|marker| path.contains(marker))
 }
 
-/// 旧版 Windows 安装残留、升级暂存目录。
-/// 这些目录内部包含完整的 \Windows\System32\ 等结构，必须在系统排除规则之前判断，
-/// 否则 Windows.old 只会剩下一堆被排除后的碎片，用户会看到深度扫描"扫不出旧系统"。
+/// Leftovers of old Windows installations and upgrade staging directories.
+/// These directories contain complete \Windows\System32\ and similar structures and must be checked before the system exclusion rules,
+/// otherwise Windows.old would be reduced to a pile of excluded fragments and the user would see deep scanning "find no old system".
 fn is_old_windows_installation(path: &str) -> bool {
     contains_any(
         path,
@@ -1523,10 +1523,10 @@ fn is_shader_cache(path: &str) -> bool {
             "\\appdata\\local\\d3dscache\\",
             "\\appdata\\local\\amd\\dxcache\\",
             "\\appdata\\local\\nvidia\\dxcache\\",
-            // NVIDIA OpenGL 着色器缓存与 DX 编译缓存，删除后自动重建
+            // NVIDIA OpenGL shader cache and DX compilation cache, automatically rebuilt after deletion
             "\\appdata\\local\\nvidia\\glcache\\",
             "\\appdata\\local\\nvidia\\dxc\\",
-            // NVIDIA 计算着色器缓存（CUDA/OptiX 编译产物），同样由驱动自动重建。
+            // NVIDIA compute shader cache (CUDA/OptiX compilation output), also automatically rebuilt by the driver.
             "\\appdata\\local\\nvidia\\computecache\\",
             "\\appdata\\local\\intel\\shadercache\\",
         ],
@@ -1539,7 +1539,7 @@ fn is_defender_cache(path: &str) -> bool {
         &[
             "\\programdata\\microsoft\\windows defender\\localcopy\\",
             "\\programdata\\microsoft\\windows defender\\support\\",
-            // Defender 扫描历史目录，扫描完成后自动重建，与 Windows 清理向导的 Defender 项一致。
+            // Defender scan history directory, automatically rebuilt after scanning, consistent with the Defender item in the Windows cleanup wizard.
             "\\programdata\\microsoft\\windows defender\\scans\\history\\service\\",
         ],
     )
@@ -1558,7 +1558,7 @@ fn is_browser_cache(path: &str) -> bool {
             "\\bravesoftware\\brave-browser\\user data\\",
             "\\mozilla\\firefox\\profiles\\",
             "\\opera software\\opera stable\\",
-            // 国产 Chromium 系浏览器（缓存目录与 Chrome 一致，删除后自动重建）
+            // Domestic Chromium-based browsers (cache directories match Chrome's and are rebuilt automatically)
             "\\tencent\\qqbrowser\\",
             "\\360chrome\\chrome\\user data\\",
             "\\360se6\\user data\\",
@@ -1566,7 +1566,7 @@ fn is_browser_cache(path: &str) -> bool {
             "\\ucbrowser\\user data\\",
             "\\2345explorer\\",
             "\\liebao\\user data\\",
-            // 其他国际 Chromium 系浏览器
+            // Other international Chromium-based browsers
             "\\vivaldi\\user data\\",
             "\\yandexbrowser\\user data\\",
             "\\opera software\\opera gx stable\\",
@@ -1582,19 +1582,19 @@ fn is_browser_cache(path: &str) -> bool {
                 "\\gpucache\\",
                 "\\shadercache\\",
                 "\\cache2\\",
-                // Chrome/Edge 新版本 GPU 着色器缓存目录，删除后自动重建
+                // GPU shader cache directory in newer Chrome/Edge versions, automatically rebuilt after deletion
                 "\\grshadercache\\",
                 "\\graphitedawncache\\",
                 "\\dawngraphitecache\\",
                 "\\dawnwebgpucache\\",
-                // Chromium 的 PWA/离线资源缓存，与 cache 同级且同样可重建；
-                // 注意不包含 CacheStorage/IndexedDB 等持久化站点数据目录。
+                // Chromium's PWA/offline resource caches, at the same level as cache and equally rebuildable;
+                // note that persistent site-data directories such as CacheStorage/IndexedDB are not included.
                 "\\service worker\\",
                 "\\scriptcache\\",
-                // 媒体缓存：网页音视频缓冲数据，删除后重新播放会重新下载。
+                // Media cache: buffered audio/video data from web pages; replaying the content re-downloads it.
                 "\\media cache\\",
                 "\\jump list icons\\",
-                // Firefox 的启动缓存与崩溃恢复缓存，均位于 profile 下并自动重建。
+                // Firefox's startup cache and crash-recovery cache, both under the profile and automatically rebuilt.
                 "\\startupcache\\",
                 "\\cache-tmp\\",
                 "\\crash reports\\",
@@ -1622,8 +1622,8 @@ fn is_user_profile_cache(path: &str) -> bool {
         return false;
     };
     let segments = profile_path.split('\\').collect::<Vec<_>>();
-    // 只匹配明确表达"缓存"语义的目录名；覆盖常见大小写与变体（Cache2/.cache/Cache Data），
-    // 不匹配 Data、Settings、Local Storage 等持久化目录名。
+    // Only directory names that explicitly mean "cache" are matched; common casing and variants are covered (Cache2/.cache/Cache Data),
+    // while persistent directory names such as Data, Settings, and Local Storage are not matched.
     let cache_names = [
         "cache",
         "caches",
@@ -1635,22 +1635,22 @@ fn is_user_profile_cache(path: &str) -> bool {
         "shadercache",
         "d3dscache",
         "crashdumps",
-        // 以下目录名同样只包含可重建数据，但此前未收录，导致同目录下其它缓存被扫到、
-        // 这些子目录却被漏掉（用户感觉"同一个软件只清了一半"）。
+        // The following directory names likewise contain only rebuildable data but were not included before, so other caches
+        // in the same parent were found while these subdirectories were missed (users felt "only half of the app was cleaned").
         "service worker",
         "media cache",
         "startupcache",
         "cache-tmp",
         "crash reports",
-        // 包管理器缓存：npm / pnpm 的缓存动辄数 GB，且 100% 可重建（重新安装时重新下载）。
-        // 这两个名字此前没收录 —— "npm-cache" 不等于 "cache"，不会命中上面的精确段匹配。
+        // Package manager caches: npm / pnpm caches are often several GB and 100% rebuildable (re-downloaded on reinstall).
+        // These two names were missing before — "npm-cache" is not "cache", so it did not match the exact segment check above.
         "npm-cache",
-        // pnpm 的缓存目录叫 `pnpm-cache`（不带点），此前只收录了 `.pnpm-store`，
-        // 导致按默认位置安装的用户清不到这几百 MB。
+        // pnpm's cache directory is named `pnpm-cache` (no dot); only `.pnpm-store` was included before,
+        // so users with the default install location could not clean these hundreds of MB.
         "pnpm-cache",
         "cacheddata",
         ".pnpm-store",
-        // VS Code 的 CachedData 存放编译后的 JS，重启即重建，同样是明确的缓存名。
+        // VS Code's CachedData holds compiled JS and is rebuilt on restart, another explicit cache name.
     ];
 
     segments
@@ -1663,12 +1663,12 @@ fn is_user_profile_cache(path: &str) -> bool {
         })
 }
 
-/// 已知第三方应用的可重建缓存目录（白名单组合匹配）
-/// 深度扫描中 AppCache 只匹配目录段恰好为 cache 等精确词；这里补充
-/// "已知应用目录 + 明确缓存目录名"的组合，覆盖 Steam htmlcache、Epic webcache
-/// 等非常规缓存名。缓存目录删除后应用会自动重建，不触碰持久化数据目录。
+/// Known rebuildable cache directories of third-party apps (whitelist combination matching)
+/// In deep scanning, AppCache only matches exact directory segments such as cache; here we add
+/// combinations of "known app directory + explicit cache directory name" to cover unconventional names
+/// such as Steam htmlcache and Epic webcache. Cache directories are automatically rebuilt after deletion and persistent data directories are not touched.
 fn is_third_party_app_cache(path: &str) -> bool {
-    // 先做应用目录快速过滤，避免对全盘路径做无谓的缓存词匹配（深度扫描热路径）
+    // Do a quick app-directory filter first to avoid pointless cache-word matching across all disk paths (deep scan hot path)
     let app_dir = contains_any(
         path,
         &[
@@ -1705,7 +1705,7 @@ fn is_thumbnail_cache(path: &str) -> bool {
         return false;
     };
     let name = name.to_ascii_lowercase();
-    // IconCache.db 是没有下划线的旧版本图标缓存，与 thumbcache_*.db 一样可重建。
+    // IconCache.db is the older icon cache without an underscore and is just as rebuildable as thumbcache_*.db.
     name == "iconcache.db"
         || ((name.starts_with("thumbcache_") || name.starts_with("iconcache_"))
             && name.ends_with(".db"))
@@ -1733,21 +1733,21 @@ mod tests {
     };
     use crate::scanner::{CategoryScanResult, FileInfo, JunkCategory};
 
-    /// 粗筛是纯性能优化，一旦漏掉某类路径，那一类垃圾就永远扫不出来。
+    /// The coarse filter is a pure performance optimization: if it ever misses a path category, that junk will never be found.
     ///
-    /// 这里对**每一条规则**取一个典型路径，粗筛必须放行、完整规则也必须命中。
-    /// 以后加规则忘了更新 `JUNK_PATH_HINTS`，这条测试会先报警。
+    /// Here a representative path is taken for **every rule**; the coarse filter must pass it and the full rule must also match.
+    /// If a rule is added later and `JUNK_PATH_HINTS` is forgotten, this test will fail first.
     #[test]
     fn junk_hint_filter_covers_every_rule() {
         let samples = [
-            // 着色器缓存 / Defender 缓存 / 旧系统残留
+            // Shader cache / Defender cache / old system leftovers
             r"C:\Windows\System32\d3d_cache\a",
             r"C:\Users\a\AppData\Local\NVIDIA\DXCache\b",
             r"C:\ProgramData\Microsoft\Windows Defender\Scans\History\Service\c",
             r"C:\Windows.old\Windows\System32\d.dll",
             r"C:\$WINDOWS.~BT\e",
             r"D:\$WINDOWS.~WS\f",
-            // 临时目录 / 分发优化 / IE 缓存 / 系统缓存
+            // Temp directories / Delivery Optimization / IE cache / system cache
             r"C:\Windows\Temp\g.tmp",
             r"C:\Users\a\AppData\Local\Temp\h.tmp",
             r"C:\Windows\SystemTemp\i",
@@ -1755,19 +1755,19 @@ mod tests {
             r"C:\Users\a\AppData\Local\Microsoft\Windows\INetCache\k",
             r"C:\Windows\Prefetch\l.pf",
             r"C:\ProgramData\NVIDIA Corporation\NV_Cache\m",
-            // 浏览器 / 用户目录缓存 / 第三方应用缓存
+            // Browser / user directory caches / third-party app caches
             r"C:\Users\a\AppData\Local\Google\Chrome\User Data\Default\Cache\n",
             r"C:\Users\a\AppData\Roaming\Mozilla\Firefox\Profiles\x\startupCache\o",
             r"C:\Users\a\AppData\Roaming\Code\Cache\p",
             r"C:\Steam\htmlcache\q",
             r"C:\Users\a\AppData\Roaming\Discord\Cache\r",
-            // 更新包 / 缩略图 / 错误报告 / 内核转储
+            // Update packages / thumbnails / error reports / kernel dumps
             r"C:\Windows\SoftwareDistribution\Download\s.cab",
             r"C:\Users\a\AppData\Local\Microsoft\Windows\Explorer\thumbcache_128.db",
             r"C:\Users\a\AppData\Local\CrashDumps\t.dmp",
             r"C:\Windows\Minidump\u.dmp",
             r"C:\Windows\LiveKernelReports\v.dmp",
-            // 日志 / 安装包残留 / 网页缓存 / 字体与剪贴板缓存
+            // Logs / installer leftovers / web cache / font and clipboard caches
             r"C:\Windows\Logs\MeasuredBoot\w.log",
             r"C:\Windows\Panther\x.xml",
             r"C:\ProgramData\USOShared\Logs\y",
@@ -1786,7 +1786,7 @@ mod tests {
         }
     }
 
-    /// 粗筛不能把无关路径放过去太多次，也不能误判成命中。
+    /// The coarse filter must not let unrelated paths through too often, nor misjudge them as matches.
     #[test]
     fn junk_hint_filter_rejects_unrelated_paths() {
         for path in [
@@ -1803,10 +1803,10 @@ mod tests {
         }
     }
 
-    /// 并行遍历必须和 `WalkDir` 收集到**完全相同**的文件集。
+    /// Parallel traversal must collect **exactly the same** set of files as `WalkDir`.
     ///
-    /// 这一步是拿正确性换速度的改造：补扫的结果会直接进"发现文件"总数，
-    /// 少一个文件用户就会发现数字变了，所以先用多层结构把各深度都对齐一遍。
+    /// This change trades correctness for speed: supplement results feed directly into the "files found" total,
+    /// so a single missing file changes the number the user sees; multi-level structures are used here to align every depth first.
     #[cfg(windows)]
     #[test]
     fn parallel_walk_collects_the_same_files_as_walkdir() {
@@ -1825,7 +1825,7 @@ mod tests {
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
             std::fs::write(&path, b"x").unwrap();
         }
-        // 空目录也要建：并行遍历不能因为读不到内容就报错
+        // Empty directories must be created too: parallel traversal must not fail just because it reads nothing
         std::fs::create_dir_all(base.join("empty")).unwrap();
 
         for depth in 1..=5usize {
@@ -1871,10 +1871,10 @@ mod tests {
         assert!(!is_deep_junk_path(r"D:\$Recycle.Bin\S-1-5-21\$R123"));
     }
 
-    /// 本轮新增的目录与缓存目录名：既要命中新的可重建内容，也不能把有用数据卷进来。
+    /// Directory and cache directory names added in this round: they must match new rebuildable content without pulling in useful data.
     #[test]
     fn matches_newly_added_cache_roots_and_names() {
-        // 新增的系统级目录
+        // Newly added system-level directories
         assert!(is_deep_junk_path(r"C:\Windows\Panther\setupact.log"));
         assert!(is_deep_junk_path(
             r"C:\Windows\Performance\WinSAT\winsat.wmv"
@@ -1891,7 +1891,7 @@ mod tests {
         assert!(is_deep_junk_path(
             r"C:\Windows\ServiceProfiles\LocalService\AppData\Local\Temp\tmp.tmp"
         ));
-        // 新收录的缓存目录名（包管理器 / 编辑器）
+        // Newly included cache directory names (package managers / editors)
         assert!(is_deep_junk_path(
             r"C:\Users\Alice\AppData\Local\npm-cache\_cacache\blob"
         ));
@@ -1905,16 +1905,16 @@ mod tests {
             r"C:\Users\Alice\AppData\Roaming\Code\CachedData\abc\cache.bin"
         ));
 
-        // 反例一：CBS 日志是**刻意保留**的（组件安装日志用于排查更新故障），不能被新规则卷进来。
+        // Counterexample 1: CBS logs are **deliberately kept** (component installation logs are used to troubleshoot update failures) and must not be pulled in by the new rules.
         assert!(!is_deep_junk_path(r"C:\Windows\Logs\CBS\CBS.log"));
-        // 反例二：缓存目录之外的同名前缀目录不能误伤（npm 的项目目录不是缓存）。
+        // Counterexample 2: similarly named directories outside cache directories must not be hit (npm's project directory is not a cache).
         assert!(!is_deep_junk_path(
             r"C:\Users\Alice\AppData\Local\npm\my-project\index.js"
         ));
         assert!(!is_deep_junk_path(
             r"C:\Users\Alice\AppData\Roaming\Code\User\settings.json"
         ));
-        // 反例三：仍然属于排除区。
+        // Counterexample 3: still within an excluded area.
         assert!(!is_deep_junk_path(
             r"C:\Windows\System32\LogFiles\W3SVC1\log.log"
         ));
@@ -1925,14 +1925,14 @@ mod tests {
 
     #[test]
     fn classifies_legacy_internet_cache_as_browser_cache() {
-        // Temporary Internet Files 的实际目标是 INetCache，应归入浏览器缓存而非系统缓存。
+        // The actual target of Temporary Internet Files is INetCache, which should be classified as a browser cache rather than a system cache.
         assert_eq!(
             super::match_deep_junk_category(
                 r"D:\Users\Alice\AppData\Local\Microsoft\Windows\INetCache\IE\entry.dat"
             ),
             Some(JunkCategory::BrowserCache)
         );
-        // Cookies 位于 INetCookies，必须保持在垃圾扫描范围之外，避免清除登录状态。
+        // Cookies live in INetCookies and must stay out of the junk scan scope to avoid clearing login state.
         assert!(!is_deep_junk_path(
             r"D:\Users\Alice\AppData\Local\Microsoft\Windows\INetCookies\entry.dat"
         ));
@@ -1960,7 +1960,7 @@ mod tests {
 
     #[test]
     fn matches_cache_name_variants() {
-        // 缓存目录名变体（cache2/.cache/Cache Data）应命中 AppCache
+        // Cache directory name variants (cache2/.cache/Cache Data) should match AppCache
         assert!(is_deep_junk_path(
             r"D:\Users\Alice\AppData\Local\Mozilla\Firefox\Profiles\abc\cache2\entries"
         ));
@@ -1974,8 +1974,8 @@ mod tests {
 
     #[test]
     fn matches_additional_rebuildable_cache_directories() {
-        // Chromium 的 Service Worker / 媒体缓存与 Firefox 启动缓存此前被漏掉，
-        // 命中它们可以让"同一个软件只清一半"的问题消失。
+        // Chromium's Service Worker / media caches and Firefox's startup cache were missed before,
+        // and matching them eliminates the "only half of the app is cleaned" problem.
         assert!(is_deep_junk_path(
             r"D:\Users\Alice\AppData\Local\Google\Chrome\User Data\Default\Service Worker\CacheStorage\abc"
         ));
@@ -1991,14 +1991,14 @@ mod tests {
         assert!(is_deep_junk_path(
             r"D:\Users\Alice\AppData\Roaming\Mozilla\Firefox\Profiles\abc.default\Crash Reports\crash.dmp"
         ));
-        // Chromium 的新版 GPU 着色器缓存与 NVIDIA ComputeCache 同样可重建。
+        // Chromium's newer GPU shader caches and NVIDIA ComputeCache are equally rebuildable.
         assert!(is_deep_junk_path(
             r"D:\Users\Alice\AppData\Local\Google\Chrome\User Data\GPUCache\data_0"
         ));
         assert!(is_deep_junk_path(
             r"D:\Users\Alice\AppData\Local\NVIDIA\ComputeCache\shader.bin"
         ));
-        // Windows 自带诊断缓存：系统临时目录、内核崩溃报告、旧版图标缓存。
+        // Windows built-in diagnostic caches: system temp directory, kernel crash reports, legacy icon cache.
         assert!(is_deep_junk_path(r"D:\Windows\SystemTemp\a.tmp"));
         assert!(is_deep_junk_path(
             r"D:\Windows\LiveKernelReports\WATCHDOG\report.dmp"
@@ -2010,15 +2010,15 @@ mod tests {
 
     #[test]
     fn keeps_persistent_site_data_out_of_new_cache_rules() {
-        // CacheStorage 允许清理，但 WebView2/MSIX 应用持久化目录仍必须整体排除，
-        // 避免新规则把 Claude 等应用的会话数据带进来。
+        // CacheStorage may be cleaned, but WebView2/MSIX app persistent directories must still be excluded as a whole,
+        // so the new rules do not pull in session data of apps such as Claude.
         assert!(!is_deep_junk_path(
             r"D:\Users\Alice\AppData\Local\Packages\Some.App\LocalCache\Local\app\EBWebView\Default\Cache\data"
         ));
         assert!(!is_deep_junk_path(
             r"D:\Users\Alice\AppData\Local\Packages\Some.App\LocalCache\Local\app\EBWebView\Default\Service Worker\CacheStorage\data"
         ));
-        // 浏览器持久化站点数据（Local Storage / IndexedDB / Session Storage）不在清理范围。
+        // Browser persistent site data (Local Storage / IndexedDB / Session Storage) is out of the cleanup scope.
         assert!(!is_deep_junk_path(
             r"D:\Users\Alice\AppData\Local\Google\Chrome\User Data\Default\Local Storage\leveldb\data"
         ));
@@ -2028,25 +2028,25 @@ mod tests {
         assert!(!is_deep_junk_path(
             r"D:\Users\Alice\AppData\Local\Google\Chrome\User Data\Default\Session Storage\data"
         ));
-        // 普通用户文件不会因为新规则被误判。
+        // Ordinary user files are not misjudged by the new rules.
         assert!(!is_deep_junk_path(r"D:\Users\Alice\Documents\report.dmp"));
         assert!(!is_deep_junk_path(r"D:\Windows\System32\kernel32.dll"));
     }
 
     #[test]
     fn matches_known_third_party_app_caches() {
-        // 非常规缓存目录名（htmlcache/webcache）命中第三方应用缓存
+        // Unconventional cache directory names (htmlcache/webcache) match third-party app caches
         assert!(is_deep_junk_path(
             r"D:\Users\Alice\AppData\Local\Steam\htmlcache\index.html"
         ));
         assert!(is_deep_junk_path(
             r"D:\Users\Alice\AppData\Local\EpicGamesLauncher\Saved\webcache\data"
         ));
-        // 标准 Cache 目录仍走 AppCache 分类，同样命中
+        // Standard Cache directories still go to the AppCache category and also match
         assert!(is_deep_junk_path(
             r"D:\Users\Alice\AppData\Roaming\discord\Cache\data_1"
         ));
-        // 持久化数据与游戏文件不命中
+        // Persistent data and game files do not match
         assert!(!is_deep_junk_path(
             r"D:\Users\Alice\AppData\Roaming\discord\Local Storage\leveldb\data"
         ));
@@ -2057,7 +2057,7 @@ mod tests {
 
     #[test]
     fn matches_extended_browser_and_shader_caches() {
-        // 国产与国际 Chromium 系浏览器缓存应命中，且不误伤非缓存数据。
+        // Domestic and international Chromium-based browser caches should match, without harming non-cache data.
         assert!(is_deep_junk_path(
             r"D:\Users\Alice\AppData\Local\Tencent\QQBrowser\User Data\Default\Cache\data_1"
         ));
@@ -2073,7 +2073,7 @@ mod tests {
         assert!(is_deep_junk_path(
             r"D:\Users\Alice\AppData\Local\YandexBrowser\User Data\Default\Cache\data_1"
         ));
-        // Chrome/Edge 新版 GPU 缓存目录命中，但非缓存目录不命中。
+        // Newer Chrome/Edge GPU cache directories match, while non-cache directories do not.
         assert!(is_deep_junk_path(
             r"D:\Users\Alice\AppData\Local\Google\Chrome\User Data\Default\GrShaderCache\GPUCache\data_0"
         ));
@@ -2083,7 +2083,7 @@ mod tests {
         assert!(!is_deep_junk_path(
             r"D:\Users\Alice\AppData\Local\Google\Chrome\User Data\Default\Local Storage\leveldb\data"
         ));
-        // NVIDIA 着色器缓存变体命中。
+        // NVIDIA shader cache variants match.
         assert!(is_deep_junk_path(
             r"D:\Users\Alice\AppData\Local\NVIDIA\GLCache\shader.bin"
         ));
@@ -2100,14 +2100,14 @@ mod tests {
         assert!(is_deep_junk_path(
             r"C:\Windows\ServiceProfiles\NetworkService\AppData\Local\Microsoft\Windows\DeliveryOptimization\Cache\payload.bin"
         ));
-        // Defender 扫描历史目录（扫描后自动重建）应命中，隔离区等关键数据仍被保护。
+        // Defender scan history directories (rebuilt after scanning) should match, while key data such as quarantine remains protected.
         assert!(is_deep_junk_path(
             r"C:\ProgramData\Microsoft\Windows Defender\Scans\History\Service\DetectionHistory\00000000-0000-0000-0000-000000000000\entry.bin"
         ));
         assert!(!is_deep_junk_path(
             r"C:\ProgramData\Microsoft\Windows Defender\Quarantine\entry.bin"
         ));
-        // 仿冒目录名（History 后面加字符）不得命中，避免放行嵌套伪造路径。
+        // Imitation directory names (extra characters after History) must not match, to avoid allowing nested forged paths.
         assert!(!is_deep_junk_path(
             r"C:\ProgramData\Microsoft\Windows Defender\Scans\History\ServiceEvil\entry.bin"
         ));
@@ -2115,7 +2115,7 @@ mod tests {
 
     #[test]
     fn supplement_roots_only_cover_high_confidence_cache_dirs() {
-        // 补扫根覆盖的系统级缓存目录应命中深度规则（与 cleanmgr 对齐）。
+        // System-level cache directories covered by supplement roots should match deep rules (aligned with cleanmgr).
         assert!(is_deep_junk_path(
             r"C:\Windows\SoftwareDistribution\Download\update.cab"
         ));
@@ -2126,7 +2126,7 @@ mod tests {
         assert!(is_deep_junk_path(
             r"C:\Windows\Logs\setupapi\setupapi.dev.log"
         ));
-        // 补扫根只覆盖明确缓存子目录，不放大到整个 AppData\Local。
+        // Supplement roots cover only explicit cache subdirectories, not all of AppData\Local.
         assert!(!is_deep_junk_path(
             r"C:\Users\Alice\AppData\Local\Microsoft\Windows\Explorer\data\something.bin"
         ));
@@ -2173,7 +2173,7 @@ mod tests {
         let full_paths =
             get_paths_for_categories(&first_page.scan_id, &category_names, &excluded_paths)
                 .expect("恢复未分页的完整分类路径");
-        // 后端应返回整类 501 个文件，并正确排除前端明确取消的 1 个路径。
+        // The backend should return all 501 files of the category and correctly exclude the 1 path the frontend explicitly cancelled.
         assert_eq!(full_paths.len(), 500);
         assert!(full_paths.iter().any(|path| path.ends_with("500.tmp")));
     }
@@ -2206,7 +2206,7 @@ mod tests {
             emit_wait_ms: 0,
         };
 
-        // 首屏必须直接给出最大的文件，避免用户为了找大文件反复翻页。
+        // The first page must directly contain the largest files, so the user does not have to page repeatedly to find big files.
         let first_page = create_session(result).expect("创建深度扫描会话");
         let sizes = first_page.categories[0]
             .files
@@ -2217,11 +2217,11 @@ mod tests {
         assert_eq!(first_page.categories[0].total_size, 1401);
     }
 
-    /// 深度扫描必须是快速扫描的超集，否则用户会看到"深度扫描反而更少"。
+    /// Deep scanning must be a superset of quick scanning, otherwise the user sees "deep scanning found fewer files".
     ///
-    /// 中文说明：这里用与本机一致的 C 盘路径，把 `JunkCategory::get_scan_paths()` 里每一条
-    /// 快速扫描路径都跑一遍深度规则；任何一条不命中都说明用户在深度模式下会漏掉整个目录。
-    /// 缩略图缓存按文件名规则（thumbcache_*.db）匹配，这里给出代表性文件名。
+    /// Note: this uses C drive paths matching this machine, running each quick-scan path from `JunkCategory::get_scan_paths()` through the deep rules;
+    /// any path that does not match means the user would miss an entire directory in deep mode.
+    /// Thumbnail caches match by filename rule (thumbcache_*.db); representative filenames are given here.
     #[test]
     fn deep_rules_cover_every_quick_scan_path() {
         const QUICK_SCAN_TARGETS: &[(&str, &str)] = &[

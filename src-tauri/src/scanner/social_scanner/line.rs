@@ -1,16 +1,16 @@
 // ============================================================================
-// LINE Windows 数据路径适配器
+// LINE Windows data path adapter
 // ============================================================================
 //
-// LINE Desktop 可能使用 Roaming、Local 或 Microsoft Store 包目录。这里只
-// 选择明确的缓存/媒体目录，消息数据库保持 Critical，避免删除聊天数据。
+// LINE Desktop may use Roaming, Local, or a Microsoft Store package directory. Here we only
+// select explicit cache/media directories; the message database stays Critical to avoid deleting chat data.
 // ============================================================================
 
 use super::core::{FileCategory, SocialAppPath, SocialScanner};
 use std::path::PathBuf;
 
 impl SocialScanner {
-    /// 查找 LINE Desktop 的缓存和数据库目录。
+    /// Find LINE Desktop's cache and database directories.
     pub(super) fn detect_line_paths(&self) -> Option<Vec<SocialAppPath>> {
         let mut paths = Vec::new();
         let bases = [

@@ -1,106 +1,106 @@
 // ============================================================================
-// AI 助手命令
+// AI assistant commands
 //
-// 这一层只做三件事：整形参数、调用 ai 模块、把错误转成可展示的字符串。
-// 真正的业务逻辑都在 src/ai/ 下，不要写在这里。
+// This layer only does three things: shape the parameters, call the ai module, and turn errors into displayable strings.
+// The real business logic is all under src/ai/ — do not write it here.
 // ============================================================================
 
 use crate::ai::{
     AiChatReply, AiChatRequest, AiProfile, AiProviderPreset, AiPublicConfig, AiSessionMessage,
 };
 
-/// 返回内置服务商预设，供设置页渲染下拉框。
+/// Return the built-in provider presets, for the settings page to render dropdowns.
 #[tauri::command]
 pub fn list_ai_providers() -> Vec<AiProviderPreset> {
     crate::ai::list_providers()
 }
 
-/// 读取当前 AI 配置。**密钥以掩码返回**，原文永远不出后端。
+/// Read the current AI config. **Keys are returned masked**; the plaintext never leaves the backend.
 #[tauri::command]
 pub fn get_ai_config() -> AiPublicConfig {
     crate::ai::read_public_config()
 }
 
-/// 保存 AI 配置。
+/// Save the AI config.
 ///
-/// 约定：前端传来的 apiKey 为空字符串时表示"不改动已保存的密钥" ——
-/// 否则用户每次只想换个模型，都得把密钥重新粘贴一遍。
+/// Convention: when the apiKey sent by the frontend is an empty string it means "do not change the saved key" —
+/// otherwise, whenever a user only wanted to change the model, they would have to paste the key again.
 #[tauri::command]
 pub fn save_ai_profile(profile: AiProfile) -> Result<AiPublicConfig, String> {
     crate::ai::upsert_profile(profile)?;
     Ok(crate::ai::read_public_config())
 }
 
-/// 清除某份档案已保存的密钥（档案保留）。密钥泄露时用户必须能撤销它。
+/// Clear the saved key for a profile (the profile is kept). Users must be able to revoke it if the key leaks.
 #[tauri::command]
 pub fn clear_ai_profile_key(profile_id: String) -> Result<AiPublicConfig, String> {
     crate::ai::clear_profile_key(&profile_id)?;
     Ok(crate::ai::read_public_config())
 }
 
-/// 删除一份服务商档案。删掉的正好是当前档案时，后端会自动切到剩下的第一份。
+/// Delete a provider profile. If the deleted one was the current profile, the backend automatically switches to the first remaining one.
 #[tauri::command]
 pub fn delete_ai_profile(profile_id: String) -> Result<AiPublicConfig, String> {
     crate::ai::delete_profile(&profile_id)?;
     Ok(crate::ai::read_public_config())
 }
 
-/// 切换当前使用的服务商档案。
+/// Switch the currently used provider profile.
 #[tauri::command]
 pub fn set_active_ai_profile(profile_id: String) -> Result<AiPublicConfig, String> {
     crate::ai::set_active_profile(&profile_id)?;
     Ok(crate::ai::read_public_config())
 }
 
-/// 设置 AI 数据目录（全局，不属于任何服务商 —— 换服务商不该把聊天记录搬走）。
+/// Set the AI data directory (global, not belonging to any provider — switching providers should not move the chat history).
 #[tauri::command]
 pub fn set_ai_data_dir(data_dir: String) -> Result<AiPublicConfig, String> {
     crate::ai::set_data_dir(data_dir)?;
     Ok(crate::ai::read_public_config())
 }
 
-/// 测试连通性：能成功拉到模型列表，说明地址、密钥、网络三者都通了。
+/// Test connectivity: successfully fetching a model list means the address, key and network are all working.
 #[tauri::command]
 pub async fn test_ai_connection() -> Result<Vec<String>, String> {
     let models = crate::ai::fetch_models().await?;
-    // 拉到了就缓存：设置页与面板都要显示"有哪些模型可选"，
-    // 不能只让它在这一次会话里可见。缓存失败不影响本次测试的成功结论。
+    // If fetched, cache it: both the settings page and the panel need to show "which models are available",
+    // it should not be visible only in this one session. A cache failure does not affect the success conclusion of this test.
     if let Err(error) = crate::ai::cache_fetched_models(models.clone()) {
         log::warn!("缓存模型列表失败: {}", error);
     }
     Ok(models)
 }
 
-/// 发一次对话（非流式）。
-/// 流式版本见 ai_chat_stream；非流式保留下来，便于排查"是不是流式解析的问题"。
+/// Send one chat message (non-streaming).
+/// For the streaming version see ai_chat_stream; the non-streaming one is kept to help diagnose "whether it is a streaming parsing problem".
 #[tauri::command]
 pub async fn ai_chat(request: AiChatRequest) -> Result<AiChatReply, String> {
     crate::ai::chat_once(request).await
 }
 
-/// 流式增量的推送数据体。
+/// Payload pushed for streaming increments.
 #[derive(Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AiStreamDelta {
-    /// 与发起请求时传入的一致；前端据此过滤（同一时刻只允许一个流，加上更稳妥）
+    /// Same as the one passed when starting the request; the frontend filters by it (only one stream is allowed at a time; adding this is more robust)
     pub stream_id: String,
     pub text: String,
 }
 
-/// 保存一张对话里的图片附件，返回文件名（前端把它写进会话记录）。
+/// Save an image attachment in a chat, returning the file name (the frontend writes it into the session record).
 #[tauri::command]
 pub fn save_ai_attachment(data_base64: String, media_type: String) -> Result<String, String> {
     crate::ai::save_attachment(&data_base64, &media_type)
 }
 
-/// 读回一张附件，返回可直接放进 <img src> 的 data URL；文件不在时返回空串。
+/// Read back an attachment, returning a data URL that can be put directly into <img src>; return an empty string if the file is not there.
 #[tauri::command]
 pub fn read_ai_attachment(name: String) -> Result<String, String> {
     crate::ai::read_attachment(&name)
 }
 
-/// 追加一条会话消息。
-/// 模块 id 与日期由前端给出（后端不为此引入日期库），语义与安全校验在 ai::session 里。
+/// Append a session message.
+/// The module id and date are given by the frontend (the backend introduces no date library for this); semantic and security validation is in ai::session.
 #[tauri::command]
 pub fn append_ai_session_message(
     module_id: String,
@@ -110,23 +110,23 @@ pub fn append_ai_session_message(
     crate::ai::append_message(&module_id, &date, message)
 }
 
-/// 清空某模块某天的会话历史（界面的「清空对话」）。
-/// 只删当天的文件：更早的历史留给'按日期清理'，不做隐式的大范围删除。
+/// Clear the chat history for a module on a given day (the UI's "Clear Conversation").
+/// Only delete that day's files: earlier history is left to "clean by date"; no implicit large-scale deletion.
 #[tauri::command]
 pub fn clear_ai_session(module_id: String, date: String) -> Result<(), String> {
     crate::ai::clear_session(&module_id, &date)
 }
 
-/// 读取某模块某天的会话历史。文件不存在返回空列表（"还没有历史"是正常状态）。
+/// Read the chat history for a module on a given day. A missing file returns an empty list ("no history yet" is a normal state).
 #[tauri::command]
 pub fn load_ai_session(module_id: String, date: String) -> Result<Vec<AiSessionMessage>, String> {
     crate::ai::load_session(&module_id, &date)
 }
 
-/// 按范围读取历史：从 `end_date` 往前读，攒够 `max_messages` 条就停。
+/// Read history by range: read backwards from `end_date`, stop once `max_messages` have been collected.
 ///
-/// 界面打开时用它加载"最近 N 条"（跨天），「加载更早」也走它 ——
-/// 单次条数在 `ai::session` 里夹了上限，**从源头防止一次读爆**。
+/// The UI uses this to load "the most recent N" (across days); "Load Earlier" also goes through it —
+/// the per-call count is capped in `ai::session`, **preventing a single read from blowing up at the source**.
 #[tauri::command]
 pub fn load_ai_session_range(
     module_id: String,
@@ -136,20 +136,20 @@ pub fn load_ai_session_range(
     crate::ai::load_session_range(&module_id, &end_date, max_messages)
 }
 
-/// 清空某模块**所有日期**的会话（界面的「清空对话」，前端已做二次确认）。
+/// Clear a module's chat history for **all dates** (the UI's "Clear Conversation", the frontend has already asked for a second confirmation).
 ///
-/// 与上面的 `clear_ai_session`（只删一天）的区别：历史现在是跨天加载的，
-/// 只删当天会出现"清空了、昨天的又回来了"，所以「清空对话」走这一个。
+/// Difference from `clear_ai_session` above (which only deletes one day): history is now loaded across days,
+/// so deleting only the current day results in "cleared, but yesterday's came back"; therefore "Clear Conversation" goes through this one.
 #[tauri::command]
 pub fn clear_ai_module_session(module_id: String) -> Result<(), String> {
     crate::ai::clear_all_sessions(&module_id)
 }
 
-/// 流式对话：增量通过事件推送，命令最终返回完整正文。
+/// Streaming chat: increments are pushed via events, and the command finally returns the full body.
 ///
-/// 为什么用事件而不是"返回值就是流"：Tauri 命令只能返回一次性结果，
-/// 要"边生成边显示"就必须在生成过程中主动往前端推。
-/// 命令返回的完整正文还能兜底 —— 即使前端漏掉了事件，也不会丢内容。
+/// Why use events rather than "the return value is the stream": a Tauri command can only return a one-off result,
+/// so to "display while generating" we must actively push to the frontend during generation.
+/// The full body returned by the command is also a fallback — even if the frontend misses events, no content is lost.
 #[tauri::command]
 pub async fn ai_chat_stream(
     app: tauri::AppHandle,
@@ -161,7 +161,7 @@ pub async fn ai_chat_stream(
     let emitter = app.clone();
     let event_stream_id = stream_id.clone();
     crate::ai::chat_stream(request, move |delta: &str| {
-        // 事件发送失败不作为致命错误：命令的返回值里还有完整正文
+        // Event send failure is not treated as a fatal error: the command's return value still contains the full body.
         let _ = emitter.emit(
             "ai-stream-delta",
             AiStreamDelta {

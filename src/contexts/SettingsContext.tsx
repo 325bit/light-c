@@ -1,47 +1,47 @@
 // ============================================================================
-// 应用设置上下文 - 管理各种开关设置
+// App settings context - manages various toggle settings
 // ============================================================================
 
 import { createContext, useContext, useState, useCallback, useEffect, type ReactNode } from 'react';
 import { APP_MODULE_META, DEFAULT_ACTIVE_MODULE_ID, type AppModuleId } from '../config/moduleMeta';
 import i18n, { type Language } from '../i18n';
 
-/** 应用设置 */
+/** App settings */
 interface AppSettings {
-  /** 界面语言，手动选择并与其他应用设置一起持久化。 */
+  /** UI language, manually selected and persisted together with other app settings. */
   language: Language;
-  /** 当前激活的功能模块，保存在全局设置里用于切换后保持位置。 */
+  /** Currently active feature module, saved in global settings to keep position after switching. */
   activeModuleId: AppModuleId;
-  /** 大目录分析深度 (2-4，默认 3) */
+  /** Big directory analysis depth (2-4, default 3) */
   hotspotDepth: number;
-  /** 大目录大小阈值 MB (10-500，默认 50) */
+  /** Big directory size threshold in MB (10-500, default 50) */
   hotspotSizeThreshold: number;
-  /** 深度扫描时是否忽略系统目录（默认 true，保持现有行为） */
+  /** Whether to ignore system directories during deep scans (default true, preserves existing behavior) */
   hotspotIgnoreSystemDirs: boolean;
-  /** 大文件清理返回的最大文件数（默认 50） */
+  /** Maximum number of files returned by large-file cleanup (default 50) */
   bigFilesScanLimit: number;
   /**
-   * 垃圾清理「深度发现」扫描的目录递归层数（4-24，默认 16）。
-   * 调大能扫到更深的缓存目录，但每一层都会成倍增加要遍历的目录数，扫描明显变慢。
+   * Directory recursion depth for junk cleanup's "Deep Discovery" scan (4-24, default 16).
+   * Increasing it reaches deeper cache directories, but each level multiplies the number of directories to traverse, making scans noticeably slower.
    */
   junkDeepScanDepth: number;
-  /** 磁盘变化分析最多展示变化目录数量（默认 300） */
+  /** Maximum number of changed directories shown in disk-change analysis (default 300) */
   diskGrowthMaxEntries: number;
-  /** 清理日志最多保留文件数（默认 10） */
+  /** Maximum number of files kept in cleanup logs (default 10) */
   cleanupLogRetention: number;
   /**
-   * 是否显示 AI 助手入口（右下角悬浮球 + 各列表行内的 AI 按钮）。
+   * Whether to show the AI assistant entry (floating ball at bottom-right + AI buttons in each list row).
    *
-   * 默认开启。关掉只隐藏入口，已配置的服务商和密钥全部保留 ——
-   * 有些用户没配服务商，也不希望这两个图标一直占着界面。
+   * Enabled by default. Turning it off only hides the entry; all configured providers and API keys are retained —
+   * some users haven't configured a provider and don't want these two icons occupying the UI all the time.
    */
   aiAssistantEnabled: boolean;
 }
 
 interface SettingsContextValue {
-  /** 当前设置 */
+  /** Current settings */
   settings: AppSettings;
-  /** 更新设置 */
+  /** Updates the settings */
   updateSettings: (updates: Partial<AppSettings>) => void;
 }
 
@@ -50,20 +50,20 @@ const SettingsContext = createContext<SettingsContextValue | null>(null);
 const STORAGE_KEY = 'c-cleanup-settings';
 const moduleIds = APP_MODULE_META.map(module => module.id);
 
-/** 默认设置 */
+/** Default settings */
 const defaultSettings: AppSettings = {
   language: 'zh',
   activeModuleId: DEFAULT_ACTIVE_MODULE_ID,
-  hotspotDepth: 3,     // 默认分析深度 3 层
-  hotspotSizeThreshold: 50, // 默认 50MB
-  hotspotIgnoreSystemDirs: true, // 默认忽略系统目录
-  bigFilesScanLimit: 50, // 默认扫描 50 个大文件，避免初次结果列表过长
-  // 比原先写死的 12 层放宽一档：深度扫描本来就是为了找藏得深的缓存，太浅会漏。
-  // 上限留到 24，用户嫌慢可以自己调回去。
+  hotspotDepth: 3,     // default analysis depth 3 levels
+  hotspotSizeThreshold: 50, // default 50MB
+  hotspotIgnoreSystemDirs: true, // default ignore system directories
+  bigFilesScanLimit: 50, // default scan 50 large files, to avoid an overly long initial result list
+  // One notch looser than the previous hard-coded 12 levels: deep scanning is meant to find deeply hidden caches, too shallow misses them.
+  // Cap stays at 24; users who find it slow can dial it back themselves.
   junkDeepScanDepth: 16,
-  diskGrowthMaxEntries: 300, // 默认最多展示 300 个变化目录
-  cleanupLogRetention: 10, // 默认保留 10 份清理日志，兼容历史行为
-  aiAssistantEnabled: true, // 默认显示 AI 助手入口，保持老用户看到的样子
+  diskGrowthMaxEntries: 300, // default show at most 300 changed directories
+  cleanupLogRetention: 10, // default keep 10 cleanup logs, preserving historical behavior
+  aiAssistantEnabled: true, // default show AI assistant entry, keeping what old users see
 };
 
 function normalizeSettings(settings: AppSettings): AppSettings {
@@ -77,14 +77,14 @@ function normalizeSettings(settings: AppSettings): AppSettings {
     ...settings,
     language,
     activeModuleId,
-    // 这些设置会直接影响扫描结果数量，读取本地缓存时做边界收敛，避免手动篡改导致 UI 或后端压力异常。
+    // These settings directly affect the number of scan results; clamp boundary values when reading local cache to avoid manual tampering causing abnormal UI or backend pressure.
     hotspotDepth: Math.min(4, Math.max(2, Number(settings.hotspotDepth) || defaultSettings.hotspotDepth)),
     hotspotSizeThreshold: Math.min(500, Math.max(10, Number(settings.hotspotSizeThreshold) || defaultSettings.hotspotSizeThreshold)),
     bigFilesScanLimit: Math.min(500, Math.max(10, Math.floor(Number(settings.bigFilesScanLimit) || defaultSettings.bigFilesScanLimit))),
     junkDeepScanDepth: Math.min(24, Math.max(4, Math.floor(Number(settings.junkDeepScanDepth) || defaultSettings.junkDeepScanDepth))),
     diskGrowthMaxEntries: Math.min(1000, Math.max(50, Number(settings.diskGrowthMaxEntries) || defaultSettings.diskGrowthMaxEntries)),
     cleanupLogRetention: Math.min(100, Math.max(1, Math.floor(Number(settings.cleanupLogRetention) || defaultSettings.cleanupLogRetention))),
-    // 只有显式存了 false 才算关闭：老版本缓存里根本没这个字段，必须保持默认开启
+    // Only an explicitly stored false counts as off: older caches don't have this field at all, so it must stay enabled by default
     aiAssistantEnabled: settings.aiAssistantEnabled !== false,
   };
 }
@@ -94,7 +94,7 @@ interface SettingsProviderProps {
 }
 
 export function SettingsProvider({ children }: SettingsProviderProps) {
-  // 从 localStorage 读取保存的设置
+  // Read saved settings from localStorage
   const [settings, setSettings] = useState<AppSettings>(() => {
     if (typeof window !== 'undefined') {
       try {
@@ -110,11 +110,11 @@ export function SettingsProvider({ children }: SettingsProviderProps) {
   });
 
   useEffect(() => {
-    // 设置可能来自旧版本缓存，统一在 Provider 生效后切换，避免首屏读取到非法语言。
+    // Settings may come from an older cache version; switch them uniformly after the Provider takes effect, to avoid reading an invalid language on first paint.
     void i18n.changeLanguage(settings.language);
   }, [settings.language]);
 
-  // 更新设置
+  // Updates the settings
   const updateSettings = useCallback((updates: Partial<AppSettings>) => {
     setSettings(prev => {
       const newSettings = normalizeSettings({ ...prev, ...updates });

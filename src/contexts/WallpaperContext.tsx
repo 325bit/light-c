@@ -1,33 +1,33 @@
 // ============================================================================
-// 背景壁纸上下文
-// 壁纸只管「背景」，与明暗/玻璃正交：深浅主题共用一张图，各自一套遮罩强度。
-// 图片文件由后端复制到数据目录，这里只持久化展示配置 + 通过 asset 协议加载。
+// Wallpaper context
+// Wallpaper only handles the "background"; orthogonal to light/dark or glass effects: both themes share one image, each with its own overlay intensity.
+// The image file is copied to the data directory by the backend; here we only persist display config + load via the asset protocol.
 // ============================================================================
 
 import { createContext, useContext, useEffect, useMemo, useState, useCallback, type ReactNode } from 'react';
 import { convertFileSrc } from '@tauri-apps/api/core';
 import { clearWallpaper, getWallpaperPath, installWallpaper, pickWallpaperDialog } from '../api/commands';
 
-/** 图片适配方式：等比填充裁切 / 等比完整留边 / 原始尺寸居中 */
+/** Image fit mode: fill and crop proportionally / fit fully with proportional letterboxing / original size centered */
 export type WallpaperFit = 'cover' | 'contain' | 'center';
 
-/** 展示配置（图片本身不在 localStorage，避免几 MB 的 base64 卡住设置读取） */
+/** Display config (the image itself is not in localStorage, to avoid a few MB of base64 stalling settings reads) */
 interface WallpaperSettings {
   fit: WallpaperFit;
-  /** 浅色主题遮罩强度 0-100，越大越白、文字越清楚 */
+  /** Light-theme overlay intensity 0-100; higher means whiter and text clearer */
   dimLight: number;
-  /** 深色主题遮罩强度 0-100，越大越黑 */
+  /** Dark-theme overlay intensity 0-100; higher means darker */
   dimDark: number;
 }
 
 interface WallpaperContextValue extends WallpaperSettings {
-  /** 当前壁纸的 asset URL；空串表示没有壁纸 */
+  /** asset URL of the current wallpaper; an empty string means no wallpaper */
   url: string;
-  /** 是否已安装壁纸 */
+  /** Whether a wallpaper is installed */
   active: boolean;
-  /** 选图并安装；取消或失败不改动现有配置 */
+  /** Pick an image and install it; cancel or failure leaves the existing config unchanged */
   choose: () => Promise<void>;
-  /** 清除壁纸，回到纯色背景 */
+  /** Clear the wallpaper, returning to a solid-color background */
   remove: () => Promise<void>;
   setFit: (fit: WallpaperFit) => void;
   setDimLight: (value: number) => void;
@@ -64,16 +64,16 @@ export function WallpaperProvider({ children }: { children: ReactNode }) {
   const [settings, setSettings] = useState<WallpaperSettings>(readSettings);
   const [url, setUrl] = useState('');
   /**
-   * 换图版本号。壁纸文件名固定（wallpaper.png），换图后 convertFileSrc 返回的还是同一个
-   * URL，浏览器会直接命中缓存继续显示旧图 —— 必须靠递增的查询参数强制重新请求。
-   * asset 协议只取 URL 的 path（query 被忽略），所以加参数不影响后端取文件。
+   * Wallpaper image revision. The wallpaper filename is fixed (wallpaper.png), so after changing the image convertFileSrc still returns the same
+   * URL and the browser hits the cache and keeps showing the old image - an incrementing query parameter is required to force a re-request.
+   * The asset protocol only uses the URL's path (the query is ignored), so adding a parameter does not affect backend file retrieval.
    */
-  // 初值用时间戳而不是 0：WebView 的磁盘缓存在重启后仍然存在，
-  // 如果每次启动都是同一个 `?v=0`，换了图重启后可能又显示缓存里的旧图。
+  // Initialize with a timestamp rather than 0: the WebView's disk cache survives restarts,
+  // so if every startup used the same `?v=0`, after changing the image and restarting the cached old image might show again.
   const [revision, setRevision] = useState(() => Date.now());
 
-  // 启动时向后端要壁纸路径：文件在数据目录里，便携版换机器也能跟着走。
-  // 后端返回空串说明没装过，保持纯色背景。
+  // Ask the backend for the wallpaper path at startup: the file is in the data directory, so it travels with portable installations.
+  // An empty string from the backend means no wallpaper was installed; keep the solid-color background.
   useEffect(() => {
     let cancelled = false;
     getWallpaperPath()
@@ -86,26 +86,26 @@ export function WallpaperProvider({ children }: { children: ReactNode }) {
     };
   }, []);
 
-  // 把配置同步到根节点：壁纸层是纯 CSS 画的，React 只负责改变量和 class。
-  // 这样切换主题/适配方式不会重挂载主界面，扫描中的模块状态不掉。
+  // Sync config to the root node: the wallpaper layer is drawn in pure CSS, React only changes variables and classes.
+  // This way switching theme/fit mode does not remount the main UI, so in-progress scan module state is not lost.
   useEffect(() => {
     const root = document.documentElement;
     root.classList.toggle('has-wallpaper', Boolean(url));
     const versionedUrl = url ? `${url}?v=${revision}` : '';
     root.style.setProperty('--wallpaper-image', versionedUrl ? `url("${versionedUrl}")` : 'none');
     root.style.setProperty('--wallpaper-size', settings.fit === 'center' ? 'auto' : settings.fit);
-    // 遮罩必须注入成完整的 linear-gradient 字符串，不能塞裸 rgba 变量。
-    // ⚠️ 实测：background-image 里用 var(--x) 展开 rgba(...) 会让整条声明失效
-    // （遮罩和图片一起消失、只剩纯色底）；gradient 属于 image 类型，能正常展开。
+    // The overlay must be injected as a complete linear-gradient string, not a bare rgba variable.
+    // ⚠️ Measured: using var(--x) inside background-image to expand rgba(...) invalidates the whole declaration
+    // (overlay and image both disappear, leaving only a solid background); a gradient is an image type and expands correctly.
     const lightScrim = `rgba(255, 255, 255, ${settings.dimLight / 100})`;
     const darkScrim = `rgba(0, 0, 0, ${settings.dimDark / 100})`;
     root.style.setProperty('--wallpaper-scrim-light', `linear-gradient(${lightScrim}, ${lightScrim})`);
     root.style.setProperty('--wallpaper-scrim-dark', `linear-gradient(${darkScrim}, ${darkScrim})`);
-    // ⚠️ revision 必须进依赖：换图时文件名不变 → url 字符串不变，
-    // 只靠 url 不会重跑这个 effect，新版本号永远注入不进去（换图不刷新的直接原因）。
+    // ⚠️ revision must be in the dependencies: when the image changes the filename is unchanged -> the url string is unchanged,
+    // relying on url alone will not re-run this effect and the new revision never gets injected (the direct cause of wallpaper not refreshing).
   }, [url, revision, settings]);
 
-  // 配置变更统一持久化；图片 URL 是运行时状态，不写盘。
+  // Config changes are persisted uniformly; the image URL is runtime state and is not written to disk.
   useEffect(() => {
     try {
       localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
@@ -123,7 +123,7 @@ export function WallpaperProvider({ children }: { children: ReactNode }) {
     if (!picked) return;
     const savedPath = await installWallpaper(picked);
     setUrl(convertFileSrc(savedPath));
-    // 同上：递增版本号，让新图绕过旧 URL 的缓存。
+    // Same as above: increment the revision so the new image bypasses the old URL's cache.
     setRevision((current) => current + 1);
   }, []);
 

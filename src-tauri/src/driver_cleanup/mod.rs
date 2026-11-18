@@ -1,8 +1,8 @@
 // ============================================================================
-// 旧驱动清理模块
+// Old driver cleanup module
 //
-// 只通过 pnputil 管理 Driver Store 中的驱动包，不直接操作 DriverStore 文件，
-// 这样可以让 Windows 自己负责驱动包的依赖、签名和删除安全检查。
+// Only manages driver packages in the Driver Store via pnputil; never manipulates DriverStore files directly,
+// so Windows itself handles dependency, signature, and deletion safety checks for driver packages.
 // ============================================================================
 
 use chrono::Local;
@@ -21,7 +21,7 @@ const DRIVER_BACKUP_DIR: &str = "driver_backups";
 #[cfg(target_os = "windows")]
 const HIDDEN_PROCESS_FLAGS: u32 = 0x08000000 | 0x00000008;
 
-// 删除操作会修改系统 Driver Store，串行化后端请求可以避免两个清理任务交叉备份或删除。
+// Deletion modifies the system Driver Store; serializing backend requests prevents two cleanup tasks from interleaving backups or deletions.
 static DRIVER_DELETE_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
 #[derive(Debug, Clone, Serialize)]
@@ -39,7 +39,7 @@ pub struct DriverPackageInfo {
     pub installed_device_count: usize,
     pub outranked_device_count: usize,
     pub file_count: usize,
-    /// 驱动包目录的估算占用（字节），用于删除确认弹窗展示；读取失败为 0 表示未知。
+    /// Estimated usage of the driver package directory (bytes), shown in the delete confirmation dialog; 0 on read failure means unknown.
     pub total_size: u64,
     pub status: String,
     pub actionable: bool,
@@ -113,7 +113,7 @@ pub fn scan() -> Result<DriverScanResult, String> {
     let (device_matches, device_match_data_available) = match enumerate_device_matches() {
         Ok(matches) => (matches, true),
         Err(error) => {
-            // 设备匹配 XML 只用于提高判定置信度；失败时保留基础扫描结果，避免影响旧系统检测。
+            // Device matching XML is only used to raise confidence in the determination; on failure the basic scan result is kept, avoiding any impact on old system detection.
             warn!("读取设备驱动匹配关系失败，将使用保守基础判定: {}", error);
             (Vec::new(), false)
         }
@@ -160,7 +160,7 @@ pub fn restore_all_backups() -> Result<DriverRestoreResult, String> {
         ));
     }
 
-    // 只启动一次 pnputil，减少恢复大量驱动时的进程开销；先枚举用于校验目录确实包含备份。
+    // Launch pnputil only once to reduce process overhead when restoring many drivers; first enumerate to verify the directory really contains backups.
     let driver_pattern = backup_directory
         .join("*.inf")
         .to_string_lossy()
@@ -203,7 +203,7 @@ pub fn delete(published_names: Vec<String>) -> Result<DriverDeleteResult, String
     let selected_packages = validate_selected_packages(&current_scan, &selected_names)?;
     let backup_directory = create_backup_root()?;
 
-    // 每个 OEM 包使用稳定目录；删除失败后重试会复用已有备份，不会不断产生时间戳目录。
+    // Each OEM package uses a stable directory; retrying after a failed deletion reuses the existing backup instead of creating timestamped directories endlessly.
     for package in &selected_packages {
         backup_driver_package(package, &backup_directory)?;
     }
@@ -212,9 +212,9 @@ pub fn delete(published_names: Vec<String>) -> Result<DriverDeleteResult, String
     let mut needs_reboot = false;
     for package in selected_packages {
         let published_name = package.published_name;
-        // 只使用 /force：旧驱动包（Outranked）仍被设备驱动匹配列表引用，pnputil 不带
-        // /force 会拒绝删除；而 /uninstall 与 /force 一起使用时 /force 会被忽略，且
-        // /uninstall 会因"设备仍安装该 INF"而失败。删除前已确认无活动设备，/force 安全。
+        // Use only /force: old driver packages (Outranked) are still referenced by the device driver match list, and pnputil without
+        // /force refuses to delete them; when /uninstall is used together with /force, /force is ignored, and
+        // /uninstall fails because "the INF is still installed for a device". No active devices were confirmed before deletion, so /force is safe.
         let command_result =
             run_pnputil(&["/delete-driver", published_name.as_str(), "/force"]);
         let (command_success, output_text) = match command_result {
@@ -240,7 +240,7 @@ pub fn delete(published_names: Vec<String>) -> Result<DriverDeleteResult, String
         });
     }
 
-    // 一次复核所有删除结果，避免每个包都重新调用 pnputil，减少系统 IO 和进程开销。
+    // Recheck all deletion results at once, avoiding a pnputil call per package, reducing system IO and process overhead.
     match enumerate_driver_packages() {
         Ok(packages) => {
             let remaining_names = packages
@@ -251,7 +251,7 @@ pub fn delete(published_names: Vec<String>) -> Result<DriverDeleteResult, String
                 detail.verified_removed =
                     !remaining_names.contains(&detail.published_name.to_ascii_lowercase());
                 if !detail.success && detail.verified_removed {
-                    // pnputil 命令返回失败码但复核确认包已被移除，以实际结果为准。
+                    // pnputil returned a failure code but the recheck confirms the package is gone; the actual result wins.
                     detail.success = true;
                     detail.error_message = None;
                 } else if detail.success && !detail.verified_removed {
@@ -262,7 +262,7 @@ pub fn delete(published_names: Vec<String>) -> Result<DriverDeleteResult, String
             }
         }
         Err(error) => {
-            // 删除命令已经执行，复核失败不能伪装成删除失败，只能明确提示用户重新检测。
+            // The delete command has already run; a failed recheck must not be disguised as a deletion failure — tell the user clearly to recheck.
             for detail in &mut details {
                 if detail.success {
                     detail.success = false;
@@ -338,7 +338,7 @@ fn enumerate_driver_packages() -> Result<Vec<RawDriverPackage>, String> {
     result
 }
 
-/// 使用旧版 pnputil 的纯文本输出枚举驱动包，兼容不支持 XML 参数的 Windows 版本。
+/// Enumerate driver packages using the plain-text output of the legacy pnputil, compatible with Windows versions that do not support the XML switch.
 fn enumerate_driver_packages_text() -> Result<Vec<RawDriverPackage>, String> {
     let output = run_pnputil(["/enum-drivers"])?;
     if !output.status_success {
@@ -482,9 +482,9 @@ fn classify_packages(
                 )
             };
 
-            // 驱动包占用无法由 pnputil 直接给出，按驱动目录实际文件大小统计，
-            // 目录不可读时回落 0，由前端按“未知”处理，避免弹窗展示假数据。
-            // 必须在 driver_store_path 被移入结构体之前计算。
+            // A driver package's usage cannot be reported directly by pnputil, so it is measured from the actual file sizes in the driver directory,
+            // falling back to 0 when the directory is unreadable; the frontend treats that as "unknown", avoiding fake data in the dialog.
+            // Must be computed before driver_store_path is moved into the struct.
             let total_size = sum_driver_package_size(&driver_store_path);
 
             DriverPackageInfo {
@@ -510,8 +510,8 @@ fn classify_packages(
         .collect()
 }
 
-/// 统计单个驱动包目录的占用大小；Windows 会把部分文件硬链接到系统其他位置，
-/// 这里只做展示用估算，不做去重，读取失败按 0 处理。
+/// Calculate the usage of a single driver package directory; Windows hard-links some files to other system locations,
+/// so this is only an estimate for display, with no deduplication; read failures are treated as 0.
 fn sum_driver_package_size(driver_store_path: &str) -> u64 {
     if driver_store_path.is_empty() {
         return 0;
@@ -787,7 +787,7 @@ fn parse_device_matches_xml(path: &Path) -> Result<Vec<RawDeviceMatch>, String> 
                 } else if element_name == b"DriverName" {
                     let driver_name = read_attribute(&event, b"DriverName")?;
                     if driver_name.is_empty() {
-                        // 设备当前驱动使用文本节点，匹配驱动使用 DriverName 属性。
+                        // The current driver of a device uses a text node, while the matching driver uses the DriverName attribute.
                         current_matching_driver = false;
                         current_text_element = Some("DriverName".to_string());
                         current_text.clear();
@@ -846,7 +846,7 @@ fn parse_device_matches_xml(path: &Path) -> Result<Vec<RawDeviceMatch>, String> 
                     && !current_driver_name.is_empty()
                 {
                     if let Some(device) = current_device.as_mut() {
-                        // 设备节点下的文本 DriverName 就是当前已安装驱动，不能和匹配候选的属性节点混淆。
+                        // The text DriverName under a device node is the currently installed driver; do not confuse it with the attribute nodes of match candidates.
                         device.installed_driver_name = current_driver_name.clone();
                     }
                     current_driver_name.clear();
@@ -882,7 +882,7 @@ fn is_driver_text_element(name: &[u8]) -> bool {
 }
 
 fn is_active_device_status(status: &str) -> bool {
-    // 只有 Windows 明确报告设备已启动或正在运行时才禁止删除，避免把已断开设备误判为在用。
+    // Only forbid deletion when Windows explicitly reports a device as started or running, to avoid misjudging a disconnected device as in use.
     matches!(
         status.trim().to_ascii_lowercase().as_str(),
         "started" | "running"
@@ -903,7 +903,7 @@ fn assign_driver_text(package: &mut RawDriverPackage, element: &str, text: &str)
     *target = text.trim().to_string();
 }
 
-/// 解析 pnputil 旧版文本格式，只提取基础包信息；设备匹配仍由 XML 能力决定。
+/// Parse the legacy pnputil text format, extracting only basic package info; device matching is still determined by the XML capability.
 fn parse_driver_text(text: &str) -> Vec<RawDriverPackage> {
     let mut packages = Vec::new();
     let mut current: Option<RawDriverPackage> = None;
@@ -950,10 +950,10 @@ fn parse_driver_text(text: &str) -> Vec<RawDriverPackage> {
             continue;
         };
         if !line.starts_with(' ') && !line.starts_with('\t') {
-            // 保留边界判断，避免把下一段非包标题文本误当作驱动文件。
+            // Keep the boundary check to avoid mistaking non-package heading text in the next segment for a driver file.
             continue;
         } else if reading_driver_files {
-            // 驱动文件路径本身可能包含盘符冒号，不能用“是否含冒号”排除它。
+            // A driver file path itself may contain a drive colon, so "contains a colon" cannot be used to exclude it.
             package.file_count = package.file_count.saturating_add(1);
         }
     }
@@ -977,7 +977,7 @@ enum TextDriverField {
     DriverFiles,
 }
 
-/// 解析 pnputil 文本字段，兼容英文/中文系统以及字段名和冒号之间的空格。
+/// Parse pnputil text fields, compatible with English/Chinese systems and with spaces between field names and colons.
 fn parse_text_field(line: &str) -> Option<(TextDriverField, String)> {
     let (raw_name, raw_value) = line.split_once(':')?;
     let field = match normalize_text_field_name(raw_name) {
@@ -1006,7 +1006,7 @@ fn parse_text_field(line: &str) -> Option<(TextDriverField, String)> {
         name if matches_any(&name, &["driverfiles", "驱动程序文件", "驱动文件"]) => {
             TextDriverField::DriverFiles
         }
-        // 未知字段不返回结果，避免把 C:\\Windows\\System32\\xxx.sys 误判成字段。
+        // Unknown fields return no result, to avoid mistaking C:\Windows\System32\xxx.sys for a field.
         _ => return None,
     };
 
@@ -1116,8 +1116,8 @@ where
 
         let output = Command::new(pnputil_path())
             .args(arguments)
-            // release 包是 Windows GUI 子系统；DETACHED_PROCESS 强制脱离父控制台，
-            // CREATE_NO_WINDOW 继续兜底，避免管理员环境下 pnputil 创建可见窗口。
+            // The release package is the Windows GUI subsystem; DETACHED_PROCESS forcibly detaches from the parent console,
+            // with CREATE_NO_WINDOW as a fallback, to avoid pnputil creating a visible window under admin.
             .creation_flags(HIDDEN_PROCESS_FLAGS)
             .output()
             .map_err(|error| format!("启动 pnputil 失败: {}", error))?;
@@ -1185,8 +1185,8 @@ fn decode_windows_output(raw: &[u8]) -> String {
                 .collect::<Vec<_>>(),
         );
     }
-    // 某些 Windows 10 构建在重定向输出时不带 BOM，先按空字节分布识别 UTF-16，
-    // 否则它可能被误当成“可解析的 UTF-8”，最终文本会带大量 NUL 导致字段匹配失败。
+    // Some Windows 10 builds redirect output without a BOM; detect UTF-16 from the NUL byte distribution first,
+    // otherwise it may be mistaken for "parseable UTF-8" and the final text will contain many NULs, causing field matching to fail.
     if let Some(text) = decode_unmarked_utf16(raw) {
         return text;
     }
@@ -1194,7 +1194,7 @@ fn decode_windows_output(raw: &[u8]) -> String {
         return text.to_string();
     }
 
-    // pnputil 的非 XML 输出通常使用系统 OEM 代码页，调用 Windows NLS 转换避免中文变成替换字符。
+    // pnputil's non-XML output usually uses the system OEM code page; call Windows NLS conversion to avoid Chinese becoming replacement characters.
     use std::os::windows::ffi::OsStringExt;
     use winapi::shared::ntdef::LPCCH;
     use winapi::um::stringapiset::MultiByteToWideChar;

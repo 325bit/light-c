@@ -1,6 +1,6 @@
 // ============================================================================
-// i18n 初始化
-// 静态加载语言包，保证桌面端切换语言时无需等待网络或异步模块加载。
+// i18n initialization
+// Load language packs statically, ensuring the desktop app needs no wait for network or async module loading when switching languages.
 // ============================================================================
 
 import i18n from 'i18next';
@@ -45,7 +45,7 @@ function getInitialLanguage(): Language {
       ? savedSettings.language
       : 'zh';
   } catch {
-    // 本地设置损坏时回落中文，避免阻断应用启动。
+    // If local settings are corrupted, fall back to Chinese, avoiding blocking app startup.
     return 'zh';
   }
 }

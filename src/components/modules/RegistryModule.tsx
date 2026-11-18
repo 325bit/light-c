@@ -1,10 +1,10 @@
 import { useAiModuleBridge } from '../ai/useAiModuleBridge';
 // ============================================================================
-// 注册表残留扫描模块
+// Registry leftover scan module
 //
-// 扫描 HKCR\Applications 中被卸载程序遗留的文件关联引用。
-// 每条输出均满足铁证条件（关联文件不存在 + 非系统路径 + 非系统进程），
-// 默认全选，一键删除。
+// Scans HKCR\Applications file-association references left by uninstalled programs.
+// Every output meets the ironclad criteria (associated file missing + non-system path + non-system process),
+// selected by default, one-click delete.
 // ============================================================================
 
 import { useState, useCallback, useEffect, useRef } from 'react';
@@ -28,7 +28,7 @@ import {
 import type { ModuleRenderProps } from './moduleProps';
 
 // ============================================================================
-// 主组件
+// Main component
 // ============================================================================
 
 export function RegistryModule({ isPageActive = true }: ModuleRenderProps) {
@@ -40,9 +40,9 @@ export function RegistryModule({ isPageActive = true }: ModuleRenderProps) {
   const lastScanTriggerRef = useRef(0);
 
   const [scanResult, setScanResult] = useState<RegistryScanResult | null>(null);
-  // 接入 AI 助手（只读）：只给摘要，不提供操作动作。
+  // Hook up the AI assistant (read-only): provide a summary only, no action tools.
   useAiModuleBridge('registry', {
-    // 只读读取：让助手能"往下看"到底有哪些条目（一次一页，由模型决定要不要继续）。
+    // Read-only: lets the assistant "look further" at what entries exist (one page at a time; the model decides whether to continue).
     readItems: (_targetId, offset, limit) => {
       const list = scanResult?.entries ?? [];
       if (list.length === 0) return null;
@@ -53,7 +53,7 @@ export function RegistryModule({ isPageActive = true }: ModuleRenderProps) {
         ),
       };
     },
-    // 只读：单条详情。itemId 用 read_items 行首那个注册表路径（该行开头就是它）。
+    // Read-only: single-item details. itemId uses the registry path at the start of the read_items line (that is how the line begins).
     readItemDetail: (itemId) => {
       const wanted = itemId.trim();
       if (!wanted) return null;
@@ -100,7 +100,7 @@ export function RegistryModule({ isPageActive = true }: ModuleRenderProps) {
       const result = await scanRegistryRedundancy();
       setScanResult(result);
 
-      // 所有条目都已通过铁证条件，默认全选
+      // All entries have passed the ironclad criteria; select all by default
       setSelectedEntries(new Set(result.entries.map(e => `${e.path}|${e.name}`)));
 
       updateModuleState('registry', {
@@ -114,7 +114,7 @@ export function RegistryModule({ isPageActive = true }: ModuleRenderProps) {
     }
   }, [updateModuleState]);
 
-  // 一键扫描触发
+  // One-click scan trigger
   useEffect(() => {
     if (oneClickScanTrigger > 0 && oneClickScanTrigger !== lastScanTriggerRef.current) {
       lastScanTriggerRef.current = oneClickScanTrigger;
@@ -138,7 +138,7 @@ export function RegistryModule({ isPageActive = true }: ModuleRenderProps) {
       const result = await deleteRegistryEntries(entriesToDelete);
       setBackupPath(result.backup_path);
 
-      // 清理日志
+      // Cleanup log
       const failedSet = new Set(result.failed_entries);
       const logEntries: CleanupLogEntryInput[] = entriesToDelete.map((entry, index) => {
         const errorMsg = index < result.errors.length ? result.errors[index] : undefined;
@@ -225,8 +225,8 @@ export function RegistryModule({ isPageActive = true }: ModuleRenderProps) {
         onScan={handleScan}
         error={moduleState.error}
       >
-        {/* 删除进度就地替换操作行里的删除按钮（见下方），既保留结果区参照，
-            也不额外占文档流 —— 注册表没有悬浮操作区可用。 */}
+        {/* Deletion progress replaces the delete button in the operation row in place (see below), keeping the result-area reference,
+            without taking extra document flow — the registry has no floating toolbar available. */}
         {moduleState.status === 'idle' && !scanResult && (
           <div className="p-5">
             <EmptyState
@@ -249,7 +249,7 @@ export function RegistryModule({ isPageActive = true }: ModuleRenderProps) {
 
         {scanResult && scanResult.entries.length > 0 && (
           <div className="p-5 space-y-4">
-            {/* 安全提示 */}
+            {/* Safety hint */}
             <div className="flex items-start justify-between gap-3 p-4 bg-emerald-500/5 rounded-xl border border-emerald-500/15">
               <div className="flex items-start gap-3">
                 <Shield className="w-5 h-5 text-emerald-600 shrink-0 mt-0.5" />
@@ -282,7 +282,7 @@ export function RegistryModule({ isPageActive = true }: ModuleRenderProps) {
               </div>
             )}
 
-            {/* 操作栏 */}
+            {/* Operation bar */}
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-3">
                 <button onClick={toggleSelectAll} className="text-sm text-[var(--brand-green)] hover:underline">
@@ -292,8 +292,8 @@ export function RegistryModule({ isPageActive = true }: ModuleRenderProps) {
                   {moduleT('registry.selected', { count: selectedCount })} / {scanResult.entries.length}
                 </span>
               </div>
-              {/* 删除中就地把按钮换成进度：注册表没有悬浮操作区，
-                  放在这里既不挤动结果区，也让用户在当前视线位置看到进展。 */}
+              {/* During deletion, replace the button with progress in place: the registry has no floating toolbar,
+                  placing it here neither shifts the result area nor loses the user's current viewing position. */}
               {isDeleting ? (
                 <ModuleDeleteProgress
                   variant="floating"
@@ -339,7 +339,7 @@ export function RegistryModule({ isPageActive = true }: ModuleRenderProps) {
               </div>
             )}
 
-            {/* 条目列表 */}
+            {/* Entry list */}
             <div className="space-y-2">
               {scanResult.entries.map((entry) => {
                 const key = `${entry.path}|${entry.name}`;
@@ -356,7 +356,7 @@ export function RegistryModule({ isPageActive = true }: ModuleRenderProps) {
                     onClick={() => toggleSelect(entry)}
                   >
                     <div className="flex items-center gap-3">
-                      {/* 复选框 */}
+                      {/* Checkbox */}
                       <div
                         className={`w-5 h-5 rounded border-2 flex items-center justify-center shrink-0 ${
                           isSelected
@@ -371,7 +371,7 @@ export function RegistryModule({ isPageActive = true }: ModuleRenderProps) {
                         )}
                       </div>
 
-                      {/* 信息 */}
+                      {/* Info */}
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2">
                           <p className="text-sm font-medium text-[var(--text-primary)] truncate">{entry.name}</p>

@@ -1,6 +1,6 @@
 // ============================================================================
-// 回收站扫描器
-// 只返回当前用户能够在 Windows 回收站界面看到的有效条目
+// Recycle bin scanner
+// Only returns valid entries the current user can see in the Windows Recycle Bin UI
 // ============================================================================
 
 use super::{CategoryScanResult, FileInfo, JunkCategory};
@@ -12,10 +12,10 @@ use std::path::{Path, PathBuf};
 #[cfg(windows)]
 use std::sync::OnceLock;
 
-/// 扫描当前登录用户的回收站。
+/// Scans the recycle bin of the currently logged-in user.
 ///
-/// 回收站目录同时包含多个 SID、孤儿文件和 Shell 元数据，不能复用普通目录扫描，
-/// 否则会把用户手动打开回收站时不可见的内容错误地展示出来。
+/// The recycle bin directory contains multiple SIDs, orphan files, and shell metadata, so normal directory scanning cannot be reused,
+/// otherwise it would incorrectly show content that is invisible when the user opens the Recycle Bin manually.
 pub fn scan_current_user(category: &JunkCategory, result: &mut CategoryScanResult) {
     #[cfg(windows)]
     {
@@ -42,7 +42,7 @@ pub fn scan_current_user(category: &JunkCategory, result: &mut CategoryScanResul
     }
 }
 
-/// 校验路径是否属于当前用户可操作的回收站数据文件。
+/// Validates whether a path belongs to recycle bin data files the current user can act on.
 pub fn is_current_user_entry_path(path: &str) -> bool {
     #[cfg(windows)]
     {
@@ -63,7 +63,7 @@ pub fn is_current_user_entry_path(path: &str) -> bool {
 
 #[cfg(windows)]
 fn get_drive_letters() -> Vec<char> {
-    // 只枚举当前存在的盘符，避免把未挂载卷传给 Shell API。
+    // Enumerate only currently existing drives, avoiding passing unmounted volumes to the Shell API.
     ('A'..='Z')
         .filter(|letter| {
             let root = format!("{}:\\", letter);
@@ -82,12 +82,12 @@ fn collect_drive_entries(sid_path: &Path, category: &JunkCategory, entries: &mut
         }
     };
 
-    // 一次 read_dir 同时收下 $I 与 $R：原实现对每个条目还要 exists() + is_dir()
-    // 两次 stat，冷读时四个分区几千个条目就是上万次元数据访问——实测首次扫描
-    // 回收站要 7.3 秒，热起来只要 2 秒，慢的全在这里。
-    // DirEntry::file_type() 在 Windows 上直接取自目录枚举结果，不额外发系统调用。
+    // One read_dir collects both $I and $R: the old implementation also did exists() + is_dir() for each entry
+    // two stats; on a cold read, thousands of entries across four partitions meant tens of thousands of metadata accesses — measured first scan
+    // of the recycle bin took 7.3 s, while a warm scan took only 2 s; the slowness was all here.
+    // On Windows, DirEntry::file_type() comes directly from the directory enumeration result, with no extra system call.
     let mut metadata_files: Vec<(PathBuf, String)> = Vec::new();
-    // 后缀统一转小写比较：NTFS 大小写不敏感，$I/$R 的主体部分可能不是同一大小写
+    // Lowercase extensions before comparing: NTFS is case-insensitive, so the $I/$R base parts may not share the same casing
     let mut data_dirs: HashMap<String, bool> = HashMap::new();
 
     for directory_entry in directory_entries.filter_map(Result::ok) {
@@ -95,7 +95,7 @@ fn collect_drive_entries(sid_path: &Path, category: &JunkCategory, entries: &mut
             continue;
         };
         if let Some(suffix) = file_name.strip_prefix("$I") {
-            // Windows 回收站条目由 $I 元数据和同后缀的 $R 数据组成
+            // A Windows recycle bin entry consists of $I metadata and $R data with the same suffix
             if !suffix.is_empty() {
                 metadata_files.push((directory_entry.path(), suffix.to_owned()));
             }
@@ -110,13 +110,13 @@ fn collect_drive_entries(sid_path: &Path, category: &JunkCategory, entries: &mut
         }
     }
 
-    // 每个 $I 都要单独打开读一次，彼此完全独立，必须并行。
-    // 冷盘上串行读几万个小文件就是几万次随机 I/O：
-    // 实测 E 盘回收站 33052 个条目时，首次扫描 16.3 秒、热了只要 1.3 秒。
+    // Each $I must be opened and read separately; they are fully independent, so they must run in parallel.
+    // Reading tens of thousands of small files serially on a cold disk means tens of thousands of random I/Os:
+    // measured with 33052 entries in the E drive recycle bin: first scan 16.3 s, warm scan only 1.3 s.
     let found: Vec<FileInfo> = metadata_files
         .into_par_iter()
         .filter_map(|(metadata_path, suffix)| {
-            // 缺失 $R 数据的 $I 文件是孤儿元数据，Explorer 不会将其展示为回收站条目。
+            // A $I file missing its $R data is orphan metadata; Explorer will not show it as a recycle bin entry.
             let &is_dir = data_dirs.get(&suffix.to_ascii_lowercase())?;
 
             let (logical_size, original_path, deleted_at) = parse_metadata(&metadata_path)?;
@@ -159,7 +159,7 @@ fn parse_metadata_bytes(bytes: &[u8]) -> Option<(u64, String, i64)> {
         return None;
     }
 
-    // Windows Vista 及以后版本的 $I 文件：版本、原始大小、删除时间、路径长度、UTF-16 路径。
+    // $I files from Windows Vista and later: version, original size, deletion time, path length, UTF-16 path.
     let version = u64::from_le_bytes(bytes[0..8].try_into().ok()?);
     if version != 2 {
         return None;
@@ -173,7 +173,7 @@ fn parse_metadata_bytes(bytes: &[u8]) -> Option<(u64, String, i64)> {
         return None;
     }
 
-    // 偏移 24 是路径长度字段，真正的 UTF-16 路径从偏移 28 开始，否则首字符会变成控制字符。
+    // Offset 24 is the path-length field; the real UTF-16 path starts at offset 28, otherwise the first character becomes a control character.
     let path_bytes = &bytes[28..path_end];
     let utf16_path: Vec<u16> = path_bytes
         .chunks_exact(2)
@@ -189,7 +189,7 @@ fn parse_metadata_bytes(bytes: &[u8]) -> Option<(u64, String, i64)> {
         return None;
     }
 
-    // FILETIME 从 1601 年开始，转换为项目现有结构使用的 Unix 时间戳。
+    // FILETIME starts from year 1601; convert it to the Unix timestamp used by the project's existing structures.
     const WINDOWS_TO_UNIX_SECONDS: u64 = 11_644_473_600;
     let deleted_at = filetime
         .checked_div(10_000_000)
@@ -254,7 +254,7 @@ fn current_user_sid_uncached() -> Option<String> {
             return None;
         }
 
-        // 使用 u64 缓冲区保证 TOKEN_USER 在 Windows 目标上的对齐要求。
+        // Use a u64 buffer to satisfy TOKEN_USER's alignment requirement on Windows targets.
         let mut buffer = vec![0u64; (required_size as usize + 7) / 8];
         let success = GetTokenInformation(
             token_handle,

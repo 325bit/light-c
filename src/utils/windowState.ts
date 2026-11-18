@@ -1,6 +1,6 @@
 // ============================================================================
-// 主窗口尺寸持久化
-// 保存用户调整后的普通窗口尺寸，避免最大化尺寸覆盖下次启动的默认尺寸。
+// Main window size persistence
+// Saves the size of the normal (non-maximized) window the user adjusted, so a maximized size doesn't override the default for the next launch.
 // ============================================================================
 
 import { useEffect } from 'react';
@@ -11,7 +11,7 @@ const WINDOW_STATE_STORAGE_KEY = 'c-cleanup-window-state';
 const WINDOW_STATE_VERSION = 1;
 const WINDOW_RESIZE_SAVE_DELAY = 250;
 
-// 与 tauri.conf.json 保持一致，防止历史缓存把窗口恢复到不可用尺寸。
+// Kept consistent with tauri.conf.json, to prevent stale caches from restoring the window to an unusable size.
 interface WindowSize {
   width: number;
   height: number;
@@ -30,7 +30,7 @@ function readPersistedWindowSize(): WindowSize | null {
     const width = Number(parsed.width);
     const height = Number(parsed.height);
 
-    // 只接受有限正数，避免手动修改 localStorage 后向 Tauri 传入非法尺寸。
+    // Accept only finite positive numbers, to avoid passing invalid sizes to Tauri after localStorage is manually edited.
     if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
       return null;
     }
@@ -59,7 +59,7 @@ async function getMaximumLogicalSize(): Promise<WindowSize | null> {
   const [monitor, scaleFactor] = await Promise.all([currentMonitor(), getCurrentWindow().scaleFactor()]);
   if (!monitor || !Number.isFinite(scaleFactor) || scaleFactor <= 0) return null;
 
-  // Tauri 的显示器工作区尺寸是物理像素，恢复窗口时需要转换为逻辑像素。
+  // Tauri's monitor work-area size is in physical pixels; it must be converted to logical pixels when restoring the window.
   return getMaximumLogicalWindowSize(
     { width: monitor.workArea.size.width, height: monitor.workArea.size.height },
     scaleFactor,
@@ -76,7 +76,7 @@ export function useWindowStatePersistence(): void {
 
     const persistCurrentSize = async (physicalSize?: { width: number; height: number }) => {
       try {
-        // 最大化时记录到的是工作区尺寸，必须保留用户最后一次普通窗口尺寸。
+        // When maximized, what's recorded is the work-area size; the user's last normal-window size must be preserved.
         if (await appWindow.isMaximized()) return;
 
         const scaleFactor = await appWindow.scaleFactor();
@@ -125,7 +125,7 @@ export function useWindowStatePersistence(): void {
           }, WINDOW_RESIZE_SAVE_DELAY);
         });
         if (disposed) {
-          // 监听注册期间组件可能已经卸载，立即解除异步完成后才拿到的监听器。
+          // The component may have unmounted while the listener was registering; immediately unlisten the one obtained after the async completes.
           unlisten();
           return;
         }
@@ -135,7 +135,7 @@ export function useWindowStatePersistence(): void {
       }
     };
 
-    // 先注册监听再恢复尺寸，确保用户恢复后继续拖拽时不会漏掉事件。
+    // Register the listener before restoring the size, so events aren't missed if the user keeps dragging after restoration.
     void registerResizeListener();
     void restoreWindowSize();
 

@@ -1,5 +1,5 @@
 // ============================================================================
-// 文件删除命令
+// File deletion command
 // ============================================================================
 
 use crate::cleaner::{
@@ -11,14 +11,14 @@ use log::info;
 use serde::Deserialize;
 use tauri::{AppHandle, Emitter};
 
-/// 将删除进度发送给前端；事件失败不应中断实际删除任务。
+/// Sends deletion progress to the frontend; a failure to emit shouldn't interrupt the actual deletion task.
 fn emit_delete_progress(app: &AppHandle, progress: EnhancedDeleteProgress) {
     if let Err(error) = app.emit("junk-clean:delete-progress", progress) {
         log::warn!("发送垃圾清理删除进度失败: {}", error);
     }
 }
 
-/// 发送删除准备阶段，帮助前端在后端展开深度分类时也能立即给出反馈。
+/// Sends the deletion-preparation phase, helping the frontend give immediate feedback even while the backend expands deep categories.
 fn emit_delete_preparing(app: &AppHandle, total_count: usize) {
     emit_delete_progress(
         app,
@@ -35,13 +35,13 @@ fn emit_delete_preparing(app: &AppHandle, total_count: usize) {
     );
 }
 
-/// 删除请求参数
+/// Deletion request parameters
 #[derive(Debug, Deserialize)]
 pub struct DeleteRequest {
     pub paths: Vec<String>,
 }
 
-/// 删除指定文件
+/// Deletes the specified files
 #[tauri::command]
 pub async fn delete_files(request: DeleteRequest) -> Result<DeleteResult, String> {
     info!("开始删除 {} 个文件", request.paths.len());
@@ -61,7 +61,7 @@ pub async fn delete_files(request: DeleteRequest) -> Result<DeleteResult, String
     Ok(result)
 }
 
-/// 增强删除文件
+/// Enhanced file deletion
 #[tauri::command]
 pub async fn enhanced_delete_files(
     app: AppHandle,
@@ -91,7 +91,7 @@ pub async fn enhanced_delete_files(
     Ok(result)
 }
 
-/// 删除深度扫描结果，后端再次校验路径规则，避免前端被篡改后删除任意文件。
+/// Deletes deep-scan results; the backend re-validates path rules to prevent deletion of arbitrary files if the frontend is tampered with.
 #[tauri::command]
 pub async fn delete_deep_junk_files(
     app: AppHandle,
@@ -104,7 +104,7 @@ pub async fn delete_deep_junk_files(
     let excluded_paths = excluded_paths.unwrap_or_default();
     let mut degraded_warning = None;
     if !category_names.is_empty() {
-        // 深度扫描结果按页返回，删除时从后端会话恢复完整分类，避免前端只传首屏文件。
+        // Deep-scan results are returned by page; on deletion the full category is restored from the backend session, avoiding the frontend sending only the first page of files.
         match deep_junk::get_paths_for_categories(
             scan_id.as_deref().unwrap_or_default(),
             &category_names,
@@ -112,8 +112,8 @@ pub async fn delete_deep_junk_files(
         ) {
             Ok(extra_paths) => paths.extend(extra_paths),
             Err(error) => {
-                // 会话已过期或缺失时，降级为只清理前端已选中的当前页文件，
-                // 并在结果中提示用户，避免整类清理因为结果过期而完全无法执行。
+                // When the session has expired or is missing, downgrade to cleaning only the current page of files selected in the frontend,
+                // and notify the user in the result, so a whole-category cleanup isn't completely blocked just because results expired.
                 log::warn!("深度扫描会话失效，降级为清理当前页文件: {}", error);
                 degraded_warning = Some(error);
             }
@@ -140,9 +140,9 @@ pub async fn delete_deep_junk_files(
     emit_delete_preparing(&app, paths.len());
     let progress_app = app.clone();
     let mut result = tokio::task::spawn_blocking(move || {
-        // 深度扫描路径已经过 is_deep_junk_path 白名单校验，属于安全缓存目录；
-        // 启用提权删除（icacls）以清理普通权限无法删除的顽固缓存文件，
-        // 仅对 SAFE_OWNERSHIP_PATHS 覆盖的目录生效，不影响其他删除入口。
+        // Deep-scan paths have already passed is_deep_junk_path whitelist validation and are safe cache directories;
+        // enable elevated deletion (icacls) to clean stubborn cache files that normal permissions can't delete,
+        // applying only to directories covered by SAFE_OWNERSHIP_PATHS, not affecting other deletion entry points.
         let engine = EnhancedDeleteEngine::new().with_take_ownership(true);
         engine.delete_files_with_progress(&paths, |progress| {
             emit_delete_progress(&progress_app, progress);
@@ -163,14 +163,14 @@ pub async fn delete_deep_junk_files(
     Ok(result)
 }
 
-/// 获取文件的物理大小（按簇对齐）
+/// Gets a file's physical size (aligned to clusters)
 #[tauri::command]
 pub async fn get_physical_size(logical_size: u64) -> Result<u64, String> {
     let engine = EnhancedDeleteEngine::new();
     Ok(engine.calculate_physical_size(logical_size))
 }
 
-/// 检查是否需要管理员权限
+/// Checks whether administrator privileges are needed
 #[tauri::command]
 pub async fn check_admin_for_path(path: String) -> Result<bool, String> {
     let path_lower = path.to_lowercase();
@@ -190,12 +190,12 @@ pub async fn check_admin_for_path(path: String) -> Result<bool, String> {
     Ok(false)
 }
 
-/// 永久删除卸载残留（深度清理）
+/// Permanently deletes uninstall leftovers (deep cleanup)
 #[tauri::command]
 pub async fn delete_leftovers_permanent(
     paths: Vec<String>,
-    // 是否放行「目录里含可执行文件」。默认 false；
-    // 只有用户在结果弹窗里明确点过「强制删除」才会传 true（白名单与系统目录保护依然生效）。
+    // Whether to allow "directories containing executable files". Default false;
+    // only true when the user explicitly clicked "Force Delete" in the result popup (whitelist and system-directory protection still apply).
     allow_executables: Option<bool>,
 ) -> Result<PermanentDeleteResult, String> {
     let allow_executables = allow_executables.unwrap_or(false);
@@ -224,7 +224,7 @@ pub async fn delete_leftovers_permanent(
     Ok(result)
 }
 
-/// 执行单个路径的安全检查
+/// Performs a safety check on a single path
 #[tauri::command]
 pub async fn check_leftover_safety(path: String) -> Result<SafetyCheckResult, String> {
     let result = tokio::task::spawn_blocking(move || {

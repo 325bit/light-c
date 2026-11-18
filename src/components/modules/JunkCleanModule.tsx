@@ -1,6 +1,6 @@
 // ============================================================================
-// 垃圾清理模块组件
-// 在仪表盘中展示垃圾文件扫描和清理功能
+// Junk cleanup module component
+// Shows junk file scanning and cleanup features in the dashboard
 // ============================================================================
 
 import { useState, useCallback, useMemo, useEffect, useRef } from 'react';
@@ -53,16 +53,16 @@ function loadDeepScanPreference(): boolean {
   try {
     return JSON.parse(localStorage.getItem(DEEP_SCAN_STORAGE_KEY) ?? 'false') === true;
   } catch {
-    // 旧版本或手工修改 localStorage 时回退到快速模式，避免阻断模块加载。
+    // Fall back to quick mode for older versions or manually edited localStorage, to avoid blocking module loading.
     return false;
   }
 }
 
 
-/** 「查看全部文件」每次向后台要多少条：2 万条约 4 MB，几万条的分类两三次就能取完 */
+/** How many entries "View all files" requests from the backend each time: 20,000 is about 4 MB, so a category of tens of thousands takes two or three requests */
 const VIEW_ALL_PAGE_SIZE = 20000;
 
-/** 用一整个分类替换掉结果里的同名分类（「查看全部文件」拿回完整数据后用） */
+/** Replace a same-named category in the result with a whole category (used after "View all files" returns the complete data) */
 function replaceCategory<T extends { categories: CategoryScanResult[] }>(
   result: T,
   category: CategoryScanResult,
@@ -76,11 +76,11 @@ function replaceCategory<T extends { categories: CategoryScanResult[] }>(
 }
 
 /**
- * 深度扫描只返回分类首屏；当前页全部选中且仍有后续页时，删除应覆盖完整分类。
- * 这样用户看到分类总量时，不会因为分页而只清理首屏几百 MB。
+ * Deep scanning returns only the first screen of each category; when the whole current page is selected and more pages remain, deletion must cover the complete category.
+ * This way, when the user sees the category total, pagination does not cause only the first few hundred MB to be cleaned.
  */
-// 阶段名 → 中文标签的映射；原先还有一个按阶段估算进度的 DEEP_SCAN_STAGES 常量，
-// 因为估算值会往回跳已整体移除，这个常量也随之删除。
+// Stage name → Chinese label mapping; there was also a DEEP_SCAN_STAGES constant for estimating progress by stage,
+// but because the estimate could jump backwards it was removed entirely, and so was this constant.
 
 function getScanStageLabel(stage: string, isDeep: boolean): string {
   if (!isDeep) return i18n.t('scanStages.quick', { ns: 'junkClean' });
@@ -128,15 +128,15 @@ function getDeleteRemainingTime(progress: EnhancedDeleteProgress | null): string
 }
 
 // ============================================================================
-// 组件实现
+// Component implementation
 // ============================================================================
 
 /**
- * 把删除失败明细按原因归并。
+ * Group deletion failure details by reason.
  *
- * 一次清理失败几十上百条很常见，逐条列出只会淹没信息。归并后每条 =
- * 一类原因 + 条数 + 一个例子路径，用户一眼看出"卡在哪"。
- * 最多 6 类，避免原因本身就很多时又变回长列表。
+ * A single cleanup failing dozens or hundreds of times is common; listing them all just buries the signal. After grouping, each entry =
+ * one reason + count + one example path, so the user can see at a glance "where it got stuck".
+ * At most 6 groups, so when there are many reasons it does not turn back into a long list.
  */
 function groupFailuresByReason(
   failed: { path: string; failure_reason?: unknown }[],
@@ -162,7 +162,7 @@ function groupFailuresByReason(
 
 export function JunkCleanModule({ isPageActive = true }: ModuleRenderProps) {
   const { t } = useTranslation('junkClean');
-  // 深度扫描的递归层数来自设置页，扫描时作为参数传给命令。
+  // The recursion depth for deep scanning comes from the settings page and is passed to the command at scan time.
   const { settings } = useSettings();
   const {
     moduleState,
@@ -173,38 +173,38 @@ export function JunkCleanModule({ isPageActive = true }: ModuleRenderProps) {
   } = useModuleDashboard('junk');
   const { showToast } = useToast();
 
-  // 用于跟踪是否已处理过当前的一键扫描触发
+  // Tracks whether the current one-click scan trigger has already been handled
   const lastScanTriggerRef = useRef(0);
 
-  // 本地状态
+  // Local state
   const [scanResult, setScanResult] = useState<ScanResult | null>(null);
   const [deleteResult, setDeleteResult] = useState<EnhancedDeleteResult | null>(null);
   const [selectedPaths, setSelectedPaths] = useState<Set<string>>(new Set());
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
   const [deleteProgress, setDeleteProgress] = useState<EnhancedDeleteProgress | null>(null);
-  // 深度分类首屏分页展示，但分类勾选必须保留“整类清理”的明确语义。
+  // Deep categories are paginated on the first screen, but category selection must keep the explicit meaning of "clean the whole category".
   const [selectedCategoryNames, setSelectedCategoryNames] = useState<Set<string>>(new Set());
   const [deepScanEnabled, setDeepScanEnabled] = useState(loadDeepScanPreference);
   const [deepScanResult, setDeepScanResult] = useState<DeepJunkScanResult | null>(null);
   const [scanMode, setScanMode] = useState<'quick' | 'deep' | null>(null);
 
-  // 接入 AI 助手：模块侧只写这一处。
-  // 分工：模块说清"数据长什么样、哪些能被操作"，管道（id 格式、注入时机、
-  // 确认卡片、权限）全在公共层 —— 所以各模块的写法形状一致，便于长期维护。
+  // Integrate the AI assistant: the module only writes this one place.
+  // Division of labor: the module states "what the data looks like and what can be operated on", while the pipeline (id format, injection timing,
+  // confirmation cards, permissions) all lives in the common layer — so every module follows the same shape, making long-term maintenance easier.
   useAiModuleBridge('junk-clean', {
     summary: () => {
       const result = deepScanResult ?? scanResult;
       if (!result) return null;
       return [
         `扫描结果：共 ${result.total_file_count} 个文件，合计 ${formatSize(result.total_size)}。`,
-        // 勾选数必须按**文件路径集合**统计：分类集合只在"整类被勾选"时才写入，
-        // 扫描后的默认勾选走的是 selectedPaths（踩过：读分类集合会得到 0）
+        // The selected count must be based on the **file path set**: the category set is only written when "the whole category is selected",
+        // and the default selection after scanning goes through selectedPaths (learned the hard way: reading the category set gives 0)
         `用户已勾选 ${selectedPaths.size} 个文件。`,
       ].join('\n');
     },
-    // 可操作项 = 分类。id 用 **category 枚举**（序列化成 "RecycleBin" 这种稳定键），
-    // 不用 display_name —— 后者是本地化名称，换语言后历史里的 id 就对不上了。
+    // Actionable items = categories. IDs use the **category enum** (serialized to stable keys like "RecycleBin"),
+    // not display_name — the latter is localized, so after a language change the IDs in history no longer match.
     targets: () => {
       const result = deepScanResult ?? scanResult;
       if (!result) return [];
@@ -217,28 +217,28 @@ export function JunkCleanModule({ isPageActive = true }: ModuleRenderProps) {
           `已勾选 ${category.files.filter((file) => selectedPaths.has(file.path)).length} 个`,
           category.description,
         ].join(' · '),
-        // 回收站清空后无法恢复，卡片上要单独标出来。
-        // 注意不能用 system_managed：那个字段是给 Windows.old 这类系统托管目录用的。
+        // Recycle bin emptying cannot be undone, so it must be flagged separately on the card.
+        // Note: do not use system_managed: that field is for system-managed directories such as Windows.old.
         irreversible: category.category === 'RecycleBin',
       }));
     },
-    // P3a：把 AI 点名的分类勾上。**复用模块自己的 toggleCategorySelection** ——
-    // 它已经处理了"整类勾选要连带勾上分页加载的文件"等细节，
-    // 另写一套必然分叉（而且那正是"AI 和手动操作结果不一致"的来源）。
+    // P3a: select the categories named by the AI. **Reuse the module's own toggleCategorySelection** —
+    // it already handles details such as "selecting a whole category must also select files loaded by pagination",
+    // writing a separate implementation would inevitably diverge (and that is exactly the source of "AI and manual operations giving different results").
     onSelect: (ids) => {
       const result = deepScanResult ?? scanResult;
       if (!result) return;
       for (const id of ids) {
         const category = result.categories.find((item) => item.category === id);
         if (!category) continue;
-        // 系统托管项（旧版 Windows 安装）应用内删不掉，不参与勾选
+        // System-managed items (old Windows installations) cannot be deleted in the app and are excluded from selection
         if (category.system_managed) continue;
         toggleCategorySelection(category.display_name, category.files, true);
       }
     },
-    // 只读读取：让助手能"往下看"某个分类里到底有哪些文件（一次一页）。
-    // 摘要只给到分类，这里才给到文件级 —— 但**不是全给**，一次最多一页，
-    // 由模型自己决定要不要继续读。
+    // Read-only: lets the assistant "look deeper" at which files are actually in a category (one page at a time).
+    // The summary only goes down to categories; here it goes down to files — but **not all of them**, at most one page,
+    // with the model deciding on its own whether to keep reading.
     readItems: (targetId, offset, limit) => {
       const result = deepScanResult ?? scanResult;
       const category = result?.categories.find((item) => item.category === targetId);
@@ -250,8 +250,8 @@ export function JunkCleanModule({ isPageActive = true }: ModuleRenderProps) {
           .map((file) => `${file.path}  ${formatSize(file.size)}`),
       };
     },
-    // 只读：单条详情。itemId 就是 read_items 里行首那个完整路径 ——
-    // 用 startsWith 兜一下，模型偶尔会把后面的说明文字一起带上。
+    // Read-only: single-item detail. itemId is the full path at the start of the line in read_items —
+    // use startsWith as a fallback, since the model sometimes includes the trailing description text too.
     readItemDetail: (itemId) => {
       const result = deepScanResult ?? scanResult;
       const wanted = itemId.trim();
@@ -268,9 +268,9 @@ export function JunkCleanModule({ isPageActive = true }: ModuleRenderProps) {
       }
       return null;
     },
-    // P3b：AI 提案 + 用户确认之后才会走到这里。
-    // **复用 handleDelete**（不另写删除逻辑），并显式把目标路径传进去 ——
-    // 刚写进 state 的勾选在同一个 tick 里读不到。
+    // P3b: only reached after an AI proposal plus user confirmation.
+    // **Reuse handleDelete** (do not write separate deletion logic), and pass the target paths in explicitly —
+    // the selection just written to state cannot be read in the same tick.
     onDelete: async (ids) => {
       const result = deepScanResult ?? scanResult;
       if (!result) {
@@ -295,23 +295,23 @@ export function JunkCleanModule({ isPageActive = true }: ModuleRenderProps) {
         deletedCount: outcome.success_count,
         freedBytes: outcome.freed_physical_size,
         needsReboot: outcome.reboot_pending_count > 0,
-        // 失败明细**按原因归并**再给：一次清理失败几十条是常事，
-        // 逐条列出来只是噪音，用户真正要的是"哪几类原因、各多少条、举个例子"。
+        // Failure details are **grouped by reason** before being returned: failing dozens of times in one cleanup is common,
+        // listing them one by one is just noise; what the user really wants is "which reasons, how many each, and an example".
         failures: groupFailuresByReason(outcome.file_results.filter((file) => !file.success)),
       };
     },
   });
-  // 「查看全部文件」：正在取全部分页的分类名，以及弹窗当前展示的分类名
+  // "View all files": the category whose pages are currently being fetched, and the category shown in the dialog
   const [loadingAllCategory, setLoadingAllCategory] = useState<string | null>(null);
   const [viewAllCategoryName, setViewAllCategoryName] = useState<string | null>(null);
   const scanningRef = useRef(false);
   const cancelRequestedRef = useRef(false);
-  // 这里原来按「阶段序号」估算一个扫描百分比：后端并不上报进度总量
-  //（DeepJunkScanProgress 只有 stage / processed / matched_count / elapsed_ms），
-  // 阶段一变、或换分区重新走阶段，序号就可能变小 → 进度条往回退。
-  // 没有真实的分子分母就不显示百分比，只显示已用时间。
+  // This used to estimate a scan percentage by "stage number": the backend does not report a progress total
+  // (DeepJunkScanProgress only has stage / processed / matched_count / elapsed_ms),
+  // so when a stage changed or a new partition restarted the stages, the number could decrease → the progress bar went backwards.
+  // Without a real numerator and denominator, no percentage is shown — only elapsed time.
 
-  // 计算选中文件大小
+  // Calculate the size of selected files
   const selectedSize = useMemo(() => {
     if (!scanResult) return 0;
     let total = 0;
@@ -322,7 +322,7 @@ export function JunkCleanModule({ isPageActive = true }: ModuleRenderProps) {
         }
       }
       if (scanMode === 'deep' && selectedCategoryNames.has(category.display_name)) {
-        // 整类选择时以分类总量为基准，再扣除当前页明确取消的条目。
+        // For a whole-category selection, use the category total as the basis, then subtract entries explicitly deselected on the current page.
         const excludedSize = category.files
           .filter((file) => !selectedPaths.has(file.path))
           .reduce((sum, file) => sum + file.size, 0);
@@ -342,7 +342,7 @@ export function JunkCleanModule({ isPageActive = true }: ModuleRenderProps) {
     if (scanMode === 'deep') {
       scanResult.categories.forEach((category) => {
         if (selectedCategoryNames.has(category.display_name)) {
-          // selectedPaths 已包含当前页，因此这里只增加未加载的文件数。
+          // selectedPaths already includes the current page, so only unloaded files are counted here.
           count += Math.max(0, category.file_count - category.files.length);
         }
       });
@@ -367,7 +367,7 @@ export function JunkCleanModule({ isPageActive = true }: ModuleRenderProps) {
     localStorage.setItem(DEEP_SCAN_STORAGE_KEY, JSON.stringify(deepScanEnabled));
   }, [deepScanEnabled]);
 
-  // 删除进度只传递批量统计，避免大批量文件逐条更新前端造成额外渲染压力。
+  // Delete progress carries only batch statistics, avoiding extra render pressure from updating the frontend file by file in bulk deletion.
   useEffect(() => {
     let unlisten: (() => void) | null = null;
     let disposed = false;
@@ -387,9 +387,9 @@ export function JunkCleanModule({ isPageActive = true }: ModuleRenderProps) {
     };
   }, [showToast, t]);
 
-  // 开始扫描
+  // Start scanning
   const handleScan = useCallback(async () => {
-    // 删除命令执行中禁止并发启动新扫描覆盖即将落地的数据。
+    // While a delete command is running, starting a new scan is forbidden so it cannot overwrite data that is about to land.
     if (scanningRef.current) return;
 
     scanningRef.current = true;
@@ -411,7 +411,7 @@ export function JunkCleanModule({ isPageActive = true }: ModuleRenderProps) {
       setScanResult(result);
       if (currentScanMode === 'deep') setDeepScanResult(result as DeepJunkScanResult);
       
-      // 默认选中风险等级 <= 2 的文件
+      // Select files with risk level <= 2 by default
       const defaultSelected = new Set<string>();
       result.categories.forEach((category) => {
         if (category.risk_level <= 2) {
@@ -429,7 +429,7 @@ export function JunkCleanModule({ isPageActive = true }: ModuleRenderProps) {
         totalSize: result.total_size,
       });
 
-      // 自动展开模块
+      // Auto-expand the module
     } catch (err) {
       if (cancelRequestedRef.current) {
         updateModuleState('junk', { status: 'idle', error: null });
@@ -455,14 +455,14 @@ export function JunkCleanModule({ isPageActive = true }: ModuleRenderProps) {
     }
   }, [scanMode, showToast, t]);
 
-  // 顶部全局停止按钮复用深度扫描取消命令。
+  // The global stop button at the top reuses the deep scan cancel command.
   useEffect(() => {
     if (stopScanTrigger > 0 && moduleState.status === 'scanning') {
       handleStopScan();
     }
   }, [handleStopScan, moduleState.status, stopScanTrigger]);
 
-  // 监听一键扫描触发器
+  // Listen for the one-click scan trigger
   useEffect(() => {
     if (oneClickScanTrigger > 0 && oneClickScanTrigger !== lastScanTriggerRef.current) {
       lastScanTriggerRef.current = oneClickScanTrigger;
@@ -470,21 +470,21 @@ export function JunkCleanModule({ isPageActive = true }: ModuleRenderProps) {
     }
   }, [oneClickScanTrigger, handleScan]);
 
-  // 执行删除。
-  // overridePaths / overrideCategoryNames 是给「AI 助手代删」用的：
-  // 它刚把勾选写进 state，同一 tick 里读不到新值，所以显式把目标传进来。
-  // 不传时行为与以前完全一致。
+  // Perform deletion.
+  // overridePaths / overrideCategoryNames are for "deletion on behalf of the AI assistant":
+  // it has just written the selection to state, so the new value cannot be read in the same tick; pass the targets in explicitly.
+  // When not provided, behavior is exactly the same as before.
   const handleDelete = useCallback(async (overridePaths?: string[], overrideCategoryNames?: string[]) => {
     const targetPaths = overridePaths ?? Array.from(selectedPaths);
     const targetCategoryNames = overrideCategoryNames ?? Array.from(selectedCategoryNames);
     if (targetPaths.length === 0 && targetCategoryNames.length === 0) return;
 
-    // 与 handleScan 共用同一个"忙"标记：删除期间点「重新扫描」或切「深度发现」都会
-    // 清空 scanResult，把正在进行中的删除的界面上下文拆掉（handleScan 那里的注释也提到了这点）。
-    // 原来的标记只在扫描时置位，删除时是空的，等于没拦住。
+    // Share the same "busy" flag with handleScan: during deletion, clicking "Rescan" or toggling "Deep Discovery" would
+    // clear scanResult and tear down the UI context of the in-progress deletion (also noted in the comment at handleScan).
+    // The old flag was only set during scanning and empty during deletion, so it did not actually block anything.
     scanningRef.current = true;
 
-    // 先给出准备阶段反馈，后端展开深度分类时用户不会看到无响应的遮罩。
+    // Give preparing-phase feedback first so the user does not see an unresponsive overlay while the backend expands deep categories.
     setDeleteProgress({
       phase: 'preparing',
       processed_count: 0,
@@ -501,13 +501,13 @@ export function JunkCleanModule({ isPageActive = true }: ModuleRenderProps) {
       const result = scanMode === 'deep'
         ? await deleteDeepJunkFiles(paths, {
           scanId: deepScanResult?.scan_id,
-          // 正常路径用"整类被勾选的分类"；AI 代删时用显式传进来的目标分类
+          // Normal paths use "categories with the whole category selected"; AI-assisted deletion uses the explicitly passed target categories
           categoryNames: overrideCategoryNames ?? fullySelectedDeepCategoryNames,
           excludedPaths: excludedDeepPaths,
         })
         : await enhancedDeleteFiles(paths);
 
-      // 记录清理日志（所有操作都记录，包括成功和失败）
+      // Record cleanup logs (all operations are recorded, including successes and failures)
       if (result.file_results.length > 0) {
         const logEntries: CleanupLogEntryInput[] = result.file_results.map((f) => ({
           category: '垃圾清理',
@@ -516,7 +516,7 @@ export function JunkCleanModule({ isPageActive = true }: ModuleRenderProps) {
           success: f.success,
           error_message: f.failure_reason ? JSON.stringify(f.failure_reason) : undefined,
         }));
-        // 异步记录日志，不阻塞 UI
+        // Record logs asynchronously so the UI is not blocked
         recordCleanupAction(logEntries).catch((err) => {
           console.warn('记录清理日志失败:', err);
           showToast({
@@ -527,8 +527,8 @@ export function JunkCleanModule({ isPageActive = true }: ModuleRenderProps) {
         });
       }
 
-      // 清理完成：清空扫描与选择状态，只保留清理结果供界面展示。
-      // 删除接口的 file_results 已包含真实成功/失败/待重启明细，无需重扫核验。
+      // Cleanup complete: clear scan and selection state, keeping only the cleanup result for display.
+      // The delete API's file_results already contains real success/failure/reboot-pending details, no rescan verification needed.
       setDeleteResult(result);
       setScanResult(null);
       setDeepScanResult(null);
@@ -538,12 +538,12 @@ export function JunkCleanModule({ isPageActive = true }: ModuleRenderProps) {
       updateModuleState('junk', { status: 'done', fileCount: 0, totalSize: 0, error: null });
       triggerHealthRefresh();
 
-      // 把结果返回出去：AI 代删时要用它生成"删了多少、失败几项"的结果卡片 ——
-      // 这些数字必须来自后端返回，不能由模型转述。
+      // Return the result: AI-assisted deletion uses it to build a "how many deleted, how many failed" result card —
+      // these numbers must come from the backend, not be paraphrased by the model.
       return result;
 
       if (result.success_count > 0) {
-        // 后端 summary_message 固定为中文，因此使用结构化结果在前端生成当前语言的摘要。
+        // The backend summary_message is fixed in Chinese, so a summary in the current language is generated on the frontend from the structured result.
         const releasedText = result.freed_physical_size > 0
           ? i18n.t('freedSize', { ns: 'common', size: formatSize(result.freed_physical_size) })
           : '';
@@ -557,7 +557,7 @@ export function JunkCleanModule({ isPageActive = true }: ModuleRenderProps) {
           ? t('toast.reboot', { count: result.reboot_pending_count })
           : '';
         showToast({
-          // 已经有文件成功删除时使用成功色；失败/待重启数量通过文案和明细表达，避免用户误以为整体未执行。
+          // Use the success color when files have actually been deleted; failures/reboot-pending are expressed through text and details, so the user does not think nothing ran.
           type: 'success',
           title: t('toast.cleanDone'),
           description: t('toast.cleanDoneDesc', {
@@ -567,13 +567,13 @@ export function JunkCleanModule({ isPageActive = true }: ModuleRenderProps) {
           }),
         });
 
-        // 深度扫描会话失效时后端降级为只清理当前页，需明确提示避免用户以为整类已清理。
+        // When the deep scan session expires the backend degrades to cleaning only the current page; a clear hint is needed so the user does not think the whole category was cleaned.
         if (result.warning) {
           showToast({ type: 'warning', title: t('toast.cleanDone'), description: t('toast.degradedClean') });
         }
       } else if (result.failed_count > 0 || result.reboot_pending_count > 0) {
         const firstFailure = result.file_results.find((f) => !f.success && !f.marked_for_reboot);
-        // 先取路径再看有没有：直接写 firstFailure.path 在联合类型下会被判为可能 undefined
+        // Read the path first, then check existence: writing firstFailure.path directly would be flagged as possibly undefined under the union type
         const blockedPath = firstFailure?.path;
         showToast({
           type: 'warning',
@@ -596,12 +596,12 @@ export function JunkCleanModule({ isPageActive = true }: ModuleRenderProps) {
     } finally {
       setIsDeleting(false);
       setDeleteProgress(null);
-      // 与上面的置位配对，退出时务必恢复，否则之后再也扫不了。
+      // Paired with the flag set above; it must be restored on exit or no further scans will be possible.
       scanningRef.current = false;
     }
   }, [deepScanResult, excludedDeepPaths, fullySelectedDeepCategoryNames, scanMode, selectedFileCount, selectedPaths, selectedCategoryNames, showToast, t, triggerHealthRefresh, updateModuleState]);
 
-  // 垃圾文件默认使用完整路径搜索，回收站条目则搜索原始路径，避免把内部 $R 文件名交给搜索引擎。
+  // Junk files are searched by full path by default, while recycle bin entries are searched by their original path, to avoid handing internal $R filenames to the search engine.
   const handleSearchFile = useCallback(async (file: FileInfo) => {
     const searchPath = file.category === 'RecycleBin'
       ? file.original_path || file.name
@@ -614,9 +614,9 @@ export function JunkCleanModule({ isPageActive = true }: ModuleRenderProps) {
     }
   }, [showToast, t]);
 
-  // 切换文件选中状态
+  // Toggle a file's selection state
   const toggleFileSelection = useCallback((path: string) => {
-    // 整类选择保持到删除结束，单项取消通过 excludedPaths 传给后端，避免漏删分页之外的文件。
+    // Whole-category selection is kept until deletion ends; single deselects are passed to the backend via excludedPaths so files outside the paginated page are not missed.
     setSelectedPaths((prev) => {
       const newSet = new Set(prev);
       if (newSet.has(path)) {
@@ -629,12 +629,12 @@ export function JunkCleanModule({ isPageActive = true }: ModuleRenderProps) {
   }, []);
 
   /**
-   * 目录树批量勾选：勾一个目录就把该目录下所有文件一起提交。
+   * Batch selection in the directory tree: selecting a directory submits all files under it together.
    *
-   * 中文说明：不走 toggleFileSelection —— 目录下几百个文件逐条 setState 会让
-   * 每次点击都触发几十次状态更新；这里一次性合并成一次变更。
-   * 注意只动 selectedPaths，不碰 selectedCategoryNames：那是"整类已选"，
-   * 代表连未加载的分页也要删，目录级勾选没有这个语义。
+   * Note: this does not go through toggleFileSelection — calling setState for each of hundreds of files under a directory would
+   * trigger dozens of state updates per click; here they are merged into one change.
+   * Only selectedPaths is touched, not selectedCategoryNames: that one means "the whole category is selected",
+   * which also implies deleting unloaded pages — a meaning directory-level selection does not have.
    */
   const setSelectionForPaths = useCallback((paths: string[], selected: boolean) => {
     if (paths.length === 0) return;
@@ -648,7 +648,7 @@ export function JunkCleanModule({ isPageActive = true }: ModuleRenderProps) {
     });
   }, []);
 
-  // 切换分类选中状态
+  // Toggle a category's selection state
   const toggleCategorySelection = useCallback((categoryName: string, files: FileInfo[], selected: boolean) => {
     setSelectedCategoryNames((previous) => {
       const next = new Set(previous);
@@ -669,14 +669,14 @@ export function JunkCleanModule({ isPageActive = true }: ModuleRenderProps) {
     });
   }, []);
 
-  // 全选/取消全选
+  // Select all / deselect all
   const toggleAllSelection = useCallback((selected: boolean) => {
     if (!scanResult) return;
     if (selected) {
       const allPaths = new Set<string>();
       scanResult.categories.forEach((category) => {
-        // 系统托管的分类（旧版 Windows 安装）不参与全选：应用内删不掉，
-        // 删了还会丢掉回退旧版本的能力，只能走系统磁盘清理。
+        // System-managed categories (old Windows installations) are excluded from select-all: they cannot be deleted in the app,
+        // and deleting them would also lose the ability to roll back to the old version; they can only be handled by Disk Cleanup.
         if (category.system_managed) return;
         category.files.forEach((file) => {
           allPaths.add(file.path);
@@ -697,7 +697,7 @@ export function JunkCleanModule({ isPageActive = true }: ModuleRenderProps) {
   const handleDeepScanToggle = useCallback((enabled: boolean) => {
     if (scanningRef.current) return;
     setDeepScanEnabled(enabled);
-    // 模式变化后旧结果不再代表当前扫描范围，必须清空以防误删上一种模式的结果。
+    // After a mode change the old result no longer represents the current scan scope and must be cleared to avoid mistakenly deleting results from the previous mode.
     setScanResult(null);
     setDeepScanResult(null);
     setSelectedPaths(new Set());
@@ -708,19 +708,19 @@ export function JunkCleanModule({ isPageActive = true }: ModuleRenderProps) {
   }, [updateModuleState]);
 
   /**
-   * 打开「查看全部文件」。
+   * Open "View all files".
    *
-   * 中文说明：深度扫描每个分类首屏只取 500 条，卡片里那块窗口也装不下几万个文件，
-   * 让用户一页页点「加载更多」既慢又容易误判"分类里就这么点东西"。
-   * 这里点开后一次性把剩余分页取完（每批 2 万条，通常 2 次就够），
-   * 取到的数据同时写回模块状态 —— 弹窗、卡片里的树、勾选统计三处口径保持一致。
+   * Note: deep scanning fetches only 500 entries per category on the first screen, and the card's window cannot hold tens of thousands of files;
+   * making the user click "Load more" page by page is slow and easily leads to the misjudgment "that's all there is in the category".
+   * Here, opening it fetches all remaining pages at once (20,000 per batch, usually two batches),
+   * and the fetched data is written back to module state — keeping the dialog, the card tree, and the selection count consistent.
    */
   const handleViewAllFiles = useCallback(async (categoryName: string) => {
     if (loadingAllCategory) return;
     const category = scanResult?.categories.find((item) => item.display_name === categoryName);
     if (!category) return;
 
-    // 快速扫描本来就是完整列表，直接开弹窗
+    // Quick scanning already returns the complete list, so just open the dialog
     if (scanMode !== 'deep' || !deepScanResult || !category.has_more) {
       setViewAllCategoryName(categoryName);
       return;
@@ -729,7 +729,7 @@ export function JunkCleanModule({ isPageActive = true }: ModuleRenderProps) {
     setLoadingAllCategory(categoryName);
     try {
       let merged = category;
-      // 理论上 has_more 会随页数推进清零；这里仍留硬上限，避免异常数据把界面卡在这里
+      // Theoretically has_more clears as pages advance; a hard cap is still kept here so bad data cannot freeze the UI
       for (let round = 0; round < 20 && merged.has_more; round += 1) {
         const page = await getDeepJunkCategoryPage(
           deepScanResult.scan_id,
@@ -750,7 +750,7 @@ export function JunkCleanModule({ isPageActive = true }: ModuleRenderProps) {
         ? replaceCategory(previous, completed) as DeepJunkScanResult
         : previous);
       if (selectedCategoryNames.has(categoryName)) {
-        // 整类已选中：补进来的文件也要一起勾上，否则「整类已选」名不副实
+        // Whole category already selected: newly loaded files must be selected too, otherwise "whole category selected" is not true
         setSelectedPaths((previous) => {
           const next = new Set(previous);
           completed.files.forEach((file) => next.add(file.path));
@@ -765,15 +765,15 @@ export function JunkCleanModule({ isPageActive = true }: ModuleRenderProps) {
     }
   }, [deepScanResult, loadingAllCategory, scanMode, scanResult, selectedCategoryNames, showToast, t]);
 
-  // 弹窗里的分类从模块状态里取，删除/重新扫描后会自动跟着更新或消失
+  // The category in the dialog comes from module state, so it updates or disappears automatically after deletion/rescan
   const viewAllCategory = viewAllCategoryName
     ? scanResult?.categories.find((item) => item.display_name === viewAllCategoryName) ?? null
     : null;
 
-  // 由当前模块控制可见性，避免跨模块共用显示条件。
+  // Visibility is controlled by this module, avoiding shared display conditions across modules.
   const shouldShowOperationToolbar = isPageActive;
-  // 底部操作条只在"有可删结果"时出现；删除中、以及清理完只剩结果卡时都没有它。
-  // 正文底部那 80px 留白必须跟着同一个判断走，否则条子不在了还白留一块。
+  // The bottom operation bar only appears when "there are deletable results"; it is absent during deletion and when only the result card remains after cleanup.
+  // The 80px padding at the bottom of the content must follow the same condition, otherwise an empty gap remains when the bar is gone.
   const showOperations = !isDeleting
     && shouldShowOperationToolbar
     && !!scanResult
@@ -784,8 +784,8 @@ export function JunkCleanModule({ isPageActive = true }: ModuleRenderProps) {
     ? Math.min(100, Math.round((deleteProcessedCount / deleteTotalCount) * 100))
     : 0;
 
-  // 耗时明细：原来这一整块「每盘阶段耗时」直接印在页面上，发版后收进浮层，页面只留一个小秒表图标。
-  // 数据本身留着 —— 它是排查卡顿和继续优化的第一手依据，只是不该占用户的地方。
+  // Timing details: this whole block of "per-drive stage timings" used to be printed directly on the page; after release it was moved into a popover, leaving only a small stopwatch icon.
+  // The data itself is kept — it is the first-hand basis for diagnosing slowdowns and further optimization, it just should not take up the user's space.
   const timingGroups: TimingGroup[] = [];
   if (deepScanResult) {
     for (const drive of deepScanResult.drives) {
@@ -793,7 +793,7 @@ export function JunkCleanModule({ isPageActive = true }: ModuleRenderProps) {
         label: getScanStageLabel(item.stage, true),
         value: `${(item.duration_ms / 1000).toFixed(1)}s`,
       }));
-      // MFT 分段/读盘/解析不放进 rows：读盘和解析是同时跑的，摆成并列阶段会让人以为要相加
+      // MFT segmentation / disk read / parsing are not put into rows: reading and parsing run concurrently, and listing them as parallel stages would imply they should be added
       const notes: string[] = [];
       if (drive.mft_fragments) {
         notes.push(
@@ -828,7 +828,7 @@ export function JunkCleanModule({ isPageActive = true }: ModuleRenderProps) {
       });
     }
   }
-  // 扫描失败/降级的盘必须留在页面上，不能被收进浮层
+  // Failed/degraded drives must stay on the page and must not be tucked into the timing popover
   const driveWarnings = (deepScanResult?.drives ?? []).filter((drive) => Boolean(drive.warning));
 
   if (!isPageActive && !isDeleting && !showDeleteConfirm) {
@@ -837,7 +837,7 @@ export function JunkCleanModule({ isPageActive = true }: ModuleRenderProps) {
 
   return (
     <>
-      {/* 查看全部文件：深扫分类只取了首屏，完整目录树放在弹窗里看 */}
+      {/* View all files: deep scan only fetches the first screen of a category; the full directory tree is shown in the dialog */}
       <JunkFileTreeModal
         category={isDeleting ? null : viewAllCategory}
         selectedPaths={selectedPaths}
@@ -851,7 +851,7 @@ export function JunkCleanModule({ isPageActive = true }: ModuleRenderProps) {
         onClose={() => setViewAllCategoryName(null)}
       />
 
-      {/* 删除确认弹窗 */}
+      {/* Delete confirmation dialog */}
       <ConfirmDialog
         isOpen={showDeleteConfirm}
         title={t('confirmTitle')}
@@ -873,8 +873,8 @@ export function JunkCleanModule({ isPageActive = true }: ModuleRenderProps) {
         description={t('desc')}
         icon={<Trash2 className="w-6 h-6 text-[var(--brand-green)]" />}
         status={moduleState.status}
-        // 删除期间不显示上一次扫描的计数 —— 那批文件正在被清掉，继续摆在标题右侧会让人误以为还有东西可删。
-        // fileCount 归零会让 ModuleCard 走"已完成但无结果"分支，所以同时关掉那个徽标。
+        // Do not show the previous scan's count during deletion — those files are being cleaned, and leaving it at the title's right would suggest there is still something to delete.
+        // Setting fileCount to zero makes ModuleCard take the "done but no results" branch, so the badge is turned off at the same time.
         fileCount={isDeleting ? 0 : moduleState.fileCount}
         totalSize={moduleState.totalSize}
         hideDoneBadge={isDeleting}
@@ -887,8 +887,8 @@ export function JunkCleanModule({ isPageActive = true }: ModuleRenderProps) {
               title={t('deepDiscoveryTitle')}
             >
               <span>{t('deepDiscovery')}</span>
-              {/* 改用共享的 ui/Switch。原先这里自绘了一套"轨道 + 滑块"，
-                  底色用的是 --border-color，在亮色玻璃下几乎看不见滑块。 */}
+              {/* Switch to the shared ui/Switch. This used to be a hand-drawn "track + thumb",
+                  with --border-color as the background, making the thumb almost invisible on light glass. */}
               <Switch
                 checked={deepScanEnabled}
                 disabled={moduleState.status === 'scanning'}
@@ -903,18 +903,18 @@ export function JunkCleanModule({ isPageActive = true }: ModuleRenderProps) {
         }
         allowStickyContent
       >
-        {/* 展开内容 */}
-        {/* pb-20：底部操作条是 fixed 悬浮层，末端留白免得最后一条分类被它压住。
-            条子不显示时（删除中 / 清理完）不留这块空档。 */}
+        {/* Expanded content */}
+        {/* pb-20: the bottom operation bar is a fixed floating layer; padding at the end keeps the last category from being covered.
+            No gap is left when the bar is hidden (during deletion / after cleanup). */}
         <div className={`p-4 space-y-3 ${showOperations ? 'pb-20' : ''}`}>
-          {/* 深度发现靠直读各盘 $MFT，打开原始卷需要管理员权限；非管理员会退回逐目录遍历，
-              耗时差一个量级。只在用户开了深度发现时提示 —— 用快速扫描的人不需要这条噪音。 */}
+          {/* Deep discovery reads each drive's $MFT directly, and opening raw volumes requires admin rights; non-admins fall back to per-directory traversal,
+              which is an order of magnitude slower. Only show this hint when the user has enabled deep discovery — quick-scan users do not need the noise. */}
           {!isDeleting && deepScanEnabled && (
             <AdminRequiredHint variant="performance" description={t('deepAdminHint')} />
           )}
 
-          {/* 删除期间只显示进度面板，下面的统计卡与分类列表都是"删除前"的数据，
-              继续摆着会让人以为没删干净。删除本身在后端线程执行，界面不必阻塞。 */}
+          {/* During deletion only the progress panel is shown; the stats card and category list below are "pre-deletion" data,
+              and leaving them up would suggest the cleanup was incomplete. The deletion itself runs on a backend thread, so the UI need not block. */}
           {isDeleting && (
             <ModuleDeleteProgress
               phaseLabel={getDeletePhaseLabel(deleteProgress?.phase ?? 'preparing')}
@@ -931,7 +931,7 @@ export function JunkCleanModule({ isPageActive = true }: ModuleRenderProps) {
           )}
 
           {showOperations && (
-            // 公共操作条统一处理底部定位，按钮内容仍由垃圾清理模块维护。
+            // The common operation bar handles bottom positioning uniformly; button content is still maintained by the junk cleanup module.
             <ModuleOperationToolbar moduleId="junk">
               <button
                 onClick={() => toggleAllSelection(true)}
@@ -957,8 +957,8 @@ export function JunkCleanModule({ isPageActive = true }: ModuleRenderProps) {
             </ModuleOperationToolbar>
           )}
 
-          {/* 扫描结果摘要：有扫描数据时展示统计卡；清理完成后 scanResult 被清空，
-              此时仅有 deleteResult 时仍展示清理结果卡 */}
+          {/* Scan summary: show the stats card when scan data exists; after cleanup scanResult is cleared,
+              so the cleanup result card is still shown when only deleteResult remains */}
           {!isDeleting && (scanResult || deleteResult) && (
             <ScanSummary
               scanResult={scanResult}
@@ -969,9 +969,9 @@ export function JunkCleanModule({ isPageActive = true }: ModuleRenderProps) {
             />
           )}
 
-          {/* 扫描中状态：统一走公共组件。
-              阶段名（枚举 NTFS 文件记录）、已处理记录数、候选文件数都是实现细节，
-              用户看结果时不需要；要排查耗时点 ScanTimingPopover。这里只留"在查什么"。 */}
+          {/* Scanning state: uses the common component uniformly.
+              Stage names (enumerating NTFS file records), processed record count, and candidate file count are implementation details
+              the user does not need when viewing results; for timing analysis use ScanTimingPopover. Only "what is being searched" is kept here. */}
           {moduleState.status === 'scanning' && (
             <div className="p-4">
               <ModuleScanProgress
@@ -988,7 +988,7 @@ export function JunkCleanModule({ isPageActive = true }: ModuleRenderProps) {
             </div>
           )}
 
-          {/* 扫描失败或降级的盘：这类提示必须留在页面上，不随耗时明细一起收进浮层 */}
+          {/* Failed or degraded drives: these hints must stay on the page and not be tucked into the timing popover */}
           {!isDeleting && driveWarnings.length > 0 && (
             <div className="space-y-1 text-[0.72rem] text-[var(--color-warning,inherit)]">
               {driveWarnings.map((drive) => (
@@ -999,7 +999,7 @@ export function JunkCleanModule({ isPageActive = true }: ModuleRenderProps) {
             </div>
           )}
 
-          {/* 分类列表 */}
+          {/* Category list */}
           {!isDeleting && scanResult ? (
             <div className="space-y-2">
               {scanResult.categories

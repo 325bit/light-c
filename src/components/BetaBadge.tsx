@@ -1,11 +1,11 @@
 /**
- * 「beta」标记。
+ * The "beta" marker.
  *
- * 用在两处：设置里的「AI 助手」入口、AI 面板标题。
- * 为什么硬编码中文/英文：beta 是通用写法，各语言里都不翻译，
- * 所以不进语言包 —— 避免在四个语言文件里各维护一份一模一样的字符串。
+ * Used in two places: the "AI Assistant" entry in settings, and the AI panel title.
+ * Why hardcode Chinese/English: "beta" is a universal term and is not translated in any language,
+ * so it does not go into the language packs - avoiding the need to maintain an identical string in each of the four language files.
  *
- * 样式刻意做得低调（弱化色 + 1px 边）：它是状态说明，不该抢标题的注意力。
+ * The styling is deliberately understated (muted color + 1px border): it is a status note and should not steal attention from the title.
  */
 export function BetaBadge({ className = '' }: { className?: string }) {
   return (

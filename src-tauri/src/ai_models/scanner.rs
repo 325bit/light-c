@@ -1,4 +1,4 @@
-// 盗取代码妄图搞商业化的sb们，看得明白吗？ 你们永远做不出来比lightc更好的产品
+// To the idiots stealing this code to commercialize it: get it through your heads — you'll never build a product better than LightC
 
 use crate::ai_models::detectors::create_detectors;
 use crate::ai_models::mft_discovery::{discover_models_via_mft, CoveredRoot};
@@ -69,10 +69,10 @@ where
         phase_started_at,
     );
 
-    // 深度发现读的是各盘的 $MFT，而打开原始卷必须提权。非管理员时原来会逐盘失败，
-    // 只在结果里留下一句「打开 NTFS 卷失败: 拒绝访问」，用户看到的就是
-    // 「我明明开了深度发现，怎么什么都没发生」。这里提前判定：跳过 MFT、说清原因，
-    // 并且如实把模式报成 quick —— 结果确实只是快速扫描的结果，不能谎称深度。
+    // Deep discovery reads each drive's $MFT, and opening a raw volume requires elevation. As a non-admin it used to fail on every drive,
+    // leaving only "Failed to open NTFS volume: Access denied" in the result, so users saw
+    // "I turned on deep discovery, why did nothing happen". Judge up front here: skip MFT, explain the reason clearly,
+    // and report the mode honestly as quick — the result really is a quick scan, it must not be claimed as deep.
     let mut deep_discovery_ran = false;
     if enable_deep_discovery {
         if crate::scanner::big_files_engine::mft_core::is_elevated() {
@@ -140,7 +140,7 @@ fn emit_progress<F>(
         message: message.to_string(),
         elapsed_ms: scan_started_at.elapsed().as_millis(),
         stage_elapsed_ms: phase_started_at.elapsed().as_millis(),
-        // 非 MFT 阶段不涉及具体盘符
+        // Non-MFT stages do not involve a specific drive letter
         drive_label: None,
     });
 }
@@ -163,7 +163,7 @@ fn covered_roots_from_sources(sources: &[AssetSource]) -> Vec<CoveredRoot> {
     let mut seen_paths = HashSet::new();
 
     for source in sources.iter().filter(|source| source.name != "未归类") {
-        // 平台 Detector 可能来自多个根目录，MFT 兜底需要把已识别模型的父目录也纳入覆盖范围，避免同一路径二次计数。
+        // Platform Detectors may come from multiple root directories; MFT fallback must include parent directories of already-recognized models in coverage, to avoid counting the same path twice.
         push_covered_root(
             &mut covered_roots,
             &mut seen_paths,
@@ -227,9 +227,9 @@ fn dedupe_models_by_path(mut sources: Vec<AssetSource>) -> Vec<AssetSource> {
             .models
             .sort_by(|left, right| right.size.cmp(&left.size));
         source.model_count = source.models.len();
-        // total_size 保持 Detector 给的值，**不能**用「剩余模型体积之和」重算：
-        // Ollama / HuggingFace 的多个模型共享同一份权重，逐模型累加会让总占用虚高；
-        // 而被去重掉的模型本来就是同一个文件，真实占用并不会因此减少。
+        // total_size keeps the value from the Detector, **must not** be recomputed as "sum of remaining model sizes":
+        // multiple Ollama / HuggingFace models share the same weights, summing per model inflates total usage;
+        // and models removed by dedup are the same file anyway, so real usage does not drop because of it.
         deduped_sources.push(source);
     }
 
@@ -256,8 +256,8 @@ fn merge_sources_by_name(sources: Vec<AssetSource>) -> Vec<AssetSource> {
                 .models
                 .sort_by(|left, right| right.size.cmp(&left.size));
             existing_source.model_count = existing_source.models.len();
-            // 同名来源可能来自不同根目录（例如 Ollama 装在两块盘），总量按各自真实占用相加。
-            // 同样不能用「合并后模型体积之和」重算，理由见 dedupe_models_by_path。
+            // Sources with the same name may come from different roots (e.g. Ollama installed on two drives), total is the sum of their real usage.
+            // Likewise must not recompute as "sum of merged model sizes", see dedupe_models_by_path for the reason.
             existing_source.total_size = existing_source
                 .total_size
                 .saturating_add(source.total_size);
@@ -287,12 +287,12 @@ fn source_priority(name: &str) -> u8 {
 fn model_identity_key(source_name: &str, model_name: &str, path: &Path) -> String {
     let path_key = canonical_path_key(path);
 
-    // MFT 返回的路径在权限或文件移动场景下可能无法立即 metadata 成功，模型扩展名本身足以作为文件级去重依据。
+    // Paths from MFT may not immediately metadata successfully under permission or file-move scenarios; the model extension alone suffices as file-level dedup basis.
     if path.is_file() || looks_like_model_file_path(path) {
         return path_key;
     }
 
-    // Ollama 这类模型会指向共享目录，必须带上来源和模型名，避免多个 manifest 被误合并。
+    // Models like Ollama point to shared directories, so source and model name must be included to avoid several manifests being wrongly merged.
     format!("{}::{}::{}", source_name, model_name, path_key)
 }
 
@@ -312,7 +312,7 @@ mod tests {
     use super::*;
     use crate::ai_models::types::ModelItem;
 
-    /// 造一个「总量小于逐模型累加」的来源：模拟 Ollama / HuggingFace 的共享权重。
+    /// Create a source where "the total is less than the per-model sum": simulate shared weights of Ollama / HuggingFace.
     fn shared_blob_source(name: &str, root: &str, models: &[(&str, u64)], total_size: u64) -> AssetSource {
         AssetSource {
             name: name.to_string(),
@@ -332,7 +332,7 @@ mod tests {
 
     #[test]
     fn dedupe_keeps_shared_blob_total_instead_of_summing_models() {
-        // 两个模型共享 100，各自另有 10：真实占用 120，逐模型累加会得到 220
+        // Two models share 100 and each has another 10: real usage 120, per-model sum gives 220
         let source = shared_blob_source("Ollama", r"D:\ollama", &[("a", 110), ("b", 110)], 120);
 
         let deduped = dedupe_models_by_path(vec![source]);
@@ -347,7 +347,7 @@ mod tests {
 
     #[test]
     fn dedupe_dropping_duplicate_keeps_total_unchanged() {
-        // 同一个文件被两个检测器命中：去重后模型少一个，但磁盘占用不变
+        // The same file matched by two detectors: one fewer model after dedup, but disk usage unchanged
         let first = shared_blob_source("ComfyUI", r"D:\comfy", &[("sd.safetensors", 500)], 500);
         let second = shared_blob_source("LM Studio", r"D:\comfy", &[("sd.safetensors", 500)], 500);
 
@@ -360,7 +360,7 @@ mod tests {
 
     #[test]
     fn merge_adds_source_totals_instead_of_resumming_models() {
-        // 同名来源来自两个根目录，各自总量都小于模型体积之和
+        // Same-named source from two roots, each total less than the sum of its model sizes
         let first = shared_blob_source("Ollama", r"D:\ollama", &[("a", 110)], 100);
         let second = AssetSource {
             name: "Ollama".to_string(),

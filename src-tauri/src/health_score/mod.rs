@@ -1,43 +1,43 @@
 // ============================================================================
-// 系统健康评分模块
-// 根据磁盘空间、休眠文件、垃圾文件三维度计算健康评分。
-// 磁盘空间维度跟随顶栏选中的分区；休眠文件与系统垃圾都在系统盘上，始终按系统盘算。
+// System health score module
+// Calculate the health score from three dimensions: disk space, hibernation file, and junk files.
+// The disk-space dimension follows the partition selected in the top bar; the hibernation file and system junk are on the system drive, so they always count against the system drive.
 // ============================================================================
 
 use log::info;
 use serde::Serialize;
 
-/// 系统健康评分结果
+/// System health score result
 #[derive(Debug, Clone, Serialize)]
 pub struct HealthScoreResult {
-    /// 总分 (0-100)
+    /// Total score (0-100)
     pub score: u32,
-    /// 当前选中分区剩余空间评分 (0-40)
+    /// Score for free space on the currently selected partition (0-40)
     pub disk_score: u32,
-    /// 休眠文件评分 (0-30)
+    /// Hibernation file score (0-30)
     pub hibernation_score: u32,
-    /// 垃圾文件评分 (0-30)
+    /// Junk file score (0-30)
     pub junk_score: u32,
-    /// 当前选中分区剩余百分比
+    /// Free percentage of the currently selected partition
     pub disk_free_percent: f64,
-    /// 是否存在休眠文件
+    /// Whether a hibernation file exists
     pub has_hibernation: bool,
-    /// 休眠文件大小
+    /// Hibernation file size
     pub hibernation_size: u64,
-    /// 预估垃圾文件大小
+    /// Estimated junk file size
     pub junk_size: u64,
 }
 
-/// 计算系统健康评分
+/// Calculate the system health score
 ///
-/// `drive_letter` 是顶栏选中的分区；传 None 时按系统盘算（保持旧行为）。
-/// 只有「磁盘空间」这一维跟随分区：休眠文件和系统垃圾都在系统盘上，
-/// 换到 D: 不会让 hiberfil.sys 或 %TEMP% 跟着搬走，所以那两项始终按系统盘算。
+/// `drive_letter` is the partition selected in the top bar; passing None uses the system drive (preserving old behavior).
+/// Only the "disk space" dimension follows the partition: the hibernation file and system junk are on the system drive,
+/// switching to D: will not move hiberfil.sys or %TEMP%, so those two always count against the system drive.
 ///
-/// 评分算法：
-/// - 选中分区剩余百分比 (40%权重)：剩余空间越多分数越高
-/// - 休眠文件 (30%权重)：无休眠文件得满分，有则根据大小扣分
-/// - 垃圾文件 (30%权重)：垃圾越少分数越高
+/// Scoring algorithm:
+/// - Free percentage of the selected partition (40% weight): more free space means a higher score
+/// - Hibernation file (30% weight): no hibernation file gets full marks; otherwise points are deducted by size
+/// - Junk files (30% weight): less junk means a higher score
 pub fn calculate(drive_letter: Option<&str>) -> HealthScoreResult {
     info!("计算系统健康评分...");
 
@@ -64,11 +64,11 @@ pub fn calculate(drive_letter: Option<&str>) -> HealthScoreResult {
     }
 }
 
-/// 把前端传来的盘符规整成该盘根目录（如 C 盘根目录）。
+/// Normalize the drive letter from the frontend into that drive's root directory (e.g., the C: root).
 ///
-/// 只取第一个 ASCII 字母重新拼装，不把用户字符串直接拼进 Win32 API 路径 ——
-/// 命令层是外部可调用的，带子目录的伪路径不该被当成合法盘符。
-/// 没传或非法时回退系统盘（%SYSTEMDRIVE%，兼容系统盘不叫 C 的机器）。
+/// Only take the first ASCII letter and reassemble; do not splice the user string directly into a Win32 API path -
+/// the command layer is externally callable, so a fake path with subdirectories must not be treated as a valid drive letter.
+/// If absent or invalid, fall back to the system drive (%SYSTEMDRIVE%, compatible with machines where the system drive is not C:).
 #[cfg(target_os = "windows")]
 fn disk_score_root(drive_letter: Option<&str>) -> String {
     let letter = drive_letter
@@ -82,7 +82,7 @@ fn disk_score_root(drive_letter: Option<&str>) -> String {
     root
 }
 
-/// 计算磁盘空间评分 (满分40)
+/// Calculate the disk space score (max 40)
 fn calculate_disk_score(drive_letter: Option<&str>) -> (f64, u32) {
     #[cfg(target_os = "windows")]
     {
@@ -99,7 +99,7 @@ fn calculate_disk_score(drive_letter: Option<&str>) -> (f64, u32) {
             ) -> i32;
         }
 
-        // 默认按系统盘；顶栏切盘后按选中的分区，盘符已在 disk_score_root 里规整
+        // Default to the system drive; after a top-bar switch, use the selected partition; the drive letter is already normalized in disk_score_root
         let drive_root = disk_score_root(drive_letter);
         let path: Vec<u16> = OsStr::new(&drive_root)
             .encode_wide()
@@ -136,10 +136,10 @@ fn calculate_disk_score(drive_letter: Option<&str>) -> (f64, u32) {
         }
     }
 
-    (50.0, 20) // 非 Windows 或调用失败时的默认值
+    (50.0, 20) // default value on non-Windows or when the call fails
 }
 
-/// 计算休眠文件评分 (满分30)
+/// Calculate the hibernation file score (max 30)
 fn calculate_hibernation_score() -> (bool, u64, u32) {
     let hiberfil_path = std::path::Path::new("C:\\hiberfil.sys");
 
@@ -164,7 +164,7 @@ fn calculate_hibernation_score() -> (bool, u64, u32) {
     }
 }
 
-/// 计算垃圾文件评分 (满分30)
+/// Calculate the junk file score (max 30)
 fn calculate_junk_score() -> (u64, u32) {
     let mut total_junk_size: u64 = 0;
 
@@ -175,7 +175,7 @@ fn calculate_junk_score() -> (u64, u32) {
             "{}\\AppData\\Local\\Temp",
             std::env::var("USERPROFILE").unwrap_or_default()
         ),
-        // 系统目录跟随 %SystemRoot%，兼容系统盘不叫 C 的机器
+        // The system directory follows %SystemRoot%, compatible with machines where the system drive is not C:
         crate::system_info::system_root_dir()
             .join("Temp")
             .to_string_lossy()
@@ -204,7 +204,7 @@ fn calculate_junk_score() -> (u64, u32) {
         }
     }
 
-    // 回收站简化估算
+    // Simplified estimate for the recycle bin
     if std::path::Path::new("C:\\$Recycle.Bin").exists() {
         total_junk_size += 100 * 1024 * 1024;
     }
@@ -230,8 +230,8 @@ fn calculate_junk_score() -> (u64, u32) {
 mod tests {
     use super::*;
 
-    /// 顶栏切盘传来的值必须先规整成单个盘符根目录：
-    /// 既保证 "d" / "D:" 等价，也保证带子目录的伪路径不会进 Win32 API。
+    /// The value from a top-bar drive switch must first be normalized into a single drive-letter root:
+    /// this ensures "d" / "D:" are equivalent and that fake paths with subdirectories never reach the Win32 API.
     #[test]
     fn disk_score_root_normalizes_drive_letter() {
         let separator = std::path::MAIN_SEPARATOR;

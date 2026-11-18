@@ -1,6 +1,6 @@
 // ============================================================================
-// 删除引擎 - 核心删除逻辑实现
-// 多层安全保护，确保不会误删重要文件
+// Delete engine - core deletion logic implementation
+// Multiple layers of safety protection to ensure important files are never deleted by mistake
 // ============================================================================
 
 use log::{debug, error, info, warn};
@@ -10,7 +10,7 @@ use std::path::Path;
 use crate::scanner::{DeleteResult, FileInfo};
 
 // ============================================================================
-// 安全保护配置 — 统一从共享模块引用
+// Safety protection config — referenced uniformly from the shared module
 // ============================================================================
 
 use super::safety_constants::{
@@ -18,36 +18,36 @@ use super::safety_constants::{
     PROTECTED_PATH_PREFIXES,
 };
 
-/// 删除引擎
+/// Delete engine
 pub struct DeleteEngine {
-    /// 是否使用安全删除模式（移动到回收站而非直接删除）
+    /// Whether to use safe delete mode (move to recycle bin instead of direct deletion)
     safe_mode: bool,
-    /// 是否跳过正在使用的文件
+    /// Whether to skip files that are in use
     skip_in_use: bool,
 }
 
 impl DeleteEngine {
-    /// 创建新的删除引擎
+    /// Create a new delete engine
     pub fn new() -> Self {
         DeleteEngine {
-            safe_mode: false,  // 默认直接删除
-            skip_in_use: true, // 默认跳过正在使用的文件
+            safe_mode: false,  // direct deletion by default
+            skip_in_use: true, // skip files in use by default
         }
     }
 
-    /// 设置安全模式
+    /// Set safe mode
     pub fn with_safe_mode(mut self, enabled: bool) -> Self {
         self.safe_mode = enabled;
         self
     }
 
-    /// 设置是否跳过正在使用的文件
+    /// Set whether to skip files in use
     pub fn with_skip_in_use(mut self, enabled: bool) -> Self {
         self.skip_in_use = enabled;
         self
     }
 
-    /// 删除文件列表
+    /// Delete a list of files
     pub fn delete_files(&self, files: &[FileInfo]) -> DeleteResult {
         let mut result = DeleteResult::new();
 
@@ -90,7 +90,7 @@ impl DeleteEngine {
         result
     }
 
-    /// 删除指定路径列表
+    /// Delete a list of specified paths
     pub fn delete_paths(&self, paths: &[String]) -> DeleteResult {
         let mut result = DeleteResult::new();
 
@@ -128,27 +128,27 @@ impl DeleteEngine {
         result
     }
 
-    /// 删除单个文件或目录（多层安全检查）
-    /// 返回 (释放大小, 是否标记为重启删除)
+    /// Delete a single file or directory (multiple safety checks)
+    /// Returns (freed size, whether marked for deletion on reboot)
     fn delete_single_file(&self, path: &str, size: u64) -> Result<(u64, bool), String> {
         let file_path = Path::new(path);
 
-        // 检查路径是否存在
+        // Check whether the path exists
         if !file_path.exists() {
             return Err("文件不存在".to_string());
         }
 
-        // 安全检查第1层：检查是否为受保护路径
+        // Safety check layer 1: check whether it is a protected path
         if self.is_protected_path(file_path) {
             return Err("系统保护路径，禁止删除".to_string());
         }
 
-        // 安全检查第2层：检查是否在允许删除的范围内
+        // Safety check layer 2: check whether it is within the allowed deletion range
         if !self.is_in_allowed_scope(file_path) {
             warn!("路径不在允许删除范围内: {}", path);
         }
 
-        // 尝试删除
+        // Try to delete
         if file_path.is_dir() {
             self.delete_directory(file_path, size)
         } else {
@@ -156,15 +156,15 @@ impl DeleteEngine {
         }
     }
 
-    /// 删除文件，返回 (大小, 是否标记为重启删除)
+    /// Delete a file, returning (size, whether marked for deletion on reboot)
     fn delete_file(&self, path: &Path, size: u64) -> Result<(u64, bool), String> {
-        // 尝试删除文件
+        // Try to delete the file
         match fs::remove_file(path) {
             Ok(_) => Ok((size, false)),
             Err(e) => {
-                // 检查是否是权限问题或文件正在使用
+                // Check whether it is a permission problem or the file is in use
                 if e.kind() == std::io::ErrorKind::PermissionDenied {
-                    // 尝试移除只读属性后再删除
+                    // Try removing the read-only attribute before deleting
                     if let Ok(metadata) = fs::metadata(path) {
                         let mut permissions = metadata.permissions();
                         #[allow(clippy::permissions_set_readonly_false)]
@@ -177,15 +177,15 @@ impl DeleteEngine {
                     }
                     Err(format!("权限不足: {}", e))
                 } else {
-                    // 检测共享冲突（错误码 32，ERROR_SHARING_VIOLATION），
-                    // 文件正被其他进程使用时无法直接删除，标记为重启后删除
+                    // Detect a sharing violation (error code 32, ERROR_SHARING_VIOLATION),
+                    // when the file is in use by another process it cannot be deleted directly, so mark it for deletion on reboot
                     #[cfg(windows)]
                     let is_sharing_violation = e.raw_os_error() == Some(32); // ERROR_SHARING_VIOLATION
                     #[cfg(not(windows))]
                     let is_sharing_violation = false;
 
                     if is_sharing_violation && self.is_in_allowed_scope(path) {
-                        // 调用 MoveFileExW 标记为重启删除
+                        // Call MoveFileExW to mark for deletion on reboot
                         #[cfg(windows)]
                         {
                             let path_str = path.to_string_lossy();
@@ -194,7 +194,7 @@ impl DeleteEngine {
                             ) {
                                 Ok(_) => {
                                     info!("文件已标记为重启删除: {}", path_str);
-                                    return Ok((size, true)); // 标记成功，重启后删除
+                                    return Ok((size, true)); // marked successfully, delete on reboot
                                 }
                                 Err(mark_err) => {
                                     warn!("标记重启删除失败: {} - {}", path_str, mark_err);
@@ -210,19 +210,19 @@ impl DeleteEngine {
         }
     }
 
-    /// 删除目录，返回 (大小, 是否标记为重启删除)
+    /// Delete a directory, returning (size, whether marked for deletion on reboot)
     ///
-    /// 注意这里**不排"重启后删除"**，与 delete_file 不同：
-    /// MoveFileExW + MOVEFILE_DELAY_UNTIL_REBOOT 要求目录为空，
-    /// 而 remove_dir_all 失败时里面通常还剩着内容，排了也不会生效，
-    /// 只会让用户误以为"重启后就删掉了"。所以改做错误分类，把原因说清楚。
+    /// Note that here we **do not queue "delete on reboot"**, unlike delete_file:
+    /// MoveFileExW + MOVEFILE_DELAY_UNTIL_REBOOT requires the directory to be empty,
+    /// and when remove_dir_all fails there is usually still content inside, so queueing would not work anyway,
+    /// it would only make users think "it will be deleted after reboot". Instead we classify the error and explain the cause clearly.
     fn delete_directory(&self, path: &Path, size: u64) -> Result<(u64, bool), String> {
         match fs::remove_dir_all(path) {
             Ok(_) => Ok((size, false)),
             Err(e) => {
-                // 错误分类对齐 delete_file：区分"权限不足"与"被占用"。
-                // 权限不足时额外给一句可操作建议 —— 由系统托管的目录（如旧版 Windows 安装
-                // Windows.old）本来就该交给系统磁盘清理，硬删还会丢掉回退旧版本的能力。
+                // Error classification aligned with delete_file: distinguish "insufficient permissions" from "in use".
+                // For insufficient permissions, add an actionable hint — directories managed by the system (such as the old Windows installation
+                // Windows.old) should be left to system disk cleanup; forcing deletion would also lose the ability to roll back to the old version.
                 #[cfg(windows)]
                 let is_sharing_violation = e.raw_os_error() == Some(32); // ERROR_SHARING_VIOLATION
                 #[cfg(not(windows))]
@@ -239,7 +239,7 @@ impl DeleteEngine {
         }
     }
 
-    /// 获取路径大小
+    /// Get the size of a path
     fn get_path_size(&self, path: &Path) -> u64 {
         if path.is_file() {
             fs::metadata(path).map(|m| m.len()).unwrap_or(0)
@@ -256,11 +256,11 @@ impl DeleteEngine {
         }
     }
 
-    /// 检查是否为受保护的路径（多层安全检查）
+    /// Check whether it is a protected path (multiple safety checks)
     fn is_protected_path(&self, path: &Path) -> bool {
         let path_str = path.to_string_lossy().to_lowercase();
 
-        // 第1层：检查路径前缀
+        // Layer 1: check the path prefix
         for protected in PROTECTED_PATH_PREFIXES {
             if path_str.starts_with(protected) && !is_rebuildable_system_cache_path(&path_str) {
                 error!("安全拦截: 尝试删除受保护路径 {}", path_str);
@@ -268,7 +268,7 @@ impl DeleteEngine {
             }
         }
 
-        // 第2层：检查文件名
+        // Layer 2: check the file name
         if let Some(file_name) = path.file_name() {
             let name = file_name.to_string_lossy().to_lowercase();
             for protected in PROTECTED_FILES {
@@ -279,7 +279,7 @@ impl DeleteEngine {
             }
         }
 
-        // 第3层：在Windows目录下保护特定扩展名
+        // Layer 3: protect specific extensions under the Windows directory
         if path_str.contains("\\windows\\") {
             if let Some(ext) = path.extension() {
                 let ext_str = ext.to_string_lossy().to_lowercase();
@@ -290,7 +290,7 @@ impl DeleteEngine {
             }
         }
 
-        // 第4层：检查是否是用户配置文件夹的根目录
+        // Layer 4: check whether it is the root of a user profile folder
         let user_critical_paths = [
             "\\appdata\\local",
             "\\appdata\\roaming",
@@ -299,14 +299,14 @@ impl DeleteEngine {
             "\\downloads",
         ];
         for critical in &user_critical_paths {
-            // 只保护根目录，不保护子目录
+            // Only protect the root directory, not subdirectories
             if path_str.ends_with(critical) {
                 error!("安全拦截: 尝试删除用户关键目录 {}", path_str);
                 return true;
             }
         }
 
-        // 第5层：检查是否是驱动器根目录
+        // Layer 5: check whether it is a drive root directory
         if path_str.len() <= 3 && path_str.ends_with("\\") {
             error!("安全拦截: 尝试删除驱动器根目录 {}", path_str);
             return true;
@@ -315,11 +315,11 @@ impl DeleteEngine {
         false
     }
 
-    /// 验证路径是否在允许删除的范围内
+    /// Validate whether the path is within the allowed deletion range
     fn is_in_allowed_scope(&self, path: &Path) -> bool {
         let path_str = path.to_string_lossy().to_lowercase();
 
-        // 允许删除的路径范围
+        // Path ranges allowed for deletion
         let allowed_scopes = [
             "\\temp",
             "\\tmp",
@@ -329,7 +329,7 @@ impl DeleteEngine {
             "\\appdata\\local\\temp",
             "\\appdata\\local\\microsoft\\windows\\temporary",
             "\\appdata\\local\\microsoft\\windows\\inetcache",
-            "\\appdata\\local\\microsoft\\windows\\explorer", // 缩略图缓存
+            "\\appdata\\local\\microsoft\\windows\\explorer", // thumbnail cache
             "\\windows\\temp",
             "\\windows\\prefetch",
             "\\windows\\softwaredistribution\\download",
@@ -338,7 +338,7 @@ impl DeleteEngine {
             "\\programdata\\microsoft\\windows defender\\localcopy",
             "\\programdata\\microsoft\\windows defender\\support",
             "\\d3d_cache",
-            "\\$recycle.bin", // 回收站内容
+            "\\$recycle.bin", // recycle bin contents
             "\\.log",
             "\\.tmp",
             "\\.bak",
@@ -352,7 +352,7 @@ impl DeleteEngine {
             }
         }
 
-        // 检查文件扩展名是否在允许列表
+        // Check whether the file extension is in the allowed list
         if let Some(ext) = path.extension() {
             let ext_str = ext.to_string_lossy().to_lowercase();
             let allowed_exts = ["tmp", "temp", "log", "bak", "old", "dmp", "etl"];
@@ -381,7 +381,7 @@ mod tests {
 
         assert!(engine.is_protected_path(Path::new("C:\\Windows\\System32\\test.dll")));
         assert!(engine.is_protected_path(Path::new("C:\\Program Files\\App")));
-        // 只有 Windows 清理向导明确列出的可重建缓存子目录可以穿过系统目录保护。
+        // Only rebuildable cache subdirectories explicitly listed by the Windows cleanup wizard may pass through system-directory protection.
         assert!(
             !engine.is_protected_path(Path::new("C:\\Windows\\System32\\d3d_cache\\shader.bin"))
         );
@@ -392,8 +392,8 @@ mod tests {
             "C:\\ProgramData\\Microsoft\\Windows Defender\\Quarantine\\entry.bin"
         )));
         assert!(!engine.is_protected_path(Path::new("C:\\Temp\\test.tmp")));
-        // 旧版 Windows 安装由系统托管：应用内删不掉，且中途失败会留下"删一半"的状态，
-        // 只能走磁盘清理 / 存储感知，所以这里必须拦住（扫描侧不受影响，仍会照常列出大小）。
+        // The old Windows installation is system-managed: it cannot be deleted inside the app, and a mid-way failure leaves a "half-deleted" state,
+        // so it must be blocked here (the scan side is unaffected and still lists the size normally).
         assert!(engine.is_protected_path(Path::new("C:\\Windows.old")));
         assert!(engine.is_protected_path(Path::new(
             "C:\\Windows.old\\Windows\\System32\\old.dll"

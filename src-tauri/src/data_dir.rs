@@ -1,14 +1,14 @@
 // ============================================================================
-// 统一数据目录管理模块
+// Unified data directory management module
 //
-// 管理 LightC 所有本地持久化数据的存储目录，包括：
-//   - 清理日志 (logs/)
-//   - 安装历史缓存 (install_history.json)
-//   - ProgramData 快照
+// Manages the storage directory for all of LightC's local persistent data, including:
+//   - Cleanup logs (logs/)
+//   - Install history cache (install_history.json)
+//   - ProgramData snapshots
 //
-// 安装版配置固定存储在 %LOCALAPPDATA%/LightC/config/config.json，
-// 便携版配置和默认数据跟随 exe 存储，避免便携包仍然依赖 AppData。
-// 允许用户通过 UI 自定义数据目录路径。更改时自动迁移已有数据。
+// Installer config is always stored at %LOCALAPPDATA%/LightC/config/config.json,
+// portable config and default data follow the exe, so the portable package no longer depends on AppData.
+// Users can customize the data directory path via the UI. Existing data is migrated automatically on change.
 // ============================================================================
 
 use serde::{Deserialize, Serialize};
@@ -25,29 +25,29 @@ use crate::runtime::{
 };
 
 // ============================================================================
-// 常量
+// Constants
 // ============================================================================
 
-/// 基于 LOCALAPPDATA 的应用根目录名，配置和默认数据会在此目录下分区存放。
+/// App root directory name based on LOCALAPPDATA; config and default data are partitioned under this directory.
 const APP_ROOT_DIR_NAME: &str = "LightC";
 
-/// 默认数据目录子目录名，避免把 config.json 和日志/快照等运行数据放在同一层级。
+/// Default data subdirectory name, to avoid putting config.json and runtime data like logs/snapshots at the same level.
 const DEFAULT_DATA_DIR_NAME: &str = "data";
 
-/// 配置目录子目录名，安装版和便携版都保持独立的 config/data 结构。
+/// Config subdirectory name; both installer and portable keep a separate config/data structure.
 const CONFIG_DIR_NAME: &str = "config";
 
-/// 配置文件相对默认目录的文件名
+/// Config file name relative to the default directory
 const CONFIG_FILE: &str = "config.json";
 
-/// 迁移状态放在数据目录中，避免把迁移元数据写进用户配置并影响旧版本读取。
+/// Migration state lives in the data directory, to avoid writing migration metadata into user config and affecting older versions' reads.
 const PORTABLE_MIGRATION_DIR: &str = ".migration";
 const PORTABLE_MIGRATION_STATE_FILE: &str = "legacy_appdata_v1.json";
 
-/// 迁移数据目录时只复制 LightC 明确拥有的数据，避免用户误选磁盘根目录后把无关文件继续带到新位置。
+/// When migrating the data directory, copy only data explicitly owned by LightC, so a user mistakenly picking a disk root won't carry unrelated files along.
 const MIGRATABLE_DATA_ENTRIES: [&str; 6] = [
     "install_history.json",
-    // 用户主动确认的误报保护规则必须随自定义数据目录一起迁移。
+    // False-positive protection rules the user explicitly confirmed must migrate along with the custom data directory.
     "leftover_whitelist.json",
     "logs",
     "reg_backups",
@@ -56,23 +56,23 @@ const MIGRATABLE_DATA_ENTRIES: [&str; 6] = [
 ];
 
 // ============================================================================
-// 运行时缓存
+// Runtime cache
 // ============================================================================
 
-/// 全局数据目录路径缓存，避免每次读取磁盘
+/// Global data directory path cache, to avoid reading the disk every time
 static DATA_DIR_CACHE: std::sync::LazyLock<RwLock<PathBuf>> = std::sync::LazyLock::new(|| {
     let path = load_or_create();
     RwLock::new(path)
 });
 
 // ============================================================================
-// 数据结构
+// Data Structures
 // ============================================================================
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct DataDirConfig {
     data_dir: String,
-    /// 新版便携版默认目录使用相对值，程序移动后仍然能解析到当前 exe 目录。
+    /// New portable default directory uses a relative value, so it still resolves to the current exe directory after the program is moved.
     #[serde(default)]
     data_dir_mode: Option<String>,
 }
@@ -117,40 +117,40 @@ pub struct ClearableDataItem {
 pub struct ClearLocalDataResult {
     pub deleted_files: usize,
     pub freed_bytes: u64,
-    /// 成功清理的项数
+    /// Number of items successfully cleaned
     pub cleared_items: usize,
-    /// 清理失败的项及原因
+    /// Items that failed to clean and the reasons
     ///
-    /// 单项失败不会中断整批：用户勾了三项，其中一项的日志文件被占用，
-    /// 另外两项照样清掉，这里只把失败的那项带回去给界面提示。
+    /// A single item's failure does not abort the whole batch: if the user checks three items and one has a locked log file,
+    /// the other two are still cleaned, and only the failed one is returned here for the UI to report.
     pub failed_items: Vec<ClearLocalDataFailure>,
 }
 
-/// 单个清理项失败的原因
+/// Reason a single cleanup item failed
 #[derive(Debug, Clone, Serialize)]
 pub struct ClearLocalDataFailure {
-    /// 清理项标识
+    /// Cleanup item identifier
     pub item: String,
-    /// 失败原因（直接展示给用户）
+    /// Failure reason (shown directly to the user)
     pub reason: String,
 }
 
-/// 便携版写入能力诊断。
+/// Portable write-capability diagnostic.
 ///
-/// 中文说明：便携版的正常状态是"数据全部跟随 exe"。当程序目录不可写（解压到
-/// `C:\Program Files`、只读 U 盘、杀软/组策略限制等）时，应用只能把数据放到 AppData，
-/// 这会让用户以为便携版又"写 C 盘"了。这里把判定结果结构化返回，设置页据此给出明确指引。
+/// Note: the normal state for the portable edition is "all data follows the exe". When the program directory is not writable (extracted to
+/// `C:\Program Files`, a read-only USB drive, antivirus/group-policy restrictions, etc.), the app can only put data in AppData,
+/// which makes users think the portable edition is "writing to C drive" again. The result is returned structured here so the settings page can give clear guidance.
 #[derive(Debug, Clone, Serialize)]
 pub struct StorageWriteDiagnostic {
-    /// 判定为便携版时才有值：exe 所在目录。
+    /// Has a value only when determined to be portable: the directory containing the exe.
     pub portable_root: Option<String>,
-    /// 应用期望写入的数据目录（便携版即 exe 目录下的 data）。
+    /// The data directory the app expects to write to (for portable, the data dir under the exe directory).
     pub preferred_data_directory: String,
-    /// 期望目录是否真的可写（实际创建并删除探针文件验证）。
+    /// Whether the expected directory is really writable (verified by actually creating and deleting a probe file).
     pub preferred_writable: bool,
-    /// 是否发生了"便携目录不可写 → 回落 AppData"。
+    /// Whether a "portable dir not writable → fell back to AppData" occurred.
     pub fell_back_to_app_data: bool,
-    /// 当前实际使用的数据目录是否可写。
+    /// Whether the currently used data directory is writable.
     pub active_writable: bool,
     pub reason: Option<String>,
 }
@@ -162,7 +162,7 @@ struct ClearableDataDefinition {
     relative_path: &'static str,
     item_type: ClearableDataType,
     warning: Option<&'static str>,
-    /// 父级目录统计和清理时排除独立管理的子路径，避免同一批文件重复计算或删除。
+    /// When computing parent-directory usage and cleaning, exclude independently managed child paths to avoid counting or deleting the same files twice.
     excluded_relative_paths: &'static [&'static str],
 }
 
@@ -179,7 +179,7 @@ const DISK_GROWTH_SNAPSHOT_BASE_PREFIX: &str = "disk_growth_";
 const DISK_GROWTH_SNAPSHOT_JSON_SUFFIX: &str = ".json";
 const DISK_GROWTH_SNAPSHOT_SHARD_SUFFIX: &str = ".files";
 
-// 快照项按盘符动态展开，普通白名单只保留固定数据，避免“清空本地数据”误删所有磁盘基线。
+// Snapshot entries expand dynamically by drive letter; the normal whitelist keeps only fixed data, so "Clear local data" won't delete all disk baselines.
 const CLEARABLE_DATA_DEFINITIONS: [ClearableDataDefinition; 6] = [
     ClearableDataDefinition {
         id: "install_history",
@@ -238,42 +238,42 @@ const CLEARABLE_DATA_DEFINITIONS: [ClearableDataDefinition; 6] = [
 ];
 
 // ============================================================================
-// 内部函数
+// Internal functions
 // ============================================================================
 
-/// 安装版应用本机根目录（%LOCALAPPDATA%/LightC），作为旧版数据迁移源。
+/// Installer app local root directory (%LOCALAPPDATA%/LightC), used as the migration source for older data.
 fn app_local_root_dir() -> Option<PathBuf> {
     dirs::data_local_dir().map(|dir| dir.join(APP_ROOT_DIR_NAME))
 }
 
-/// 当前发行包的存储根目录；便携版以 exe 所在目录为根，安装版以 AppData 为根。
+/// Storage root directory of the current distribution; portable uses the exe's directory as root, installer uses AppData.
 fn storage_root_dir() -> Option<PathBuf> {
     current_application_root()
 }
 
-/// 默认数据目录路径。
+/// Default data directory path.
 fn default_data_dir() -> Option<PathBuf> {
     storage_root_dir().map(|dir| dir.join(DEFAULT_DATA_DIR_NAME))
 }
 
-/// 配置文件存储路径；便携版配置也必须跟随 exe，移动整个目录后仍然有效。
+/// Config file storage path; portable config must also follow the exe and remain valid after moving the whole directory.
 fn config_file_path() -> Option<PathBuf> {
     storage_root_dir().map(|dir| dir.join(CONFIG_DIR_NAME).join(CONFIG_FILE))
 }
 
-/// 旧版本曾把配置放在 %LOCALAPPDATA%/LightC/config.json，初始化时需要兼容读取。
+/// Older versions put config at %LOCALAPPDATA%/LightC/config.json; initialization must read it for compatibility.
 fn legacy_config_file_path() -> Option<PathBuf> {
     app_local_root_dir().map(|dir| dir.join(CONFIG_FILE))
 }
 
-/// 加载配置或创建默认配置
+/// Load the config or create a default one
 fn load_or_create() -> PathBuf {
     let default = default_data_dir().unwrap_or_else(|| PathBuf::from("."));
     let channel = current_distribution_channel();
 
-    // 先复制旧版配置到便携目录，再解析配置中的数据目录，避免旧配置直接指向 AppData。
-    // 开发环境不迁移：调试实例不应该继承正式包的自定义数据目录（否则 dev 的数据会写到
-    // 用户以前选过的目录里，看起来像"读到了便携包的配置"）。
+    // First copy the old config to the portable directory, then resolve the data directory from the config, avoiding old config pointing straight to AppData.
+    // No migration in dev builds: a debug instance shouldn't inherit the release package's custom data directory (otherwise dev data would be written to
+    // a directory the user previously selected, looking as if "the portable config was read").
     if channel == DistributionChannel::Portable && !cfg!(debug_assertions) {
         migrate_legacy_portable_config_if_needed();
     }
@@ -284,7 +284,7 @@ fn load_or_create() -> PathBuf {
         if is_legacy_default {
             migrate_legacy_data_to_default(&default, channel);
         }
-        // 自定义数据目录由用户明确指定，不可写时只提示，不擅自搬走用户的数据。
+        // A custom data directory is explicitly chosen by the user; if not writable, only warn, don't move the user's data without permission.
         let allow_fallback = !is_legacy_default
             || path_compare_key(&configured_data_dir) == path_compare_key(&default);
         let resolved = ensure_writable_data_dir(
@@ -307,8 +307,8 @@ fn load_or_create() -> PathBuf {
         return resolved;
     }
 
-    // 缺少配置时迁移旧版默认数据；只复制白名单内容，避免把用户无关文件带入便携包。
-    // 开发环境跳过：调试实例不应把正式包的历史数据搬进 target 目录。
+    // When config is missing, migrate old default data; copy only whitelist contents to avoid bringing unrelated user files into the portable package.
+    // Skip in dev builds: a debug instance shouldn't move the release package's historical data into the target directory.
     if !cfg!(debug_assertions) {
         migrate_legacy_data_to_default(&default, channel);
     }
@@ -322,11 +322,11 @@ fn load_or_create() -> PathBuf {
     resolved
 }
 
-/// 便携版数据目录落地前确认可写：不可写时明确退回 AppData，并记录可读原因。
+/// Before landing the portable data directory, confirm it is writable: if not, explicitly fall back to AppData and record a readable reason.
 ///
-/// 中文说明：此前只靠 `create_dir_all` 判断，而目录已存在时它会直接返回成功，
-/// 结果日志/快照在真正写入时才失败，甚至静默落到 AppData 让用户以为便携版又写 C 盘。
-/// 这里用真实探针校验，并把回退结果写进日志与配置，供设置页展示。
+/// Note: previously we relied only on `create_dir_all`, which returns success immediately when the directory already exists,
+/// so logs/snapshots would fail only at actual write time, or even silently land in AppData making users think the portable edition writes to C drive again.
+/// Here we verify with a real probe and write the fallback result into logs and config for the settings page to display.
 fn ensure_writable_data_dir(
     preferred: PathBuf,
     channel: DistributionChannel,
@@ -340,7 +340,7 @@ fn ensure_writable_data_dir(
         return preferred;
     }
 
-    // 极端情况下连 AppData 也不可写时，保留期望目录，让后续写入失败暴露真实原因。
+    // In the extreme case where even AppData isn't writable, keep the preferred directory so later write failures expose the real reason.
     let Some(fallback) = app_data_fallback_dir()
         .filter(|candidate| probe_writable_directory(candidate).is_ok())
     else {
@@ -380,16 +380,16 @@ fn read_config_file(path: &Path) -> Option<DataDirConfig> {
     match serde_json::from_str::<DataDirConfig>(json.trim_start_matches('\u{feff}')) {
         Ok(config) => Some(config),
         Err(error) => {
-            // 配置损坏时不继续使用旧值，避免把异常路径写回并放大数据目录问题。
+            // Don't keep using stale values when config is corrupted, to avoid writing a bad path back and worsening the data directory problem.
             log::warn!("读取配置文件失败 {}: {}", path.display(), error);
             None
         }
     }
 }
 
-/// 将旧版默认路径转换为当前发行包的默认路径。
+/// Convert an old default path to the current distribution's default path.
 ///
-/// 只有 AppData 根目录或 AppData/data 被视为旧版默认路径，用户主动选择的自定义路径必须保留。
+/// Only the AppData root or AppData/data count as old defaults; a custom path the user actively chose must be preserved.
 fn resolve_configured_data_dir(
     config: &DataDirConfig,
     default_data_dir: &Path,
@@ -404,7 +404,7 @@ fn resolve_configured_data_dir(
 
     let configured_path = PathBuf::from(&config.data_dir);
     if !configured_path.is_absolute() {
-        // 外部配置可能被用户手工修改，禁止让相对路径跟随当前工作目录造成数据写入漂移。
+        // External config may have been hand-edited; forbid relative paths from following the current working directory and causing data write drift.
         log::warn!(
             "配置中的数据目录不是绝对路径，将回退到默认目录: {}",
             config.data_dir
@@ -453,7 +453,7 @@ fn migrate_legacy_default_data_if_needed(default_data_dir: &Path) {
         return;
     }
 
-    // 这里只迁移 LightC 明确拥有的数据项，避免把 config、config 目录或用户误放的文件复制进默认数据目录。
+    // Migrate only data items explicitly owned by LightC here, to avoid copying config, the config directory, or stray user files into the default data dir.
     if legacy_root.is_dir() {
         if let Err(error) = migrate_owned_data_entries(&legacy_root, default_data_dir) {
             log::warn!(
@@ -466,7 +466,7 @@ fn migrate_legacy_default_data_if_needed(default_data_dir: &Path) {
     }
 }
 
-/// 将旧版 AppData 中的白名单数据复制到当前默认目录，源文件始终保留。
+/// Copy whitelisted data from old AppData to the current default directory; source files are always kept.
 fn migrate_legacy_data_to_default(default_data_dir: &Path, channel: DistributionChannel) {
     let Some(legacy_root) = app_local_root_dir() else {
         return;
@@ -486,7 +486,7 @@ fn migrate_legacy_data_to_default(default_data_dir: &Path, channel: Distribution
     }
 }
 
-/// 旧版便携程序实际把数据写在 AppData；新版本只复制明确属于 LightC 的内容。
+/// Older portable programs actually wrote data to AppData; the new version copies only content explicitly belonging to LightC.
 fn migrate_legacy_portable_data_inner(
     legacy_root: &Path,
     portable_data_dir: &Path,
@@ -504,7 +504,7 @@ fn migrate_legacy_portable_data_inner(
         return Ok(());
     }
 
-    // 同时检查旧版根目录和新版 AppData/data，覆盖多个历史版本的布局。
+    // Check both the old root and the new AppData/data, covering several historical layout versions.
     let legacy_data_dir = legacy_root.join(DEFAULT_DATA_DIR_NAME);
     migrate_owned_data_entries(legacy_root, portable_data_dir)?;
     if legacy_data_dir.is_dir() {
@@ -521,7 +521,7 @@ fn migrate_legacy_portable_data_inner(
     )
 }
 
-/// 便携版没有本地配置时，先复制旧版配置，后续再把其中的默认数据路径重写为相对目录。
+/// When the portable edition has no local config, first copy the old config, then later rewrite its default data path to a relative directory.
 fn migrate_legacy_portable_config_if_needed() {
     let Some(target_path) = config_file_path() else {
         return;
@@ -593,7 +593,7 @@ fn write_portable_migration_state(
     fs::write(path, json).map_err(|error| format!("写入迁移状态失败 {}: {}", path.display(), error))
 }
 
-/// 持久化配置到磁盘
+/// Persist the config to disk
 fn save_config_inner(path: &PathBuf) -> Result<(), String> {
     let cfg_path = config_file_path().ok_or_else(|| "无法确定配置文件路径".to_string())?;
     let parent = cfg_path
@@ -705,7 +705,7 @@ fn migrate_owned_data_entries(src: &Path, dest: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// 递归复制目录内容，仅供白名单数据目录迁移使用。
+/// Recursively copy directory contents, only used for whitelisted data directory migration.
 fn copy_dir_contents(src: &Path, dest: &Path) -> Result<(), String> {
     fs::create_dir_all(dest).map_err(|e| format!("创建目标目录失败: {}", e))?;
 
@@ -717,7 +717,7 @@ fn copy_dir_contents(src: &Path, dest: &Path) -> Result<(), String> {
         if src_path.is_dir() {
             copy_dir_contents(&src_path, &dest_path)?;
         } else if src_path.is_file() && !dest_path.exists() {
-            // 初始化和迁移都可能重复执行，目标已有文件时保留新目录中的版本，避免旧数据覆盖新数据。
+            // Both initialization and migration can run repeatedly; when the target already has the file, keep the version in the new directory, avoiding old data overwriting new.
             fs::copy(&src_path, &dest_path)
                 .map_err(|e| format!("复制文件 {} 失败: {}", src_path.display(), e))?;
         }
@@ -727,14 +727,14 @@ fn copy_dir_contents(src: &Path, dest: &Path) -> Result<(), String> {
 }
 
 // ============================================================================
-// 公共 API
+// Public API
 // ============================================================================
 
-/// 打印本次运行的存储路径与判定依据（仅调试构建调用）。
+/// Print this run's storage paths and decision basis (debug builds only).
 ///
-/// 中文说明：便携版与安装版的数据目录由「发行模式 + 配置文件 + 数据目录配置」共同决定，
-/// 排查"数据到底写到哪了"时只看配置文件容易误判。这里把关键路径和来源一次性打到日志，
-/// 开发环境（cargo tauri dev）启动即可在终端看到。
+/// Note: portable and installer data directories are jointly determined by "distribution mode + config file + data dir config";
+/// when investigating "where data actually went", looking only at the config file is misleading. This logs all key paths and their sources at once,
+/// so launching in a dev environment (cargo tauri dev) shows them in the terminal.
 #[cfg(debug_assertions)]
 pub fn log_storage_diagnostics() {
     let channel = current_distribution_channel();
@@ -748,7 +748,7 @@ pub fn log_storage_diagnostics() {
     let executable = current_executable_path()
         .map(|path| path.to_string_lossy().to_string())
         .unwrap_or_else(|_| "(无法确定)".to_string());
-    // 说明当前数据目录是"跟随程序目录"还是"用户在设置里指定的自定义目录"。
+    // Explain whether the current data directory "follows the program directory" or is "a custom directory the user set in settings".
     let directory_source = if path_compare_key(&active_directory) == path_compare_key(Path::new(&default_directory)) {
         "默认（跟随发行模式）"
     } else {
@@ -768,17 +768,17 @@ pub fn log_storage_diagnostics() {
     );
 }
 
-/// 获取当前数据目录路径
+/// Get the current data directory path
 pub fn get_data_dir() -> PathBuf {
     DATA_DIR_CACHE.read().unwrap().clone()
 }
 
-/// 获取默认数据目录路径（UI 显示用）
+/// Get the default data directory path (for UI display)
 pub fn get_default_dir() -> PathBuf {
     default_data_dir().unwrap_or_else(|| PathBuf::from("."))
 }
 
-/// 获取当前配置、默认数据和迁移状态，前端不自行推断便携版路径。
+/// Get current config, default data and migration state; the frontend does not infer portable paths itself.
 pub fn get_storage_location_info() -> StorageLocationInfo {
     let channel = current_distribution_channel();
     let storage_root = storage_root_dir().unwrap_or_else(|| PathBuf::from("."));
@@ -823,7 +823,7 @@ pub fn get_storage_location_info() -> StorageLocationInfo {
     }
 }
 
-/// 手动重试便携版旧数据迁移，供设置页处理自动迁移失败或用户稍后放入的旧数据。
+/// Manually retry migration of old portable data, for the settings page to handle automatic migration failures or old data added later.
 pub fn migrate_legacy_portable_data() -> Result<StorageLocationInfo, String> {
     if current_distribution_channel() != DistributionChannel::Portable {
         return Err("只有便携版支持迁移旧版 AppData 数据。".to_string());
@@ -847,14 +847,14 @@ fn has_migratable_data_entries(root: &Path) -> bool {
 }
 
 fn can_write_storage(config_directory: &Path, data_directory: &Path) -> bool {
-    // 初始化阶段已经创建过目录，这里只确认当前运行配置仍具备写入能力，不创建测试文件污染用户目录。
+    // Directories were already created during initialization; here only confirm the current runtime config can still write, without creating test files that pollute user dirs.
     fs::create_dir_all(config_directory).is_ok() && fs::create_dir_all(data_directory).is_ok()
 }
 
-/// 真实写入探针：创建目录后写入 0 字节文件并立即删除。
+/// Real write probe: create the directory, write a 0-byte file and delete it immediately.
 ///
-/// 中文说明：仅靠 `create_dir_all` 判断不可靠——如果目录已存在，即使没有写权限也会返回成功，
-/// 于是日志、快照、备份会在真正写入时才失败。探针文件用完立刻删除，不会留下垃圾。
+/// Note: relying only on `create_dir_all` is unreliable — if the directory already exists, it returns success even without write permission,
+/// so logs, snapshots and backups fail only at actual write time. The probe file is deleted right after use, leaving no garbage.
 fn probe_writable_directory(directory: &Path) -> Result<(), String> {
     fs::create_dir_all(directory)
         .map_err(|error| format!("无法创建目录 {}: {}", directory.display(), error))?;
@@ -869,10 +869,10 @@ fn probe_writable_directory(directory: &Path) -> Result<(), String> {
     }
 }
 
-/// 便携版写入诊断。
+/// Portable write diagnostic.
 ///
-/// 便携包被解压到 `C:\Program Files`、只读 U 盘或受杀软/组策略保护的目录时，程序目录不可写，
-/// 数据只能落到 AppData。这里把结果结构化返回，设置页给出"把程序移到可写目录"的明确指引。
+/// When the portable package is extracted to `C:\Program Files`, a read-only USB drive, or a directory protected by antivirus/group policy, the program dir is not writable,
+/// so data can only land in AppData. The result is returned structured here, and the settings page gives clear guidance to "move the program to a writable directory".
 pub fn get_storage_write_diagnostic() -> StorageWriteDiagnostic {
     let channel = current_distribution_channel();
     let preferred_directory = default_data_dir().unwrap_or_else(|| PathBuf::from("."));
@@ -882,7 +882,7 @@ pub fn get_storage_write_diagnostic() -> StorageWriteDiagnostic {
         .flatten();
 
     if channel != DistributionChannel::Portable {
-        // 安装版本来就该写 AppData，只需要确认当前目录仍可写。
+        // The installer is supposed to write AppData anyway; just confirm the current directory is still writable.
         return StorageWriteDiagnostic {
             portable_root: None,
             preferred_data_directory: preferred_directory.to_string_lossy().to_string(),
@@ -895,8 +895,8 @@ pub fn get_storage_write_diagnostic() -> StorageWriteDiagnostic {
 
     let preferred_error = probe_writable_directory(&preferred_directory).err();
     let active_writable = probe_writable_directory(&active_directory).is_ok();
-    // 只有"期望目录不可写 + 实际用的是 AppData 目录"才算回落。用户自定义的数据目录
-    // 或历史配置里的其它路径都不该被误报成"又写 C 盘了"。
+    // Only "expected dir not writable + actually using the AppData dir" counts as a fallback. A custom data directory
+    // or other paths in old config must not be misreported as "writing to C drive again".
     let active_is_app_data = app_local_root_dir()
         .is_some_and(|root| is_same_or_child_path(&path_compare_key(&active_directory), &path_compare_key(&root)));
     let fell_back = preferred_error.is_some()
@@ -909,7 +909,7 @@ pub fn get_storage_write_diagnostic() -> StorageWriteDiagnostic {
         preferred_writable: preferred_error.is_none(),
         fell_back_to_app_data: fell_back,
         active_writable,
-        // reason 只在真正发生回落时给出可展示的原因，避免把"自定义目录"等情况误报成写 C 盘。
+        // reason is only given when a real fallback occurred, to avoid misreporting cases like "custom directory" as writing to C drive.
         reason: fell_back.then(|| {
             format!(
                 "便携目录不可写，数据已临时保存到 {}",
@@ -919,36 +919,36 @@ pub fn get_storage_write_diagnostic() -> StorageWriteDiagnostic {
     }
 }
 
-/// 便携目录不可写时的兜底数据目录：安装版位置（%LOCALAPPDATA%\LightC\data）。
+/// Fallback data directory when the portable dir isn't writable: the installer location (%LOCALAPPDATA%\LightC\data).
 fn app_data_fallback_dir() -> Option<PathBuf> {
     app_local_root_dir().map(|root| root.join(DEFAULT_DATA_DIR_NAME))
 }
 
-/// 设置新的数据目录并迁移已有数据
+/// Set a new data directory and migrate existing data
 ///
-/// 【中文说明】
-/// 1. 创建新目录
-/// 2. 将旧目录中的所有数据复制到新目录
-/// 3. 更新运行时缓存和持久化配置文件
+/// [Note]
+/// 1. Create the new directory
+/// 2. Copy all data from the old directory to the new one
+/// 3. Update the runtime cache and persisted config file
 ///
-/// 注意：旧目录数据不会被删除，如需清理请手动操作。
+/// Note: data in the old directory is not deleted; clean it up manually if needed.
 pub fn set_data_dir(new_path: &Path) -> Result<(), String> {
     let old_path = get_data_dir();
     let old_key = canonical_or_absolute(&old_path)?;
     let new_key = canonical_or_absolute(new_path)?;
 
-    // 相同路径则跳过
+    // Skip if the path is the same
     if old_key == new_key {
         return Ok(());
     }
 
     ensure_migration_target_is_safe(&old_path, new_path)?;
 
-    // 创建新目录
+    // Create the new directory
     fs::create_dir_all(new_path)
         .map_err(|e| format!("无法创建数据目录 {}: {}", new_path.display(), e))?;
 
-    // 迁移已有数据
+    // Migrate existing data
     if old_path.exists() && old_path.is_dir() {
         log::info!(
             "正在迁移数据: {} -> {}",
@@ -959,7 +959,7 @@ pub fn set_data_dir(new_path: &Path) -> Result<(), String> {
         log::info!("数据迁移完成");
     }
 
-    // 更新缓存并持久化
+    // Update the cache and persist
     let path_buf = new_path.to_path_buf();
     save_config_inner(&path_buf)?;
     *DATA_DIR_CACHE.write().unwrap() = path_buf;
@@ -968,15 +968,15 @@ pub fn set_data_dir(new_path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// AI 对话记录的清理项 id。
+/// Cleanup item id for AI chat records.
 pub const AI_SESSION_ITEM_ID: &str = "ai_sessions";
 
-/// 构造「AI 对话记录」清理项。
+/// Build the "AI chat records" cleanup item.
 ///
-/// 不放进上面的定长白名单：它的路径取决于「AI 数据目录」设置，可能不在主数据目录下，
-/// 而白名单里的项都是相对主数据目录的固定路径。做法与磁盘快照一致，按动态项处理 ——
-/// 关键是**与落盘用同一条解析路径**（ai::session::sessions_root），
-/// 否则会出现"显示有这个项、点了却删不到东西"。
+/// Not in the static whitelist above: its path depends on the "AI data directory" setting and may be outside the main data dir,
+/// while whitelist entries are fixed paths relative to the main data dir. Handled as a dynamic item, same as disk snapshots —
+/// the key is to **use the same resolution path as persistence** (ai::session::sessions_root),
+/// otherwise you'd get "the item shows up but clicking it deletes nothing".
 fn build_ai_session_item() -> ClearableDataItem {
     let root = crate::ai::sessions_root();
     let (file_count, size) = measure_directory(&root);
@@ -989,12 +989,12 @@ fn build_ai_session_item() -> ClearableDataItem {
         exists: root.is_dir(),
         file_count,
         size,
-        // 这是用户自己聊出来的内容，不是缓存，警示要说清"不可恢复"
+        // This is content the user chatted themselves, not a cache; the warning must make clear it's "unrecoverable"
         warning: Some("对话记录属于个人数据，删除后无法恢复。服务商与密钥等配置不受影响。".to_string()),
     }
 }
 
-/// 递归统计目录下的文件数与总字节数。读不进去的目录按 0 计，不让统计失败阻断列表。
+/// Recursively count files and total bytes under a directory. Unreadable directories count as 0, so a stats failure won't block the list.
 fn measure_directory(path: &Path) -> (usize, u64) {
     let mut files = 0usize;
     let mut bytes = 0u64;
@@ -1015,7 +1015,7 @@ fn measure_directory(path: &Path) -> (usize, u64) {
     (files, bytes)
 }
 
-/// 删除 AI 对话记录（整个 sessions 目录）。
+/// Delete AI chat records (the whole sessions directory).
 fn clear_ai_sessions() -> Result<(usize, u64), String> {
     let root = crate::ai::sessions_root();
     if !root.is_dir() {
@@ -1034,7 +1034,7 @@ pub fn list_clearable_data_items() -> Result<Vec<ClearableDataItem>, String> {
         .map(|definition| build_clearable_data_item(&data_dir, definition))
         .collect::<Result<Vec<_>, _>>()?;
     items.extend(build_disk_growth_snapshot_items(&data_dir)?);
-    // AI 对话记录：路径可能不在主数据目录下，所以按动态项加入
+    // AI chat records: the path may be outside the main data dir, so add it as a dynamic item
     items.push(build_ai_session_item());
     Ok(items)
 }
@@ -1048,8 +1048,8 @@ pub fn clear_selected_local_data(item_ids: &[String]) -> Result<ClearLocalDataRe
         failed_items: Vec::new(),
     };
 
-    // 逐项隔离：一项失败（文件被占用、权限不足、目录结构异常）只记录原因，不中断后面的项。
-    // 原来每一项都用 `?` 传播，用户勾了 5 项、第 1 项被占用，等于另外 4 项也白勾了。
+    // Isolate each item: one failure (locked file, insufficient permission, abnormal dir structure) only records the reason and does not abort later items.
+    // Previously every item used `?` to propagate, so if the user checked 5 items and the 1st was locked, the other 4 were effectively wasted.
     for item_id in item_ids {
         match clear_single_item(item_id, &data_dir) {
             Ok((deleted_files, deleted_bytes)) => {
@@ -1070,12 +1070,12 @@ pub fn clear_selected_local_data(item_ids: &[String]) -> Result<ClearLocalDataRe
     Ok(result)
 }
 
-/// 清理单个数据项，返回（文件数, 字节数）。
+/// Clean a single data item, returning (file count, bytes).
 ///
-/// 三种项的来源不同：AI 会话是动态路径、磁盘快照按盘符分片、其余走白名单。
-/// 统一收敛成「一项一次调用」后，上层才能逐项隔离失败、逐项汇总统计。
+/// The three kinds of items come from different places: AI sessions use a dynamic path, disk snapshots are sharded by drive letter, the rest use the whitelist.
+/// Only after unifying to "one call per item" can the upper layer isolate failures and aggregate statistics per item.
 fn clear_single_item(item_id: &str, data_dir: &Path) -> Result<(usize, u64), String> {
-    // AI 对话记录是动态项（路径取决于 AI 数据目录设置），先于白名单处理
+    // AI chat records are a dynamic item (path depends on the AI data directory setting), handled before the whitelist
     if item_id == AI_SESSION_ITEM_ID {
         return clear_ai_sessions();
     }
@@ -1094,7 +1094,7 @@ fn clear_single_item(item_id: &str, data_dir: &Path) -> Result<(usize, u64), Str
     clear_data_item(definition, &target_path)
 }
 
-/// 清空本地数据：保留旧命令兼容，一次性清理所有白名单项。
+/// Clear local data: kept for old-command compatibility, cleans all whitelist items at once.
 pub fn clear_local_data() -> Result<(usize, u64), String> {
     let item_ids = list_clearable_data_items()?
         .into_iter()
@@ -1166,7 +1166,7 @@ fn build_disk_growth_snapshot_items(data_dir: &Path) -> Result<Vec<ClearableData
         return Ok(vec![empty_disk_growth_snapshot_item(&snapshot_dir)]);
     }
 
-    // 只展示真实存在快照的盘符，弹窗默认全选时不会凭空多出一批空盘符项。
+    // Only show drive letters that actually have snapshots, so selecting all by default won't conjure a batch of empty drive entries.
     drives
         .into_iter()
         .map(|drive_letter| build_disk_growth_snapshot_item(&snapshot_dir, drive_letter))
@@ -1223,7 +1223,7 @@ fn clear_data_item(
     match definition.item_type {
         ClearableDataType::File => clear_file(target_path),
         ClearableDataType::DirectoryContents => {
-            // 数据目录入口本身由应用复用，只清空目录内容，避免后续日志/快照写入前还要重新创建父目录。
+            // The data directory entry itself is reused by the app; only clear its contents, so later log/snapshot writes don't need to recreate the parent dir.
             if !target_path.exists() {
                 return Ok((0, 0));
             }
@@ -1263,7 +1263,7 @@ fn clear_disk_growth_snapshots_for_drive(
     let mut file_count = 0usize;
     let mut total_size = 0u64;
     for path in disk_growth_snapshot_paths_for_drive(snapshot_dir, drive_letter)? {
-        // 分片目录与主快照文件同名同盘符，必须成组删除，否则后续明细查询会看到残缺数据。
+        // Shard directories share the name and drive letter with the main snapshot file; they must be deleted as a group, otherwise later detail queries see partial data.
         if path.is_dir() {
             let (child_files, child_bytes) = directory_usage(&path, &[])?;
             file_count += child_files;
@@ -1344,7 +1344,7 @@ fn disk_growth_snapshot_paths_for_drive(
 
 fn disk_growth_snapshot_drive_from_name(name: &str) -> Option<char> {
     let lower_name = name.to_ascii_lowercase();
-    // C 盘沿用历史文件名，不带盘符前缀；其他盘才使用 d_/e_ 这类前缀。
+    // The C drive keeps its historical file name without a drive prefix; other drives use prefixes like d_/e_.
     if lower_name.starts_with(DISK_GROWTH_SNAPSHOT_BASE_PREFIX)
         && (lower_name.ends_with(DISK_GROWTH_SNAPSHOT_JSON_SUFFIX)
             || lower_name.ends_with(DISK_GROWTH_SNAPSHOT_SHARD_SUFFIX))
@@ -1409,7 +1409,7 @@ fn directory_contents_usage(
     directory_usage(dir, excluded_relative_paths)
 }
 
-/// 清空指定目录下的所有内容但保留目录本身，避免日志目录等固定入口被删后还要重新创建。
+/// Clear all contents of a directory but keep the directory itself, so fixed entries like the log dir don't need recreating after deletion.
 fn clear_directory_contents(
     dir: &Path,
     excluded_relative_paths: &[&str],
@@ -1422,7 +1422,7 @@ fn clear_directory_contents(
     {
         let entry = entry_res.map_err(|e| format!("读取目录条目失败 {}: {}", dir.display(), e))?;
         let path = entry.path();
-        // 独立展示的虚拟磁盘数据由专属清理项处理，父级项目只统计其余内容。
+        // Virtual disk data shown as its own item is handled by a dedicated cleanup item; the parent only counts the rest.
         if entry.file_name().to_str().is_some_and(|name| {
             excluded_relative_paths
                 .iter()
@@ -1430,11 +1430,11 @@ fn clear_directory_contents(
         }) {
             continue;
         }
-        // 一次 metadata 同时拿到「是不是目录」和「文件大小」：
-        // 原来是 is_dir() + is_file() + metadata() 三次系统调用，在零碎文件上是纯浪费。
-        // 语义不变 —— metadata 跟随符号链接，与原来的 is_dir()/is_file() 处理一致。
+        // One metadata call gets both "is it a directory" and "file size":
+        // previously is_dir() + is_file() + metadata() were three syscalls, pure waste on lots of tiny files.
+        // Semantics unchanged — metadata follows symlinks, consistent with the old is_dir()/is_file() handling.
         let Ok(metadata) = fs::metadata(&path) else {
-            // 统计期间被删掉 / 无权访问：跳过这一条，不影响同目录其它条目
+            // Deleted or permission-denied during stats: skip this entry without affecting others in the same directory
             continue;
         };
         if metadata.is_dir() {
@@ -1454,7 +1454,7 @@ fn clear_directory_contents(
     Ok((file_count, total_size))
 }
 
-/// 删除目录前先统计文件数和空间，保证前端提示的释放量包含嵌套目录内的快照分片。
+/// Before deleting a directory, count files and space first so the UI's freed amount includes snapshot shards in nested dirs.
 fn directory_usage(dir: &Path, excluded_relative_paths: &[&str]) -> Result<(usize, u64), String> {
     let mut file_count = 0usize;
     let mut total_size = 0u64;
@@ -1464,7 +1464,7 @@ fn directory_usage(dir: &Path, excluded_relative_paths: &[&str]) -> Result<(usiz
     {
         let entry = entry_res.map_err(|e| format!("统计目录条目失败 {}: {}", dir.display(), e))?;
         let path = entry.path();
-        // 这里只需要过滤当前目录的独立子项，嵌套目录由专属分类整体管理。
+        // Here we only need to filter this directory's own independently-managed children; nested dirs are handled wholesale by their own category.
         if entry.file_name().to_str().is_some_and(|name| {
             excluded_relative_paths
                 .iter()
@@ -1472,7 +1472,7 @@ fn directory_usage(dir: &Path, excluded_relative_paths: &[&str]) -> Result<(usiz
         }) {
             continue;
         }
-        // 同 clear_directory_contents：一次 metadata 取代 is_dir + is_file + metadata 三次调用
+        // Same as clear_directory_contents: one metadata call replaces is_dir + is_file + metadata
         let Ok(metadata) = fs::metadata(&path) else {
             continue;
         };
@@ -1490,7 +1490,7 @@ fn directory_usage(dir: &Path, excluded_relative_paths: &[&str]) -> Result<(usiz
 }
 
 // ============================================================================
-// 单元测试
+// Unit tests
 // ============================================================================
 
 #[cfg(test)]
@@ -1501,7 +1501,7 @@ mod tests {
     #[test]
     fn test_default_dir_exists() {
         let dir = get_data_dir();
-        // 如果目录不存在，至少路径能被创建
+        // If the directory doesn't exist, at least the path should be creatable
         assert!(!dir.as_os_str().is_empty());
     }
 
@@ -1528,12 +1528,12 @@ mod tests {
         fs::write(root.join("shell_icons.log"), "shell icon").expect("创建专属日志失败");
         fs::write(root.join("shell_icons").join("backup.reg"), "backup").expect("创建专属备份失败");
 
-        // 通用日志统计排除专属日志，但不会排除其他无关子目录。
+        // General log stats exclude the dedicated log but not other unrelated subdirectories.
         let usage = directory_usage(&root, &["shell_icons.log"]).expect("统计测试目录失败");
         assert_eq!(usage.0, 2);
         assert_eq!(usage.1, "cleanup".len() as u64 + "backup".len() as u64);
 
-        // 通用备份统计排除虚拟磁盘专属目录，避免与专属备份项重复。
+        // General backup stats exclude the virtual-disk-specific directory to avoid double counting with the dedicated backup item.
         let backup_usage = directory_usage(&root, &["shell_icons"]).expect("统计备份测试目录失败");
         assert_eq!(backup_usage.0, 2);
         assert_eq!(
@@ -1555,7 +1555,7 @@ mod tests {
                 .as_nanos()
         ));
 
-        // 目录不存在也应通过（探针会先创建），且不能让探针文件残留。
+        // A non-existent directory should also pass (the probe creates it first), and no probe file may be left behind.
         assert!(probe_writable_directory(&root.join("nested")).is_ok());
         let leftovers = fs::read_dir(&root)
             .expect("读取测试目录失败")
@@ -1569,7 +1569,7 @@ mod tests {
 
     #[test]
     fn probe_rejects_file_as_directory() {
-        // 路径被同名文件占用时必须报错，否则后续日志/快照写入会在运行时才失败。
+        // A path occupied by a file of the same name must error, otherwise later log/snapshot writes would fail at runtime.
         let root = std::env::temp_dir().join(format!(
             "lightc-write-probe-file-{}-{}",
             std::process::id(),
@@ -1589,7 +1589,7 @@ mod tests {
 
     #[test]
     fn installer_channel_never_reports_portable_fallback() {
-        // 安装版本来就写 AppData，诊断不应把它标记成"便携目录回落"。
+        // The installer writes AppData by design; the diagnostic must not mark it as "portable fallback".
         let diagnostic = get_storage_write_diagnostic();
         let channel = current_distribution_channel();
         if channel == DistributionChannel::Installer {
@@ -1597,8 +1597,8 @@ mod tests {
             assert!(!diagnostic.fell_back_to_app_data);
             assert!(diagnostic.preferred_writable);
         } else {
-            // 便携版：期望目录必须可写；只有"不可写 + 实际用 AppData"才算回落，
-            // 历史配置或用户自定义目录都不应被误报。
+            // Portable: the expected directory must be writable; only "not writable + actually using AppData" counts as a fallback,
+            // old config or user-custom directories must not be misreported.
             assert_eq!(
                 path_compare_key(Path::new(&diagnostic.preferred_data_directory)),
                 path_compare_key(&get_default_dir())
@@ -1612,7 +1612,7 @@ mod tests {
 
     #[test]
     fn separates_config_and_default_data_paths() {
-        // 便携版：配置与默认数据都必须跟随 exe 目录，且分别落在 config/ 与 data/ 下。
+        // Portable: both config and default data must follow the exe directory, landing under config/ and data/ respectively.
         let portable_root = PathBuf::from(r"D:\LightCPortable");
         let config_path = portable_root.join(CONFIG_DIR_NAME).join(CONFIG_FILE);
         let default_dir = portable_root.join(DEFAULT_DATA_DIR_NAME);
@@ -1626,7 +1626,7 @@ mod tests {
             path_compare_key(&PathBuf::from(r"D:\LightCPortable\data"))
         );
 
-        // 安装版：两者都在 %LOCALAPPDATA%\LightC 下，保证 NSIS 更新/卸载不会碰到数据。
+        // Installer: both are under %LOCALAPPDATA%\LightC, so NSIS update/uninstall won't touch data.
         let installer_root = installer_root_dir().expect("安装版根目录应可用");
         assert_eq!(
             path_compare_key(&installer_root.join(CONFIG_DIR_NAME).join(CONFIG_FILE)),
@@ -1641,7 +1641,7 @@ mod tests {
 
     #[test]
     fn portable_root_follows_executable_directory() {
-        // 便携版根目录必须等于 exe 所在目录，这是"数据随包携带"的前提。
+        // The portable root must equal the exe's directory — a prerequisite for "data travels with the package".
         let executable = PathBuf::from(r"E:\USB\LightC\LightC.exe");
         assert_eq!(
             path_compare_key(&portable_root_dir_for(&executable).expect("便携版根目录应可用")),
@@ -1743,10 +1743,10 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
     }
 
-    /// 统计口径必须覆盖嵌套目录，且排除项不计入。
+    /// The counting rule must cover nested directories and exclude excluded items.
     ///
-    /// 这条守住的是「一次 metadata 拿类型和大小」的改动：换成 metadata 之后
-    /// 目录与文件的判断变了，统计结果不能跟着变。
+    /// This guards the "one metadata call for type and size" change: after switching to metadata, the way directories and files are judged changed,
+    /// but the counting result must not change with it.
     #[test]
     fn counts_nested_files_and_skips_excluded_entries() {
         let root = std::env::temp_dir().join(format!(
@@ -1768,7 +1768,7 @@ mod tests {
         assert_eq!(files, 3, "嵌套三层的文件都要统计到");
         assert_eq!(bytes, 60, "字节数应与实际大小一致");
 
-        // 演示目录是独立清理项时，父级统计要把它排除在外
+        // When a demo directory is a separate cleanup item, parent stats must exclude it
         let (files, bytes) = directory_usage(&root, &["nested"]).expect("统计失败");
         assert_eq!(files, 1);
         assert_eq!(bytes, 10);
@@ -1776,7 +1776,7 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
     }
 
-    /// 未知清理项必须返回错误而不是 panic —— 逐项清理靠这个错误继续下一项。
+    /// An unknown cleanup item must return an error rather than panic — per-item cleanup relies on this error to continue to the next item.
     #[test]
     fn unknown_clear_item_returns_error() {
         let data_dir = std::env::temp_dir();

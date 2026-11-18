@@ -1,8 +1,8 @@
 // ============================================================================
-// 磁盘信息业务模块
+// Disk info business module
 //
-// MVP 只读取 Windows Storage 提供的物理磁盘基础信息和健康状态，不解析
-// SMART 私有属性，避免在不同厂商和磁盘类型上产生误导性的“寿命百分比”。
+// The MVP only reads basic physical disk info and health status provided by Windows Storage; it does not parse
+// private SMART attributes, to avoid misleading "lifetime percentages" across different vendors and disk types.
 // ============================================================================
 
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine};
@@ -45,7 +45,7 @@ struct StorageSnapshot {
     physical_disks: Vec<RawPhysicalDisk>,
     #[serde(default, deserialize_with = "deserialize_array_or_single")]
     partitions: Vec<RawPartition>,
-    /// 脚本内部两路查询都失败时写入的异常文本，正常情况为 null。
+    /// Exception text written when both query paths inside the script fail; normally null.
     #[serde(default)]
     error: Option<String>,
 }
@@ -94,15 +94,15 @@ where
     }
 }
 
-/// 查询所有物理磁盘，并尽量合并可读的盘符和卷信息。
+/// Query all physical disks and merge readable drive letters and volume information where possible.
 pub fn query_disk_health() -> Result<Vec<DiskHealthInfo>, String> {
     #[cfg(target_os = "windows")]
     {
         let output = run_storage_query()?;
         let snapshot: StorageSnapshot = serde_json::from_str(&output)
             .map_err(|error| format!("解析 Windows 磁盘信息失败: {}", error))?;
-        // 脚本两路查询都没拿到物理磁盘时会带回异常文本，这里转成人话再抛给前端，
-        // 避免用户看到成片的 CLIXML 乱码。
+        // When neither script query path returns a physical disk, it brings back exception text; convert it to plain language here before throwing to the frontend,
+        // so users do not see a wall of CLIXML gibberish.
         if snapshot.physical_disks.is_empty() {
             if let Some(raw) = snapshot.error.as_deref() {
                 return Err(describe_storage_query_failure(raw));
@@ -121,13 +121,13 @@ pub fn query_disk_health() -> Result<Vec<DiskHealthInfo>, String> {
 fn run_storage_query() -> Result<String, String> {
     use std::os::windows::process::CommandExt;
 
-    // 使用 CIM 一次性读取全部对象，减少 PowerShell 进程和 WMI 查询次数。
+    // Use CIM to read all objects in one pass, reducing PowerShell process and WMI query counts.
     //
-    // 中文说明：本脚本对「存储模块」与「传统 WMI 磁盘类」做了双通道降级。
-    // 部分 Windows 11 机器的 WMI 仓库损坏、或 VSS / SMPHost 服务被禁用后，
-    // root/Microsoft/Windows/Storage 下的 MSFT_* 类会整体缺失，
-    // 查询直接抛 0x80041031（WBEM_E_CLASS_NOT_FOUND），导致设置页「读取失败」。
-    // 因此这两个查询各自带 try/catch 与降级来源，任何一路失败都不影响整体出结果。
+    // Note: this script uses a dual-channel fallback for the "Storage module" and "traditional WMI disk classes".
+    // On some Windows 11 machines the WMI repository is corrupted, or the VSS / SMPHost services are disabled,
+    // so the MSFT_* classes under root/Microsoft/Windows/Storage are missing entirely,
+    // and queries throw 0x80041031 (WBEM_E_CLASS_NOT_FOUND), causing a "read failed" message on the settings page.
+    // Therefore each of the two queries has its own try/catch and fallback source, so failure of either path does not prevent an overall result.
     let script = r#"
 $ErrorActionPreference = 'Stop'
 $utf8 = New-Object System.Text.UTF8Encoding($false)
@@ -136,8 +136,8 @@ $OutputEncoding = $utf8
 $logicalDisks = @{}
 Get-CimInstance -ClassName Win32_LogicalDisk | ForEach-Object { $logicalDisks[$_.DeviceID] = $_ }
 
-# ---- 物理磁盘：优先 MSFT_PhysicalDisk，失败则降级到 Win32_DiskDrive ----
-# $physicalError / $partitionError 记录首选通道的失败原因，用于两路都空时给出可读提示。
+# ---- Physical disks: prefer MSFT_PhysicalDisk, fall back to Win32_DiskDrive ----
+# $physicalError / $partitionError record the failure reason of the preferred channel, used to give a readable hint when both paths are empty.
 $physical = @()
 $physicalError = $null
 try {
@@ -158,18 +158,18 @@ try {
     }
   })
 } catch {
-  # 注意：Exception.Message 不含 HRESULT（例如「无效命名空间」），
-  # 错误码只出现在 FullyQualifiedErrorId 里（如「HRESULT 0x80041031,...」）。
-  # 这里把两者都带上，Rust 侧才认得出 WMI 类缺失这类已知故障。
+  # Note: Exception.Message does not contain the HRESULT (e.g. "invalid namespace"),
+  # the error code appears only in FullyQualifiedErrorId (e.g. "HRESULT 0x80041031,...").
+  # Include both here so the Rust side can recognize known failures such as missing WMI classes.
   $physicalError = "$($_.Exception.Message) $($_.FullyQualifiedErrorId)"
   $physical = @()
 }
 if ($physical.Count -eq 0) {
-  # 降级：Win32_DiskDrive 是传统类，不依赖 Storage 模块，覆盖面最广。
-  # MediaType 只说明是否可移动介质，无法区分 SSD/HDD，这里统一留空（前端显示「未知」），
-  # 不做猜测，避免给出错误的介质类型。
-  # Status 是 Win32 的老式字符串枚举（OK / Degraded / Error 等），
-  # 这里翻译成与 MSFT_PhysicalDisk.HealthStatus 相同的词汇，让下游只需一套映射。
+  # Fallback: Win32_DiskDrive is a traditional class, does not depend on the Storage module, and has the widest coverage.
+  # MediaType only says whether the medium is removable and cannot distinguish SSD/HDD; leave it blank here (frontend shows "unknown"),
+  # without guessing, to avoid giving a wrong media type.
+  # Status is the old-style Win32 string enum (OK / Degraded / Error, etc.);
+  # translate it here into the same vocabulary as MSFT_PhysicalDisk.HealthStatus, so downstream needs only one mapping.
   $physical = @(Get-CimInstance -ClassName Win32_DiskDrive -ErrorAction SilentlyContinue | Where-Object { $_.Size -gt 0 } | ForEach-Object {
     $health = switch -Regex ([string]$_.Status) {
       '^OK$'            { 'Healthy' }
@@ -191,8 +191,8 @@ if ($physical.Count -eq 0) {
   })
 }
 
-# ---- 分区：优先 MSFT_Partition，失败则降级到 Win32_DiskPartition 关联盘符 ----
-# 分区查询失败不影响整体：没有卷信息时磁盘列表照常展示，因此这里不记录错误原因。
+# ---- Partitions: prefer MSFT_Partition, fall back to Win32_DiskPartition for drive letters ----
+# Partition query failure does not affect the whole result: the disk list still displays when volume info is missing, so no error reason is recorded here.
 $partitions = @()
 try {
   $partitions = @(Get-CimInstance -Namespace 'root/Microsoft/Windows/Storage' -ClassName MSFT_Partition -ErrorAction Stop | ForEach-Object {
@@ -231,12 +231,12 @@ try {
     }
   })
 } catch {
-  # 分区查不到就交给下面的降级通道，不在这里抛错。
+  # If partitions cannot be found, hand off to the fallback channel below; do not throw here.
   $partitions = @()
 }
 if ($partitions.Count -eq 0) {
-  # 降级：Win32_DiskPartition -> Win32_LogicalDisk 两步关联。
-  # 只有真正带盘符的逻辑卷才需要展示，因此没有关联到盘符的分区直接跳过。
+  # Fallback: Win32_DiskPartition -> Win32_LogicalDisk, a two-step association.
+  # Only logical volumes that actually have a drive letter need to be shown, so partitions not associated with a letter are skipped.
   $partitions = @(Get-CimInstance -ClassName Win32_DiskPartition -ErrorAction SilentlyContinue | ForEach-Object {
     $partition = $_
     $drive = $null
@@ -268,10 +268,10 @@ if ($partitions.Count -eq 0) {
   })
 }
 
-    # 只有当两个通道都拿不到物理磁盘时才算真正失败：把首选通道的异常文本带出去，
-    # 让 Rust 侧能判断是不是 WMI 类缺失（0x80041031），从而给出可操作的提示。
-    # 只要有一路出结果就正常返回，降级场景前端不做额外提示。
-    # 分区查询失败不算整体失败——没有卷信息时磁盘列表照常显示。
+    # Only when neither channel yields a physical disk is it a real failure: carry out the preferred channel's exception text,
+    # so the Rust side can tell whether it is missing WMI classes (0x80041031) and give an actionable hint.
+    # If either path returns a result, return normally; the frontend gives no extra hint in fallback scenarios.
+    # A partition query failure is not an overall failure - the disk list still displays when volume info is missing.
     $errorText = $null
     if ($physical.Count -eq 0 -and $physicalError) { $errorText = $physicalError }
 
@@ -279,7 +279,7 @@ if ($partitions.Count -eq 0) {
     [Console]::Out.Write($json)
 "#;
 
-    // 使用 PowerShell 官方的 UTF-16LE 编码参数，避免生产包中长脚本经过命令行转义后丢失输出。
+    // Use PowerShell's official UTF-16LE encoding parameter, to avoid losing output when long scripts are command-line escaped in production builds.
     let encoded_script = encode_powershell_script(script);
     let mut child = Command::new("powershell.exe")
         .args([
@@ -293,8 +293,8 @@ if ($partitions.Count -eq 0) {
             "-EncodedCommand",
             encoded_script.as_str(),
         ])
-        // PowerShell 需要依赖重定向管道返回 JSON；不使用 DETACHED_PROCESS，
-        // 避免部分 GUI/管理员环境下子进程 stdout 管道为空，同时保留无控制台标志。
+        // PowerShell relies on the redirection pipe to return JSON; do not use DETACHED_PROCESS,
+        // to avoid an empty child stdout pipe in some GUI/admin environments, while keeping the no-console flag.
         .creation_flags(POWERSHELL_PROCESS_FLAGS)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -359,15 +359,15 @@ fn encode_powershell_script(script: &str) -> String {
     BASE64_STANDARD.encode(utf16_bytes)
 }
 
-/// 把 PowerShell / WMI 的原始异常文本转成用户能看懂的一句话。
+/// Turn raw PowerShell / WMI exception text into a sentence users can understand.
 ///
-/// 背景：PowerShell 在非交互宿主里会把异常序列化成 CLIXML（`#< CLIXML …<S S="Error">…`），
-/// 直接展示给用户就是一屏幕乱码，这也是 issue 里「读取失败」框里那一大段东西的来源。
-/// 这里按已知的 HRESULT 给出结论和排查建议，未知错误只保留清洗后的短文本。
+/// Background: in a non-interactive host, PowerShell serializes exceptions as CLIXML (`#< CLIXML …<S S="Error">…`),
+/// which shown directly to the user is a screen of gibberish - this is the source of the big block in the issue's "read failed" box.
+/// Here we give conclusions and troubleshooting advice for known HRESULTs; unknown errors keep only the cleaned short text.
 fn describe_storage_query_failure(raw: &str) -> String {
     let text = sanitize_powershell_error(raw);
 
-    // 已知 HRESULT 的处理建议。顺序有意义：更具体的错误放前面。
+    // Handling advice for known HRESULTs. Order matters: more specific errors come first.
     const KNOWN_FAILURES: &[(&str, &str)] = &[
         (
             "0x80041031",
@@ -409,7 +409,7 @@ fn describe_storage_query_failure(raw: &str) -> String {
     if text.is_empty() {
         return "无法读取系统磁盘信息，请稍后重试。".to_string();
     }
-    // 未知错误：限长，避免异常文本撑破弹窗。
+    // Unknown errors: limit the length so the exception text cannot burst the dialog.
     let summary: String = text.chars().take(180).collect();
     if text.chars().count() > 180 {
         return format!("无法读取系统磁盘信息：{}…", summary);
@@ -417,15 +417,15 @@ fn describe_storage_query_failure(raw: &str) -> String {
     format!("无法读取系统磁盘信息：{}", summary)
 }
 
-/// 清洗 PowerShell 异常文本：剥离 CLIXML 外壳与转义实体，压掉多余空白，只留可读的一行。
+/// Clean PowerShell exception text: strip the CLIXML shell and escape entities, collapse extra whitespace, keep only one readable line.
 fn sanitize_powershell_error(raw: &str) -> String {
     let mut text = raw.trim().to_string();
 
-    // 去掉 CLIXML 头，例如 `#< CLIXML\r\n<Objs Version="1.1.0.1" …>`
+    // Remove the CLIXML header, e.g. `#< CLIXML\r\n<Objs Version="1.1.0.1" …>`
     if let Some(index) = text.find("<Objs") {
         text = text[index..].to_string();
     }
-    // 只取 <S S="Error">…</S> 里的内容，这是 PowerShell 实际想表达的异常行。
+    // Take only the content inside <S S="Error">…</S>; this is the exception line PowerShell actually means to express.
     let mut collected = String::new();
     let marker = "<S S=\"Error\">";
     let mut rest = text.as_str();
@@ -441,7 +441,7 @@ fn sanitize_powershell_error(raw: &str) -> String {
     }
     let text = if collected.trim().is_empty() { text } else { collected };
 
-    // 还原 CLIXML 的 XML 实体与 _xHHHH_ 形式的转义（如 _x000D__x000A_ 代表换行），再合并空白。
+    // Restore CLIXML XML entities and _xHHHH_ style escapes (e.g. _x000D__x000A_ means a newline), then collapse whitespace.
     text.replace("&lt;", "<")
         .replace("&gt;", ">")
         .replace("&quot;", "\"")
@@ -481,7 +481,7 @@ fn merge_storage_snapshot(snapshot: StorageSnapshot) -> Result<Vec<DiskHealthInf
     let mut result = Vec::with_capacity(snapshot.physical_disks.len());
     for physical_disk in snapshot.physical_disks {
         let Some(number) = physical_disk.number else {
-            // MSFT_PhysicalDisk 在部分 Windows 版本没有 Number 属性，仍保留磁盘信息。
+            // MSFT_PhysicalDisk has no Number property on some Windows versions; still keep the disk info.
             result.push(to_disk_health_info(physical_disk, None, Vec::new()));
             continue;
         };
@@ -582,8 +582,8 @@ fn map_bus_type(value: Option<serde_json::Value>) -> String {
     if text.contains("usb") {
         return "USB".to_string();
     }
-    // 降级路径（Win32_DiskDrive.InterfaceType）只给 SCSI / IDE / HDC 这类粗略值，
-    // NVMe 与 SATA 盘在该字段里通常都报 SCSI，因此按「未知」处理更诚实，不做具体总线猜测。
+    // The fallback path (Win32_DiskDrive.InterfaceType) only gives rough values like SCSI / IDE / HDC;
+    // NVMe and SATA disks usually both report SCSI in this field, so treating them as "unknown" is more honest than guessing a specific bus.
     if text.contains("scsi") || text.contains("raid") {
         return "SCSI".to_string();
     }
@@ -752,8 +752,8 @@ mod tests {
 
     #[test]
     fn maps_legacy_disk_drive_fields_from_fallback_channel() {
-        // 降级路径（Win32_DiskDrive）给的是另一套取值：media_type 为 null、
-        // bus_type 是 SCSI 这类粗粒度字符串、health_status 已由脚本归一化。
+        // The fallback path (Win32_DiskDrive) gives a different set of values: media_type is null,
+        // bus_type is a coarse string like SCSI, health_status has already been normalized by the script.
         assert_eq!(map_media_type(None), "未知");
         assert_eq!(map_bus_type(Some(serde_json::json!("SCSI"))), "SCSI");
         assert_eq!(map_bus_type(Some(serde_json::json!("ATA"))), "ATA");
@@ -776,7 +776,7 @@ mod tests {
 
     #[test]
     fn describes_known_hresult_with_actionable_hint() {
-        // 0x80041031 = WBEM_E_CLASS_NOT_FOUND，即 Storage 命名空间下的 MSFT_* 类缺失。
+        // 0x80041031 = WBEM_E_CLASS_NOT_FOUND, i.e. the MSFT_* classes under the Storage namespace are missing.
         let hint = describe_storage_query_failure(
             "#< CLIXML<Objs><S S=\"Error\">FullyQualifiedErrorId : HRESULT 0x80041031</S></Objs>",
         );
@@ -791,7 +791,7 @@ mod tests {
     fn truncates_unknown_error_to_stay_readable() {
         let long = "X".repeat(500);
         let hint = describe_storage_query_failure(&long);
-        // 180 个字符 + 前后缀，留一点余量。
+        // 180 characters plus prefix/suffix; leave a little margin.
         assert!(hint.chars().count() < 220, "未知错误应限长: {}", hint.chars().count());
         assert!(hint.ends_with('…'), "截断应有省略号");
     }

@@ -1,17 +1,17 @@
 // ============================================================================
-// 注册表残留扫描模块
+// Registry leftover scanning module
 //
-// 【安全声明】
-//   1. 只读扫描：扫描阶段绝不修改任何注册表键值
-//   2. 铁证条件：关联 exe 不存在 + 非系统路径 + 非系统进程，三项全部满足才输出
-//   3. 范围收敛：只扫描 HKCR\Applications（文件关联残留），不碰系统关键区域
-//   4. 真实备份：删除前使用 reg.exe export 创建可恢复的 .reg 文件
-//   5. 用户确认：所有删除操作需用户明确选择
+// [Safety statement]
+//   1. Read-only scan: the scan phase never modifies any registry key/value
+//   2. Hard-evidence condition: output only when all three hold — associated exe doesn't exist + non-system path + non-system process
+//   3. Scope narrowing: only scan HKCR\Applications (file-association leftovers), don't touch critical system areas
+//   4. Real backup: before deleting, use reg.exe export to create a recoverable .reg file
+//   5. User confirmation: all deletions require explicit user selection
 //
-// 【为什么只扫描 HKCR\Applications】
-//   程序安装时在此注册文件关联（如 "用 xxx 打开 .pdf"），卸载后经常残留。
-//   这是最安全且最有价值的注册表清理目标——删错最多丢失文件关联，
-//   不会影响系统稳定性。
+// [Why only scan HKCR\Applications]
+//   Programs register file associations here at install time (e.g. "open .pdf with xxx"), and often leave residue after uninstall.
+//   This is the safest and most valuable registry cleanup target — deleting the wrong thing at most loses a file association,
+//   it won't affect system stability.
 // ============================================================================
 
 use chrono;
@@ -27,10 +27,10 @@ use winreg::RegKey;
 use super::registry_scoring::{is_definitely_safe_to_delete, PathCache, PathResolver};
 
 // ============================================================================
-// 数据类型
+// Data types
 // ============================================================================
 
-/// 扫描结果
+/// Scan result
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RegistryScanResult {
     pub entries: Vec<RegistryEntry>,
@@ -38,20 +38,20 @@ pub struct RegistryScanResult {
     pub scan_duration_ms: u64,
 }
 
-/// 单个残留条目
+/// Single leftover entry
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RegistryEntry {
-    /// HKCR\Applications 下的完整路径
+    /// Full path under HKCR\Applications
     pub path: String,
-    /// 应用程序名（注册表子键名，如 "notepad.exe"）
+    /// Application name (registry subkey name, e.g. "notepad.exe")
     pub name: String,
-    /// 关联的不存在的可执行文件路径
+    /// Associated non-existent executable path
     pub associated_path: String,
-    /// 人类可读的问题描述
+    /// Human-readable problem description
     pub issue: String,
 }
 
-/// 删除结果
+/// Deletion result
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RegistryDeleteResult {
     pub backup_path: String,
@@ -61,13 +61,13 @@ pub struct RegistryDeleteResult {
 }
 
 // ============================================================================
-// 扫描器
+// Scanner
 // ============================================================================
 
-/// 注册表残留扫描器
+/// Registry leftover scanner
 ///
-/// 扫描 HKCR\Applications 下所有子键，检查其 shell\open\command
-/// 引用的可执行文件是否仍然存在。
+/// Scans all subkeys under HKCR\Applications and checks whether the executable
+/// referenced by shell\open\command still exists.
 pub struct RegistryScanner {
     path_cache: PathCache,
     path_resolver: PathResolver,
@@ -82,11 +82,11 @@ impl RegistryScanner {
         }
     }
 
-    /// 执行扫描
+    /// Performs the scan
     pub fn scan(&mut self) -> RegistryScanResult {
         let start_time = std::time::Instant::now();
         let mut entries = Vec::new();
-        let mut seen_paths: HashSet<String> = HashSet::new(); // 按关联路径去重
+        let mut seen_paths: HashSet<String> = HashSet::new(); // deduplicate by associated path
 
         log::info!("开始扫描注册表残留 (HKCR\\Applications)");
 
@@ -109,7 +109,7 @@ impl RegistryScanner {
                 break;
             }
 
-            // 读 shell\open\command 默认值（命令行字符串）
+            // Read the shell\open\command default value (command-line string)
             let shell_path = format!(r"{}\shell\open\command", app_name);
             let exe_path = match apps_key.open_subkey_with_flags(&shell_path, KEY_READ) {
                 Ok(cmd_key) => match cmd_key.get_value::<String, _>("") {
@@ -127,12 +127,12 @@ impl RegistryScanner {
                 None => continue,
             };
 
-            // 铁证条件：路径不存在 + 非系统路径 + 非系统进程
+            // Hard-evidence condition: path doesn't exist + non-system path + non-system process
             if !is_definitely_safe_to_delete(&exe_path, &mut self.path_cache) {
                 continue;
             }
 
-            // 去重：同一个 exe 可能被多个应用名注册
+            // Deduplication: the same exe may be registered under multiple application names
             let path_lower = exe_path.to_lowercase();
             if seen_paths.contains(&path_lower) {
                 continue;
@@ -179,16 +179,16 @@ impl Default for RegistryScanner {
 }
 
 // ============================================================================
-// 备份
+// Backup
 // ============================================================================
 
-/// 注册表备份管理器
+/// Registry backup manager
 ///
-/// 使用 `reg.exe export` 导出完整子键为 .reg 文件，可双击恢复。
+/// Uses `reg.exe export` to export a full subkey to a .reg file, recoverable by double-clicking.
 pub struct RegistryBackup;
 
 impl RegistryBackup {
-    /// 批量导出注册表键到 .reg 文件
+    /// Batch-exports registry keys to .reg files
     pub fn export_backup(entries: &[RegistryEntry], backup_dir: &Path) -> Result<PathBuf, String> {
         fs::create_dir_all(backup_dir).map_err(|e| format!("创建备份目录失败: {}", e))?;
 
@@ -198,7 +198,7 @@ impl RegistryBackup {
         let mut file =
             File::create(&backup_file).map_err(|e| format!("创建备份文件失败: {}", e))?;
 
-        // .reg 文件头
+        // .reg file header
         writeln!(file, "Windows Registry Editor Version 5.00")
             .map_err(|e| format!("写入备份文件失败: {}", e))?;
         writeln!(file).map_err(|e| format!("写入备份文件失败: {}", e))?;
@@ -223,7 +223,7 @@ impl RegistryBackup {
         Ok(backup_file)
     }
 
-    /// 使用 reg.exe export 导出完整注册表键
+    /// Uses reg.exe export to export a full registry key
     fn export_key_via_reg_exe(file: &mut File, entry: &RegistryEntry) -> Result<(), String> {
         let temp_dir = std::env::temp_dir();
         let temp_file = temp_dir.join(format!("lightc_temp_export_{}.reg", std::process::id()));
@@ -237,7 +237,7 @@ impl RegistryBackup {
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            // 回退：手动记录路径头
+            // Fallback: manually record the path header
             writeln!(
                 file,
                 "; [回退] reg export 失败: {}. 手动记录路径",
@@ -251,14 +251,14 @@ impl RegistryBackup {
             return Ok(());
         }
 
-        // reg.exe 在不同语言 Windows 上输出编码不同：
-        // - 中文/日文/韩文 Windows → UTF-16 LE + BOM (\xFF\xFE)
-        // - 英文 Windows → UTF-8 (无 BOM) 或 ANSI
-        // 直接读 bytes 按 BOM 判断，兼容所有情况
+        // reg.exe outputs different encodings on different-language Windows:
+        // - Chinese/Japanese/Korean Windows → UTF-16 LE + BOM (\xFF\xFE)
+        // - English Windows → UTF-8 (no BOM) or ANSI
+        // Read bytes and judge by BOM, compatible with all cases
         let raw_bytes = fs::read(&temp_file).map_err(|e| format!("读取临时导出文件失败: {}", e))?;
         let content = decode_reg_export(&raw_bytes)?;
 
-        // 跳过 .reg 文件头，追加内容
+        // Skip the .reg file header, append content
         let mut started = false;
         for line in content.lines() {
             if !started {
@@ -275,7 +275,7 @@ impl RegistryBackup {
         Ok(())
     }
 
-    /// 路径转换: HKEY_CLASSES_ROOT\Applications\xxx → Applications\xxx (供 reg.exe)
+    /// Path conversion: HKEY_CLASSES_ROOT\Applications\xxx → Applications\xxx (for reg.exe)
     fn to_reg_exe_format(path: &str) -> Result<String, String> {
         if let Some(subpath) = path.strip_prefix("HKEY_CURRENT_USER\\") {
             Ok(format!("HKCU\\{}", subpath))
@@ -288,7 +288,7 @@ impl RegistryBackup {
         }
     }
 
-    /// 默认备份目录
+    /// Default backup directory
     pub fn get_backup_dir() -> PathBuf {
         dirs::document_dir()
             .unwrap_or_else(|| PathBuf::from("C:\\"))
@@ -298,12 +298,12 @@ impl RegistryBackup {
 }
 
 // ============================================================================
-// 删除
+// Deletion
 // ============================================================================
 
-/// 删除单个注册表条目（删除整个子键）
+/// Deletes a single registry entry (deletes the whole subkey)
 ///
-/// 调用前必须通过 RegistryBackup::export_backup 创建备份。
+/// The caller must create a backup via RegistryBackup::export_backup before calling.
 pub fn delete_registry_entry(entry: &RegistryEntry) -> Result<(), String> {
     let (root_key, subpath) = parse_registry_path_components(&entry.path)?;
     let (parent_path, child_name) = split_last_component(subpath)?;
@@ -337,15 +337,15 @@ fn split_last_component(path: &str) -> Result<(&str, &str), String> {
         .ok_or_else(|| format!("无法分割路径: {}", path))
 }
 
-/// 解码 reg.exe 导出的 .reg 文件内容
+/// Decodes the content of a .reg file exported by reg.exe
 ///
-/// reg.exe 输出编码随系统语言变化：
-/// - 中日韩 Windows → UTF-16 LE + BOM (0xFF 0xFE)
-/// - 英文/其他 Windows → UTF-8 (有/无 BOM)
-/// 按前导 BOM 判断编码，无 BOM 则按 UTF-8/lossy 兜底
+/// reg.exe output encoding varies with system language:
+/// - CJK Windows → UTF-16 LE + BOM (0xFF 0xFE)
+/// - English/other Windows → UTF-8 (with/without BOM)
+/// Judge encoding by the leading BOM; without BOM, fall back to UTF-8/lossy
 fn decode_reg_export(raw: &[u8]) -> Result<String, String> {
     if raw.len() >= 2 && raw[0] == 0xFF && raw[1] == 0xFE {
-        // UTF-16 LE with BOM — 中文/日文/韩文 Windows 的默认输出
+        // UTF-16 LE with BOM — default output on Chinese/Japanese/Korean Windows
         let utf16: Vec<u16> = raw[2..]
             .chunks_exact(2)
             .map(|c| u16::from_le_bytes([c[0], c[1]]))
@@ -355,14 +355,14 @@ fn decode_reg_export(raw: &[u8]) -> Result<String, String> {
         // UTF-8 with BOM
         String::from_utf8(raw[3..].to_vec()).map_err(|e| format!("UTF-8 解码失败: {}", e))
     } else {
-        // 无 BOM，按 UTF-8 尝试，失败则 lossy 兜底（兼容英文 Windows 的 ANSI 输出）
+        // No BOM, try UTF-8 first, fall back to lossy (compatible with English Windows' ANSI output)
         Ok(String::from_utf8(raw.to_vec())
             .unwrap_or_else(|_| String::from_utf8_lossy(raw).into_owned()))
     }
 }
 
 // ============================================================================
-// 测试
+// Tests
 // ============================================================================
 
 #[cfg(test)]

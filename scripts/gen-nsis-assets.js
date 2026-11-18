@@ -1,10 +1,10 @@
 /**
- * NSIS 安装包图片生成脚本
- * 使用 sharp 库生成 NSIS 所需的 BMP 图片
+ * NSIS installer image generation script
+ * Uses the sharp library to generate the BMP images required by NSIS
  * 
- * 注意: sharp 不直接支持 BMP 输出，这里手动构建 BMP 文件
+ * Note: sharp doesn't support BMP output directly, so the BMP file is built manually here
  * 
- * 使用方法:
+ * Usage:
  * node scripts/gen-nsis-assets.js
  */
 
@@ -20,21 +20,21 @@ const iconsDir = path.join(__dirname, '../src-tauri/icons');
 const nsisDir = path.join(__dirname, '../src-tauri/nsis');
 const svgPath = path.join(iconsDir, 'icon.svg');
 
-// 确保 nsis 目录存在
+// Ensure the nsis directory exists
 if (!fs.existsSync(nsisDir)) {
   fs.mkdirSync(nsisDir, { recursive: true });
   console.log('✓ 创建目录: src-tauri/nsis');
 }
 
 /**
- * 将 RGB raw buffer 转换为 24-bit BMP 文件
- * @param {Buffer} rawBuffer - RGB raw 数据 (每像素3字节)
- * @param {number} width - 图片宽度
- * @param {number} height - 图片高度
- * @returns {Buffer} - BMP 文件数据
+ * Convert an RGB raw buffer into a 24-bit BMP file
+ * @param {Buffer} rawBuffer - RGB raw data (3 bytes per pixel)
+ * @param {number} width - image width
+ * @param {number} height - image height
+ * @returns {Buffer} - BMP file data
  */
 function rgbToBmp(rawBuffer, width, height) {
-  // BMP 行需要 4 字节对齐
+  // BMP rows must be aligned to 4 bytes
   const rowSize = Math.ceil((width * 3) / 4) * 4;
   const padding = rowSize - width * 3;
   const imageSize = rowSize * height;
@@ -85,16 +85,16 @@ function rgbToBmp(rawBuffer, width, height) {
 }
 
 /**
- * 生成 wizard.bmp (164x314)
- * 左侧向导图片，翡翠绿到深色的垂直渐变背景，Logo 居中在上半部分
+ * Generate wizard.bmp (164x314)
+ * Left-side wizard image, vertical gradient background from emerald green to dark, Logo centered in the upper half
  */
 async function generateWizardBmp() {
   const width = 164;
   const height = 314;
   const logoSize = 100;
-  const logoY = 60; // Logo 在上半部分
+  const logoY = 60; // Logo in the upper half
 
-  // 创建垂直渐变背景 SVG
+  // Create the vertical gradient background SVG
   const gradientSvg = `
     <svg width="${width}" height="${height}" xmlns="http://www.w3.org/2000/svg">
       <defs>
@@ -107,12 +107,12 @@ async function generateWizardBmp() {
     </svg>
   `;
 
-  // 生成渐变背景
+  // Generate the gradient background
   const background = await sharp(Buffer.from(gradientSvg))
     .png()
     .toBuffer();
 
-  // 读取并调整 Logo 尺寸
+  // Read and resize the Logo
   let logoBuffer;
   if (fs.existsSync(svgPath)) {
     const svgContent = fs.readFileSync(svgPath);
@@ -121,7 +121,7 @@ async function generateWizardBmp() {
       .png()
       .toBuffer();
   } else {
-    // 如果没有 SVG，创建一个简单的 "C:" 文字 Logo
+    // If there's no SVG, create a simple "C:" text Logo
     const fallbackSvg = `
       <svg width="${logoSize}" height="${logoSize}" xmlns="http://www.w3.org/2000/svg">
         <rect width="${logoSize}" height="${logoSize}" rx="20" fill="#07C160"/>
@@ -133,10 +133,10 @@ async function generateWizardBmp() {
       .toBuffer();
   }
 
-  // 合成：背景 + Logo
+  // Composite: background + Logo
   const logoX = Math.floor((width - logoSize) / 2);
   
-  // 获取 RGB raw 数据
+  // Get the RGB raw data
   const rawBuffer = await sharp(background)
     .composite([
       {
@@ -149,7 +149,7 @@ async function generateWizardBmp() {
     .raw()
     .toBuffer();
 
-  // 转换为 BMP 并保存
+  // Convert to BMP and save
   const bmpBuffer = rgbToBmp(rawBuffer, width, height);
   fs.writeFileSync(path.join(nsisDir, 'wizard.bmp'), bmpBuffer);
 
@@ -157,15 +157,15 @@ async function generateWizardBmp() {
 }
 
 /**
- * 生成 header.bmp (150x57)
- * 顶部横幅图片，白色背景，右侧包含简化 Logo
+ * Generate header.bmp (150x57)
+ * Top banner image, white background, with a simplified Logo on the right
  */
 async function generateHeaderBmp() {
   const width = 150;
   const height = 57;
   const logoSize = 40;
 
-  // 创建白色背景
+  // Create the white background
   const backgroundSvg = `
     <svg width="${width}" height="${height}" xmlns="http://www.w3.org/2000/svg">
       <rect width="${width}" height="${height}" fill="white"/>
@@ -176,7 +176,7 @@ async function generateHeaderBmp() {
     .png()
     .toBuffer();
 
-  // 读取并调整 Logo 尺寸
+  // Read and resize the Logo
   let logoBuffer;
   if (fs.existsSync(svgPath)) {
     const svgContent = fs.readFileSync(svgPath);
@@ -185,7 +185,7 @@ async function generateHeaderBmp() {
       .png()
       .toBuffer();
   } else {
-    // 如果没有 SVG，创建一个简单的 Logo
+    // If there's no SVG, create a simple Logo
     const fallbackSvg = `
       <svg width="${logoSize}" height="${logoSize}" xmlns="http://www.w3.org/2000/svg">
         <rect width="${logoSize}" height="${logoSize}" rx="8" fill="#07C160"/>
@@ -197,11 +197,11 @@ async function generateHeaderBmp() {
       .toBuffer();
   }
 
-  // Logo 放在右侧，垂直居中
+  // Place the Logo on the right, vertically centered
   const logoX = width - logoSize - 8;
   const logoY = Math.floor((height - logoSize) / 2);
 
-  // 获取 RGB raw 数据
+  // Get the RGB raw data
   const rawBuffer = await sharp(background)
     .composite([
       {
@@ -214,7 +214,7 @@ async function generateHeaderBmp() {
     .raw()
     .toBuffer();
 
-  // 转换为 BMP 并保存
+  // Convert to BMP and save
   const bmpBuffer = rgbToBmp(rawBuffer, width, height);
   fs.writeFileSync(path.join(nsisDir, 'header.bmp'), bmpBuffer);
 

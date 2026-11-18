@@ -1,10 +1,10 @@
-//! 白名单边界与异常输入。
+//! Whitelist boundaries and abnormal inputs.
 
 use super::super::AiToolScanner;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-/// 与 `AiToolScanner::new` 相同的取值方式，供路径校验用例拼真实目录。
+/// Same value retrieval as `AiToolScanner::new`, for path-validation test cases to build real directories.
 fn user_profile() -> PathBuf {
     PathBuf::from(std::env::var("USERPROFILE").unwrap_or_else(|_| r"C:\Users\Default".to_string()))
 }
@@ -15,15 +15,15 @@ fn appdata() -> PathBuf {
         .unwrap_or_else(|_| user_profile().join("AppData").join("Roaming"))
 }
 
-/// 白名单之外的目录必须被忽略 —— 这条是安全底线：
-/// 删错会话历史或凭据的代价，远大于少省几个 G。
+/// Directories outside the whitelist must be ignored — this is the security bottom line:
+/// the cost of deleting the wrong session history or credentials is far greater than saving a few extra GB.
 #[test]
 fn only_whitelisted_directories_are_collected() {
     let base = std::env::temp_dir().join("lightc-ai-clean-test");
     let _ = fs::remove_dir_all(&base);
     fs::create_dir_all(base.join("Cache")).unwrap();
     fs::create_dir_all(base.join("sessions")).unwrap();
-    // Chromium 新版着色器缓存：本轮补进白名单，这里顺带钉住
+    // Chromium's new shader cache: added to the whitelist this round, pinned here too
     fs::create_dir_all(base.join("ShaderCache")).unwrap();
     fs::write(base.join("Cache").join("a.bin"), vec![0u8; 1024]).unwrap();
     fs::write(base.join("sessions").join("chat.db"), vec![0u8; 4096]).unwrap();
@@ -41,7 +41,7 @@ fn only_whitelisted_directories_are_collected() {
     let _ = fs::remove_dir_all(&base);
 }
 
-/// 工具私有的额外目录名（Codex 的 `.tmp`）只在这个工具下生效。
+/// A tool's private extra directory names (Codex's `.tmp`) apply only under that tool.
 #[test]
 fn extra_names_only_apply_when_requested() {
     let base = std::env::temp_dir().join("lightc-ai-clean-extra");
@@ -51,12 +51,12 @@ fn extra_names_only_apply_when_requested() {
 
     let scanner = AiToolScanner::new();
 
-    // 不给额外名单：`.tmp` 不算缓存（别的工具里它可能是重要暂存区）
+    // No extra list given: `.tmp` doesn't count as cache (in other tools it may be an important staging area)
     let mut without = Vec::new();
     scanner.collect_cleanable_children(&base, &[], &mut without);
     assert!(without.is_empty(), "`.tmp` 不该进全局白名单");
 
-    // 给了额外名单：才算
+    // Extra list given: then it counts
     let mut with = Vec::new();
     scanner.collect_cleanable_children(&base, &[".tmp"], &mut with);
     assert_eq!(with.len(), 1);
@@ -65,7 +65,7 @@ fn extra_names_only_apply_when_requested() {
     let _ = fs::remove_dir_all(&base);
 }
 
-/// 目录不存在时不能 panic，也不能返回空以外的副作用。
+/// A non-existent directory must not panic, nor have side effects other than returning empty.
 #[test]
 fn missing_root_is_ignored() {
     let scanner = AiToolScanner::new();
@@ -74,21 +74,21 @@ fn missing_root_is_ignored() {
     assert!(entries.is_empty());
 }
 
-/// 扩展 / 插件 / 依赖目录里的 `cache` 不能被当成可清理缓存。
+/// A `cache` inside an extension/plugin/dependency directory must not be treated as cleanable cache.
 ///
-/// 这不是假设出来的场景：VS Code 系客户端的扩展是
-/// `extensions/<扩展名>/node_modules/<包>/cache` 这样的嵌套结构，
-/// 按目录名匹配的话正好会命中，删掉整段扩展依赖就废了。
+/// This isn't a hypothetical: VS Code-family clients have extensions with a nested structure like
+/// `extensions/<extension>/node_modules/<package>/cache`,
+/// which a directory-name match would hit exactly — deleting the whole extension dependency would break it.
 #[test]
 fn cache_inside_extension_or_plugin_dirs_is_skipped() {
     let base = std::env::temp_dir().join("lightc-ai-clean-skip");
     let _ = fs::remove_dir_all(&base);
 
-    // 真正该清理的：根目录下的 Cache
+    // What should really be cleaned: Cache at the root
     fs::create_dir_all(base.join("Cache")).unwrap();
     fs::write(base.join("Cache").join("a.bin"), vec![0u8; 512]).unwrap();
 
-    // 不该清理的三种嵌套：扩展依赖、插件、git 版本库
+    // The three nested cases that shouldn't be cleaned: extension dependency, plugin, git repository
     for path in [
         base.join("extensions")
             .join("foo.pkg")
@@ -112,20 +112,20 @@ fn cache_inside_extension_or_plugin_dirs_is_skipped() {
     let _ = fs::remove_dir_all(&base);
 }
 
-/// 路径里带 `..` 时必须拒绝。
+/// Paths containing `..` must be rejected.
 ///
-/// `Path::starts_with` 是词法比较，`...\Cursor\Cache\..\..\..\logs` 会被判定
-/// 在根目录之下，而 `remove_dir_all` 按解析后的真实路径动手 ——
-/// 少了这道判断，前缀校验就形同虚设。
+/// `Path::starts_with` is a lexical comparison; `...\Cursor\Cache\..\..\..\logs` would be judged
+/// as under the root directory, while `remove_dir_all` acts on the resolved real path —
+/// without this check, the prefix validation would be useless.
 #[test]
 fn path_traversal_is_rejected() {
     let scanner = AiToolScanner::new();
     let root = appdata().join("Cursor");
 
-    // 正常情况：根目录下的缓存目录是托管的
+    // Normal case: a cache directory under the root is managed
     assert!(scanner.is_managed_cache_dir(&root.join("Cache")));
 
-    // 用 `..` 跳出根目录，名字仍伪装成白名单里的 logs
+    // Use `..` to escape the root, while the name still masquerades as logs in the whitelist
     let escaped = root
         .join("Cache")
         .join("..")
@@ -134,31 +134,31 @@ fn path_traversal_is_rejected() {
         .join("logs");
     assert!(!scanner.is_managed_cache_dir(&escaped), "带 `..` 的路径必须拒绝");
 
-    // 根目录本身永远不能删
+    // The root directory itself must never be deleted
     assert!(!scanner.is_managed_cache_dir(&root));
 }
 
-/// 路径大小写不一致时仍然要认。
+/// Paths with inconsistent case must still be recognized.
 ///
-/// 扫描拿到的是磁盘上的真实目录名，清单里是固定字面量；两者不一致时
-/// `Path::starts_with` 会让删除被静默拒绝（界面只报 0），所以比较必须忽略大小写。
+/// Scanning gets the real directory name from disk, while the manifest has fixed literals; when they differ,
+/// `Path::starts_with` would silently reject the deletion (UI just reports 0), so comparison must ignore case.
 #[test]
 fn root_match_ignores_case() {
     let scanner = AiToolScanner::new();
-    // 清单里写的是 "Cursor"，这里模拟磁盘上是 "CURSOR"
+    // The manifest writes "Cursor", here we simulate "CURSOR" on disk
     assert!(scanner.is_managed_cache_dir(&appdata().join("CURSOR").join("Cache")));
-    // 同理验证用户目录下的点目录
+    // Same verification for a dot-directory in the user directory
     assert!(scanner.is_managed_cache_dir(&user_profile().join(".CODEX").join("cache")));
 }
 
-/// 非托管路径必须被拒绝并计入失败列表。
+/// Non-managed paths must be rejected and counted in the failure list.
 ///
-/// 界面要靠这个列表说"没删掉"，所以拒绝也必须走同一条返回通道，
-/// 不能只 log 一下就当成成功。
+/// The UI relies on this list to say "not deleted", so rejection must go through the same return channel,
+/// not just be logged and treated as success.
 #[test]
 fn delete_reports_unmanaged_paths_as_failures() {
     let scanner = AiToolScanner::new();
-    // 名字在白名单里（logs），但不在任何工具的根目录下
+    // The name is in the whitelist (logs), but not under any tool's root directory
     let target = std::env::temp_dir().join("logs");
     let result = scanner.delete_dirs(&[target.to_string_lossy().to_string()]);
 
@@ -167,7 +167,7 @@ fn delete_reports_unmanaged_paths_as_failures() {
     assert_eq!(result.failed[0].reason, "不在可清理范围内");
 }
 
-/// Codex 的 `.tmp` 只在 Codex 名下算缓存。
+/// Codex's `.tmp` counts as cache only under Codex.
 #[test]
 fn extra_names_are_scoped_to_their_tool() {
     let scanner = AiToolScanner::new();
@@ -175,14 +175,14 @@ fn extra_names_are_scoped_to_their_tool() {
     assert!(!scanner.is_managed_cache_dir(&appdata().join("devin").join(".tmp")));
 }
 
-/// 豆包的目录结构：缓存埋在 `User Data\Default` 里，运行时要分开对待。
+/// Doubao's directory structure: cache is buried in `User Data\Default`, handled differently at runtime.
 ///
-/// 这条钉的是三个容易搞错的点：
-/// 1. 多层嵌套（`Doubao\User Data\Default\Cache`）必须能扫到，否则豆包会显示 0；
-/// 2. `sandbox_runtime\downloads` 是**这个工具授权**的可清目录（运行时安装包，本机 234MB），
-///    但它不在全局白名单里 —— 别的工具叫这个名字时可能是用户的下载目录；
-/// 3. `sandbox_runtime\bases`（正在用的运行时）和 `Default\sandbox_envs_dir`（会话环境）
-///    删了功能就用不了，无论如何都不能进名单。
+/// This case pins three easy-to-get-wrong points:
+/// 1. Multi-level nesting (`Doubao\User Data\Default\Cache`) must be scannable, otherwise Doubao shows 0;
+/// 2. `sandbox_runtime\downloads` is a cleanable directory **authorized by this tool** (runtime installer package, 234MB locally),
+///    but it isn't in the global whitelist — when another tool uses this name it may be the user's downloads directory;
+/// 3. `sandbox_runtime\bases` (runtime in use) and `Default\sandbox_envs_dir` (session environment)
+///    would break functionality if deleted, so they must never enter the list.
 #[test]
 fn doubao_layout_separates_cache_from_sandbox_runtime() {
     let base = std::env::temp_dir().join("lightc-ai-clean-doubao");
@@ -209,7 +209,7 @@ fn doubao_layout_separates_cache_from_sandbox_runtime() {
 
     let scanner = AiToolScanner::new();
 
-    // ① 豆包自己的名单：downloads 算，bases / sandbox_envs_dir / gecko_cache 不算
+    // ① Doubao's own list: downloads counts, bases / sandbox_envs_dir / gecko_cache don't
     let mut entries = Vec::new();
     scanner.collect_cleanable_children(&base, &["downloads"], &mut entries);
 
@@ -222,7 +222,7 @@ fn doubao_layout_separates_cache_from_sandbox_runtime() {
         "bases / sandbox_envs_dir / gecko_cache 不计入体积"
     );
 
-    // ② 不给额外名单（其它工具）：downloads 不算。防止有人把它塞进全局白名单
+    // ② No extra list (other tools): downloads doesn't count. Prevent someone from slipping it into the global whitelist
     let mut without = Vec::new();
     scanner.collect_cleanable_children(&base, &[], &mut without);
     assert!(

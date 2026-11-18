@@ -1,100 +1,100 @@
 // ============================================================================
-// 模块动作登记表
+// Module action registry
 //
-// 确认卡片是纯展示的，真正"删什么、怎么删"由模块提供 —— 这张表就是那个接口。
-// 与 moduleDataRegistry 同一套思路：模块登记一个对象，AI 层按模块 id 取用，
-// 双方都不用知道对方的组件长什么样。
+// Confirmation cards are purely presentational; what to delete and how is provided by the module — this table is that interface.
+// Same idea as moduleDataRegistry: a module registers an object, the AI layer retrieves it by module id,
+// and neither side needs to know what the other's components look like.
 //
-// 动作按风险递增，模块可以只实现前面的：
-//   selectItems  —— 只改勾选态（P3a，无风险，用户仍按原流程点删除）
-//   deleteItems  —— 真正执行删除（P3b，必须走模块自己的安全入口）
+// Actions are ordered by increasing risk; a module may implement only the earlier ones:
+//   selectItems  — only changes selection state (P3a, no risk; the user still clicks Delete through the normal flow)
+//   deleteItems  — actually performs deletion (P3b, must go through the module's own safe entry point)
 //
-// ⚠️ **deleteItems 绝不能自己实现删除逻辑**：必须调用模块原有的删除函数。
-//    这样"校验 → 备份 → 删除 → 复核"整套安全流程照旧生效，
-//    也不会出现"手动删很安全、AI 删走了另一条路"这种分裂。
+// ⚠️ **deleteItems must never implement deletion logic itself**: it must call the module's existing delete function.
+//    This way the whole "validate → back up → delete → verify" safety flow still applies,
+//    and there is no split where "manual deletion is safe but AI deletion takes a different path".
 // ============================================================================
 
 import { useEffect, useRef } from 'react';
 
-/** 删除目标解析结果里的一项（给界面展示用）。 */
+/** An item in the deletion target resolution result (for display in the UI). */
 export interface AiDeleteTargetSummary {
-  /** 稳定 id，回调时原样带回 */
+  /** Stable id, returned as-is in callbacks */
   id: string;
   label: string;
-  /** 大小、项数等说明，模块格式化好 */
+  /** Description such as size and item count, formatted by the module */
   detail?: string;
-  /** 删除后不可恢复（回收站这类），界面会单独标注 */
+  /** Irreversible after deletion (like the recycle bin); flagged separately in the UI */
   irreversible?: boolean;
 }
 
-/** 删除执行结果。数字一律由模块给出，**不让模型转述**。 */
+/** Deletion execution result. All numbers are provided by the module, **never paraphrased by the model**. */
 export interface AiDeleteOutcome {
   deletedCount: number;
-  /** 释放的字节数；模块算不出来时可以不给 */
+  /** Bytes freed; may be omitted if the module cannot compute it */
   freedBytes?: number;
-  /** 失败明细：名称 + 原因 */
+  /** Failure details: name + reason */
   failures: { name: string; reason: string }[];
-  /** 是否需要重启才生效 */
+  /** Whether a reboot is required to take effect */
   needsReboot?: boolean;
 }
 
 /**
- * 一页明细。**由模块提供内容，由公共层负责说明"这只是其中一部分"** ——
- * 截断提示不交给模块自觉，否则很容易漏，而模型会因此以为自己看到了全部。
+ * A page of details. **The module provides the content, and the common layer is responsible for saying "this is only part of it"** —
+ * the truncation hint is not left to the module's discretion, otherwise it is easily missed and the model thinks it saw everything.
  */
 export interface AiReadPage {
-  /** 每行一条，模块自己格式化好（路径、大小等） */
+  /** One line per entry, formatted by the module itself (path, size, etc.) */
   lines: string[];
-  /** 总条数，用来告诉模型这一页占了多少 */
+  /** Total count, used to tell the model how much of the whole this page covers */
   total: number;
 }
 
 export interface ModuleActions {
   /**
-   * 把 id 列表解析成可展示的目标摘要。
-   * **必须容忍失效 id**：提案到确认之间数据可能变了（用户又勾选、模块重扫过），
-   * 解析不到的项返回时剔除即可，不要抛错。
+   * Resolve a list of ids into a displayable target summary.
+   * **Must tolerate stale ids**: data may change between proposal and confirmation (the user selects more, or the module rescans),
+   * just drop entries that cannot be resolved; do not throw.
    */
   resolveTargets?: (ids: string[]) => AiDeleteTargetSummary[];
-  /** P3a：把目标加入勾选态，由用户自己按原来的按钮删除。 */
+  /** P3a: add targets to the selection state; the user deletes via the original button. */
   selectItems?: (ids: string[]) => void;
-  /** P3b：执行删除。**必须调用模块原有的删除入口**。 */
+  /** P3b: perform deletion. **Must call the module's existing delete entry point**. */
   deleteItems?: (ids: string[]) => Promise<AiDeleteOutcome>;
   /**
-   * 只读：读取某个分类下的一页明细。
-   * **不登记就不会声明对应工具** —— 渐进增强，不影响没实现的模块。
+   * Read-only: read one page of details under a category.
+   * **If not registered, the corresponding tool is not declared** — progressive enhancement, no impact on modules that have not implemented it.
    */
   readItems?: (targetId: string, offset: number, limit: number) => AiReadPage | null;
-  /** 只读：读取单条条目的完整信息。 */
+  /** Read-only: read the full information of a single entry. */
   readItemDetail?: (itemId: string) => string | null;
 }
 
 const actions = new Map<string, ModuleActions>();
 
-/** 登记某模块的动作，返回注销函数（模块卸载时必须调用，避免留下旧闭包）。 */
+/** Register a module's actions, returning an unregister function (must be called when the module unmounts, to avoid stale closures). */
 export function registerModuleActions(moduleId: string, moduleActions: ModuleActions): () => void {
   actions.set(moduleId, moduleActions);
   return () => {
-    // 只在自己还是当前登记项时删除：页面模式下模块实例可能先挂载后卸载，顺序不保证
+    // Only delete if we are still the current registration: in page mode a module instance may mount after another unmounts, order is not guaranteed
     if (actions.get(moduleId) === moduleActions) {
       actions.delete(moduleId);
     }
   };
 }
 
-/** 取某模块的动作；没有登记返回 null（调用方据此禁用卡片上的按钮）。 */
+/** Get a module's actions; returns null if none registered (the caller uses this to disable buttons on the card). */
 export function getModuleActions(moduleId: string | null): ModuleActions | null {
   if (!moduleId) return null;
   return actions.get(moduleId) ?? null;
 }
 
 /**
- * 模块侧使用的登记钩子。
+ * Registration hook for use on the module side.
  *
- * 用 ref 保存最新的动作对象：动作里会闭包模块当前的状态（选中集合、扫描结果），
- * 所以必须是"每次渲染都更新的最新闭包"；但登记动作本身**只需做一次**，
- * 否则每帧都要 register + unregister 一遍，白白制造副作用。
- * 两者结合：登记一个稳定包装函数，内部每次调用都读 ref 里的最新实现。
+ * A ref holds the latest action object: actions close over the module's current state (selection set, scan result),
+ * so it must be "the latest closure, updated every render"; but the registration itself **only needs to happen once**,
+ * otherwise every frame would do register + unregister, creating needless side effects.
+ * Combining the two: register one stable wrapper function that reads the latest implementation from the ref on each call.
  */
 export function useModuleActions(moduleId: string, moduleActions: ModuleActions): void {
   const actionsRef = useRef(moduleActions);
@@ -107,18 +107,18 @@ export function useModuleActions(moduleId: string, moduleActions: ModuleActions)
         selectItems: (ids) => actionsRef.current.selectItems?.(ids),
         deleteItems: (ids) => {
           const implementation = actionsRef.current.deleteItems;
-          // 模块没实现删除时明确报错，而不是静默什么都不做
+          // Report an explicit error when the module has no delete capability, instead of silently doing nothing
           if (!implementation) {
             return Promise.reject(new Error('当前模块未提供删除能力'));
           }
           return implementation(ids);
         },
-        // ⚠️ 只读能力**必须**和上面几个一样走 ref。
+        // ⚠️ Read-only capabilities **must** go through the ref just like the ones above.
         //
-        // 直接写 `readItems: moduleActions.readItems` 会捕获**注册那一刻**的闭包，
-        // 而注册只在 moduleId 变化时做一次 —— 于是模块里的 scanResult 永远是初始的
-        // null，read_items 对**所有模块**都返回空，渐进式读取等于没实现。
-        // （这就是"代码写了但一直测不出效果"的原因。）
+        // Writing `readItems: moduleActions.readItems` directly captures the closure **at registration time**,
+        // and registration happens only once when moduleId changes — so scanResult in the module stays the initial
+        // null, read_items returns empty for **all modules**, and progressive reading is effectively unimplemented.
+        // (This is why "the code was written but never worked in tests".)
         readItems: (targetId, offset, limit) =>
           actionsRef.current.readItems?.(targetId, offset, limit) ?? null,
         readItemDetail: (itemId) => actionsRef.current.readItemDetail?.(itemId) ?? null,

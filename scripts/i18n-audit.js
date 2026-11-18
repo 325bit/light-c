@@ -1,14 +1,14 @@
 // ============================================================================
-// i18n 占位符审计脚本
+// i18n placeholder audit script
 //
-// 背景：i18next 在缺少插值参数时不会报错，而是把 {{name}} 原样显示出来。
-// 本项目曾因此出现弹窗直接显示 "{{name}}" 的线上问题，所以需要一个静态检查：
+// Background: i18next does not throw when interpolation arguments are missing; it displays {{name}} verbatim.
+// This project once had a production issue where a dialog showed "{{name}}" directly, so a static check is needed:
 //
-//   1. 语言包内部：zh / zh-TW / en / ja 的 key 是否对齐，同一 key 的占位符是否一致
-//   2. 调用处：t('key', {...}) 传的参数是否覆盖文案里的占位符
-//   3. key 是否存在、命名空间是否匹配
+//   1. Inside language packs: whether keys in zh / zh-TW / en / ja align, and whether placeholders for the same key are consistent
+//   2. At call sites: whether arguments passed to t('key', {...}) cover the placeholders in the text
+//   3. Whether the key exists and the namespace matches
 //
-// 用法：node scripts/i18n-audit.js
+// Usage: node scripts/i18n-audit.js
 // ============================================================================
 
 import fs from 'node:fs';
@@ -20,13 +20,13 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const LOCALES_DIR = path.join(ROOT, 'src', 'i18n', 'locales');
 const SRC_DIR = path.join(ROOT, 'src');
 
-/** 语言包在 i18n/index.ts 里注册的命名空间 */
+/** Namespaces registered for language packs in i18n/index.ts */
 const NAMESPACES = ['common', 'nav', 'settings', 'junkClean', 'modules', 'ui'];
 const LANGUAGES = ['zh', 'zh-TW', 'en', 'ja'];
 const DEFAULT_NS = 'common';
-const INTERPOLATION_NS = 'common'; // useTranslation 默认从 common 取插值格式配置
+const INTERPOLATION_NS = 'common'; // useTranslation reads interpolation format config from common by default
 
-/** 与 i18n/index.ts 的 interpolation 配置保持一致 */
+/** Keep in sync with the interpolation config in i18n/index.ts */
 const PREFIX = '{{';
 const SUFFIX = '}}';
 
@@ -38,10 +38,10 @@ function report(level, file, line, message) {
 }
 
 // ---------------------------------------------------------------------------
-// 语言包加载
+// Language pack loading
 // ---------------------------------------------------------------------------
 
-/** 读取所有语言包并扁平化成 { ns: { lang: { 'a.b.c': 'text' } } } */
+/** Read all language packs and flatten them into { ns: { lang: { 'a.b.c': 'text' } } } */
 function loadLocales() {
   const byNs = {};
   for (const ns of NAMESPACES) {
@@ -67,7 +67,7 @@ function loadLocales() {
   return byNs;
 }
 
-/** 把嵌套对象扁平化成点号路径，非字符串叶子会被忽略并单独报告 */
+/** Flatten a nested object into dot-separated paths; non-string leaves are ignored and reported separately */
 function flatten(node, prefix, out = {}, fileLabel = '') {
   if (node === null || typeof node !== 'object') return out;
   for (const [key, value] of Object.entries(node)) {
@@ -83,7 +83,7 @@ function flatten(node, prefix, out = {}, fileLabel = '') {
   return out;
 }
 
-/** 提取文案里的插值变量名，兼容 i18next 的 {{var}} / {{ var }} 写法 */
+/** Extract interpolation variable names from text, supporting i18next's {{var}} / {{ var }} syntax */
 const PLACEHOLDER_RE = /\{\{\s*([A-Za-z0-9_$.-]+)\s*\}\}/g;
 function extractPlaceholders(text) {
   const found = new Set();
@@ -96,7 +96,7 @@ function extractPlaceholders(text) {
 }
 
 // ---------------------------------------------------------------------------
-// 语言包一致性检查
+// Language pack consistency check
 // ---------------------------------------------------------------------------
 
 function checkLocaleAlignment(byNs) {
@@ -104,11 +104,11 @@ function checkLocaleAlignment(byNs) {
     const languagesPresent = Object.keys(byNs[ns]).filter((l) => Object.keys(byNs[ns][l]).length > 0);
     if (languagesPresent.length === 0) continue;
 
-    // 以 zh 为基准；zh 缺失则退回第一个有内容的语言
+    // Use zh as the baseline; if zh is missing, fall back to the first language with content
     const base = byNs[ns]['zh'] && Object.keys(byNs[ns]['zh']).length > 0 ? 'zh' : languagesPresent[0];
     const baseKeys = Object.keys(byNs[ns][base]);
 
-    // key 缺失 / 多余
+    // Missing / extra keys
     for (const lang of LANGUAGES) {
       const target = byNs[ns][lang];
       if (!target) continue;
@@ -124,7 +124,7 @@ function checkLocaleAlignment(byNs) {
       }
     }
 
-    // 同一 key 的占位符集合必须跨语言一致，否则切语言会漏变量
+    // The set of placeholders for the same key must be consistent across languages, otherwise switching languages drops variables
     for (const key of baseKeys) {
       const baseSet = extractPlaceholders(byNs[ns][base][key]);
       for (const lang of LANGUAGES) {
@@ -147,20 +147,20 @@ function checkLocaleAlignment(byNs) {
 }
 
 // ---------------------------------------------------------------------------
-// 调用处检查
+// Call-site check
 // ---------------------------------------------------------------------------
 
 /**
- * 从 useTranslation('ns') 推断每个 t 变量对应的 namespace。
+ * Infer the namespace for each t variable from useTranslation('ns').
  *
- * 注意 1：不能用 isIdentifier(node.name) 做前置过滤——`const { t } = useTranslation()`
- * 的名字是解构模式（ObjectBindingPattern），不是 Identifier，那样会漏掉所有正常写法。
+ * Note 1: isIdentifier(node.name) cannot be used as a pre-filter — the name in `const { t } = useTranslation()`
+ * is an ObjectBindingPattern (destructuring), not an Identifier, so that would miss all normal usages.
  *
- * 注意 2：必须按词法作用域解析。同一文件里可能有多个组件各自 `const { t } = useTranslation('x')`，
- * 例如 AboutSettings.tsx 主组件用 settings、底部子组件用 ui。若按文件级覆盖，
- * 后声明的会污染前面的调用，产出大量假报错。
- * 这里采用「按函数体建立作用域链」的做法：进入函数时压栈它内部的 t 映射，
- * 查找时沿作用域链由内向外找。
+ * Note 2: lexical scope must be resolved. The same file may have several components each declaring `const { t } = useTranslation('x')`,
+ * e.g. AboutSettings.tsx: the main component uses settings and the child component at the bottom uses ui. If overwritten at file level,
+ * later declarations would pollute earlier calls and produce many false errors.
+ * Here a "scope chain per function body" approach is used: on entering a function, push its internal t mappings,
+ * and look up along the scope chain from inner to outer.
  */
 function collectTranslators(sourceFile) {
   const hooksByScope = new Map(); // scopeNode -> Map<tVarName, ns>
@@ -171,10 +171,10 @@ function collectTranslators(sourceFile) {
       || (ts.isPropertyAccessExpression(callee) && callee.name.text === 'useTranslation');
   };
 
-  /** 找出某个作用域节点（函数/箭头函数体）直接声明的 t 映射，不递归进嵌套函数 */
+  /** Find t mappings declared directly in a scope node (function/arrow function body), without recursing into nested functions */
   const scanScopeDeclarations = (scopeNode, result) => {
     const walk = (node) => {
-      // 遇到嵌套函数就停下，它属于更内层的作用域
+      // Stop at nested functions; they belong to an inner scope
       if (node !== scopeNode && ts.isFunctionLike(node)) return;
       if (ts.isVariableDeclaration(node) && node.initializer
         && ts.isObjectBindingPattern(node.name) && ts.isCallExpression(node.initializer)
@@ -182,7 +182,7 @@ function collectTranslators(sourceFile) {
         const nsArg = node.initializer.arguments[0];
         const ns = nsArg && ts.isStringLiteralLike(nsArg) ? nsArg.text : DEFAULT_NS;
         for (const el of node.name.elements) {
-          // 支持 `{ t }` 与 `{ t: moduleT }` 两种解构写法
+          // Support both `{ t }` and `{ t: moduleT }` destructuring forms
           if (el.name && ts.isIdentifier(el.name)) result.set(el.name.text, ns);
         }
       }
@@ -191,7 +191,7 @@ function collectTranslators(sourceFile) {
     ts.forEachChild(scopeNode, walk);
   };
 
-  // 先为每个作用域（SourceFile + 每个函数）预计算声明
+  // Precompute declarations for each scope (SourceFile + each function) first
   const visit = (node) => {
     if (ts.isSourceFile(node) || ts.isFunctionLike(node)) {
       const decls = new Map();
@@ -206,13 +206,13 @@ function collectTranslators(sourceFile) {
 }
 
 /**
- * 沿 AST 父链由内向外查找 t 变量所属的 namespace。
- * 返回 null 表示这个 t 不是来自 useTranslation（可能是普通局部变量），应跳过。
+ * Look up the namespace of a t variable along the AST parent chain from inner to outer.
+ * Returning null means this t does not come from useTranslation (it may be a plain local variable) and should be skipped.
  */
 function resolveTranslatorNs(node, hooksByScope) {
   let current = node;
   while (current) {
-    // 从最近的函数作用域开始，逐层向外
+    // Start from the nearest function scope and work outward
     if (ts.isFunctionLike(current) || ts.isSourceFile(current)) {
       const decls = hooksByScope.get(current);
       if (decls) {
@@ -225,7 +225,7 @@ function resolveTranslatorNs(node, hooksByScope) {
   return null;
 }
 
-/** 取得字符串字面量的值 */
+/** Get the value of a string literal */
 function literalText(node) {
   if (!node) return null;
   if (ts.isStringLiteralLike(node)) return node.text;
@@ -234,9 +234,9 @@ function literalText(node) {
 }
 
 /**
- * 解析调用参数对象里的 key 名，只认静态可判定的：
+ * Parse key names in the call argument object, only statically determinable ones:
  * { size: x }、{ 'size': x }、{ ...spread }
- * 返回 { keys: Set<string>, hasSpread: boolean }
+ * Returns { keys: Set<string>, hasSpread: boolean }
  */
 function collectObjectKeys(objLiteral) {
   const keys = new Set();
@@ -250,15 +250,15 @@ function collectObjectKeys(objLiteral) {
     if (ts.isIdentifier(prop.name) || ts.isStringLiteralLike(prop.name)) {
       keys.add(prop.name.text);
     } else if (ts.isComputedPropertyName(prop.name)) {
-      hasSpread = true; // 计算属性名无法静态判定
+      hasSpread = true; // computed property names cannot be statically determined
     }
   }
   return { keys, hasSpread };
 }
 
 /**
- * 尝试把表达式还原成静态字符串（支持模板串里的静态片段）。
- * 返回 { values: Set<string>, hasDynamic: boolean }
+ * Try to restore an expression to a static string (supports static fragments in template literals).
+ * Returns { values: Set<string>, hasDynamic: boolean }
  */
 function collectDynamicParts(node) {
   const parts = new Set();
@@ -276,7 +276,7 @@ function collectDynamicParts(node) {
   };
   walk(node);
   if (node && ts.isTemplateExpression(node)) return { parts, hasDynamic: true };
-  // 字符串拼接 'a' + x + 'b'
+  // String concatenation 'a' + x + 'b'
   if (node && ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.PlusToken) {
     const gather = (n) => {
       if (ts.isBinaryExpression(n) && n.operatorToken.kind === ts.SyntaxKind.PlusToken) {
@@ -310,17 +310,17 @@ function checkCallSites(byNs) {
       file, content, ts.ScriptTarget.Latest, true,
       file.endsWith('.tsx') ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
     );
-    // 解析作用域需要 parent 指针，createSourceFile 默认不挂载，这里手动补上
+    // Parsing scope requires parent pointers, which createSourceFile does not attach by default; add them manually here
     attachParents(sourceFile);
     const hooksByScope = collectTranslators(sourceFile);
     const rel = path.relative(ROOT, file).replace(/\\/g, '/');
 
-    /** 定位到行号（1-based） */
+    /** Locate the line number (1-based) */
     const lineOf = (node) => sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile)).line + 1;
 
     const visit = (node) => {
       if (ts.isCallExpression(node) && ts.isIdentifier(node.expression)) {
-        // 只处理来自 useTranslation 的 t / 别名
+        // Only handle t / aliases coming from useTranslation
         const ns = resolveTranslatorNs(node.expression, hooksByScope);
         if (ns) {
           stats.callsFound++;
@@ -333,7 +333,7 @@ function checkCallSites(byNs) {
   }
 }
 
-/** 为 AST 补 parent 指针，便于沿作用域链向上查找变量来源 */
+/** Add parent pointers to the AST for looking up variable origins along the scope chain */
 function attachParents(node, parent = null) {
   node.parent = parent;
   ts.forEachChild(node, (child) => attachParents(child, node));
@@ -347,20 +347,20 @@ function handleCall(node, defaultNs, rel, line, byNs) {
   const explicitNs = literalText(args[1]);
   const options = args[2];
 
-  // 只处理第一个参数是字符串字面量的调用
+  // Only handle calls whose first argument is a string literal
   const rawKey = literalText(first);
   if (rawKey === null) {
-    // t(`social.category.${id}.name`) 这类动态 key 无法静态校验
+    // Dynamic keys like t(`social.category.${id}.name`) cannot be statically verified
     const { hasDynamic } = collectDynamicParts(first);
     if (hasDynamic) {
       stats.dynamicCalls++;
-      // 若是带 ns 前缀的完整路径，做一个粗粒度校验
+      // For a full path with an ns prefix, do a coarse-grained check
       return;
     }
     return;
   }
 
-  // 解析 key 中的命名空间前缀：'common:foo' / 'modules:driverUi.scan'
+  // Parse the namespace prefix in the key: 'common:foo' / 'modules:driverUi.scan'
   let ns = defaultNs;
   let key = rawKey;
   const colonIndex = rawKey.indexOf(':');
@@ -382,11 +382,11 @@ function handleCall(node, defaultNs, rel, line, byNs) {
   }
   if (explicitNs && NAMESPACES.includes(explicitNs)) ns = explicitNs;
 
-  // 插值参数一律从第 2 个参数取（i18next: t(key, options)）
+  // Interpolation arguments are always taken from the 2nd argument (i18next: t(key, options))
   const interpolationArg = args[1] && ts.isObjectLiteralExpression(args[1]) ? args[1] : null;
 
-  // returnObjects 表示该 key 取的是数组/对象本身，不是文案，
-  // 此时不需要校验插值参数（scanner 只展平了字符串叶子节点）
+  // returnObjects means this key retrieves an array/object itself, not text,
+  // so interpolation arguments need no validation (the scanner only flattens string leaves)
   const wantsRawObject = !!interpolationArg && interpolationArg.properties.some(
     (prop) => ts.isPropertyAssignment(prop)
       && prop.name
@@ -394,14 +394,14 @@ function handleCall(node, defaultNs, rel, line, byNs) {
       && prop.initializer.kind === ts.SyntaxKind.TrueKeyword,
   );
 
-  // returnObjects 取的是原始数组/对象，其叶子不会出现在展平表里，直接跳过校验
+  // returnObjects retrieves the raw array/object, whose leaves do not appear in the flattened table; skip validation
   if (wantsRawObject) return;
 
   const localeTable = byNs[ns];
   if (!localeTable) return;
   const zhTable = localeTable['zh'] || {};
   if (!(key in zhTable)) {
-    // 动态拼接的 key 会被误报，先确认它在任何语言里都不存在
+    // Dynamically concatenated keys cause false positives; first confirm it does not exist in any language
     const existsAnywhere = LANGUAGES.some((lang) => localeTable[lang] && key in localeTable[lang]);
     if (!existsAnywhere) {
       report('error', rel, line, `key 不存在：${ns}:${key}`);
@@ -409,7 +409,7 @@ function handleCall(node, defaultNs, rel, line, byNs) {
     }
   }
 
-  // 占位符校验以 zh 为准，并取所有语言占位符的并集（更严格）
+  // Placeholder validation uses zh as the baseline and takes the union of placeholders across all languages (stricter)
   const required = new Set();
   for (const lang of LANGUAGES) {
     const text = localeTable[lang]?.[key];
@@ -419,7 +419,7 @@ function handleCall(node, defaultNs, rel, line, byNs) {
   }
   if (required.size === 0) return;
 
-  // count 是 i18next 复数/内置变量，通常由库自己注入，仍要求显式传入以便排查
+  // count is an i18next plural/built-in variable, usually injected by the library; still require it to be passed explicitly for troubleshooting
   const provided = new Set();
   let hasSpread = false;
   if (interpolationArg) {
@@ -428,7 +428,7 @@ function handleCall(node, defaultNs, rel, line, byNs) {
     for (const k of keys) provided.add(k);
   }
 
-  if (hasSpread) return; // 无法静态判定，跳过
+  if (hasSpread) return; // cannot be statically determined, skip
 
   const missing = [...required].filter((v) => !provided.has(v));
   if (missing.length > 0) {
@@ -437,7 +437,7 @@ function handleCall(node, defaultNs, rel, line, byNs) {
 }
 
 // ---------------------------------------------------------------------------
-// 主流程
+// Main flow
 // ---------------------------------------------------------------------------
 
 function main() {

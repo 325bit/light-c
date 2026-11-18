@@ -1,6 +1,6 @@
 // ============================================================================
-// 仪表盘顶部统计栏组件
-// 显示 C 盘健康评分、磁盘使用情况和一键扫描按钮
+// Dashboard top statistics bar component
+// Displays the C drive health score, disk usage, and a one-click scan button
 // ============================================================================
 
 import { useCallback, useEffect, useMemo, useState, useRef } from 'react';
@@ -13,7 +13,7 @@ import { DiskSwitchModal } from './DiskSwitchModal';
 import { useToast } from './Toast';
 
 // ============================================================================
-// 数字跳动动画 Hook
+// Number-counting animation hook
 // ============================================================================
 
 function useAnimatedNumber(targetValue: number, duration: number = 800) {
@@ -34,7 +34,7 @@ function useAnimatedNumber(targetValue: number, duration: number = 800) {
       const elapsed = currentTime - startTimeRef.current;
       const progress = Math.min(elapsed / duration, 1);
       
-      // 使用 easeOutExpo 缓动函数
+      // Uses the easeOutExpo easing function
       const easeProgress = progress === 1 ? 1 : 1 - Math.pow(2, -10 * progress);
       const currentValue = Math.round(startValueRef.current + (targetValue - startValueRef.current) * easeProgress);
       
@@ -58,28 +58,28 @@ function useAnimatedNumber(targetValue: number, duration: number = 800) {
 }
 
 // ============================================================================
-// 根据分数获取颜色配置
+// Gets the color configuration based on the score
 // ============================================================================
 
-// 微信风格评分颜色配置
+// WeChat-style score color configuration
 function getScoreColor(score: number) {
   if (score >= 80) {
     return {
-      text: 'text-[#07C160]',      // 微信绿
+      text: 'text-[#07C160]',      // WeChat green
       bg: 'bg-[#07C160]',
       bgLight: 'bg-[#07C160]/10',
       labelKey: 'excellent',
     };
   } else if (score >= 60) {
     return {
-      text: 'text-[#FA9D3B]',      // 柔和橙
+      text: 'text-[#FA9D3B]',      // soft orange
       bg: 'bg-[#FA9D3B]',
       bgLight: 'bg-[#FA9D3B]/10',
       labelKey: 'good',
     };
   } else {
     return {
-      text: 'text-[#FA5151]',      // 柔和红
+      text: 'text-[#FA5151]',      // soft red
       bg: 'bg-[#FA5151]',
       bgLight: 'bg-[#FA5151]/10',
       labelKey: 'needsOptimization',
@@ -88,28 +88,28 @@ function getScoreColor(score: number) {
 }
 
 // ============================================================================
-// 组件 Props
+// Component props
 // ============================================================================
 
 interface DashboardHeaderProps {
-  /** 一键扫描回调 */
+  /** One-click scan callback */
   onOneClickScan: () => void;
-  /** 显示欢迎弹窗回调（彩蛋） */
+  /** Callback to show the welcome modal (easter egg) */
   onShowWelcome?: () => void;
-  /** 页面模式聚焦单模块，隐藏一键扫描可以避免用户误以为只扫描当前页。 */
+  /** In page mode that focuses a single module, hiding one-click scan avoids making users think only the current page is scanned. */
   hideOneClickScan?: boolean;
 }
 
 // ============================================================================
-// 磁盘占用档位
+// Disk usage tiers
 //
-// 进度条和「可用」数字必须用同一组阈值：以前只在进度条里内联写了 90/75，
-// 现在文字也要按占用率变色，两处各写一份迟早对不上。
+// The progress bar and the "Free" number must use the same set of thresholds: previously 90/75 was inlined only in the progress bar,
+// now the text also changes color by usage; writing it in two places will sooner or later drift apart.
 // ============================================================================
 
 type DiskUsageTone = 'normal' | 'warning' | 'danger';
 
-/** 占用率 → 档位。充足用主题绿，不足用橙，紧张用红。 */
+/** Usage rate → tier. Plenty uses the theme green, low uses orange, tight uses red. */
 function getDiskUsageTone(usagePercent: number): DiskUsageTone {
   if (usagePercent > 90) return 'danger';
   if (usagePercent > 75) return 'warning';
@@ -129,13 +129,13 @@ const DISK_TEXT_CLASS: Record<DiskUsageTone, string> = {
 };
 
 /**
- * 手动刷新后的冷却时长。
- * 磁盘容量不会在几秒内变两次，放开连点只会堆一叠「已刷新」提示（Toast 会自动消失但仍是刷屏）。
+ * Cooldown duration after a manual refresh.
+ * Disk capacity won't change twice within seconds; allowing rapid clicks just piles up "Refreshed" toasts (which auto-dismiss but still flood the screen).
  */
 const REFRESH_COOLDOWN_MS = 2000;
 
 // ============================================================================
-// 组件实现
+// Component implementation
 // ============================================================================
 
 export function DashboardHeader({ onOneClickScan, onShowWelcome, hideOneClickScan = false }: DashboardHeaderProps) {
@@ -145,18 +145,18 @@ export function DashboardHeader({ onOneClickScan, onShowWelcome, hideOneClickSca
   const { showToast } = useToast();
 
   /**
-   * 顶栏的磁盘条支持切换盘符并手动刷新。
+   * The top bar's disk bar supports switching drive letters and manual refresh.
    *
-   * 数据源用 `useLocalDrives`（它本来就返回每个盘的容量、可用空间、使用率），
-   * 而不是 context 里的 `diskInfo` —— 后者只有系统盘一条，切不了盘。
-   * `diskInfo` 保留为兜底：磁盘列表还没读回来时先用它撑住，避免首帧空白。
+   * The data source uses `useLocalDrives` (it already returns each drive's capacity, free space, and usage rate),
+   * instead of `diskInfo` in context — the latter has only one entry for the system drive and can't switch drives.
+   * `diskInfo` is kept as a fallback: while the drive list hasn't loaded yet, use it to hold the display and avoid a blank first frame.
    */
   const { drives, loading: drivesLoading, refresh: refreshDrives } = useLocalDrives();
   const [selectedDrive, setSelectedDrive] = useState('');
 
-  /** 冷却期内按钮保持禁用，让用户看得见「刚刷过」而不是点了没反应。 */
+  /** During cooldown the button stays disabled so users can see "just refreshed" rather than clicking with no response. */
   const [isRefreshCooling, setIsRefreshCooling] = useState(false);
-  /** state 更新是异步的：同一帧里的连点要靠 ref 锁挡住，不能只靠 disabled。 */
+  /** state updates are async: rapid clicks in the same frame must be blocked by a ref lock, not just by disabled. */
   const refreshInFlightRef = useRef(false);
   const cooldownTimerRef = useRef<number | null>(null);
 
@@ -164,7 +164,7 @@ export function DashboardHeader({ onOneClickScan, onShowWelcome, hideOneClickSca
     if (cooldownTimerRef.current !== null) window.clearTimeout(cooldownTimerRef.current);
   }, []);
 
-  /** 手动刷新：请求中与冷却期内都不重复发起；读完弹一条轻提示，成功失败都要说。 */
+  /** Manual refresh: don't re-fire while requesting or in cooldown; show a light toast when done, report both success and failure. */
   const handleRefreshDrives = useCallback(async () => {
     if (drivesLoading || isRefreshCooling || refreshInFlightRef.current) return;
     refreshInFlightRef.current = true;
@@ -178,7 +178,7 @@ export function DashboardHeader({ onOneClickScan, onShowWelcome, hideOneClickSca
       );
     } finally {
       refreshInFlightRef.current = false;
-      // 冷却从请求结束后开始算：慢请求也不会因为计时提前跑完而提前解禁
+      // Cooldown starts when the request ends: a slow request won't unlock early because the timer finished early
       cooldownTimerRef.current = window.setTimeout(() => {
         cooldownTimerRef.current = null;
         setIsRefreshCooling(false);
@@ -186,7 +186,7 @@ export function DashboardHeader({ onOneClickScan, onShowWelcome, hideOneClickSca
     }
   }, [drivesLoading, isRefreshCooling, refreshDrives, showToast, t]);
 
-  // 首次拿到列表时默认选中系统盘（后端标了 is_system 的那块，找不到就退 C:）。
+  // On first receiving the list, default-select the system drive (the one flagged is_system; fall back to C: if not found).
   useEffect(() => {
     if (!selectedDrive && drives.length > 0) {
       setSelectedDrive(defaultDriveLetter(drives));
@@ -198,30 +198,30 @@ export function DashboardHeader({ onOneClickScan, onShowWelcome, hideOneClickSca
     [drives, selectedDrive],
   );
 
-  // 选中的盘被拔掉或刷新后消失：容量条会退回系统盘，评分也必须一起退回，
-  // 否则会出现「显示 C 盘容量、却按 D 盘打分」的错位。
+  // If the selected drive is unplugged or disappears after refresh: the capacity bar falls back to the system drive, and the score must fall back too,
+  // otherwise you get a mismatch of "showing C drive capacity but scoring by D drive".
   useEffect(() => {
     if (!selectedDrive || drives.length === 0 || activeDrive) return;
     const fallback = defaultDriveLetter(drives);
     setSelectedDrive(fallback);
     void refreshHealthScore(fallback);
   }, [selectedDrive, drives, activeDrive, refreshHealthScore]);
-  /** 展示用的一条数据：选中的盘优先，没有就退回 context 的系统盘。 */
+  /** One display item: the selected drive takes priority, otherwise fall back to the context's system drive. */
   const disk = activeDrive
     ? { drive_letter: activeDrive.drive_letter, free_space: activeDrive.free_space, total_space: activeDrive.total_space, usage_percent: activeDrive.usage_percent }
     : diskInfo;
 
-  // 切换分区用弹窗，不在顶栏塞下拉：顶栏只有几十像素高，下拉的字号和宽度反复对不齐。
+  // Use a modal for switching partitions, don't stuff a dropdown into the top bar: the bar is only tens of pixels tall, and a dropdown's font size and width keep misaligning.
   const [isDiskSwitchOpen, setIsDiskSwitchOpen] = useState(false);
 
-  /** 进度条与「可用」数字共用这一个档位，保证颜色和阈值始终一致。 */
+  /** The progress bar and "Free" number share this one tier, so color and thresholds always stay consistent. */
   const usageTone = getDiskUsageTone(disk?.usage_percent ?? 0);
   
-  // 动画数字
+  // Animated number
   const animatedScore = useAnimatedNumber(healthData?.score ?? 0);
   const scoreColor = getScoreColor(healthData?.score ?? 0);
 
-  // 三连击计数器（彩蛋）
+  // Triple-click counter (easter egg)
   const [clickCount, setClickCount] = useState(0);
   const clickTimerRef = useRef<number | null>(null);
 
@@ -245,7 +245,7 @@ export function DashboardHeader({ onOneClickScan, onShowWelcome, hideOneClickSca
   return (
     <div className="glass-chrome glass-header-bottom bg-[var(--bg-card)] border-b border-[var(--border-color)] px-5 py-2.5 sticky top-0 z-10">
       <div className="dashboard-container flex items-center gap-5">
-        {/* 健康评分 - 微信风格圆环进度 */}
+        {/* Health score - WeChat-style ring progress */}
         <div 
           className="flex items-center gap-3 cursor-pointer min-w-[16.43rem]"
           onClick={handleTripleClick}
@@ -301,24 +301,24 @@ export function DashboardHeader({ onOneClickScan, onShowWelcome, hideOneClickSca
           </div>
         </div>
 
-        {/* 分隔线 */}
+        {/* Divider */}
         <div className="w-px h-9 bg-[var(--border-color)]" />
 
-        {/* 磁盘使用情况：左侧是当前盘标签，右侧是切换 + 刷新图标和容量。
-            切换分区走弹窗而不是下拉 —— 顶栏只有几十像素高，下拉的字号/宽度/选项截断
-            反复对不齐；弹窗里每个盘能完整显示卷标、可用量和占用率。 */}
+        {/* Disk usage: the current drive label on the left, switch + refresh icons and capacity on the right.
+            Switching partitions uses a modal rather than a dropdown — the top bar is only tens of pixels tall, and a dropdown's font size / width / option truncation
+            keep misaligning; in a modal each drive can fully show its volume label, free space, and usage rate. */}
         <div className="flex-1 min-w-0">
           <div className="flex items-center justify-between gap-3 mb-1.5">
             <div className="flex min-w-0 items-center gap-1.5">
-              {/* 不写自定义字号：html 的根字号是 calc(14px + --font-size-offset)，
-                  继承它才会跟着「设置 - 字号」变化。之前写 text-[0.9rem] 在标准档只有 12.6px，
-                  比正文小一档，而且把比例写死了。 */}
+              {/* Don't set a custom font size: html's root font size is calc(14px + --font-size-offset),
+                  inheriting it makes it follow "Settings - Font Size". Previously text-[0.9rem] was only 12.6px at the standard level,
+                  one notch smaller than body text, and hard-coded the ratio. */}
               <span className="shrink-0 font-medium text-[var(--text-primary)]">
                 {t('diskSpace', { drive: disk?.drive_letter ?? 'C:' })}
               </span>
             </div>
             <div className="flex min-w-0 items-center gap-2">
-              {/* 切换分区：点击弹窗，不在这一行里展开下拉 */}
+              {/* Switch partition: click for a modal, don't expand a dropdown on this line */}
               <button
                 type="button"
                 onClick={() => setIsDiskSwitchOpen(true)}
@@ -328,7 +328,7 @@ export function DashboardHeader({ onOneClickScan, onShowWelcome, hideOneClickSca
               >
                 <ArrowLeftRight className="h-4 w-4" />
               </button>
-              {/* 手动刷新放在右侧操作区：左侧只留盘符标签，两个图标挨在一起更好扫视 */}
+              {/* Manual refresh goes in the right action area: the left keeps only the drive label, two icons side by side are easier to scan */}
               <button
                 type="button"
                 onClick={handleRefreshDrives}
@@ -337,14 +337,14 @@ export function DashboardHeader({ onOneClickScan, onShowWelcome, hideOneClickSca
                 aria-label={t('refreshDiskInfo')}
                 className="shrink-0 rounded-lg p-1.5 text-[var(--text-muted)] transition-colors hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)] disabled:cursor-not-allowed disabled:opacity-60"
               >
-                {/* 读取中转一圈，让"按钮生效了"这件事可见 */}
+                {/* Show a brief loading spin, to make "the button worked" visible */}
                 <RefreshCw className={`h-4 w-4 ${drivesLoading ? 'animate-spin' : ''}`} />
               </button>
-              {/* 彩色数字就是可用量，不再加「可用」二字：盘符标签已经说明这一行是什么，
-                  多两个字反而把数字挤小。总容量加粗。 */}
+              {/* The colored number is exactly the free space, no "Free" label needed: the drive label already says what this row is,
+                  two extra characters just squeeze the number smaller. Total capacity is bolded. */}
               {disk && (
                 <span className="truncate tabular-nums">
-                  {/* 可用与总量同字重：两段数字都是主体信息，只加粗总量会让前半句发虚 */}
+                  {/* Free and total share the same font weight: both numbers are primary info, bolding only the total makes the first half look faint */}
                   <span className={`font-semibold ${DISK_TEXT_CLASS[usageTone]}`}>
                     {formatSize(disk.free_space)}
                   </span>
@@ -373,17 +373,17 @@ export function DashboardHeader({ onOneClickScan, onShowWelcome, hideOneClickSca
           selectedDrive={disk?.drive_letter ?? 'C:'}
           onSelect={(driveLetter) => {
             setSelectedDrive(driveLetter);
-            // 磁盘空间是评分里的 40 分那一维：切盘必须让后端按新盘重算
+            // Disk space is the 40-point dimension of the score: switching drives must make the backend recalculate for the new drive
             void refreshHealthScore(driveLetter);
           }}
         />
 
         {!hideOneClickScan && (
           <>
-            {/* 分隔线 */}
+            {/* Divider */}
             <div className="w-px h-9 bg-[var(--border-color)]" />
 
-            {/* 一键扫描按钮区域 */}
+            {/* One-click scan button area */}
             <div className="flex items-center gap-2">
               {isAnyScanning ? (
                 <button

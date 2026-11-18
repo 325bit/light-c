@@ -1,6 +1,6 @@
 // ============================================================================
-// 系统瘦身模块
-// 负责休眠文件管理、WinSxS 组件清理、虚拟内存迁移引导
+// System slim module
+// Handles hibernation file management, WinSxS component cleanup, and virtual memory migration guidance
 // ============================================================================
 
 use log::{info, warn};
@@ -12,10 +12,10 @@ use std::sync::{
 use tauri::{AppHandle, Emitter, Manager, Window};
 
 // ============================================================================
-// 数据结构
+// Data structures
 // ============================================================================
 
-/// 系统瘦身项状态
+/// System slim item state
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SlimItemStatus {
     pub id: String,
@@ -27,40 +27,40 @@ pub struct SlimItemStatus {
     pub size: u64,
     pub actionable: bool,
     pub action_text: String,
-    /// 该项仍在后台分析（目前只有 WinSxS 两项会为 true）。
+    /// Whether this item is still being analyzed in the background (currently only the two WinSxS items can be true).
     ///
-    /// 中文说明：DISM 分析动辄几十秒到几分钟，不能让它挡住整个检测 ——
-    /// 首屏先把这一项标成"分析中"，分析完通过 `system-slim:winsxs-ready` 事件补上结果。
+    /// Note: DISM analysis can easily take tens of seconds to several minutes; it must not block the whole check ——
+    /// Mark this item as "analyzing" on the first screen, then fill in the result via the `system-slim:winsxs-ready` event when analysis finishes.
     #[serde(default)]
     pub analyzing: bool,
-    /// 组件存储的可回收构成（只有 winsxs 一项会带上）。
+    /// Reclaimable breakdown of the component store (only the winsxs item carries this).
     ///
-    /// 中文说明：`size` 只给总数，用户在界面上看不出 6.9 GB 里有多少是被取代的旧组件、
-    /// 多少是缓存临时数据，因此把 DISM 分析的两项分别透出，由前端分行展示。
+    /// Note: `size` only gives a total; from the UI users cannot tell how much of the 6.9 GB is superseded old components
+    /// and how much is cached temporary data, so the two DISM-analysis items are exposed separately and rendered on separate lines by the frontend.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub breakdown: Option<WinsxsBreakdown>,
 }
 
-/// 后台 WinSxS 分析完成后推送的条目（事件名 `system-slim:winsxs-ready`）。
+/// Items pushed after background WinSxS analysis completes (event name `system-slim:winsxs-ready`).
 ///
-/// 只带这两项，前端替换同 id 的条目即可；不发整个 `SystemSlimStatus`，
-/// 后端不必为了发事件把休眠/虚拟内存/搜索索引再检测一遍。
+/// Carry only these two items; the frontend just replaces the entries with the same id; the whole `SystemSlimStatus` is not sent,
+/// so the backend does not need to re-check hibernation / virtual memory / search index just to emit an event.
 #[derive(Debug, Clone, Serialize)]
 pub struct WinsxsItemsPayload {
     pub items: Vec<SlimItemStatus>,
 }
 
-/// DISM 分析进度（事件名 `system-slim:winsxs-progress`）。
+/// DISM analysis progress (event name `system-slim:winsxs-progress`).
 ///
-/// 单独一个事件、单独一套类型，不和清理的 `system-slim:progress` 混用 ——
-/// 两者 item_id 相同，混在一起会出现"清理进度被分析进度覆盖"的串台。
+/// A separate event and a separate type; do not mix it with the cleanup `system-slim:progress` ——
+/// Both share the same item_id; mixing them would cause cross-talk where "cleanup progress is overwritten by analysis progress".
 #[derive(Debug, Clone, Serialize)]
 pub struct WinsxsAnalyzeProgress {
     pub percent: u8,
     pub elapsed_ms: u64,
 }
 
-/// 系统瘦身状态汇总
+/// System slim status summary
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SystemSlimStatus {
     pub is_admin: bool,
@@ -68,27 +68,27 @@ pub struct SystemSlimStatus {
     pub total_reclaimable: u64,
 }
 
-/// 瘦身操作进度事件（事件名 `system-slim:progress`）。
+/// Slim operation progress event (event name `system-slim:progress`).
 ///
-/// 中文说明：休眠开关、组件清理、基线压缩都可能耗时几十秒到十几分钟。前端用它显示
-/// 阶段、百分比和已用时间，让用户明确知道"还在跑、大概到哪一步"，而不是盯着一个不动的按钮。
+/// Note: the hibernation toggle, component cleanup, and baseline compaction can each take tens of seconds to over ten minutes. The frontend uses this to show
+/// the stage, percentage, and elapsed time, so users clearly know "it is still running and roughly which step it is at", instead of staring at an unchanging button.
 #[derive(Debug, Clone, Serialize)]
 pub struct SlimOperationProgress {
-    /// 操作项 id，与 SlimItemStatus.id 对应，前端据此定位是哪个卡片在跑。
+    /// Operation item id, corresponding to SlimItemStatus.id; the frontend uses it to locate which card is running.
     pub item_id: String,
-    /// 阶段标识：preparing / running / waiting / done / error。
+    /// Stage identifier: preparing / running / waiting / done / error.
     pub phase: String,
-    /// 面向用户的中文阶段说明。
+    /// User-facing stage description in Chinese.
     pub message: String,
-    /// 0-100；无法估算时返回 0，前端显示不确定进度条。
+    /// 0-100; returns 0 when it cannot be estimated, and the frontend shows an indeterminate progress bar.
     pub percent: u8,
     /// running / done / error。
     pub status: String,
-    /// 已用时间（毫秒），让用户能判断还要不要继续等。
+    /// Elapsed time (ms), so users can judge whether to keep waiting.
     pub elapsed_ms: u64,
 }
 
-/// 统一推送瘦身进度；发送失败只记录日志，不影响操作本身。
+/// Push slim progress uniformly; a send failure is only logged and does not affect the operation itself.
 fn emit_slim_progress(
     window: &Window,
     item_id: &str,
@@ -111,21 +111,21 @@ fn emit_slim_progress(
     }
 }
 
-/// 单次 DISM 分析的最长等待时间。
+/// Maximum wait time for a single DISM analysis.
 ///
-/// 分析已经改成后台跑、结果用事件补推，所以这个值不再决定"用户要等多久"，
-/// 只用来防止 DISM 卡死把 `WINSXS_ANALYZE_RUNNING` 永久占住。
+/// Analysis has been moved to the background with results pushed via events, so this value no longer decides "how long the user waits";
+/// it is only used to prevent a stuck DISM from holding `WINSXS_ANALYZE_RUNNING` forever.
 ///
-/// 本机实测（2026-11-10，CBS.log 里 `Analyze: begin WinSxS tree walk` 到会话结束）
-/// 一次 `analyzecomponentstore` 要 **171 秒**，比原来 30 秒的超时长出近 6 倍 ——
-/// 那正是旧版"每次检测都超时、永远拿不到结果"的原因。留足余量取 600 秒：
-/// 被杀掉等于白跑三分钟，宁可多等也不轻易放弃。
+/// Measured locally (2026-11-10, from `Analyze: begin WinSxS tree walk` to session end in CBS.log)
+/// One `analyzecomponentstore` run takes **171 seconds**, nearly 6 times the old 30-second timeout ——
+/// That was exactly why the old version "timed out on every check and never got a result". Leave a generous margin of 600 seconds:
+/// Killing it would waste three minutes, so it is better to wait a bit longer than give up easily.
 const WINSXS_ANALYZE_TIMEOUT_SECS: u64 = 600;
-/// 内存缓存的"新鲜期"：这段时间内直接复用，不重跑 DISM。
+/// The "freshness window" of the in-memory cache: within this period, reuse it directly without rerunning DISM.
 const WINSXS_CACHE_TTL_SECS: u64 = 10 * 60;
-/// 磁盘缓存可以拿来"先展示"的最长时间。
+/// Maximum age for which the disk cache can be used for "initial display".
 ///
-/// 重开应用时先显示上次的结果、同时后台重算，用户不必为了看一眼组件存储占用再等一轮 DISM。
+/// On app restart, show the previous result first while recomputing in the background, so users do not have to wait for another DISM run just to glance at component store usage.
 const WINSXS_DISK_CACHE_TTL_SECS: u64 = 24 * 60 * 60;
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
@@ -134,27 +134,27 @@ struct WinsxsAnalyzeResult {
     cleanup_recommended: bool,
     reclaimable_packages: u32,
     analysis_succeeded: bool,
-    /// 「备份和已禁用功能」一项的体积：被新版本取代、暂时保留用于回滚的旧组件副本。
+    /// Size of the "Backup and Disabled Features" item: copies of old components replaced by newer versions and temporarily kept for rollback.
     ///
-    /// 中文说明：DISM 的可回收估算恰好由两项组成，拆开之后界面才能回答
-    /// 「它到底想清什么」——以前只给一个总数，用户看不出这 6.9 GB 是怎么来的。
+    /// Note: DISM's reclaimable estimate consists of exactly two items; only after splitting them can the UI answer
+    /// "what it actually wants to clean" —— previously only a total was given, and users could not tell how this 6.9 GB was composed.
     #[serde(default)]
     backups_size: u64,
-    /// 「缓存和临时数据」一项的体积：组件存储里可安全删除的缓存与临时副本。
+    /// Size of the "Cache and Temporary Data" item: caches and temporary copies in the component store that can be safely deleted.
     #[serde(default)]
     cache_size: u64,
 }
 
-/// 可回收组件的构成明细（DISM 分析的两行原始数据）。
+/// Breakdown of reclaimable components (the two raw lines from DISM analysis).
 ///
-/// 只提供数字，文案由前端按语言渲染 —— 后端拼中文会污染其它语言界面。
+/// Only provide numbers; the frontend renders the wording per language —— assembling Chinese text on the backend would pollute other-language UIs.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
 pub struct WinsxsBreakdown {
-    /// 被取代但仍保留的旧组件副本（「备份和已禁用功能」）。
+    /// Superseded but retained copies of old components ("Backup and Disabled Features").
     pub backups: u64,
-    /// 缓存与临时数据。
+    /// Cache and temporary data.
     pub cache: u64,
-    /// DISM 报告的可回收组件包数量。
+    /// Number of reclaimable component packages reported by DISM.
     pub packages: u32,
 }
 
@@ -164,61 +164,61 @@ struct WinsxsAnalyzeCache {
     cached_at: std::time::Instant,
 }
 
-/// 磁盘缓存的内容：结果 + 写入时刻（Unix 秒）。
+/// Disk cache contents: result + write time (Unix seconds).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct WinsxsDiskCache {
-    /// 解析逻辑的版本号。改了识别规则就加一，让旧缓存自动失效 ——
-    /// 2026-11-10 修好中文输出解析后，磁盘里还躺着"0 可回收"的旧结论，
-    /// 不失效的话用户重开应用仍会先看到"无需清理"。
+    /// Version of the parsing logic. Increment it when recognition rules change so old caches are automatically invalidated ——
+    /// After fixing Chinese-output parsing on 2026-11-10, old "0 reclaimable" conclusions still lay on disk,
+    /// and without invalidation users would still see "no cleanup needed" first on restart.
     #[serde(default)]
     schema_version: u32,
     result: WinsxsAnalyzeResult,
     cached_at_unix: u64,
 }
 
-/// 当前解析规则版本，与 `WinsxsDiskCache::schema_version` 对应。
+/// Current parsing-rule version, corresponding to `WinsxsDiskCache::schema_version`.
 const WINSXS_CACHE_SCHEMA: u32 = 3;
 
 static WINSXS_ANALYZE_CACHE: LazyLock<RwLock<Option<WinsxsAnalyzeCache>>> =
     LazyLock::new(|| RwLock::new(None));
 static WINSXS_ANALYZE_RUNNING: AtomicBool = AtomicBool::new(false);
-/// 本轮分析的开始时刻（Unix 秒），用于识别"锁住了但其实早就该结束"的僵死状态。
+/// Start time of this analysis round (Unix seconds), used to detect a stuck state where the lock is held but the work should have finished long ago.
 static WINSXS_ANALYZE_STARTED_AT: AtomicU64 = AtomicU64::new(0);
 
 // ============================================================================
-// 权限检测
+// Privilege check
 // ============================================================================
 
-/// 检查当前进程**是否真的具备管理员能力**。
+/// Check whether the current process **really has administrator capability**.
 ///
-/// ⚠️ 不要改回 `shell32!IsUserAnAdmin` —— 两者语义不同：它问的是「这个账号是不是管理员组成员」，
-/// 而这里要的是「这个进程能不能读 $MFT、能不能改系统设置」。
-/// 开启 UAC 后普通方式启动的进程带的是**受限令牌**，账号是管理员但进程没有权限，
-/// 两个函数在这种机器上会给出相反答案 → 前端提示和「后端实际会不会降级」对不上，
-/// 表现就是「功能悄悄退化成慢路径，界面上却没有任何提示」。
+/// ⚠️ Do not switch back to `shell32!IsUserAnAdmin` —— the two have different semantics: it asks "is this account a member of the Administrators group",
+/// whereas here we need "can this process read $MFT and change system settings".
+/// With UAC enabled, a normally launched process carries a **restricted token**: the account is an administrator but the process has no privileges,
+/// so the two functions give opposite answers on such machines → the frontend hint and "whether the backend actually degrades" would disagree,
+/// showing up as "features silently degrade to a slow path with no hint in the UI".
 ///
-/// 统一走 `TokenElevation`（和 AI 模型深度发现、大文件/大目录引擎选择用的是同一个判定），
-/// 保证「界面看到的权限状态」和「后端的行为」永远来自同一个事实。
+/// Use `TokenElevation` uniformly (the same check used for AI model deep discovery and big-file/big-directory engine selection),
+/// ensuring that "the privilege state shown in the UI" and "the backend's behavior" always come from the same source of truth.
 pub fn check_admin() -> bool {
     crate::scanner::big_files_engine::mft_core::is_elevated()
 }
 
 // ============================================================================
-// 状态检测（异步：避免 DISM 阻塞主线程）
+// Status check (async: avoid DISM blocking the main thread)
 // ============================================================================
 
-/// 获取系统瘦身状态。
+/// Get the system slim status.
 ///
-/// **WinSxS 不再参与首屏等待。** DISM 分析在本机是几十秒到几分钟的量级，
-/// 以前整条 `get_status` 要等它（30 秒超时才放行），用户看到的就是"检查中"转半分钟。
-/// 现在：有缓存就先用（哪怕是上次启动留下的），没有就先标成"分析中"，
-/// DISM 跑完通过 `system-slim:winsxs-ready` 事件补推那两项。
+/// **WinSxS no longer participates in first-screen waiting.** DISM analysis takes tens of seconds to minutes locally,
+/// previously the whole `get_status` had to wait for it (released only after a 30-second timeout), so users saw "checking" spin for half a minute.
+/// Now: use the cache if available (even from a previous launch); otherwise mark it as "analyzing" first,
+/// and push those two items via the `system-slim:winsxs-ready` event when DISM finishes.
 pub async fn get_status(window: Window, force_refresh: bool) -> SystemSlimStatus {
     let is_admin = check_admin();
 
     let winsxs_items = prepare_winsxs_items(&window, is_admin, force_refresh);
 
-    // 其余三项都是毫秒级（读注册表 + metadata），并发跑完即可
+    // The other three items are millisecond-level (registry read + metadata); just run them concurrently.
     let (hibernation, pagefile, search_index) = tokio::join!(
         async { get_hibernation_status() },
         async { get_pagefile_status() },
@@ -238,18 +238,18 @@ pub async fn get_status(window: Window, force_refresh: bool) -> SystemSlimStatus
     }
 }
 
-/// 组装 WinSxS 两项，并在需要时启动后台分析。
+/// Assemble the two WinSxS items and start background analysis when needed.
 ///
-/// 数据来源优先级：内存缓存（10 分钟内）→ 磁盘缓存（24 小时内，跨重启）→ 干脆没有。
-/// 后两种都会顺带起一次后台分析，结果回来再覆盖。
+/// Data source priority: in-memory cache (within 10 min) → disk cache (within 24 h, across restarts) → none at all.
+/// The latter two also start a background analysis, whose result overwrites the cached one when it arrives.
 fn prepare_winsxs_items(
     window: &Window,
     is_admin: bool,
     force_refresh: bool,
 ) -> Vec<SlimItemStatus> {
-    // 用户手动点"重新检测"时必须真的重跑一次，不能拿 10 分钟内的缓存糊弄他 ——
-    // 旧行为是"点了没反应、界面像刷新了一下"，就是因为缓存直接命中了。
-    // 刷新期间先用现有结论垫着（标 analyzing），新结果到了再覆盖。
+    // When the user manually clicks "recheck", we must really rerun it; fobbing them off with a cache under 10 minutes old is not allowed ——
+    // The old behavior of "click does nothing, the UI just looks refreshed" was caused by a direct cache hit.
+    // During refresh, hold the existing conclusion as a placeholder (mark as analyzing) and overwrite when the new result arrives.
     if force_refresh && is_admin {
         let fallback = get_any_cached_winsxs_result().or_else(load_disk_winsxs_cache);
         start_winsxs_analysis(window.clone());
@@ -266,8 +266,8 @@ fn prepare_winsxs_items(
 
     let stale = load_disk_winsxs_cache();
 
-    // 没有管理员权限时 DISM 必然失败（错误码 740），不必起进程再等它报错。
-    // 但磁盘上 24 小时内的结论仍然值得展示 —— 总比一句"读不到"有用。
+    // Without admin privileges DISM is bound to fail (error code 740); there is no need to start a process just to wait for the error.
+    // But conclusions on disk from within 24 hours are still worth showing —— better than a bare "cannot read".
     if !is_admin {
         return match stale {
             Some(result) => build_winsxs_items(result, false, None),
@@ -283,13 +283,13 @@ fn prepare_winsxs_items(
     }
 }
 
-/// 后台启动一次 DISM 分析，立刻返回。
+/// Start a DISM analysis in the background and return immediately.
 ///
-/// 返回 `true` 表示"现在确实有分析在跑"（本次起的或更早就在跑的），前端据此显示分析中。
+/// Returns `true` to mean "an analysis is indeed running now" (started this time or earlier), which the frontend uses to show the analyzing state.
 fn start_winsxs_analysis(window: Window) -> bool {
     #[cfg(target_os = "windows")]
     {
-        // 清理正在独占组件存储：这时候起 analyze 只会和它抢 CBS 会话
+        // Cleanup is exclusively using the component store; starting analyze now would only fight it for the CBS session
         if WINSXS_CLEANUP_ACTIVE.load(Ordering::SeqCst) {
             return false;
         }
@@ -299,9 +299,9 @@ fn start_winsxs_analysis(window: Window) -> bool {
             let started = WINSXS_ANALYZE_STARTED_AT.load(Ordering::Relaxed);
             let age = now.saturating_sub(started);
 
-            // 正常情况：确实有分析在跑（含刚起的那个），本次不重复发起。
-            // 异常情况：线程挂起/异常退出没走到解锁，锁会永远不释放 ——
-            // 表现就是"点多少次重新检测都没有动静"。超过兜底时间就当作僵死，强制重来。
+            // Normal case: an analysis is indeed running (including the one just started); do not launch another.
+            // Abnormal case: the thread hung or exited abnormally without unlocking, so the lock would never be released ——
+            // showing up as "no response no matter how many times recheck is clicked". Past the fallback timeout, treat it as stuck and force a restart.
             if started == 0 || age <= WINSXS_ANALYZE_TIMEOUT_SECS + 60 {
                 return true;
             }
@@ -314,14 +314,14 @@ fn start_winsxs_analysis(window: Window) -> bool {
 
         WINSXS_ANALYZE_STARTED_AT.store(unix_now(), Ordering::Relaxed);
 
-        // 用 spawn_blocking 而不是 spawn：DISM 是阻塞进程调用，不能占着异步线程。
-        // 这里不 await —— 结果通过事件补推，扫描接口提前返回。
-        // 进度要推给前端，所以把 handle 一起带进后台线程
+        // Use spawn_blocking rather than spawn: DISM is a blocking process call and must not occupy an async thread.
+        // Do not await here —— the result is pushed later via an event, and the scan endpoint returns early.
+        // Progress must be pushed to the frontend, so carry the handle into the background thread as well
         let progress_handle = window.app_handle().clone();
 
         tokio::task::spawn_blocking(move || {
             let outcome = analyze_winsxs_sync(Some(progress_handle));
-            // 先解锁再发事件：分析本身已经结束，后续检查可以立刻复用缓存
+            // Unlock before emitting the event: the analysis itself has ended, so later checks can reuse the cache immediately
             WINSXS_ANALYZE_RUNNING.store(false, Ordering::SeqCst);
 
             let items = match outcome {
@@ -331,8 +331,8 @@ fn start_winsxs_analysis(window: Window) -> bool {
                 }
                 Err(error) => {
                     warn!("DISM 分析失败，本次不更新组件存储占用: {}", error);
-                    // 失败也要推一次：前端收到事件才会把"分析中"的转圈停掉，
-                    // 否则它会一直转，用户误以为还在跑。原因一并带上，别让用户干猜。
+                    // Push even on failure: only when the frontend receives the event will it stop the "analyzing" spinner,
+                    // otherwise it keeps spinning and users think it is still running. Include the cause so users do not have to guess.
                     build_winsxs_items(WinsxsAnalyzeResult::default(), false, Some(&error))
                 }
             };
@@ -353,7 +353,7 @@ fn start_winsxs_analysis(window: Window) -> bool {
     }
 }
 
-/// 获取休眠文件状态（通过注册表检测，不依赖 powercfg 编码）
+/// Get hibernation file status (detected via the registry, not dependent on powercfg encoding)
 fn get_hibernation_status() -> SlimItemStatus {
     let hibernation_enabled = check_hibernation_enabled();
     let hiberfil_path = std::path::Path::new("C:\\hiberfil.sys");
@@ -388,14 +388,14 @@ fn get_hibernation_status() -> SlimItemStatus {
     }
 }
 
-/// 通过注册表检测休眠功能是否启用（快速、编码无关、不依赖 powercfg）
+/// Detect whether hibernation is enabled via the registry (fast, encoding-independent, no powercfg dependency)
 fn check_hibernation_enabled() -> bool {
     #[cfg(target_os = "windows")]
     {
         use winreg::{enums::*, RegKey};
 
-        // 主检测：注册表 HibernateEnabled 值（powercfg /hibernate 的权威来源）。
-        // 读取成功后必须直接返回，避免旧的 hiberfil.sys 让“已关闭”再次被误判为启用。
+        // Primary check: the registry HibernateEnabled value (authoritative source for powercfg /hibernate).
+        // After a successful read, return immediately; otherwise a stale hiberfil.sys could make "disabled" be misjudged as enabled again.
         if let Ok(hklm) = RegKey::predef(HKEY_LOCAL_MACHINE)
             .open_subkey_with_flags(r"SYSTEM\CurrentControlSet\Control\Power", KEY_READ)
         {
@@ -404,7 +404,7 @@ fn check_hibernation_enabled() -> bool {
             }
         }
 
-        // 回退：检查 hiberfil.sys 是否存在
+        // Fallback: check whether hiberfil.sys exists
         std::path::Path::new("C:\\hiberfil.sys").exists()
     }
 
@@ -414,15 +414,15 @@ fn check_hibernation_enabled() -> bool {
     }
 }
 
-/// 把 DISM 分析结果转成两项界面条目。
+/// Convert DISM analysis results into two UI entries.
 ///
-/// `analyzing` 为 true 时表示后台仍在分析：此时如果有上一次的结论就先展示它，
-/// 只是前端会打上"分析中"的转圈；如果什么都没有，就直说正在分析、别让用户等一个空白。
-/// 截断失败原因：DISM 的输出可能带整段使用说明，界面上只留第一行有效信息。
+/// `analyzing` being true means background analysis is still running: if a previous conclusion exists, display it first,
+/// with an "analyzing" spinner added by the frontend; if there is nothing at all, say plainly that analysis is in progress rather than leaving users staring at a blank.
+/// Truncate the failure reason: DISM output may include a whole usage block; keep only the first meaningful line in the UI.
 fn truncate_reason(reason: &str) -> String {
     const MAX_CHARS: usize = 120;
 
-    // 优先取第一行非空内容，DISM 的"Error: 740 ..."就在第一行
+    // Prefer the first non-empty line; DISM's "Error: 740 ..." is on the first line
     let first_line = reason
         .lines()
         .map(str::trim)
@@ -450,8 +450,8 @@ fn build_winsxs_items(
         if analyzing {
             "首次分析通常需要 2-3 分钟，这段时间可以先处理其他项目".to_string()
         } else {
-            // 把 DISM 自己的失败原因带出来。只说"分析失败"等于让用户和开发者一起猜 ——
-            // 常见的是"另一个操作正在进行"（Windows Update 占着组件存储）或权限不足。
+            // Surface DISM's own failure reason. Saying only "analysis failed" leaves users and developers guessing ——
+            // Common causes are "another operation is in progress" (Windows Update holding the component store) or insufficient privileges.
             match failure.map(str::trim).filter(|reason| !reason.is_empty()) {
                 Some(reason) => format!("未能读取组件存储信息：{}", truncate_reason(reason)),
                 None => "未能读取组件存储信息（通常是没有管理员权限，或 DISM 分析失败），以管理员身份重新检测可获取准确占用".to_string(),
@@ -465,11 +465,11 @@ fn build_winsxs_items(
     } else {
         "DISM 未发现明确可回收的组件包，当前无需执行组件清理".to_string()
     };
-    // 分析中不允许点：结论还没出来，点了只会被后端拒绝（或跑一次重复的清理）。
+    // Not clickable during analysis: no conclusion yet, a click would only be rejected by the backend (or trigger a duplicate cleanup).
     let winsxs_actionable = !analyzing && (!can_estimate || has_reclaimable);
 
-    // 只有真解析出分项才给明细：DISM 某些版本只报总数，硬拆一个 0 出来
-    // 会让界面显示"备份 0 B、缓存 = 全部"，比不显示更误导。
+    // Only show details when sub-items are actually parsed: some DISM versions report only a total, and hard-splitting a zero out of it
+    // would make the UI show "backup 0 B, cache = everything", which is more misleading than showing nothing.
     let breakdown = if can_estimate
         && (analyze_result.backups_size > 0 || analyze_result.cache_size > 0)
     {
@@ -486,8 +486,8 @@ fn build_winsxs_items(
         SlimItemStatus {
             id: "winsxs".to_string(),
             name: "系统组件存储".to_string(),
-            // 这句话要经得起追问"到底删什么"：写清执行的是哪条官方命令、
-            // 动的是哪两类数据、以及明确不碰什么。AI 助手也读这一条。
+            // This wording must withstand the question "what exactly gets deleted": state which official command is run,
+            // which two kinds of data are affected, and what is explicitly untouched. The AI assistant also reads this.
             description: "调用 Windows 官方的 StartComponentCleanup：删除 WinSxS 中被新版本取代的旧组件副本，以及组件存储的缓存与临时数据；正在使用的组件、已安装的程序和更新本身都不受影响"
                 .to_string(),
             warning: "清理会删除被取代的旧组件副本，因此清理后通常无法回滚到这些版本；已安装的 Windows 更新不会被卸载"
@@ -495,7 +495,7 @@ fn build_winsxs_items(
             status_text,
             enabled: has_reclaimable,
             size: analyze_result.reclaimable_size,
-            // 检测明确无可回收内容时禁用按钮，避免用户反复执行幂等 DISM 清理产生“还能清”的错觉。
+            // Disable the button when the check clearly finds nothing reclaimable, to avoid the illusion of "still cleanable" from users repeatedly running idempotent DISM cleanup.
             actionable: winsxs_actionable,
             action_text: if analyzing {
                 "分析中…".to_string()
@@ -537,7 +537,7 @@ fn build_winsxs_items(
     ]
 }
 
-/// 取内存里的结论，**不看 TTL**：强制刷新时用来给界面垫底，避免数字先消失再出现。
+/// Get the in-memory conclusion, **ignoring TTL**: used as a placeholder during forced refresh so numbers do not disappear and then reappear.
 fn get_any_cached_winsxs_result() -> Option<WinsxsAnalyzeResult> {
     WINSXS_ANALYZE_CACHE
         .read()
@@ -549,18 +549,18 @@ fn get_any_cached_winsxs_result() -> Option<WinsxsAnalyzeResult> {
 fn get_cached_winsxs_result() -> Option<WinsxsAnalyzeResult> {
     let cache = WINSXS_ANALYZE_CACHE.read().ok()?;
     let cached = cache.as_ref()?;
-    // WinSxS 可回收大小短时间内不会频繁变化，缓存能避免页面重复打开时反复卡在 DISM 分析。
+    // The WinSxS reclaimable size does not change frequently in a short period; caching avoids repeatedly hanging on DISM analysis when the page is reopened.
     if cached.cached_at.elapsed().as_secs() <= WINSXS_CACHE_TTL_SECS {
         return Some(cached.result);
     }
     None
 }
 
-/// 记录一次分析结果：内存 + 磁盘都写，下次启动可以直接拿磁盘缓存垫着。
+/// Record an analysis result: write to both memory and disk, so the next launch can use the disk cache as a placeholder.
 ///
-/// 只拒绝"分析失败"的结果。**「没有可回收内容」也会缓存** —— 那是最常见的情况，
-/// 以前不缓存它，等于每次打开检测页都要重跑一轮 DISM（几十秒），
-/// 而清理/压缩动作本身会调 `clear_cached_winsxs_size()` 主动作废，不会出现"清完还显示 0"。
+/// Only reject results of "analysis failed". **"Nothing reclaimable" is also cached** —— that is the most common case,
+/// and not caching it before meant rerunning DISM (tens of seconds) every time the check page was opened,
+/// while cleanup/compaction actions themselves call `clear_cached_winsxs_size()` to invalidate it proactively, so "still showing 0 after cleanup" cannot happen.
 fn set_cached_winsxs_result(result: WinsxsAnalyzeResult) {
     if !result.analysis_succeeded {
         return;
@@ -570,7 +570,7 @@ fn set_cached_winsxs_result(result: WinsxsAnalyzeResult) {
     save_disk_winsxs_cache(result);
 }
 
-/// 只写内存缓存（不含磁盘），单测用它，避免往真实数据目录里写文件。
+/// Write only the in-memory cache (not disk); used by unit tests to avoid writing files into the real data directory.
 fn store_memory_winsxs_result(result: WinsxsAnalyzeResult) {
     if let Ok(mut cache) = WINSXS_ANALYZE_CACHE.write() {
         *cache = Some(WinsxsAnalyzeCache {
@@ -582,10 +582,10 @@ fn store_memory_winsxs_result(result: WinsxsAnalyzeResult) {
 
 fn clear_cached_winsxs_size() {
     if let Ok(mut cache) = WINSXS_ANALYZE_CACHE.write() {
-        // 清理会改变组件存储状态，必须让下次检查重新分析而不是继续展示旧估算。
+        // Cleanup changes the component store state; the next check must re-analyze rather than keep showing the old estimate.
         *cache = None;
     }
-    // 磁盘缓存同样作废：否则用户清理完重开应用又会读到清理前的大小。
+    // Invalidate the disk cache as well: otherwise users would read the pre-cleanup size after restarting.
     let path = winsxs_disk_cache_path();
     if path.exists() {
         if let Err(error) = std::fs::remove_file(&path) {
@@ -594,7 +594,7 @@ fn clear_cached_winsxs_size() {
     }
 }
 
-/// 磁盘缓存文件：跟着数据目录走，便携版/自定义数据目录都能正确落位。
+/// Disk cache file: follows the data directory, so portable builds and custom data directories both resolve correctly.
 fn winsxs_disk_cache_path() -> std::path::PathBuf {
     crate::data_dir::get_data_dir().join("system_slim_winsxs.json")
 }
@@ -609,13 +609,13 @@ fn save_disk_winsxs_cache(result: WinsxsAnalyzeResult) {
         let _ = std::fs::create_dir_all(parent);
     }
 
-    // 缓存写不进去只影响下次启动的成绩，不影响本次结果，因此不往上抛错。
+    // Failure to write the cache only affects the next launch's result, not this one, so do not propagate the error.
     if let Err(error) = std::fs::write(&path, json) {
         warn!("写入 WinSxS 磁盘缓存失败: {}", error);
     }
 }
 
-/// 序列化磁盘缓存。拆成纯函数是为了能直接测"存了再读回来是不是同一个值"。
+/// Serialize the disk cache. Splitting it into a pure function lets us directly test "whether a value round-trips through save and read".
 fn serialize_disk_cache(result: WinsxsAnalyzeResult, now_unix: u64) -> Option<String> {
     serde_json::to_string(&WinsxsDiskCache {
         schema_version: WINSXS_CACHE_SCHEMA,
@@ -625,7 +625,7 @@ fn serialize_disk_cache(result: WinsxsAnalyzeResult, now_unix: u64) -> Option<St
     .ok()
 }
 
-/// 解析磁盘缓存：失败结果、过期结果都当没有。
+/// Parse the disk cache: treat failed and expired results as absent.
 fn parse_disk_cache(text: &str, now_unix: u64) -> Option<WinsxsAnalyzeResult> {
     let cache: WinsxsDiskCache = serde_json::from_str(text).ok()?;
     if cache.schema_version != WINSXS_CACHE_SCHEMA {
@@ -641,7 +641,7 @@ fn parse_disk_cache(text: &str, now_unix: u64) -> Option<WinsxsAnalyzeResult> {
     Some(cache.result)
 }
 
-/// 读磁盘缓存。只用来"先显示上次的结果"，因此允许它比内存缓存旧得多。
+/// Read the disk cache. Only used for "showing the previous result first", so it is allowed to be much older than the in-memory cache.
 fn load_disk_winsxs_cache() -> Option<WinsxsAnalyzeResult> {
     let text = std::fs::read_to_string(winsxs_disk_cache_path()).ok()?;
     parse_disk_cache(&text, unix_now())
@@ -654,10 +654,10 @@ fn unix_now() -> u64 {
         .unwrap_or(0)
 }
 
-/// 同步运行 dism /analyzecomponentstore（在 spawn_blocking 中调用）。
+/// Run dism /analyzecomponentstore synchronously (called from spawn_blocking).
 ///
-/// DISM 会边跑边打百分比，这里转发给前端：分析是几十秒到几分钟的事，
-/// 界面上只有一个转圈的话，用户会以为卡死。
+/// DISM prints percentages as it runs; forward them to the frontend: analysis takes tens of seconds to minutes,
+/// and with only a spinner in the UI users would think it is stuck.
 fn analyze_winsxs_sync(handle: Option<AppHandle>) -> Result<WinsxsAnalyzeResult, String> {
     #[cfg(target_os = "windows")]
     {
@@ -666,8 +666,8 @@ fn analyze_winsxs_sync(handle: Option<AppHandle>) -> Result<WinsxsAnalyzeResult,
         let stderr = decode_command_output(&stderr_bytes);
 
         if !success {
-            // DISM 的报错（如 "Error: 740 Elevated permissions are required"）写在 stdout 里，
-            // 只看 stderr 会得到一条空消息 —— 上一版排查时就卡在这里。
+            // DISM errors (e.g. "Error: 740 Elevated permissions are required") are written to stdout;
+            // looking only at stderr yields an empty message —— the previous version got stuck debugging exactly here.
             let detail = if stderr.trim().is_empty() {
                 stdout.trim()
             } else {
@@ -685,19 +685,19 @@ fn analyze_winsxs_sync(handle: Option<AppHandle>) -> Result<WinsxsAnalyzeResult,
     }
 }
 
-/// 跑 DISM 分析：一边转发进度，一边做超时兜底。
+/// Run DISM analysis: forward progress while also enforcing a timeout fallback.
 ///
-/// stdout / stderr 各用一个线程读，主线程轮询 `try_wait`：
-/// 主线程自己也去读管道就没法判超时；只轮询不读，输出超过管道缓冲区（64 KB）时
-/// 子进程会卡在写，两边互相等死。DISM 分析输出很小，双线程读是最省心的写法。
+/// Read stdout and stderr each in its own thread while the main thread polls `try_wait`:
+/// if the main thread also reads the pipes it cannot judge the timeout; if it only polls without reading, once output exceeds the pipe buffer (64 KB)
+/// the child process blocks on writing and the two sides deadlock. DISM analysis output is small, so two reader threads are the safest approach.
 #[cfg(target_os = "windows")]
-/// 读子进程输出，边读边转发 DISM 的百分比进度。
+/// Read child-process output, forwarding DISM's percentage progress as it goes.
 ///
-/// **必须按字节读、自己按 `\n` 切行**：`BufRead::lines()` 要求每行都是合法 UTF-8，
-/// 遇到非 UTF-8 字节（中文系统下 DISM 用 GBK 输出）就返回 `Err`，
-/// 而 `map_while(Result::ok)` 会**静默终止整个读取** —— 表现为"分析成功、可回收 0"。
-/// 2026-11-10 那次"明明 CBS 日志写着 Superseded Packages: 2、Cleanup recommended: 1，
-/// 界面却显示无需清理"，就是这条链路断在编码上。
+/// **Must read by bytes and split lines on `\n` ourselves**: `BufRead::lines()` requires every line to be valid UTF-8,
+/// and returns `Err` on non-UTF-8 bytes (on Chinese systems DISM outputs GBK),
+/// while `map_while(Result::ok)` would **silently terminate the whole read** —— showing up as "analysis succeeded, 0 reclaimable".
+/// The 2026-11-10 case where "the CBS log clearly said Superseded Packages: 2, Cleanup recommended: 1,
+/// yet the UI showed no cleanup needed" was exactly this chain breaking on encoding.
 fn read_stream_with<F>(mut reader: impl std::io::Read, mut on_line: F) -> Vec<u8>
 where
     F: FnMut(&str),
@@ -716,12 +716,12 @@ where
         raw.extend_from_slice(&buffer[..read]);
         pending.extend_from_slice(&buffer[..read]);
 
-        // 自己按 \n 或 \r 切行，不要求整行是合法 UTF-8。
+        // Split lines on \n or \r ourselves; do not require the whole line to be valid UTF-8.
         //
-        // ⚠️ 必须认 \r：DISM 的进度条是在同一行里用 \r 反复重绘的
-        // （`[====10.0%====]` → `[=====11.0%=====]`），整段只有一个 \n。
-        // 只按 \n 切，一条进度要等到这一步结束才吐出来 —— 界面上看到的就是
-        // 百分比停在 10%、"已用 0s"永不刷新，用户以为卡死了。2026-11-17 实测。
+        // ⚠️ Must recognize \r: DISM redraws its progress bar repeatedly on the same line using \r
+        // (`[====10.0%====]` → `[=====11.0%=====]`), with only a single \n for the whole segment.
+        // Splitting only on \n means a progress update is emitted only when the step ends —— the UI would show
+        // the percentage frozen at 10% and "elapsed 0s" never refreshing, making users think it is stuck. Measured 2026-11-17.
         while let Some(pos) = pending
             .iter()
             .position(|&byte| byte == b'\n' || byte == b'\r')
@@ -734,7 +734,7 @@ where
     raw
 }
 
-/// 分析专用的读流：把 DISM 的百分比转发成 `system-slim:winsxs-progress`。
+/// Analysis-specific stream reader: forward DISM's percentage as `system-slim:winsxs-progress`.
 fn read_stream(
     reader: impl std::io::Read,
     handle: Option<AppHandle>,
@@ -747,7 +747,7 @@ fn read_stream(
             if percent > last_percent {
                 last_percent = percent;
                 if let Some(handle) = &handle {
-                    // 发失败（比如窗口已关）不影响分析本身
+                    // A send failure (e.g. window already closed) does not affect the analysis itself
                     let _ = handle.emit(
                         "system-slim:winsxs-progress",
                         &WinsxsAnalyzeProgress {
@@ -770,9 +770,9 @@ fn run_dism_analyze(handle: Option<&AppHandle>) -> Result<(Vec<u8>, Vec<u8>, boo
     let mut child = Command::new("cmd")
         .args([
             "/C",
-            // `/english` 让 DISM 用英文输出：解析器只认一套文案，
-            // 不必为每种系统语言维护一份关键词表（中文的"建议执行组件存储清理"就和
-            // "建议清理"对不上，线上因此漏判过）。
+            // `/english` makes DISM output in English: the parser only recognizes one set of wording,
+            // so there is no need to maintain a keyword table for every system language (the Chinese "component store cleanup is recommended" does not match
+            // "cleanup recommended", which has caused missed detections in production).
             "dism.exe /english /online /cleanup-image /analyzecomponentstore",
         ])
         .stdout(Stdio::piped())
@@ -781,7 +781,7 @@ fn run_dism_analyze(handle: Option<&AppHandle>) -> Result<(Vec<u8>, Vec<u8>, boo
         .spawn()
         .map_err(|e| format!("执行 DISM 失败: {}", e))?;
 
-    // 记录 pid：清理开始时需要把它结束掉（两个 DISM 不能同时操作组件存储）
+    // Record the pid: it must be terminated when cleanup starts (two DISM processes cannot operate on the component store at once)
     WINSXS_ANALYZE_PID.store(child.id(), Ordering::SeqCst);
 
     let stdout = child
@@ -812,7 +812,7 @@ fn run_dism_analyze(handle: Option<&AppHandle>) -> Result<(Vec<u8>, Vec<u8>, boo
         }
 
         if std::time::Instant::now() >= deadline {
-            // analyzecomponentstore 是只读的，kill 掉不会留下半完成的组件存储
+            // analyzecomponentstore is read-only, so killing it leaves no half-finished component store
             let _ = child.kill();
             timed_out = true;
             break;
@@ -844,8 +844,8 @@ fn parse_winsxs_analyze_output(output: &str) -> WinsxsAnalyzeResult {
         analysis_succeeded: true,
         ..WinsxsAnalyzeResult::default()
     };
-    // 关键结论行（可回收包数 / 是否建议清理）至少要认出一行，否则就是解析失败。
-    // 少了这个自检，空输出会被当成"成功且 0 可回收"，界面显示"无需清理" —— 2026-11-10 就这个坑。
+    // At least one key conclusion line (reclaimable package count / whether cleanup is recommended) must be recognized, otherwise parsing has failed.
+    // Without this self-check, empty output would be treated as "success with 0 reclaimable" and the UI would show "no cleanup needed" —— exactly the 2026-11-10 pitfall.
     let mut saw_verdict = false;
 
     for line in output.lines() {
@@ -854,8 +854,8 @@ fn parse_winsxs_analyze_output(output: &str) -> WinsxsAnalyzeResult {
         if is_winsxs_reclaimable_size_line(&normalized) {
             if let Some(size_bytes) = parse_size_from_line(&normalized) {
                 result.reclaimable_size = result.reclaimable_size.saturating_add(size_bytes);
-                // 顺带记到对应的分项上：这两行是 DISM 唯一给出的可回收构成，
-                // 界面要靠它解释"这个总数是怎么来的"。
+                // Also record it on the corresponding sub-item: these two lines are the only reclaimable breakdown DISM provides,
+                // and the UI relies on them to explain "how this total was derived".
                 if is_winsxs_backups_line(&normalized) {
                     result.backups_size = result.backups_size.saturating_add(size_bytes);
                 } else if is_winsxs_cache_line(&normalized) {
@@ -879,8 +879,8 @@ fn parse_winsxs_analyze_output(output: &str) -> WinsxsAnalyzeResult {
         if normalized.contains("cleanup recommended")
             || normalized.contains("建议清理")
             || normalized.contains("推荐清理")
-            // 中文 DISM 的真实文案是"建议执行组件存储清理"，不含连续的"建议清理"四个字，
-            // 只按字面匹配会漏判 —— 必须允许"建议……清理"这种中间插字的形式。
+            // The real Chinese DISM wording is "component store cleanup is recommended", which does not contain the contiguous characters meaning "cleanup recommended",
+            // so literal matching would miss it —— we must allow the form with words inserted in between.
             || (normalized.contains("建议") && normalized.contains("清理"))
         {
             saw_verdict = true;
@@ -897,9 +897,9 @@ fn parse_winsxs_analyze_output(output: &str) -> WinsxsAnalyzeResult {
     result
 }
 
-/// 从 "标签 : 是/否"、"Label : Yes/No" 里取值。
+/// Extract a value from "Label : Yes/No" in either Chinese or English.
 ///
-/// 不能用 `contains("是")` 判断 —— "是否建议清理"这种写法里"是"恒成立，结论会永远是"建议清理"。
+/// Do not judge with `contains("yes")` —— in wording like "whether cleanup is recommended" that character is always present, so the conclusion would always be "cleanup recommended".
 fn parse_yes_no(line: &str) -> Option<bool> {
     let value = line.rsplit(|c: char| c == ':' || c == '：').next()?.trim();
 
@@ -914,8 +914,8 @@ fn parse_yes_no(line: &str) -> Option<bool> {
 }
 
 fn is_winsxs_reclaimable_size_line(line: &str) -> bool {
-    // DISM 的可回收估算由“备份和已禁用功能”与“缓存和临时数据”组成；
-    // 不使用 WinSxS 总大小，避免把组件存储硬链接体积误算为可释放空间。
+    // DISM's reclaimable estimate consists of "Backup and Disabled Features" and "Cache and Temporary Data";
+    // Do not use the total WinSxS size, to avoid miscounting component-store hard-link size as freeable space.
     line.contains("backups and disabled features")
         || line.contains("cache and temporary data")
         || line.contains("备份")
@@ -923,21 +923,21 @@ fn is_winsxs_reclaimable_size_line(line: &str) -> bool {
         || line.contains("缓存和临时")
 }
 
-/// 「备份和已禁用功能」行：被取代、暂时保留用于回滚的旧组件副本。
+/// "Backup and Disabled Features" line: superseded old component copies temporarily kept for rollback.
 fn is_winsxs_backups_line(line: &str) -> bool {
     line.contains("backups and disabled features")
         || line.contains("备份")
         || line.contains("已禁用")
 }
 
-/// 「缓存和临时数据」行：组件存储里可安全删除的缓存与临时副本。
+/// "Cache and Temporary Data" line: caches and temporary copies in the component store that can be safely deleted.
 fn is_winsxs_cache_line(line: &str) -> bool {
     line.contains("cache and temporary data")
         || line.contains("缓存和临时")
         || line.contains("缓存与临时")
 }
 
-/// 从大小字符串解析字节数，支持 "3.50 GB"、"500 MB"、"12 KB" 等格式
+/// Parse a byte count from a size string, supporting formats like "3.50 GB", "500 MB", "12 KB"
 fn parse_size_from_line(line: &str) -> Option<u64> {
     let line = line.to_lowercase();
     let mut value: Option<f64> = None;
@@ -946,7 +946,7 @@ fn parse_size_from_line(line: &str) -> Option<u64> {
     let bytes_line = line.as_bytes();
     for (i, &b) in bytes_line.iter().enumerate() {
         if b.is_ascii_digit() || b == b'.' {
-            // 从当前位置提取数字
+            // Extract the number from the current position
             let start = i;
             let mut end = i;
             while end < bytes_line.len()
@@ -959,7 +959,7 @@ fn parse_size_from_line(line: &str) -> Option<u64> {
                 .parse::<f64>()
             {
                 value = Some(v);
-                // 检查这个数字后面是否跟着 GB 或 MB
+                // Check whether GB or MB follows this number
                 let rest = &line[end..];
                 if rest.trim_start().starts_with("gb") {
                     unit_multiplier = 1024.0 * 1024.0 * 1024.0;
@@ -995,11 +995,11 @@ fn parse_first_integer(line: &str) -> Option<u32> {
     None
 }
 
-/// 获取虚拟内存状态（支持多磁盘分页文件检测）
+/// Get virtual memory status (supports multi-disk pagefile detection)
 fn get_pagefile_status() -> SlimItemStatus {
     let pagefile_configs = get_pagefile_configs();
 
-    // 统计 C 盘上的分页文件大小
+    // Count pagefile sizes on drive C
     let mut c_drive_size: u64 = 0;
     let mut other_drive_size: u64 = 0;
     let mut c_drive_paths: Vec<String> = Vec::new();
@@ -1027,7 +1027,7 @@ fn get_pagefile_status() -> SlimItemStatus {
         other_drive_size
     };
 
-    // 构建描述文本
+    // Build the description text
     let description = if pagefile_configs.is_empty()
         || pagefile_configs.len() == 1
             && pagefile_configs
@@ -1090,7 +1090,7 @@ fn get_pagefile_status() -> SlimItemStatus {
     }
 }
 
-/// 分页文件配置项
+/// Pagefile configuration entry
 struct PagefileConfig {
     path: String,
     #[allow(dead_code)]
@@ -1098,11 +1098,11 @@ struct PagefileConfig {
     max_size: u64,
 }
 
-/// 从注册表读取分页文件配置（支持多磁盘）
+/// Read pagefile configuration from the registry (supports multiple disks)
 ///
-/// 直接用 winreg 读 `PagingFiles`（REG_MULTI_SZ），不再起 `reg.exe` 子进程：
-/// 省掉一次进程启动（实测 100-300ms，杀软环境下更久），也避开了"按 UTF-8 解码
-/// reg 的控制台输出"这个坑 —— 非 UTF-8 代码页下中文路径会变成乱码。
+/// Read `PagingFiles` (REG_MULTI_SZ) directly with winreg, no longer spawning a `reg.exe` child process:
+/// Saves one process launch (measured 100-300 ms, longer with antivirus) and avoids the "decode reg's console output as
+/// UTF-8" pitfall —— under a non-UTF-8 code page, Chinese paths become garbled.
 fn get_pagefile_configs() -> Vec<PagefileConfig> {
     #[cfg(target_os = "windows")]
     {
@@ -1128,7 +1128,7 @@ fn get_pagefile_configs() -> Vec<PagefileConfig> {
     }
 }
 
-/// 解码 REG_MULTI_SZ：UTF-16LE 字符串，项之间用单个 `\0` 分隔，末尾双 `\0`。
+/// Decode REG_MULTI_SZ: UTF-16LE strings separated by a single `\0`, ending with a double `\0`.
 fn decode_reg_multi_sz(bytes: &[u8]) -> Vec<String> {
     let mut items = Vec::new();
     let mut current = String::new();
@@ -1136,13 +1136,13 @@ fn decode_reg_multi_sz(bytes: &[u8]) -> Vec<String> {
     for pair in bytes.chunks_exact(2) {
         let unit = u16::from_le_bytes([pair[0], pair[1]]);
         if unit == 0 {
-            // 连续两个 0 表示列表结束；单个 0 只是分隔符。
+            // Two consecutive zeros end the list; a single zero is just a separator.
             if current.is_empty() {
                 break;
             }
             items.push(std::mem::take(&mut current));
         } else {
-            // 路径里不会有代理对，遇到代理项按替换字符处理，不至于整条丢掉。
+            // Paths never contain surrogate pairs; treat any surrogate as a replacement character so the whole entry is not lost.
             current.push(char::from_u32(unit as u32).unwrap_or('\u{FFFD}'));
         }
     }
@@ -1154,9 +1154,9 @@ fn decode_reg_multi_sz(bytes: &[u8]) -> Vec<String> {
     items
 }
 
-/// 解析单条分页文件配置：`C:\pagefile.sys 2048 4096`（后两个数字可省略）。
+/// Parse a single pagefile config entry: `C:\pagefile.sys 2048 4096` (the last two numbers may be omitted).
 ///
-/// 只有路径没有数字时表示"由系统管理大小"，此时大小留 0 交给 `metadata` 去读实际文件。
+/// A path with no numbers means "system-managed size"; in that case leave the size at 0 and let `metadata` read the actual file.
 fn parse_pagefile_entries(entries: &[String]) -> Vec<PagefileConfig> {
     entries
         .iter()
@@ -1164,7 +1164,7 @@ fn parse_pagefile_entries(entries: &[String]) -> Vec<PagefileConfig> {
             let tokens: Vec<&str> = entry.split_whitespace().collect();
             let path = tokens.first()?.trim_end_matches(',');
 
-            // 只认盘符绝对路径；空值或 "*" 之类的占位符跳过。
+            // Only accept absolute paths with a drive letter; skip empty values and placeholders like "*".
             if path.len() < 3 || &path.as_bytes()[1..3] != b":\\" {
                 return None;
             }
@@ -1179,14 +1179,14 @@ fn parse_pagefile_entries(entries: &[String]) -> Vec<PagefileConfig> {
 
             Some(PagefileConfig {
                 path: path.to_string(),
-                initial_size: size_mb(1) * 1024 * 1024, // MB → 字节
+                initial_size: size_mb(1) * 1024 * 1024, // MB → bytes
                 max_size: size_mb(2) * 1024 * 1024,
             })
         })
         .collect()
 }
 
-/// 格式化字节为可读字符串
+/// Format a byte count as a human-readable string
 fn format_bytes(bytes: u64) -> String {
     if bytes >= 1024 * 1024 * 1024 {
         format!("{:.2} GB", bytes as f64 / (1024.0 * 1024.0 * 1024.0))
@@ -1202,7 +1202,7 @@ fn run_powercfg_hibernation_command(mode: &str) -> Result<std::process::Output, 
     use std::os::windows::process::CommandExt;
     use std::process::Command;
 
-    // 休眠配置应直接交给 powercfg.exe，避免经过 cmd 后命令解析或代码页切换影响状态变更。
+    // Pass hibernation config directly to powercfg.exe; going through cmd risks command parsing or code-page changes affecting the state change.
     Command::new("powercfg.exe")
         .args(["/hibernate", mode])
         .creation_flags(0x08000000)
@@ -1214,7 +1214,7 @@ fn run_powercfg_hibernation_command(mode: &str) -> Result<std::process::Output, 
 fn wait_for_hibernation_disabled() -> bool {
     let hiberfil_path = std::path::Path::new("C:\\hiberfil.sys");
 
-    // powercfg 删除系统文件可能需要短暂时间，轮询可以避免成功后立即重检造成误报。
+    // powercfg may need a moment to delete the system file; polling avoids false reports from rechecking immediately after success.
     for _ in 0..20 {
         if !check_hibernation_enabled() && !hiberfil_path.exists() {
             return true;
@@ -1227,29 +1227,29 @@ fn wait_for_hibernation_disabled() -> bool {
 
 #[cfg(target_os = "windows")]
 fn decode_command_output(raw: &[u8]) -> String {
-    // DISM 输出按 UTF-8 解码（命令前已经 chcp 65001）；
-    // 这里保留 lossy 回退，避免异常字节导致错误信息丢失。
+    // DISM output is decoded as UTF-8 (the command is preceded by chcp 65001);
+    // keep a lossy fallback here so unusual bytes do not cause the error message to be lost.
     String::from_utf8_lossy(raw).into_owned()
 }
 
-/// 当前正在运行的 DISM 进程 id。
+/// ID of the currently running DISM process.
 ///
-/// 中文说明：DISM 是独立进程，程序被强制关闭后它会继续在后台跑完，用户既看不到进度、
-/// 也不知道系统仍在改动。这里记录 pid，下次启动或发起新的清理前先把它结束掉，
-/// 避免留下"看不见的组件清理"。
+/// Note: DISM is a separate process; if the app is force-closed it keeps running in the background, with no progress visible to users
+/// and no indication that the system is still being modified. Record the pid here and terminate it before the next launch or a new cleanup,
+/// to avoid leaving behind an "invisible component cleanup".
 static RUNNING_DISM_PROCESS_ID: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
-/// 清理期间的独占标记。
+/// Exclusive marker during cleanup.
 ///
-/// DISM 的 `analyzecomponentstore` 和 `startcomponentcleanup` 不能同时在跑：
-/// 后启动的那个会拿到 `0x800f0806`（另一个操作正在进行）。
-/// 清理开始时先叫停分析，清理期间不再起新的分析。
+/// DISM's `analyzecomponentstore` and `startcomponentcleanup` cannot run at the same time:
+/// the one started later gets `0x800f0806` (another operation is in progress).
+/// Stop any running analysis when cleanup starts, and start no new analyses during cleanup.
 static WINSXS_CLEANUP_ACTIVE: AtomicBool = AtomicBool::new(false);
 
-/// 正在跑的 analyze 进程 id，清理开始前要把它结束掉。
+/// ID of a running analyze process, which must be terminated before cleanup starts.
 static WINSXS_ANALYZE_PID: AtomicU32 = AtomicU32::new(0);
 
-/// 清理期间独占组件存储；`Drop` 时自动解除，函数中途 return 也不会漏复位。
+/// Hold the component store exclusively during cleanup; released automatically on `Drop`, so even an early return cannot leave it set.
 struct WinsxsCleanupGuard;
 
 impl WinsxsCleanupGuard {
@@ -1266,7 +1266,7 @@ impl Drop for WinsxsCleanupGuard {
     }
 }
 
-/// 结束正在跑的 analyze 进程（如果有）。
+/// Terminate the running analyze process, if any.
 #[cfg(target_os = "windows")]
 fn terminate_running_analysis() {
     use std::os::windows::process::CommandExt;
@@ -1277,7 +1277,7 @@ fn terminate_running_analysis() {
         return;
     }
 
-    // analyzecomponentstore 是只读的，中途结束不会破坏组件存储
+    // analyzecomponentstore is read-only, so terminating it mid-run does not damage the component store
     let _ = Command::new("taskkill.exe")
         .args(["/PID", &pid.to_string(), "/T", "/F"])
         .creation_flags(0x08000000)
@@ -1288,9 +1288,9 @@ fn terminate_running_analysis() {
 #[cfg(not(target_os = "windows"))]
 fn terminate_running_analysis() {}
 
-/// 结束上一次残留的 DISM 进程（如果有）。
+/// Terminate a leftover DISM process from a previous run, if any.
 ///
-/// 中文说明：只结束我们自己启动、且仍在运行的那个 pid，不会误伤用户在命令行手动执行的 DISM。
+/// Note: only terminate the pid we started ourselves and that is still running; never affect a DISM the user launched manually from the command line.
 #[cfg(target_os = "windows")]
 fn terminate_previous_dism_process() {
     use std::os::windows::process::CommandExt;
@@ -1301,7 +1301,7 @@ fn terminate_previous_dism_process() {
         return;
     }
 
-    // 进程可能已经自然结束，taskkill 对不存在的 pid 会返回非零，这里不当作错误处理。
+    // The process may have already ended naturally; taskkill returns non-zero for a nonexistent pid, which is not treated as an error here.
     let result = Command::new("taskkill.exe")
         .args(["/PID", &previous_pid.to_string(), "/T", "/F"])
         .creation_flags(0x08000000)
@@ -1315,40 +1315,40 @@ fn terminate_previous_dism_process() {
     }
 }
 
-/// 程序启动时的检查点：**有意什么都不做**。
+/// Startup checkpoint: **intentionally does nothing**.
 ///
-/// `RUNNING_DISM_PROCESS_ID` 是进程内静态变量，重启后必然是 0 ——
-/// 这里根本拿不到"上次那个 DISM"的 pid，之前写成 `terminate_previous_dism_process()`
-/// 其实一次都没生效过（它读到的永远是 0，直接 return）。
+/// `RUNNING_DISM_PROCESS_ID` is a process-local static, so it is always 0 after a restart ——
+/// we cannot obtain the pid of "the previous DISM" here; the earlier `terminate_previous_dism_process()`
+/// never actually took effect (it always read 0 and returned immediately).
 ///
-/// 换一个角度也不该在这里杀：用户强关程序时 DISM 会继续把这次清理跑完
-/// （子进程独立于父进程），让它自然结束最安全；DISM 改动组件存储的**中途**被结束，
-/// 才可能留下需要系统回滚的中间状态 —— 那正是我们最该避免的事。
+/// From another angle, killing it here is also wrong: when the user force-closes the app, DISM continues and finishes this cleanup
+/// (the child is independent of the parent), so letting it finish naturally is safest; terminating DISM **midway** through modifying the component store
+/// is what could leave an intermediate state requiring system rollback —— exactly what we must avoid most.
 ///
-/// 如果它真的卡死，后果只是下一次清理报 `0x800f0806`（另一个操作正在进行），
-/// 用户重试即可，不值得在启动路径上冒这个险。
+/// If it really hangs, the consequence is only that the next cleanup reports `0x800f0806` (another operation is in progress),
+/// and the user can simply retry; it is not worth taking this risk on the startup path.
 pub fn cleanup_orphan_dism_process() {
-    // 故意留空，原因见上面的文档注释。
+    // Intentionally empty; see the doc comment above for the rationale.
 }
 
 // ============================================================================
-// 操作执行
+// Operation execution
 // ============================================================================
 
-/// 关闭休眠功能（异步执行并推送进度）。
+/// Disable hibernation (executed asynchronously with progress updates).
 ///
-/// 中文说明：powercfg 关闭休眠后还要等待系统删除 hiberfil.sys（大文件，可能需要一两秒），
-/// 同步执行会把主线程卡住、界面完全没有反馈；这里改为 spawn_blocking + 进度事件。
+/// Note: after powercfg disables hibernation, we must wait for the system to delete hiberfil.sys (a large file that may take a second or two),
+/// running it synchronously would block the main thread with no UI feedback; use spawn_blocking plus progress events instead.
 pub async fn disable_hibernation_with_progress(window: &Window) -> Result<String, String> {
     run_hibernation_toggle(window, false).await
 }
 
-/// 开启休眠功能（异步执行并推送进度）。
+/// Enable hibernation (executed asynchronously with progress updates).
 pub async fn enable_hibernation_with_progress(window: &Window) -> Result<String, String> {
     run_hibernation_toggle(window, true).await
 }
 
-/// 休眠开关的统一实现：关闭时轮询等待 hiberfil.sys 释放，并把等待过程报给前端。
+/// Shared implementation of the hibernation toggle: when disabling, poll until hiberfil.sys is released and report the wait to the frontend.
 async fn run_hibernation_toggle(window: &Window, enable: bool) -> Result<String, String> {
     if !check_admin() {
         return Err("需要管理员权限才能执行此操作，请以管理员身份运行程序".to_string());
@@ -1390,7 +1390,7 @@ async fn run_hibernation_toggle(window: &Window, enable: bool) -> Result<String,
                 if enable {
                     "命令已执行，正在确认系统状态..."
                 } else {
-                    // 删除 hiberfil.sys 需要时间，明确告诉用户在等什么，避免误以为卡死。
+                    // Deleting hiberfil.sys takes time; tell users clearly what is being waited on so they do not think it is stuck.
                     "命令已执行，正在等待系统释放 hiberfil.sys（文件较大，通常需要几秒）..."
                 },
                 70,
@@ -1457,12 +1457,12 @@ async fn run_hibernation_toggle(window: &Window, enable: bool) -> Result<String,
     }
 }
 
-/// 清理 WinSxS 组件存储（异步执行，实时推送进度）
+/// Clean the WinSxS component store (async, with live progress updates)
 pub async fn cleanup_winsxs(window: &Window) -> Result<String, String> {
     run_winsxs_cleanup(window, false).await
 }
 
-/// 深度清理 WinSxS 组件存储（ResetBase 会移除更新回滚基线）
+/// Deep-clean the WinSxS component store (ResetBase removes update rollback baselines)
 pub async fn cleanup_winsxs_resetbase(window: &Window) -> Result<String, String> {
     run_winsxs_cleanup(window, true).await
 }
@@ -1477,17 +1477,17 @@ async fn run_winsxs_cleanup(window: &Window, reset_base: bool) -> Result<String,
         use std::os::windows::process::CommandExt;
         use std::process::{Command, Stdio};
 
-        // 独占组件存储：叫停正在跑的分析，并在本次清理结束前不再起新的
+        // Exclusively hold the component store: stop any running analysis and start no new ones until this cleanup ends
         let _cleanup_guard = WinsxsCleanupGuard::acquire();
 
         info!("开始清理 WinSxS 组件存储，ResetBase: {}", reset_base);
 
-        // 先结束上一次可能残留的 DISM，避免两个清理进程同时改动组件存储。
+        // First terminate any leftover DISM from a previous run, so two cleanup processes cannot modify the component store at once.
         terminate_previous_dism_process();
 
         let started_at = std::time::Instant::now();
         let item_id = if reset_base { "winsxs_resetbase" } else { "winsxs" };
-        // DISM 清理耗时可能从几十秒到十几分钟，首条进度必须说明"这一步很慢"，否则用户会以为卡死。
+        // DISM cleanup can take from tens of seconds to over ten minutes; the first progress message must say "this step is slow", otherwise users will think it is stuck.
         emit_slim_progress(
             window,
             item_id,
@@ -1522,7 +1522,7 @@ async fn run_winsxs_cleanup(window: &Window, reset_base: bool) -> Result<String,
                 .creation_flags(0x08000000)
                 .spawn()?;
 
-            // 记录 pid：程序被强制关闭后，下次启动可以结束这个残留进程。
+            // Record the pid so the next launch can terminate this leftover process if the app was force-closed.
             RUNNING_DISM_PROCESS_ID.store(child.id(), Ordering::SeqCst);
 
             let stdout = child.stdout.take().ok_or_else(|| {
@@ -1532,9 +1532,9 @@ async fn run_winsxs_cleanup(window: &Window, reset_base: bool) -> Result<String,
                 std::io::Error::new(std::io::ErrorKind::Other, "无法读取 DISM 错误输出")
             })?;
 
-            // stdout 交给独立线程读：主线程要等进程结束，两边不能抢同一个管道。
-            // 这里和 analyze 共用 read_stream_with，按字节读 —— 中文系统下 DISM 输出是 GBK，
-            // 用 BufRead::lines() 会整行解码失败，进度条就再也不动。
+            // Read stdout in a separate thread: the main thread waits for the process to end, so the two must not compete for the same pipe.
+            // Like analyze, use read_stream_with and read by bytes here —— on Chinese systems DISM outputs GBK,
+            // and BufRead::lines() would fail to decode whole lines, leaving the progress bar frozen forever.
             let progress_handle = handle.clone();
             let stdout_thread = std::thread::spawn(move || {
                 let mut last_progress = 0u32;
@@ -1560,7 +1560,7 @@ async fn run_winsxs_cleanup(window: &Window, reset_base: bool) -> Result<String,
             let stderr_thread = std::thread::spawn(move || read_stream_with(stderr, |_| {}));
 
             let status = child.wait()?;
-            // 进程已结束，清掉 pid，避免下次启动或下一次清理去杀一个不存在的进程。
+            // The process has ended; clear the pid so the next launch or cleanup does not try to kill a nonexistent process.
             RUNNING_DISM_PROCESS_ID.store(0, Ordering::SeqCst);
 
             let stdout_bytes = stdout_thread.join().unwrap_or_default();
@@ -1597,8 +1597,8 @@ async fn run_winsxs_cleanup(window: &Window, reset_base: bool) -> Result<String,
                 Ok("系统组件存储清理完成".to_string())
             }
         } else {
-            // 两个流都看：DISM 的 "Error: 740 ..." 写在 stdout，部分版本写 stderr。
-            // 只取一路会得到一条空消息（旧实现就丢过一次）。
+            // Check both streams: DISM's "Error: 740 ..." goes to stdout, though some versions write to stderr.
+            // Reading only one yields an empty message (the old implementation once lost an error this way).
             let stderr = decode_command_output(&stderr_bytes);
             let stdout = decode_command_output(&stdout_bytes);
             let detail = if stderr.trim().is_empty() {
@@ -1626,14 +1626,14 @@ async fn run_winsxs_cleanup(window: &Window, reset_base: bool) -> Result<String,
     }
 }
 
-/// 从 DISM 输出行解析进度百分比
-/// DISM 进度行格式: "[===========================85.0%==================        ]"
+/// Parse the progress percentage from a DISM output line
+/// DISM progress line format: "[===========================85.0%==================        ]"
 fn parse_dism_progress(line: &str) -> Option<u32> {
-    // 查找形如 "XX.X%" 的进度标记
+    // Look for a progress marker of the form "XX.X%"
     let bytes = line.as_bytes();
     for (i, &b) in bytes.iter().enumerate() {
         if b.is_ascii_digit() {
-            // 检查后面是否有 '%' 符号
+            // Check whether a '%' sign follows
             let end = bytes[i..].iter().position(|&c| c == b'%').map(|p| i + p);
             if let Some(pct_pos) = end {
                 let num_str = std::str::from_utf8(&bytes[i..pct_pos]).ok()?;
@@ -1646,7 +1646,7 @@ fn parse_dism_progress(line: &str) -> Option<u32> {
     None
 }
 
-/// 打开系统虚拟内存设置
+/// Open the system virtual memory settings
 pub fn open_virtual_memory_settings() -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
@@ -1670,10 +1670,10 @@ pub fn open_virtual_memory_settings() -> Result<(), String> {
 }
 
 // ============================================================================
-// Windows 搜索索引（Windows.db 膨胀时重建，官方 SearchManager COM 接口）
+// Windows Search index (rebuild when Windows.db bloats, via the official SearchManager COM interface)
 // ============================================================================
 
-/// Windows Search 服务状态
+/// Windows Search service status
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum SearchServiceState {
     Running,
@@ -1682,7 +1682,7 @@ enum SearchServiceState {
     NotInstalled,
 }
 
-/// 查询 Windows Search 服务状态（服务控制管理器 + 注册表启动类型）
+/// Query the Windows Search service status (Service Control Manager + registry startup type)
 fn get_wsearch_service_state() -> SearchServiceState {
     use winapi::um::winsvc::{
         CloseServiceHandle, OpenSCManagerW, OpenServiceW, QueryServiceStatus, SC_MANAGER_CONNECT,
@@ -1692,7 +1692,7 @@ fn get_wsearch_service_state() -> SearchServiceState {
     #[cfg(target_os = "windows")]
     unsafe {
         use std::os::windows::ffi::OsStrExt;
-        // 注册表启动类型：4 = 已禁用，禁用状态下无法通过 COM 调用重建接口
+        // Registry startup type: 4 = disabled; when disabled, the rebuild interface cannot be invoked via COM
         let start_disabled = {
             use winreg::{enums::*, RegKey};
             if let Ok(key) = RegKey::predef(HKEY_LOCAL_MACHINE).open_subkey_with_flags(
@@ -1745,7 +1745,7 @@ fn get_wsearch_service_state() -> SearchServiceState {
     }
 }
 
-/// Windows 搜索索引数据库路径（默认位于 ProgramData，实际路径跟随环境变量）
+/// Windows Search index database path (defaults to ProgramData; the actual path follows environment variables)
 fn search_index_db_path() -> Option<std::path::PathBuf> {
     let program_data =
         std::env::var("ProgramData").unwrap_or_else(|_| r"C:\ProgramData".to_string());
@@ -1758,8 +1758,8 @@ fn search_index_db_path() -> Option<std::path::PathBuf> {
     }
 }
 
-/// 获取搜索索引瘦身项状态
-/// 注意：不把数据库大小计入可回收总量（size 仅用于展示），因为重建后索引会重新生成。
+/// Get the search index slim item status
+/// Note: do not count the database size in the total reclaimable amount (size is display-only), because the index is regenerated after a rebuild.
 fn get_search_index_status() -> SlimItemStatus {
     let service_state = get_wsearch_service_state();
     let db_size = search_index_db_path()
@@ -1811,7 +1811,7 @@ fn get_search_index_status() -> SlimItemStatus {
     }
 }
 
-/// 重建 Windows 搜索索引（通过官方 SearchManager COM 接口，与系统"索引选项"中的重建等效）
+/// Rebuild the Windows Search index (via the official SearchManager COM interface, equivalent to the rebuild in the system's "Indexing Options")
 pub fn rebuild_search_index() -> Result<String, String> {
     if !check_admin() {
         return Err("需要管理员权限才能执行此操作，请以管理员身份运行程序".to_string());
@@ -1831,8 +1831,8 @@ pub fn rebuild_search_index() -> Result<String, String> {
 
         info!("开始重建 Windows 搜索索引...");
 
-        // COM 初始化：S_OK(0) 表示本次初始化成功，结束时需 CoUninitialize；
-        // S_FALSE(1) / RPC_E_CHANGED_MODE 表示线程已有 COM 状态，直接复用。
+        // COM initialization: S_OK(0) means initialization succeeded and needs CoUninitialize at the end;
+        // S_FALSE(1) / RPC_E_CHANGED_MODE mean the thread already has COM state, so reuse it directly.
         let co_result = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
         let mut need_uninitialize = false;
         match co_result.0 {
@@ -1844,10 +1844,10 @@ pub fn rebuild_search_index() -> Result<String, String> {
             }
         }
 
-        // 索引已在重建/恢复时直接返回提示，避免重复触发
+        // If the index is already rebuilding/recovering, return a hint directly to avoid duplicate triggers
         let mut already_rebuilding = false;
         let rebuild_result = (|| -> windows::core::Result<()> {
-            // CSearchManager 为 SearchAPI.dll 中 SearchManager coclass 的 CLSID
+            // CSearchManager is the CLSID of the SearchManager coclass in SearchAPI.dll
             let manager: ISearchManager =
                 unsafe { CoCreateInstance(&CSearchManager, None, CLSCTX_ALL)? };
             let catalog = unsafe { manager.GetCatalog(&HSTRING::from("SystemIndex")) }?;
@@ -1895,20 +1895,20 @@ mod tests {
 
     #[test]
     fn parses_dism_progress_percentages() {
-        // DISM 的输出形如 "[==========35.5%==========          ]"，必须能取出百分比。
+        // DISM output looks like "[==========35.5%==========          ]"; we must be able to extract the percentage.
         assert_eq!(parse_dism_progress("[==========35.5%==========          ]"), Some(35));
         assert_eq!(parse_dism_progress("[===========================85.0%==================        ]"), Some(85));
         assert_eq!(parse_dism_progress("[100.0%]"), Some(100));
-        // 没有百分比的行（普通日志）不应被误判为进度。
+        // Lines without a percentage (ordinary logs) must not be mistaken for progress.
         assert_eq!(parse_dism_progress("Deployment Image Servicing and Management tool"), None);
         assert_eq!(parse_dism_progress(""), None);
     }
 
     #[test]
     fn splits_carriage_return_progress_updates() {
-        // DISM 在同一行里用 \r 重绘进度条，整段只有一个 \n。
-        // 只按 \n 切行的话，一条进度要等到整步结束才吐出来，
-        // 界面上的百分比和"已用 Ns"会一起冻住（2026-11-17 实测就是这个现象）。
+        // DISM redraws the progress bar with \r on the same line; the whole segment has only one \n.
+        // If we split only on \n, a progress update is emitted only when the whole step ends,
+        // freezing both the percentage and "elapsed Ns" in the UI (observed on 2026-11-17).
         let payload = b"[===10.0%===]\r[===35.0%===]\r[===60.0%===]\r\n";
         let mut seen: Vec<u32> = Vec::new();
         read_stream_with(&payload[..], |line| {
@@ -1921,15 +1921,15 @@ mod tests {
 
     #[test]
     fn parses_whole_and_fractional_percentages() {
-        // DISM 不同版本会给 "35.5%" 或 "35%" 两种写法，都要能解析。
+        // Different DISM versions emit "35.5%" or "35%"; both must be parseable.
         assert_eq!(parse_dism_progress("[===== 7% =====]"), Some(7));
         assert_eq!(parse_dism_progress("[===== 7.9% =====]"), Some(7));
     }
 
     #[test]
     fn caches_successful_analysis_but_not_failures() {
-        // 成功结果（包括"没有可回收内容"）都要缓存：0 是最常见的情况，不缓存等于每次
-        // 打开检测页都重跑一轮 DISM。清理动作会调 clear_cached_winsxs_size() 主动作废。
+        // Cache successful results (including "nothing reclaimable"): 0 is the most common case, and not caching means every
+        // opening of the check page reruns DISM. Cleanup actions call clear_cached_winsxs_size() to invalidate proactively.
         *WINSXS_ANALYZE_CACHE.write().unwrap() = None;
 
         store_memory_winsxs_result(WinsxsAnalyzeResult {
@@ -1957,7 +1957,7 @@ mod tests {
             "0 可回收也是有效结论，必须缓存"
         );
 
-        // 分析失败不覆盖已有缓存：上次的结论比"什么都没有"更有用
+        // A failed analysis does not overwrite an existing cache: a previous conclusion is more useful than "nothing"
         store_memory_winsxs_result(WinsxsAnalyzeResult {
             reclaimable_size: 1024,
             cleanup_recommended: true,
@@ -1982,7 +1982,7 @@ mod tests {
             cleanup_recommended: true,
             reclaimable_packages: 7,
             analysis_succeeded: true,
-            // 分项明细也要能跟着磁盘缓存一起往返
+            // Sub-item details must also round-trip with the disk cache
             backups_size: 1536,
             cache_size: 512,
         };
@@ -1991,15 +1991,15 @@ mod tests {
         let parsed = parse_disk_cache(&json, 1_500).expect("未过期应能读回");
         assert_eq!(parsed.reclaimable_size, result.reclaimable_size);
         assert_eq!(parsed.reclaimable_packages, 7);
-        // 分项明细必须跟着往返：丢了它，重开应用后界面又只剩一个总数
+        // Sub-item details must round-trip: without them, the UI would again show only a total after restart
         assert_eq!(parsed.backups_size, 1536);
         assert_eq!(parsed.cache_size, 512);
 
-        // 超过磁盘 TTL 后不再拿来展示，避免把好几天前的结论当成现状
+        // Do not display it past the disk TTL, to avoid treating a days-old conclusion as current
         let too_old = 1_000 + WINSXS_DISK_CACHE_TTL_SECS + 1;
         assert!(parse_disk_cache(&json, too_old).is_none(), "过期缓存应被丢弃");
 
-        // 分析失败的结果即使刚写进去也不认
+        // A failed-analysis result is rejected even if just written
         let failed = serialize_disk_cache(WinsxsAnalyzeResult::default(), 1_000).unwrap();
         assert!(parse_disk_cache(&failed, 1_000).is_none());
 
@@ -2008,7 +2008,7 @@ mod tests {
 
     #[test]
     fn decodes_multi_sz_pagefile_list() {
-        // REG_MULTI_SZ 是 UTF-16LE：项之间单 \0，末尾双 \0
+        // REG_MULTI_SZ is UTF-16LE: single \0 between items, double \0 at the end
         let mut bytes = Vec::new();
         for entry in [r"C:\pagefile.sys 2048 4096", r"D:\pagefile.sys 1024 1024"] {
             for unit in entry.encode_utf16() {
@@ -2023,7 +2023,7 @@ mod tests {
         assert!(entries[0].starts_with(r"C:\pagefile.sys"));
         assert!(entries[1].starts_with(r"D:\pagefile.sys"));
 
-        // 空值（全 0）应得到空列表，而不是一个空字符串项
+        // An empty value (all zeros) should yield an empty list, not one empty-string item
         assert!(decode_reg_multi_sz(&[0, 0, 0, 0]).is_empty());
     }
 
@@ -2032,7 +2032,7 @@ mod tests {
         let entries = vec![
             r"C:\pagefile.sys 2048 4096".to_string(),
             r"D:\pagefile.sys".to_string(),
-            // 非盘符路径、占位符都要跳过
+            // Skip non-drive-letter paths and placeholders
             "".to_string(),
             "*".to_string(),
         ];
@@ -2040,13 +2040,13 @@ mod tests {
 
         assert_eq!(configs.len(), 2);
         assert_eq!(configs[0].max_size, 4096 * 1024 * 1024);
-        // 没写数字 = 系统管理大小，大小留 0 交给实文件读取
+        // No numbers = system-managed size; leave size at 0 and let the actual file provide it
         assert_eq!(configs[1].max_size, 0);
     }
 
     #[test]
     fn parses_english_and_chinese_analyze_reports() {
-        // 英文（加 /english 后的实际输出形态）
+        // English (actual output form after adding /english)
         let english = "Number of Reclaimable Packages : 2\n\
                        Component Store Cleanup Recommended : Yes\n\
                            Backups and Disabled Features : 4.46 GB\n";
@@ -2056,8 +2056,8 @@ mod tests {
         assert!(result.cleanup_recommended);
         assert!(result.reclaimable_size > 4 * 1024 * 1024 * 1024);
 
-        // 中文：标签是"建议执行组件存储清理"，中间插了"执行组件存储"，
-        // 只按 contains("建议清理") 匹配会漏判 —— 真机上因此显示过"无需清理"。
+        // Chinese: the label is "component store cleanup is recommended", with words inserted in the middle,
+        // matching only contains("cleanup recommended") would miss it —— this has shown "no cleanup needed" on real machines.
         let chinese = "可回收的程序包数 : 2\n\
                        建议执行组件存储清理 : 是\n\
                            备份和禁用的组件 : 4.46 GB\n";
@@ -2069,8 +2069,8 @@ mod tests {
 
     #[test]
     fn splits_reclaimable_size_into_breakdown() {
-        // DISM 的可回收估算恰好由两行组成：界面要分开显示"被取代的旧组件副本"
-        // 与"缓存和临时数据"，否则用户只看到一个总数，不知道它想删什么。
+        // DISM's reclaimable estimate consists of exactly two lines: the UI must show "superseded old component copies"
+        // and "cache and temporary data" separately, otherwise users see only a total and do not know what it wants to delete.
         let english = "Backups and Disabled Features : 1.00 GB\n\
                        Cache and Temporary Data : 512 MB\n\
                        Number of Reclaimable Packages : 1\n\
@@ -2084,7 +2084,7 @@ mod tests {
             "总数必须等于两项之和，不能只统计其中一行"
         );
 
-        // 中文标签同样要拆开：只算总数等于把两类完全不同的数据混成一笔。
+        // Chinese labels must be split too: counting only the total would mix two completely different kinds of data into one figure.
         let chinese = "备份和已禁用的功能 : 2.00 GB\n\
                        缓存和临时数据 : 256 MB\n\
                        可回收的程序包数 : 1\n\
@@ -2097,12 +2097,12 @@ mod tests {
 
     #[test]
     fn unparseable_report_is_not_reported_as_clean() {
-        // 空输出 / 错误输出不能当成"成功且 0 可回收"—— 那会让界面显示"无需清理"，
-        // 用户会以为扫过了确实没有。必须判为分析失败。
+        // Empty or error output must not be treated as "success with 0 reclaimable" —— that would show "no cleanup needed" in the UI,
+        // making users think a scan was done and found nothing. It must be judged an analysis failure.
         assert!(!parse_winsxs_analyze_output("").analysis_succeeded);
         assert!(!parse_winsxs_analyze_output("Error: 740 Elevated permissions").analysis_succeeded);
 
-        // 认得出结论、且结论是"否"：这才是真正的"没有可回收内容"
+        // A conclusion was recognized and it is "no": this is the real "nothing reclaimable"
         let clean = parse_winsxs_analyze_output(
             "Number of Reclaimable Packages : 0\nCleanup Recommended : No\n",
         );
@@ -2122,7 +2122,7 @@ mod tests {
             elapsed_ms: 1234,
         };
         let json = serde_json::to_value(&progress).expect("进度结构应可序列化");
-        // 前端依赖这些字段名，改动字段会让进度条直接失效，因此在这里锁定。
+        // The frontend depends on these field names; changing them would break the progress bar, so they are locked here.
         for key in ["item_id", "phase", "message", "percent", "status", "elapsed_ms"] {
             assert!(json.get(key).is_some(), "缺少字段: {}", key);
         }

@@ -1,11 +1,11 @@
 // ============================================================================
-// AI 工具清理命令
+// AI tool cleanup commands
 // ============================================================================
 
 use crate::scanner::{AiCacheDeleteResult, AiCacheFileList, AiToolScanner, AiToolScanResult};
 use log::info;
 
-/// 扫描各家 AI 工具的缓存。扫描要遍历目录，放阻塞线程池里跑，避免卡住 UI。
+/// Scans caches of various AI tools. Scanning traverses directories, so run it in the blocking thread pool to avoid freezing the UI.
 #[tauri::command]
 pub async fn scan_ai_tool_caches() -> Result<AiToolScanResult, String> {
     info!("开始扫描 AI 工具缓存");
@@ -25,13 +25,13 @@ pub async fn scan_ai_tool_caches() -> Result<AiToolScanResult, String> {
     Ok(result)
 }
 
-/// 删除选中的缓存目录，返回成功数与失败明细。
+/// Deletes the selected cache directories, returning the success count and failure details.
 ///
-/// 每个路径都会在 `AiToolScanner::delete_dirs` 里重新校验归属 —— 前端传来的路径不可信，
-/// 而删目录没有回收站可退，所以宁可多校验一次。
+/// Every path is re-validated for ownership in `AiToolScanner::delete_dirs` — paths from the frontend are not trusted,
+/// and directory deletion has no recycle bin to recover from, so an extra check is worthwhile.
 ///
-/// 返回值必须带失败列表：工具开着时缓存文件常被占用，只回一个成功数会让界面
-/// 显示"已删除 N 个"，而实际占用一点没降。
+/// The return value must include a failure list: cache files are often in use while tools run, so returning only a success count would make the UI
+/// show "deleted N items" while the actual usage has not dropped at all.
 #[tauri::command]
 pub async fn delete_ai_tool_caches(paths: Vec<String>) -> Result<AiCacheDeleteResult, String> {
     if paths.is_empty() {
@@ -57,9 +57,9 @@ pub async fn delete_ai_tool_caches(paths: Vec<String>) -> Result<AiCacheDeleteRe
     Ok(result)
 }
 
-/// 列出某个缓存目录下的全部文件（明细弹窗用）。
+/// Lists all files under a cache directory (for the detail modal).
 ///
-/// 同样要校验路径归属：这个接口虽然只读，但也不该让前端用它去遍历任意目录。
+/// Path ownership must also be validated here: although this endpoint is read-only, the frontend should not use it to traverse arbitrary directories.
 #[tauri::command]
 pub async fn list_ai_cache_files(path: String) -> Result<AiCacheFileList, String> {
     let target = std::path::PathBuf::from(&path);

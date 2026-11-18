@@ -1,13 +1,13 @@
 // ============================================================================
-// 主题化复选框
-// 统一处理勾选、禁用和键盘焦点状态，避免各模块重复维护原生样式。
-// 尺寸用 em 而非 rem，跟随 :root 的全局字号设置一起缩放。
+// Themed checkbox
+// Handles checked, disabled and keyboard-focus states uniformly, avoiding each module maintaining native styles separately.
+// Sizes use em rather than rem, so they scale together with the global font-size setting on :root.
 // ============================================================================
 
 import type { ChangeEvent, InputHTMLAttributes } from 'react';
 
 export interface CheckboxProps extends Omit<InputHTMLAttributes<HTMLInputElement>, 'type' | 'onChange'> {
-  /** 复选框状态变化回调。 */
+  /** Callback when the checkbox state changes. */
   onChange?: (checked: boolean, event: ChangeEvent<HTMLInputElement>) => void;
 }
 

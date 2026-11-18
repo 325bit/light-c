@@ -1,6 +1,6 @@
 // ============================================================================
-// 旧驱动清理模块
-// 正在使用的驱动包由后端锁定，其他未关联活动设备的条目交由用户确认。
+// Old driver cleanup module
+// Driver packages currently in use are locked by the backend; other entries not associated with active devices are left for user confirmation.
 // ============================================================================
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -56,7 +56,7 @@ function getStatusLabel(packageInfo: DriverPackageInfo, translate: (key: string)
 }
 
 function getStatusClass(packageInfo: DriverPackageInfo): string {
-  // 状态标签沿用 AI 模块的中性底色，只用品牌色和图表色表达语义，避免彩色块抢占信息层级。
+  // Status labels reuse the AI module's neutral background; only brand and chart colors carry semantics, avoiding colored blocks stealing information hierarchy.
   const baseClass = 'border border-[var(--border-color)] bg-[var(--bg-hover)]';
   switch (packageInfo.status) {
     case 'old_confirmed': return `${baseClass} text-[var(--brand-green)]`;
@@ -68,7 +68,7 @@ function getStatusClass(packageInfo: DriverPackageInfo): string {
 }
 
 function getPackageCardClass(): string {
-  // AI 模块的列表使用统一卡片边框，驱动状态通过标签表达，避免每张卡片变成彩色面板。
+  // The AI module's list uses a unified card border and driver status is expressed via labels, avoiding each card becoming a colored panel.
   return 'border-[var(--border-default)] bg-[var(--bg-card)] hover:border-[var(--brand-green)]';
 }
 
@@ -140,7 +140,7 @@ function getDriverClassBadge(className: string, translate?: (key: string) => str
     usb: 'bg-blue-500',
   };
 
-  // 分类使用 CHART_PALETTE 同源的颜色点，保持与 AI 模型空间图表一致。
+  // Categories use color dots from the same source as CHART_PALETTE, staying consistent with AI model space charts.
   return {
     label: getDriverClassLabel(className, translate),
     className: badgeClasses[normalizedClassName] ?? 'text-[var(--text-muted)]',
@@ -159,7 +159,7 @@ function getReasonLabel(packageInfo: DriverPackageInfo, translate: (key: string)
 }
 
 function getReasonClass(packageInfo: DriverPackageInfo): string {
-  // 判定理由与状态标签共享颜色，底色保持项目统一的 hover 灰。
+  // The decision reason shares its color with the status label; the background keeps the project's unified hover gray.
   const baseClass = 'border border-[var(--border-color)] bg-[var(--bg-hover)]';
   switch (packageInfo.status) {
     case 'old_confirmed': return `${baseClass} text-[var(--brand-green)]`;
@@ -175,20 +175,20 @@ function getDriverSearchQuery(packageInfo: DriverPackageInfo): string {
     .replace(/\.inf$/i, '')
     .replace(/[_-]+/g, ' ')
     .trim();
-  // pnputil 版本字段通常带日期；只保留版本号，避免日期干扰搜索结果。
+  // The pnputil version field usually includes a date; keep only the version number to avoid dates interfering with search results.
   const version = packageInfo.driver_version.match(/\d+(?:\.\d+){1,}/)?.[0] ?? '';
   return [packageInfo.provider_name, driverName, version, 'driver'].filter(Boolean).join(' ');
 }
 
 /**
- * 给 AI 助手的问题。
+ * Question for the AI assistant.
  *
- * 与 getDriverSearchQuery 的区别很关键：那个拼的是**给搜索引擎的关键字**
- * （`Microsoft oem7 10.0.26100.1882 driver`），用空格堆词；直接把这种关键字丢给 AI，
- * 它结合「旧驱动清理」的上下文会读成"处理一下这个驱动"，于是开始提删除 ——
- * 用户点快捷提问明明是想**了解这个驱动**。
+ * The difference from getDriverSearchQuery is crucial: that one builds **keywords for a search engine**
+ * (`Microsoft oem7 10.0.26100.1882 driver`), piling words with spaces; feeding such keywords directly to AI,
+ * combined with the "old driver cleanup" context, reads as "deal with this driver" and it starts suggesting deletion —
+ * whereas the user clicking a quick question clearly wants to **learn about this driver**.
  *
- * 所以这里用完整问句把意图说清楚，但字段仍然取自同一份数据，不另维护一套。
+ * So use a full question here to make the intent clear, but still source fields from the same data, without maintaining a second set.
  */
 function getDriverAiQuestion(packageInfo: DriverPackageInfo): string {
   const driverName = packageInfo.original_name
@@ -220,13 +220,13 @@ export function DriverCleanupModule({ isPageActive = true }: ModuleRenderProps) 
   const [restoring, setRestoring] = useState(false);
   const toolbarRef = useRef<HTMLDivElement>(null);
   const [isToolbarSticky, setIsToolbarSticky] = useState(false);
-  // 默认只展示"用户能自己拿主意"的驱动包（见 isActionableWithEvidence）。
-  // 以前一股脑全列出来，有用户反馈整屏都是「信息不完整」，看了也不知道该不该删。
-  // 全部驱动没被删掉，只是移到开关后面。
+  // By default only show driver packages "the user can decide on themselves" (see isActionableWithEvidence).
+  // Previously everything was listed; users reported the whole screen was "incomplete info" and they could not tell whether to delete.
+  // All drivers are not deleted, just moved behind a toggle.
   const [showAllDrivers, setShowAllDrivers] = useState(false);
 
-  // 接入 AI 助手：模块侧只写这一处（与垃圾清理写法形状一致）。
-  // 旧驱动的"可操作项"就是可安全处理的驱动包，id 用 published_name（稳定，pnputil 也认它）。
+  // Integrate the AI assistant: the module side writes only this one place (same shape as junk cleanup).
+  // The "actionable items" for old drivers are safely handleable driver packages, id uses published_name (stable, pnputil recognizes it too).
   useAiModuleBridge('driver-cleanup', {
     summary: () => {
       if (!scanResult) return null;
@@ -236,13 +236,13 @@ export function DriverCleanupModule({ isPageActive = true }: ModuleRenderProps) 
         `当前${scanResult.is_admin ? '有' : '没有'}管理员权限，用户已勾选 ${selectedNames.size} 个。`,
       ].join('');
     },
-    // 只读读取：驱动包列表。**与界面同源**，但给"全部"而不是默认筛选后的那些 ——
-    // 界面上有「显示全部驱动」开关，用户问到任何一行都得答得上。
-    // 每条带上状态判定，模型才不可能把"正在使用"的驱动也说成能删。
+    // Read-only access: driver package list. **Same source as the UI**, but give "all" rather than the default filtered ones —
+    // there is a "show all drivers" toggle in the UI, and users may ask about any row.
+    // Include each item's status decision so the model cannot say an "in use" driver is deletable.
     readItems: (_targetId, offset, limit) => {
       const list = scanResult?.packages ?? [];
       if (list.length === 0) {
-        // 空结果的两种原因要分开说，否则排查方向完全是两回事
+        // The two causes of an empty result must be stated separately, otherwise the troubleshooting directions are completely different
         return {
           total: 0,
           lines: [
@@ -262,8 +262,8 @@ export function DriverCleanupModule({ isPageActive = true }: ModuleRenderProps) 
         }),
       };
     },
-    // 只读：单条详情。id 用 published_name（与 targets 一致）；
-    // 用户问的那句话里通常只有"原名 + 厂商 + 版本"，所以再按原名兜一次。
+    // Read-only: single-item detail. id uses published_name (consistent with targets);
+    // the question users ask usually only contains "original name + vendor + version", so fall back once more by original name.
     readItemDetail: (itemId) => {
       const wanted = itemId.trim();
       if (!wanted) return null;
@@ -283,7 +283,7 @@ export function DriverCleanupModule({ isPageActive = true }: ModuleRenderProps) 
         `占用：${item.total_size > 0 ? formatSize(item.total_size) : '无法读取'}（${item.file_count} 个文件）`,
         `关联设备：共 ${item.device_count} 个（在用 ${item.active_device_count}、已安装 ${item.installed_device_count}、被更高版本替代 ${item.outranked_device_count}）`,
         `判定依据：${getReasonLabel(item, moduleT)} —— ${item.reason}`,
-        // 结论由**本地事实**给出，不交给模型自己判断能不能删
+        // The conclusion is given by **local facts**, not left to the model to judge whether it can be deleted
         item.actionable
           ? '结论：按上面的判定，这个驱动包可以做安全清理（删除前程序会自动备份，可以回退）。'
           : '结论：**不建议清理这个驱动包** —— 按上面的判定理由，删除可能影响设备或无法回退。',
@@ -297,29 +297,29 @@ export function DriverCleanupModule({ isPageActive = true }: ModuleRenderProps) 
           label: item.original_name || item.published_name,
           detail: `${item.provider_name || '未知厂商'} · ${item.reason}`,
         })),
-    // 删除动作等工具调用接上后再补：它必须调用模块原有的 deleteOldDrivers，
-    // 好让"校验 → 全部备份 → 删除 → 复核"整套流程继续生效。
+    // The delete action will be added once tool calls are wired up: it must call the module's existing deleteOldDrivers,
+    // so the whole "validate → back up everything → delete → recheck" flow keeps working.
   });
 
   const visiblePackages = useMemo(
     () =>
       (scanResult?.packages ?? []).filter((packageInfo) => {
         if (showAllDrivers) return true;
-        // 默认视图只保留"有明确依据、用户能自己判断"的两类：
-        //   old_confirmed —— 在设备匹配列表里被更高排名驱动替代（就是后端算的"高置信"）
-        //   recommended   —— 未关联设备，且同一驱动族存在更新版本
-        // 其余三类都放到「显示全部驱动」后面：
-        //   in_use           正在使用，本来就不能删
-        //   unknown          信息不完整，用户看了也无从判断（有用户反馈整屏都是这个）
-        //   no_newer_version 未确认过时，删了就没有别的版本可回退
+        // The default view keeps only the two kinds with "clear evidence that users can judge themselves":
+        //   old_confirmed — replaced by a higher-ranked driver in the device match list (what the backend calls "high confidence")
+        //   recommended   — no associated device, and a newer version exists in the same driver family
+        // The other three kinds go behind "show all drivers":
+        //   in_use           currently in use, cannot be deleted anyway
+        //   unknown          incomplete info, users cannot judge even if shown (users reported whole screens of this)
+        //   no_newer_version not confirmed outdated, deleting leaves no other version to roll back to
         if (!packageInfo.actionable) return false;
         return packageInfo.status === 'old_confirmed' || packageInfo.status === 'recommended';
       }),
     [scanResult, showAllDrivers],
   );
   const hiddenDriverCount = (scanResult?.packages.length ?? 0) - visiblePackages.length;
-  // 操作栏里那行展示范围的文案：默认说清"只显示可安全处理的、隐藏了多少"，
-  // 打开开关后说清"现在看的是全部"。文案可能偏长，操作栏里会限宽截断。
+  // The line in the action bar describing display scope: by default say clearly "only safely handleable ones shown, N hidden",
+  // and when the toggle is on say "now showing all". The text may be long and is truncated by the action bar's width limit.
   const listScopeText = showAllDrivers
     ? moduleT('driverUi.allList', { total: scanResult?.packages.length ?? 0 })
     : moduleT('driverUi.filteredList', {
@@ -393,7 +393,7 @@ export function DriverCleanupModule({ isPageActive = true }: ModuleRenderProps) 
         && highConfidenceNames.every((publishedName) => current.has(publishedName));
       const next = new Set(current);
 
-      // 只切换高置信集合，保留用户手动选中的其他候选驱动。
+      // Only toggle the high-confidence set, preserving other candidates the user selected manually.
       highConfidenceNames.forEach((publishedName) => {
         if (allSelected) next.delete(publishedName);
         else next.add(publishedName);
@@ -404,7 +404,7 @@ export function DriverCleanupModule({ isPageActive = true }: ModuleRenderProps) 
 
   const handleSearchDriver = useCallback(async (packageInfo: DriverPackageInfo) => {
     try {
-      // 只使用精简后的厂商、驱动名和版本，避免日期字段干扰搜索结果。
+      // Use only the simplified vendor, driver name and version, to avoid the date field interfering with search results.
       await openSearchUrl(getDriverSearchQuery(packageInfo));
     } catch (error) {
       showToast({ title: t('openSearchFailed'), description: String(error), type: 'error' });
@@ -472,21 +472,21 @@ export function DriverCleanupModule({ isPageActive = true }: ModuleRenderProps) 
   const allHighConfidenceSelected = highConfidenceNames.length > 0
     && selectedHighConfidenceCount === highConfidenceNames.length;
 
-  // 删除确认弹窗需要展示本次会删除的驱动名和占用，这里直接在渲染前算出，
-  // 避免弹窗内再遍历一次 packages。
+  // The delete-confirmation modal needs to show the names and usage of drivers to be deleted; compute before rendering here,
+  // to avoid traversing packages again inside the modal.
   const selectedPackages = useMemo(
     () => scanResult?.packages.filter((packageInfo) => selectedNames.has(packageInfo.published_name)) ?? [],
     [scanResult, selectedNames],
   );
   const selectedDriverSize = selectedPackages.reduce((sum, packageInfo) => sum + packageInfo.total_size, 0);
   const selectedDriverSummary = useMemo(() => {
-    // 单个驱动时直接显示文件名，多个时只给数量，避免文案被长文件名撑爆。
+    // For a single driver show the file name directly; for multiple just give the count, to avoid long file names blowing up the text.
     if (selectedPackages.length === 1) {
       return selectedPackages[0].original_name || selectedPackages[0].published_name;
     }
     return moduleT('driverUi.confirmDeleteTarget', { count: selectedPackages.length });
   }, [moduleT, selectedPackages]);
-  // 后端拿不到占用时传 0，前端统一显示“未知”，不展示 0 B 误导用户。
+  // When the backend cannot get usage it passes 0; the frontend uniformly shows "unknown", never 0 B which would mislead users.
   const selectedDriverSizeText = selectedDriverSize > 0
     ? formatSize(selectedDriverSize)
     : moduleT('driverUi.unknownSize');
@@ -543,8 +543,8 @@ export function DriverCleanupModule({ isPageActive = true }: ModuleRenderProps) 
                 ref={toolbarRef}
                 className={`driver-toolbar sticky top-2 z-20 mx-auto flex max-w-full flex-wrap items-center justify-center gap-1.5 rounded-xl border border-[var(--border-default)] bg-[var(--bg-elevated)] px-2 py-1.5 shadow-sm transition-[width,box-shadow,background-color] duration-200 ease-out ${isToolbarSticky ? 'w-fit shadow-md' : 'w-full'}`}
               >
-                {/* 「显示全部」开关，和操作按钮共用同一行。
-                    展示范围的文案不直接显示出来（占宽又没必要），挂在 title 上，hover 可见。 */}
+                {/* The "show all" toggle shares a row with the action buttons.
+                    The scope text is not shown directly (takes width unnecessarily); attach it to title, visible on hover. */}
                 <span
                   className="flex items-center gap-1 px-1 text-xs text-[var(--fg-muted)]"
                   title={listScopeText}
@@ -592,7 +592,7 @@ export function DriverCleanupModule({ isPageActive = true }: ModuleRenderProps) 
               </div>
 
               <div className="min-w-0">
-              {/* 权限提示由公共组件自己判断，模块不再持有 is_admin 分支 */}
+              {/* Permission hint is judged by the common component itself; the module no longer holds an is_admin branch */}
               <AdminRequiredHint description={moduleT('driverUi.adminHint')} />
 
               {visiblePackages.length === 0 ? (
@@ -659,9 +659,9 @@ export function DriverCleanupModule({ isPageActive = true }: ModuleRenderProps) 
                             >
                               <Search className="h-3.5 w-3.5" />
                             </button>
-                            {/* 快捷提问：点它是**了解这个驱动**，不是要求操作 ——
-                                所以用完整问句（见 getDriverAiQuestion），
-                                而不是把搜索引擎的关键字原样丢过去。 */}
+                            {/* Quick question: clicking it means **learning about this driver**, not requesting an action —
+                                so use a full question (see getDriverAiQuestion),
+                                rather than passing search-engine keywords verbatim. */}
                             <AiAskButton
                               question={getDriverAiQuestion(packageInfo)}
                               className="inline-flex h-7 w-7 items-center justify-center"

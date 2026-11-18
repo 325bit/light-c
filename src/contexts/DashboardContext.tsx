@@ -1,6 +1,6 @@
 // ============================================================================
-// 仪表盘状态管理 Context
-// 管理所有清理模块的扫描状态，支持并发扫描和实时进度更新
+// Dashboard state management Context
+// Manages scan state for all cleanup modules, supporting concurrent scans and real-time progress updates
 // ============================================================================
 
 import { createContext, useContext, useState, useCallback, useEffect, useMemo, useRef, ReactNode } from 'react';
@@ -15,84 +15,84 @@ import {
 import type { DiskInfo } from '../types';
 
 // ============================================================================
-// 类型定义
+// Type definitions
 // ============================================================================
 
-/** 模块扫描状态 */
+/** Module scan status */
 export type ModuleStatus = 'idle' | 'scanning' | 'done' | 'error';
 
-/** 单个模块的状态 */
+/** State of a single module */
 export interface ModuleState {
-  /** 模块状态 */
+  /** Module status */
   status: ModuleStatus;
-  /** 扫描进度（0-100） */
+  /** Scan progress (0-100) */
   progress: number;
-  /** 发现的文件数量 */
+  /** Number of files found */
   fileCount: number;
-  /** 可清理的总大小 */
+  /** Total size that can be cleaned */
   totalSize: number;
-  /** 错误信息 */
+  /** Error message */
   error: string | null;
-  /** 最后更新时间 */
+  /** Last update time */
   lastUpdated: number;
 }
 
-/** 所有模块的状态映射 */
+/** Status map for all modules */
 export interface ModulesState {
-  /** 垃圾清理模块 */
+  /** Junk cleanup module */
   junk: ModuleState;
-  /** 大文件清理模块 */
+  /** Big file cleanup module */
   bigFiles: ModuleState;
-  /** 社交软件清理模块 */
+  /** Social software cleanup module */
   social: ModuleState;
-  /** 系统瘦身模块 */
+  /** System slim module */
   system: ModuleState;
-  /** 旧驱动清理模块 */
+  /** Old driver cleanup module */
   driverCleanup: ModuleState;
-  /** 卸载残留模块 */
+  /** Uninstall leftovers module */
   leftovers: ModuleState;
-  /** 注册表冗余模块 */
+  /** Registry redundancy module */
   registry: ModuleState;
-  /** C盘热点扫描模块 */
+  /** C drive hotspot scan module */
   hotspot: ModuleState;
-  /** 右键菜单清理模块 */
+  /** Context menu cleanup module */
   contextMenu: ModuleState;
-  /** C 盘全盘变化分析模块 */
+  /** C drive full-disk change analysis module */
   diskGrowth: ModuleState;
-  /** AI资产分析模块 */
+  /** AI asset analysis module */
   aiModels: ModuleState;
   shellIcons: ModuleState;
 }
 
-/** 仪表盘 Context 值类型 */
+/** Dashboard Context value type */
 export interface DashboardContextValue {
-  /** 磁盘信息 */
+  /** Disk info */
   diskInfo: DiskInfo | null;
-  /** 健康评分数据 */
+  /** Health score data */
   healthData: HealthScoreResult | null;
-  /** 是否正在加载健康评分 */
+  /** Whether the health score is loading */
   isLoadingHealth: boolean;
-  /** 所有模块的状态 */
+  /** State of all modules */
   modules: ModulesState;
-  /** 更新模块状态 */
+  /** Update module state */
   updateModuleState: (moduleId: keyof ModulesState, state: Partial<ModuleState>) => void;
-  /** 刷新磁盘信息 */
+  /** Refresh disk info */
   refreshDiskInfo: () => Promise<void>;
-  /** 刷新健康评分；传入盘符即按该盘重算，不传沿用上一次的盘 */
+  /** Refresh health score; pass a drive letter to recompute for that drive, omit to reuse the last drive */
   refreshHealthScore: (driveLetter?: string) => Promise<void>;
-  /** 是否有任何模块正在扫描 */
+  /** Whether any module is scanning */
   isAnyScanning: boolean;
-  /** 健康评分刷新触发器 */
+  /** Health score refresh trigger */
   healthRefreshTrigger: number;
-  /** 触发健康评分刷新 */
+  /** Trigger a health score refresh */
   triggerHealthRefresh: () => void;
-  /** 一键扫描触发器（递增数字，各模块监听此值变化来启动扫描） */
+  /** One-click scan trigger (an incrementing number; modules watch this value to start scanning) */
   oneClickScanTrigger: number;
-  /** 触发一键扫描 */
+  /** Trigger a one-click scan */
   triggerOneClickScan: () => void;
-  /** 停止所有扫描 */
+  /** Stop all scans */
   stopAllScans: () => void;
-  /** 全局停止触发器，模块用它丢弃被取消任务的异步返回。 */
+  /** Global stop trigger, used by modules to discard async returns from cancelled tasks. */
   stopScanTrigger: number;
 }
 
@@ -119,10 +119,10 @@ interface DashboardSummaryValue {
 }
 
 // ============================================================================
-// 初始状态
+// Initial state
 // ============================================================================
 
-/** 模块初始状态 */
+/** Initial state of a module */
 const initialModuleState: ModuleState = {
   status: 'idle',
   progress: 0,
@@ -132,7 +132,7 @@ const initialModuleState: ModuleState = {
   lastUpdated: 0,
 };
 
-/** 所有模块初始状态 */
+/** Initial state of all modules */
 const initialModulesState: ModulesState = {
   junk: { ...initialModuleState },
   bigFiles: { ...initialModuleState },
@@ -149,7 +149,7 @@ const initialModulesState: ModulesState = {
 };
 
 // ============================================================================
-// Context 创建
+// Context creation
 // ============================================================================
 
 const DashboardContext = createContext<DashboardContextValue | null>(null);
@@ -173,7 +173,7 @@ const ModuleStateContexts: { [K in keyof ModulesState]: React.Context<ModuleStat
 };
 
 // ============================================================================
-// Provider 组件
+// Provider component
 // ============================================================================
 
 interface DashboardProviderProps {
@@ -181,20 +181,20 @@ interface DashboardProviderProps {
 }
 
 export function DashboardProvider({ children }: DashboardProviderProps) {
-  // 磁盘信息
+  // Disk info
   const [diskInfo, setDiskInfo] = useState<DiskInfo | null>(null);
-  // 健康评分
+  // Health score
   const [healthData, setHealthData] = useState<HealthScoreResult | null>(null);
   const [isLoadingHealth, setIsLoadingHealth] = useState(true);
-  // 模块状态
+  // Module state
   const [modules, setModules] = useState<ModulesState>(initialModulesState);
-  // 健康评分刷新触发器
+  // Health score refresh trigger
   const [healthRefreshTrigger, setHealthRefreshTrigger] = useState(0);
-  // 一键扫描触发器
+  // One-click scan trigger
   const [oneClickScanTrigger, setOneClickScanTrigger] = useState(0);
   const [stopScanTrigger, setStopScanTrigger] = useState(0);
 
-  // 刷新磁盘信息
+  // Refresh disk info
   const refreshDiskInfo = useCallback(async () => {
     try {
       const info = await getDiskInfo();
@@ -205,14 +205,14 @@ export function DashboardProvider({ children }: DashboardProviderProps) {
   }, []);
 
   /**
-   * 健康评分按哪个分区算。用 ref 而不是 state：它只决定请求参数，
-   * 界面看的是 healthData；清理完成后的自动刷新也要沿用用户最后选中的盘。
+   * Which partition the health score is computed for. A ref is used instead of state because it only determines the request parameters,
+   * while the UI reads healthData; the automatic refresh after cleanup must also reuse the drive the user last selected.
    */
   const healthDriveRef = useRef('');
-  /** 连续切盘时只认最后一次请求，避免旧结果晚到把新结果盖掉。 */
+  /** Only the latest request counts when switching drives rapidly, so an older late result does not overwrite the newer one. */
   const healthRequestIdRef = useRef(0);
 
-  // 刷新健康评分（传入盘符即按该盘重算；不传沿用上一次的盘）
+  // Refresh health score (pass a drive letter to recompute for that drive; omit to reuse the last drive)
   const refreshHealthScore = useCallback(async (driveLetter?: string) => {
     if (driveLetter !== undefined) healthDriveRef.current = driveLetter;
     const requestId = ++healthRequestIdRef.current;
@@ -229,10 +229,10 @@ export function DashboardProvider({ children }: DashboardProviderProps) {
     }
   }, []);
 
-  // 触发健康评分刷新。
-  // ⚠️ 顺带把磁盘可用空间也重读一遍（Issue #90）：各模块清理完成后调的都是这个函数，
-  // 而右上角显示的可用空间来自本组件挂载时读的那一次快照 —— 不重读就会出现
-  //「已经清理出空间、资源管理器里也变了，但右上角数字不动，要重启软件才对」。
+  // Trigger a health score refresh.
+  // ⚠️ Also re-read free disk space here (Issue #90): every module calls this after cleanup,
+  // while the free space shown in the top-right comes from the snapshot read when this component mounted — without re-reading,
+  // you get "space has been freed and Explorer shows it, but the top-right number does not move until the app is restarted".
   const triggerHealthRefresh = useCallback(() => {
     setHealthRefreshTrigger(n => n + 1);
     void getDiskInfo()
@@ -240,20 +240,20 @@ export function DashboardProvider({ children }: DashboardProviderProps) {
       .catch(error => console.error('刷新磁盘信息失败:', error));
   }, []);
 
-  // 触发一键扫描
+  // Trigger a one-click scan
   const triggerOneClickScan = useCallback(() => {
     setOneClickScanTrigger(n => n + 1);
   }, []);
 
-  // 停止所有扫描
+  // Stop all scans
   const stopAllScans = useCallback(() => {
-    // 先通知支持取消的后端任务，避免 UI 已停止但 MFT/文件扫描仍在后台占用 IO。
+    // First notify backend tasks that support cancellation, so the UI has stopped but MFT/file scans are still hogging IO in the background.
     void cancelLargeFileScan().catch(error => console.error('停止大文件扫描失败:', error));
     void cancelHotspotScan().catch(error => console.error('停止大目录扫描失败:', error));
     void cancelDiskGrowthScan().catch(error => console.error('停止磁盘变化分析失败:', error));
     setStopScanTrigger(n => n + 1);
 
-    // 将所有正在扫描的模块状态重置为 idle
+    // Reset all scanning modules' state to idle
     setModules(prev => {
       const newModules = { ...prev };
       (Object.keys(newModules) as Array<keyof ModulesState>).forEach(key => {
@@ -265,7 +265,7 @@ export function DashboardProvider({ children }: DashboardProviderProps) {
     });
   }, []);
 
-  // 更新模块状态
+  // Update module state
   const updateModuleState = useCallback((moduleId: keyof ModulesState, state: Partial<ModuleState>) => {
     setModules(prev => ({
       ...prev,
@@ -277,19 +277,19 @@ export function DashboardProvider({ children }: DashboardProviderProps) {
     }));
   }, []);
 
-  // 计算是否有任何模块正在扫描
+  // Compute whether any module is scanning
   const isAnyScanning = useMemo(
     () => Object.values(modules).some(m => m.status === 'scanning'),
     [modules]
   );
 
-  // 初始化加载
+  // Initial load
   useEffect(() => {
     refreshDiskInfo();
     refreshHealthScore();
   }, [refreshDiskInfo, refreshHealthScore]);
 
-  // 监听健康评分刷新触发器
+  // Listen for the health score refresh trigger
   useEffect(() => {
     if (healthRefreshTrigger > 0) {
       refreshHealthScore();
@@ -444,7 +444,7 @@ export function useModuleDashboard(moduleId: keyof ModulesState) {
   const actions = useDashboardActions();
   const signals = useDashboardSignals();
 
-  // 模块只订阅自己的扫描状态；全局触发信号仍单独订阅，保持一键扫描/停止扫描行为不变。
+  // Modules subscribe only to their own scan state; global trigger signals are still subscribed separately, keeping one-click scan/stop behavior unchanged.
   return {
     moduleState,
     oneClickScanTrigger: signals.oneClickScanTrigger,

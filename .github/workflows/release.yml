@@ -1,6 +1,6 @@
 # ============================================================================
-# LightC 自动发布工作流
-# 当推送 tag (v*) 时自动构建并发布到 GitHub Releases
+# LightC automated release workflow
+# Automatically builds and publishes to GitHub Releases when a tag (v*) is pushed
 # ============================================================================
 
 name: Release
@@ -52,7 +52,7 @@ jobs:
             exit 1
           }
 
-          # 发布说明使用中文 CHANGELOG 的最新版本段落，但去掉列表符号，保持 Release 为纯文本。
+          # Release notes use the latest version section of the Chinese CHANGELOG, but strip list markers to keep the Release as plain text.
           $ReleaseLines = @("LightC v$Version 发布说明")
           for ($Index = $VersionHeaderIndex + 1; $Index -lt $ChangelogLines.Count; $Index++) {
             $Line = $ChangelogLines[$Index]
@@ -132,7 +132,7 @@ jobs:
             exit 1
           }
 
-          # 必须在 WebView2 离线包二次构建前签名；后续 tauri build 会覆盖 target\release\LightC.exe。
+          # Must sign before the second build of the WebView2 offline package; the subsequent tauri build overwrites target\release\LightC.exe.
           Copy-Item $ReleaseExe $PreservedInstallerExe -Force
           $SignatureOutput = npx tauri signer sign $ReleaseExe
           if ($LASTEXITCODE -ne 0) {
@@ -158,8 +158,8 @@ jobs:
           $SignatureBase64 | Out-File -FilePath "LightC_installer_exe.sig" -Encoding utf8 -NoNewline
           Write-Host "  Created: LightC_installer_exe.sig" -ForegroundColor Green
 
-      # tauri-action 已创建 Release 并上传了 NSIS 安装包
-      # 以下额外打包 WebView2 离线安装包和绿色便携版并上传到同一个 Release
+      # tauri-action has already created the Release and uploaded the NSIS installer
+      # The following additional steps package the WebView2 offline installer and portable build and upload them to the same Release
 
       - name: Create WebView2 offline installer
         shell: pwsh
@@ -171,7 +171,7 @@ jobs:
           TAURI_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
           $ConfigPath = "tauri.webview2-offline.conf.json"
-          # 外部 Release 资产带版本号；内部运行文件仍保持 LightC.exe，避免破坏完整性校验和运行时路径识别。
+          # External release assets include the version number; internal runtime files keep the name LightC.exe, to avoid breaking integrity checks and runtime path detection.
           $OutputName = "LightC_webview2_offline_x64_v$env:RELEASE_VERSION.exe"
 
           Write-Host "Creating WebView2 offline installer..." -ForegroundColor Cyan
@@ -252,7 +252,7 @@ jobs:
         run: |
           $ReleaseDir = "src-tauri\target\release"
           $PortableDir = "portable_temp"
-          # 压缩包带版本号；压缩包内部仍使用 LightC.exe，签名对象和便携模式识别保持不变。
+          # The archive includes the version number; inside it the file is still LightC.exe, keeping the signing target and portable-mode detection unchanged.
           $ZipName = "LightC_portable_x64_v$env:RELEASE_VERSION.zip"
           $PreservedInstallerExe = "LightC_installer_runtime.exe"
 
@@ -260,17 +260,17 @@ jobs:
 
           New-Item -ItemType Directory -Path $PortableDir -Force | Out-Null
 
-          # 主程序
+          # Main program
           $PortableSourceExe = if (Test-Path $PreservedInstallerExe) { $PreservedInstallerExe } else { "$ReleaseDir\LightC.exe" }
           if (-not (Test-Path $PortableSourceExe)) {
             Write-Host "Error: LightC.exe not found" -ForegroundColor Red
             exit 1
           }
-          # 便携版使用常规安装版同一份 runtime exe，避免 WebView2 离线包二次构建后的 exe 被误打进便携包。
+          # The portable build uses the same runtime exe as the regular installer, to avoid the exe from the second WebView2 offline build being wrongly packed into the portable archive.
           Copy-Item $PortableSourceExe "$PortableDir\LightC.exe" -Force
           Write-Host "  Copied: LightC.exe" -ForegroundColor White
 
-          # 旧 marker 保留给旧版本兼容；新版同时读取带 schema 的 manifest 来决定数据目录布局。
+          # The old marker is kept for old-version compatibility; new versions also read the schema-bearing manifest to decide the data directory layout.
           Set-Content -Path "$PortableDir\LightC.portable" -Value "portable" -Encoding UTF8
           Write-Host "  Created: LightC.portable" -ForegroundColor White
           $PortableManifest = [ordered]@{
@@ -281,7 +281,7 @@ jobs:
           $PortableManifest | ConvertTo-Json | Out-File -FilePath "$PortableDir\LightC.portable.json" -Encoding utf8
           Write-Host "  Created: LightC.portable.json" -ForegroundColor White
 
-          # DLL 文件
+          # DLL files
           $DllFiles = Get-ChildItem -Path $ReleaseDir -Filter "*.dll" -ErrorAction SilentlyContinue
           if ($DllFiles) {
             foreach ($dll in $DllFiles) {
@@ -290,13 +290,13 @@ jobs:
             }
           }
 
-          # resources 目录
+          # resources directory
           if (Test-Path "$ReleaseDir\resources") {
             Copy-Item "$ReleaseDir\resources" "$PortableDir\resources" -Recurse -Force
             Write-Host "  Copied: resources/" -ForegroundColor White
           }
 
-          # 官方下载渠道不写死在前端，随 Release 上传 download.json，便于后续调整网盘地址。
+          # The official download channel is not hard-coded in the frontend; download.json is uploaded with the Release so the netdisk URL can be adjusted later.
           $DownloadConfig = [ordered]@{
             githubReleasesUrl = "https://github.com/Chunyu33/light-c/releases"
             netDiskUrl = "https://pan.quark.cn/s/bce8f722bf33"
@@ -306,11 +306,11 @@ jobs:
           $DownloadConfig | ConvertTo-Json | Out-File -FilePath "download.json" -Encoding utf8
           Write-Host "  Created: download.json" -ForegroundColor Green
 
-          # 压缩
+          # Compression
           Compress-Archive -Path "$PortableDir\*" -DestinationPath $ZipName -Force
           Write-Host "  Created: $ZipName" -ForegroundColor Green
 
-          # 签名对象必须是最终便携包内的 LightC.exe；manifest 不参与 exe 签名，避免改变现有校验链路。
+          # The signing target must be the LightC.exe inside the final portable archive; the manifest does not participate in exe signing, avoiding changes to the existing verification chain.
           $SignatureOutput = npx tauri signer sign "$PortableDir\LightC.exe"
           if ($LASTEXITCODE -ne 0) {
             Write-Host "Error: portable exe signing failed" -ForegroundColor Red
@@ -320,14 +320,14 @@ jobs:
           if (Test-Path $GeneratedSigPath) {
             $SignatureText = Get-Content -Raw -Path $GeneratedSigPath
             if ($SignatureText.TrimStart().StartsWith("untrusted comment:")) {
-              # 原始 minisign 文本需要转成 Tauri updater 风格的 Public signature 字符串。
+              # The raw minisign text needs to be converted into a Tauri updater-style Public signature string.
               $SignatureBase64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($SignatureText))
             } else {
-              # 有些 CLI 版本会直接写入 Public signature，直接复用可避免双重 base64。
+              # Some CLI versions write Public signature directly; reusing it avoids double base64.
               $SignatureBase64 = $SignatureText.Trim()
             }
           } else {
-            # CLI 正常会生成 .sig 文件；这里兜底解析 stdout 中的 Public signature，避免把说明文字写进签名资产。
+            # The CLI normally generates a .sig file; as a fallback, parse Public signature from stdout, to avoid writing explanatory text into the signature asset.
             $SignatureBase64 = ($SignatureOutput -split "`r?`n" | Where-Object { $_ -match '^[A-Za-z0-9+/=]+$' } | Select-Object -Last 1)
             if (-not $SignatureBase64) {
               Write-Host "Error: signature output not found" -ForegroundColor Red
@@ -337,10 +337,10 @@ jobs:
           $SignatureBase64 | Out-File -FilePath "LightC_portable_exe.sig" -Encoding utf8 -NoNewline
           Write-Host "  Created: LightC_portable_exe.sig" -ForegroundColor Green
 
-          # 清理临时目录
+          # Clean up temporary directory
           Remove-Item $PortableDir -Recurse -Force
 
-          # 输出文件名供后续步骤使用
+          # Output file names for later steps
           echo "portable_zip=$ZipName" >> $env:GITHUB_OUTPUT
         id: portable
 
@@ -357,9 +357,9 @@ jobs:
           $DownloadConfigPath = "download.json"
           $WebView2OfflineInstallerPath = "LightC_webview2_offline_x64_v$env:RELEASE_VERSION.exe"
 
-          # 生成校验值：下载页要能直接核对安装包完整性。
-          # 本地 pack.ps1 一直会生成 SHA256SUMS.txt，但线上发版走这里，之前漏了这一步。
-          # ⚠️ 必须写无 BOM 的 UTF-8：带 BOM 会让 `sha256sum -c` 在第一行就失败。
+          # Generate checksums: the download page must be able to directly verify installer integrity.
+          # The local pack.ps1 always generates SHA256SUMS.txt, but online releases go through here, and this step was previously missed.
+          # ⚠️ Must write UTF-8 without BOM: a BOM makes `sha256sum -c` fail on the first line.
           $ChecksumTargets = @()
           $ChecksumTargets += Get-ChildItem -Path $ZipPath -File -ErrorAction SilentlyContinue
           $ChecksumTargets += Get-ChildItem -Path $WebView2OfflineInstallerPath -File -ErrorAction SilentlyContinue
@@ -371,7 +371,7 @@ jobs:
           $ChecksumLines = [System.Collections.Generic.List[string]]::new()
           foreach ($target in $ChecksumTargets) {
             $hash = (Get-FileHash -Path $target.FullName -Algorithm SHA256).Hash
-            # 两个空格是 sha256sum 的格式要求
+            # Two spaces are required by the sha256sum format
             $ChecksumLines.Add("$hash  $($target.Name)")
             Write-Host "  $($target.Name)  $hash" -ForegroundColor Gray
           }

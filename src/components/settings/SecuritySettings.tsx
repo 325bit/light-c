@@ -1,5 +1,5 @@
 // ============================================================================
-// 安全与校验页面
+// Security and verification page
 // ============================================================================
 
 import { useEffect, useState } from 'react';
@@ -18,7 +18,7 @@ export function SecuritySettings() {
   const { showToast } = useToast();
 
   useEffect(() => {
-    // 渠道链接放在 Release 的 download.json，设置页只展示通过 https 校验后的官方入口。
+    // Channel links are in the Release download.json; the settings page only shows official entries that pass https verification.
     getOfficialDownloadConfig()
       .then(setDownloadConfig)
       .catch((error) => {
@@ -89,7 +89,7 @@ export function SecuritySettings() {
         </div>
       </div>
 
-      {/* 先给出官方渠道，再说明第三方风险，避免用户只看到警告却不知道应该去哪里下载。 */}
+      {/* Give the official channel first, then explain third-party risks, so users don't only see the warning without knowing where to download. */}
       <div className="space-y-3">
         <h4 className="text-xs font-medium text-[var(--text-muted)] uppercase tracking-wider flex items-center gap-2">
           <Download className="w-3.5 h-3.5" />
@@ -100,7 +100,7 @@ export function SecuritySettings() {
             {t('security.downloadDesc')}
           </p>
 
-          {/* 安全页同时展示官网，帮助用户从可信入口了解项目和下载来源。 */}
+          {/* The security page also shows the official site, helping users learn about the project and download source from a trusted entry. */}
           <a
             href={LIGHTC_OFFICIAL_WEBSITE_URL}
             target="_blank"

@@ -1,35 +1,35 @@
 /**
- * AI 工具清理的数据结构。
+ * Data structures for AI tool cleanup.
  *
- * 字段与后端 `ai_tool_cleaner.rs` 的 Serialize 输出一一对应（camelCase）。
- * 分组按工具来：用户先看到"哪个工具占了多少"，再决定删哪一项。
+ * Fields correspond one-to-one with the Serialize output of backend `ai_tool_cleaner.rs` (camelCase).
+ * Grouping is by tool: the user first sees "how much each tool occupies", then decides which item to delete.
  */
 
 import type { LinkInfo } from './devCache';
 
-/** 单个缓存目录 */
+/** A single cache directory */
 export interface AiCacheEntry {
-  /** 目录名，如 "Cache" / "code cache" */
+  /** Directory name, e.g. "Cache" / "code cache" */
   name: string;
   path: string;
   size: number;
   fileCount: number;
   /**
-   * 路径经过 junction / symlink 时才有值。
+   * Has a value only when the path goes through a junction / symlink.
    *
-   * 用 FolderMove 把 `.workbuddy` 这类目录搬到别的盘之后，原地留下链接，
-   * 扫描统计的是真实文件，但路径还写着 `C:\...` —— 有值时界面要显示 `link.resolved`。
+   * After using FolderMove to relocate a directory like `.workbuddy` to another drive, a link is left in place,
+   * so the scan counts the real files but the path still reads `C:\...` — when present, the UI should show `link.resolved`.
    */
   link?: LinkInfo;
 }
 
-/** 一个工具的汇总 */
+/** Summary for one tool */
 export interface AiToolGroup {
   toolId: string;
   toolName: string;
   totalSize: number;
   fileCount: number;
-  /** 该工具命中的缓存目录，按体积从大到小 */
+  /** Cache directories hit by this tool, sorted from largest to smallest */
   entries: AiCacheEntry[];
 }
 
@@ -39,32 +39,32 @@ export interface AiToolScanResult {
   totalFiles: number;
 }
 
-/** 缓存目录里的单个文件（明细弹窗按需拉取） */
+/** A single file in a cache directory (details are fetched on demand by the details modal) */
 export interface AiCacheFile {
   path: string;
   size: number;
-  /** 最后修改时间（Unix 秒）；0 表示没取到，排序时垫底 */
+  /** Last modified time (Unix seconds); 0 means it wasn't retrieved and sorts last */
   modifiedTime: number;
 }
 
-/** 明细弹窗的文件列表 */
+/** File list for the details modal */
 export interface AiCacheFileList {
   files: AiCacheFile[];
-  /** 目录文件数超过上限被截断：界面必须说明只显示了前 N 条 */
+  /** Directory file count exceeded the cap and was truncated: the UI must state that only the first N are shown */
   truncated: boolean;
 }
 
-/** 单个删除失败的目录 */
+/** A single directory that failed to delete */
 export interface AiCacheDeleteFailure {
   path: string;
-  /** 失败原因（系统错误原文），仅用于排查，界面上不直接展示 */
+  /** Failure reason (raw system error), for troubleshooting only, not shown directly in the UI */
   reason: string;
 }
 
-/** 批量删除结果 */
+/** Batch deletion result */
 export interface AiCacheDeleteResult {
-  /** 成功删掉的目录数 */
+  /** Number of directories successfully deleted */
   deleted: number;
-  /** 没删掉的目录及原因（工具开启时文件被占用是最常见的情况） */
+  /** Directories that weren't deleted and why (files being occupied while the tool is running is the most common case) */
   failed: AiCacheDeleteFailure[];
 }

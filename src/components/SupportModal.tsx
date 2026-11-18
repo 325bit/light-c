@@ -1,14 +1,14 @@
 // ============================================================================
-// 支持作者弹窗
+// Support author modal
 //
-// 侧边栏爱心图标和「设置 - 意见反馈 - 支持作者」共用这一个弹窗，
-// 二维码、支付方式切换、放大预览只有这一份实现。
+// The sidebar heart icon and "Settings - Feedback - Support Author" share this one modal,
+// the QR code, payment-method switching, and zoomed preview have only this single implementation.
 //
-// 标题和设置页卡片共用 `supportTitle`（值统一为「赞助」）：侧边栏悬停写「赞助 LightC」，
-// 点进来标题是「赞助」，从设置页点开也是同一个词，不用在一件事上出现三种叫法。
+// The title and the settings-page card share `supportTitle` (value consistently "Sponsor"): the sidebar tooltip says "Sponsor LightC",
+// the modal title when opened is "Sponsor", and opening from the settings page uses the same word — three names for one thing are avoided.
 //
-// ⚠️ 不要把弹窗再抄一份到调用方：二维码图片、切换动画、ESC 关闭散在两处，
-// 改一次要改两遍，迟早对不上。
+// ⚠️ Do not copy another modal into the caller: QR image, switch animation and ESC-close scattered in two places
+// means changing once requires changing twice, and they will sooner or later drift apart.
 // ============================================================================
 
 import { useEffect, useState } from 'react';
@@ -23,15 +23,15 @@ import { MODAL_BACKDROP_MOTION, MODAL_CARD_MOTION } from '../utils/modalMotion';
 export type PaymentType = 'wechat' | 'alipay';
 
 /**
- * 弹窗里赞赏码的尺寸（像素）。
+ * Size of the donation QR code in the modal (pixels).
  *
- * 设置页卡片里是 176px，弹窗要比它明显大一档才算"放大"。
- * 用像素而不是 rem：项目根字号被字号设置改成 14px，Tailwind 的 rem 尺寸会等比缩小，
- * 码缩到 96px 以下就扫不动了。
+ * The settings-page card is 176px; the modal must be noticeably larger than that to count as a "zoom".
+ * Use pixels rather than rem: the project root font size is changed to 14px by the font-size setting, so Tailwind's rem sizes scale down,
+ * and once the code shrinks below 96px it can no longer be scanned.
  */
 const QR_MODAL_SIZE = 220;
 
-/** 支付方式元数据：颜色与文案只在这里定义，所有入口共用 */
+/** Payment-method metadata: colors and text are defined only here, shared by all entry points */
 export const PAYMENT_OPTIONS: { type: PaymentType; activeClass: string; labelKey: string }[] = [
   { type: 'wechat', activeClass: 'bg-[#07C160]', labelKey: 'wechat' },
   { type: 'alipay', activeClass: 'bg-[#1677FF]', labelKey: 'alipay' },
@@ -40,9 +40,9 @@ export const PAYMENT_OPTIONS: { type: PaymentType; activeClass: string; labelKey
 interface SupportModalProps {
   isOpen: boolean;
   onClose: () => void;
-  /** 打开时默认选中的支付方式，由调用方决定（设置页会传卡片上当前选的那个） */
+  /** The payment method selected by default when opening, decided by the caller (the settings page passes the one currently selected on the card) */
   initialPayment?: PaymentType;
-  /** 底部显示的版本号；侧边栏入口传进来，设置页入口不传 */
+  /** Version number shown at the bottom; passed in by the sidebar entry, not passed by the settings-page entry */
   version?: string;
 }
 
@@ -51,13 +51,13 @@ export function SupportModal({ isOpen, onClose, initialPayment = 'wechat', versi
   const [paymentType, setPaymentType] = useState<PaymentType>(initialPayment);
   const [isTransitioning, setIsTransitioning] = useState(false);
 
-  // 每次打开都对齐到调用方的选择：设置页卡片上切到支付宝后点开，
-  // 弹窗还停在微信会让人以为切换没生效。
+  // Align to the caller's selection every time it opens: if a user switches to Alipay on the settings card and then opens,
+  // the modal still sitting on WeChat would make them think the switch did not take effect.
   useEffect(() => {
     if (isOpen) setPaymentType(initialPayment);
   }, [isOpen, initialPayment]);
 
-  // 切换支付方式时先淡出再换图：直接换 src 会瞬间跳变，观感生硬
+  // When switching payment methods, fade out before swapping the image: swapping src directly causes an abrupt jump, harsh visually
   const handlePaymentChange = (type: PaymentType) => {
     if (type === paymentType) return;
     setIsTransitioning(true);
@@ -67,7 +67,7 @@ export function SupportModal({ isOpen, onClose, initialPayment = 'wechat', versi
     }, 150);
   };
 
-  // ESC 关闭。只在打开时挂监听，避免常驻。
+  // Close on ESC. Only attach the listener while open, to avoid keeping it resident.
   useEffect(() => {
     if (!isOpen) return;
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -109,8 +109,8 @@ export function SupportModal({ isOpen, onClose, initialPayment = 'wechat', versi
               {t('supportTitle')}
             </h3>
 
-            {/* 竖排：赞赏码 → 切换 → 说明。微信/支付宝的赞赏页都是这个结构，
-                横排会把说明压成一行几个字，读起来费劲。 */}
+            {/* Vertical layout: donation code → switch → description. WeChat/Alipay donation pages all use this structure,
+                a horizontal layout squeezes the description to a few characters per line, tiring to read. */}
             <div className="flex flex-col items-center">
               <div
                 style={{ width: QR_MODAL_SIZE, height: QR_MODAL_SIZE }}
@@ -157,8 +157,8 @@ export function SupportModal({ isOpen, onClose, initialPayment = 'wechat', versi
               </ul>
             </div>
 
-            {/* 版本号留在这里：侧边栏那个位置换成了爱心图标，
-                而用户反馈问题时最常截的就是侧边栏或这个弹窗，版本号不能彻底消失。 */}
+            {/* Keep the version number here: that spot in the sidebar was replaced by the heart icon,
+                and the screenshots users most often attach when reporting a problem are the sidebar or this modal, so the version number must not disappear entirely. */}
             {version && (
               <p className="mt-[1.14em] text-center text-[0.71em] text-[var(--text-faint)] tabular-nums">
                 LightC v{version}

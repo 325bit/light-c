@@ -16,8 +16,8 @@ export const SEARCH_ENGINE_OPTIONS: Array<{ value: SearchEngine; label: string }
 ];
 
 /**
- * 去掉 Windows 长路径设备前缀，避免搜索引擎把 \\?\ 当成路径内容，降低搜索结果可读性。
- * UNC 长路径需要还原为标准的 \\server 形式，不能简单留下 UNC 文本。
+ * Strip the Windows long-path device prefix so search engines do not treat \\?\ as path content, reducing search result readability.
+ * UNC long paths must be restored to the standard \\server form; do not simply leave the UNC text.
  */
 export function stripWindowsDevicePrefix(value: string): string {
   return value
@@ -45,14 +45,14 @@ export function getStoredSearchEngine(): SearchEngine {
 }
 
 export function setStoredSearchEngine(engine: SearchEngine) {
-  // 搜索引擎是纯前端偏好，不需要写入后端配置；广播事件让已挂载模块立即拿到新设置。
+  // The search engine is a frontend-only preference and does not need to be written to backend config; the broadcast event lets mounted modules pick up the new setting immediately.
   localStorage.setItem(SEARCH_ENGINE_STORAGE_KEY, engine);
   window.dispatchEvent(new CustomEvent<SearchEngine>(SEARCH_ENGINE_CHANGED_EVENT, { detail: engine }));
 }
 
 export async function openSearchUrl(searchText: string) {
   const engine = getStoredSearchEngine();
-  // 所有模块统一在搜索入口清理设备前缀，避免调用方遗漏导致搜索词带有 \\?\。
+  // All modules strip the device prefix uniformly at the search entry point, so callers cannot miss it and include \\?\ in the search term.
   const query = encodeURIComponent(stripWindowsDevicePrefix(searchText));
   await openUrl(`${SEARCH_ENGINE_URLS[engine]}${query}`);
 }

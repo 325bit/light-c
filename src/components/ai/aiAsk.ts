@@ -1,29 +1,29 @@
 // ============================================================================
-// 快捷提问通道
+// Quick-ask channel
 //
-// 各模块的数据行上会放一个「咨询 AI 助手」按钮，点击后要：**打开助手并把问题直接发出去**。
-// 但模块组件在很深的层级里，助手挂在 App 顶层 —— 用 context 逐层透传会污染一路组件。
+// Each module's data rows will have an "Ask AI assistant" button; clicking it must: **open the assistant and send the question immediately**.
+// But module components are deeply nested while the assistant is mounted at the App top level - passing context down layer by layer would pollute the whole chain.
 //
-// 所以这里用一个极小的模块级订阅：模块只管"发一个提问请求"，
-// 助手订阅后自行打开面板并发送。与 moduleDataRegistry 是同一套思路：
-// **模块不需要知道助手在哪，助手也不需要知道按钮长什么样。**
+// So use a tiny module-level subscription here: modules just "emit a question request",
+// the assistant subscribes and opens the panel and sends it itself. Same idea as moduleDataRegistry:
+// **The module does not need to know where the assistant is, and the assistant does not need to know what the button looks like.**
 //
-// 问题文本由模块决定（通常是复用它原有的"一键搜索"关键字），这里不做任何改写。
+// The question text is decided by the module (usually reusing its existing "one-click search" keyword); no rewriting is done here.
 // ============================================================================
 
 import { useSyncExternalStore } from 'react';
 
 export interface AiAskRequest {
-  /** 自增序号：相同文本连点两次也要能触发第二次 */
+  /** Auto-increment sequence: clicking twice with the same text must trigger the second time too */
   id: number;
   text: string;
   /**
-   * 这一问**不需要去查数据**。
+   * This question **does not require a data lookup**.
    *
-   * 用在"用户自己从界面上展开看到的那一行"（例如磁盘变化分析的「变化明细」弹窗）：
-   * 问句里带的就是那一行本身，而这些**文件级**明细并不在模块的读取能力里 ——
-   * 让模型去查只会白试一次，还会先冒出一句"没有读到内容"再作答。
-   * 置位后：本轮不声明任何工具，并在系统提示里说明"数据就在问题里，直接用你自己的知识回答"。
+   * Used for "a row the user expanded to see themselves" (e.g., the disk change analysis "change details" modal):
+   * the question carries that row itself, and these **file-level** details are outside the module's read capability -
+   * having the model look it up would only waste a try and would first blurt out "no content read" before answering.
+   * When set: declare no tools this round and state in the system prompt that "the data is in the question, answer with your own knowledge".
    */
   skipLookup: boolean;
 }
@@ -32,13 +32,13 @@ let sequence = 0;
 let pending: AiAskRequest | null = null;
 const listeners = new Set<() => void>();
 
-/** 供 useSyncExternalStore 使用：返回订阅函数。 */
+/** For useSyncExternalStore: return the subscribe function. */
 function subscribe(listener: () => void): () => void {
   listeners.add(listener);
   return () => listeners.delete(listener);
 }
 
-/** 模块侧调用：请求助手打开并发送这个问题。 */
+/** Called by a module: request the assistant to open and send this question. */
 export function requestAiAsk(text: string, options?: { skipLookup?: boolean }): void {
   const trimmed = text.trim();
   if (!trimmed) return;
@@ -47,14 +47,14 @@ export function requestAiAsk(text: string, options?: { skipLookup?: boolean }): 
   listeners.forEach((listener) => listener());
 }
 
-/** 助手处理完后清空，避免重新挂载时重复发送。 */
+/** Clear after the assistant handles it, to avoid resending on remount. */
 export function clearAiAsk(): void {
   if (pending === null) return;
   pending = null;
   listeners.forEach((listener) => listener());
 }
 
-/** 助手侧订阅：拿到待处理的提问（没有则为 null）。 */
+/** Subscribed by the assistant: get the pending question (null if none). */
 export function useAiAskRequest(): AiAskRequest | null {
   return useSyncExternalStore(
     subscribe,

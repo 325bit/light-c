@@ -1,14 +1,14 @@
 // ============================================================================
-// AI 助手标识（手绘 SVG）
+// AI assistant icon (hand-drawn SVG)
 //
-// 为什么不用图标库：现有的 Sparkles（四角星）在项目里是「闪亮 / 新功能」的语义，
-// 拿它当 AI 助手完全看不出是"能对话的助手"。
+// Why not use an icon library: the existing Sparkles (four-pointed star) means "shiny / new feature" in this project,
+// using it for the AI assistant does not convey "a helper you can chat with" at all.
 //
-// 画法说明（为小尺寸做的取舍）：
-//   - 20px 左右要认得出，所以只保留三块信息：方形脑袋 + 两只眼睛 + 一根天线；
-//   - 与全项目图标统一用**描边**风格（不是实心块），线宽 1.75 在 24 格下方显得
-//     和 Lucide 图标同一家族；
-//   - 用 currentColor，跟随文字色（现在是品牌绿），换主题不用改这里。
+// Drawing notes (trade-offs made for small size):
+//   - Must be recognizable at around 20px, so only three pieces of information are kept: a square head + two eyes + one antenna;
+//   - Consistent with project icons in using a **stroke** style (not solid blocks), line width 1.75 reads at 24-grid
+//     as the same family as Lucide icons;
+//   - Uses currentColor, following the text color (currently brand green), so changing themes needs no change here.
 // ============================================================================
 
 interface AiMarkIconProps {
@@ -28,15 +28,15 @@ export function AiMarkIcon({ className = '' }: AiMarkIconProps) {
       aria-hidden="true"
       focusable="false"
     >
-      {/* 天线：一根竖线 + 顶端圆点，最省笔墨的"机器人"信号 */}
+      {/* Antenna: a vertical line + a dot on top, the most economical "robot" signal */}
       <path d="M12 2.6v2.1" />
       <circle cx="12" cy="2" r="1.05" />
-      {/* 脑袋：圆角矩形，比正圆更像机器人 */}
+      {/* Head: a rounded rectangle, more robot-like than a perfect circle */}
       <rect x="4" y="4.9" width="16" height="13.2" rx="4.2" />
-      {/* 眼睛：两个实心圆点，是"有生命感"的关键 */}
+      {/* Eyes: two solid dots, the key to a sense of "aliveness" */}
       <circle cx="9.2" cy="11.2" r="1.15" fill="currentColor" stroke="none" />
       <circle cx="14.8" cy="11.2" r="1.15" fill="currentColor" stroke="none" />
-      {/* 嘴：一道短线，纯描边时和眼睛一起构成表情 */}
+      {/* Mouth: a short line, which together with the eyes forms an expression in pure stroke style */}
       <path d="M9.6 14.3h4.8" />
     </svg>
   );

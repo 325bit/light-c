@@ -1,16 +1,16 @@
 // ============================================================================
-// 系统工具命令（格式化、打开系统设置等）
+// System tool commands (formatting, opening system settings, etc.)
 // ============================================================================
 
 use log::info;
 
-/// 格式化文件大小
+/// Format a file size
 #[tauri::command]
 pub fn format_size(bytes: u64) -> String {
     crate::scanner::format_size(bytes)
 }
 
-/// 打开Windows磁盘清理工具
+/// Open the Windows Disk Cleanup tool
 #[tauri::command]
 pub fn open_disk_cleanup() -> Result<(), String> {
     info!("打开Windows磁盘清理工具");
@@ -18,9 +18,9 @@ pub fn open_disk_cleanup() -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
         use std::process::Command;
-        // 盘符不能写死 C：Windows 可以装在别的盘上。这里与垃圾清理分类扫描（SYSTEMDRIVE）
-        // 用同一个来源，否则非 C 盘系统上打开磁盘清理会定位到 C 盘，用户找不到目标项。
-        // cleanmgr /d 只接受盘符字母、不带冒号，system_drive_letter() 返回的正是字母。
+        // Do not hardcode drive C: Windows can be installed on another drive. Use the same source as the junk cleanup category scan (SYSTEMDRIVE)
+        // here, otherwise on non-C systems opening Disk Cleanup would point at C: and the user could not find the target items.
+        // cleanmgr /d accepts only the drive letter without a colon, which is exactly what system_drive_letter() returns.
         let drive_letter = crate::system_info::system_drive_letter().to_string();
         Command::new("cleanmgr")
             .arg("/d")
@@ -36,9 +36,9 @@ pub fn open_disk_cleanup() -> Result<(), String> {
     }
 }
 
-/// 在文件资源管理器中打开路径
-/// - 如果是目录，直接钻入该目录
-/// - 如果是文件，打开所在目录并选中该文件
+/// Open a path in File Explorer
+/// - If it is a directory, drill into it directly
+/// - If it is a file, open its containing directory and select the file
 #[tauri::command]
 pub fn open_in_folder(path: String) -> Result<(), String> {
     info!("打开路径: {}", path);
@@ -47,17 +47,17 @@ pub fn open_in_folder(path: String) -> Result<(), String> {
     {
         use std::path::Path;
         use std::process::Command;
-        // Windows explorer 需要反斜杠路径，正斜杠会导致打开桌面而非目标目录
+        // Windows explorer needs a backslash path; forward slashes would open the desktop instead of the target directory
         let windows_path = path.replace('/', "\\");
         let p = Path::new(&windows_path);
         if p.is_dir() {
-            // 目录：直接打开钻入
+            // Directory: open and drill in directly
             Command::new("explorer")
                 .arg(&windows_path)
                 .spawn()
                 .map_err(|e| format!("无法打开文件夹: {}", e))?;
         } else {
-            // 文件：打开所在目录并选中
+            // File: open the containing directory and select it
             Command::new("explorer")
                 .arg("/select,")
                 .arg(&windows_path)
@@ -73,7 +73,7 @@ pub fn open_in_folder(path: String) -> Result<(), String> {
     }
 }
 
-/// 直接打开文件（使用系统默认程序）
+/// Open a file directly (using the system default program)
 #[tauri::command]
 pub fn open_file(path: String) -> Result<(), String> {
     info!("打开文件: {}", path);
@@ -81,9 +81,9 @@ pub fn open_file(path: String) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
         use std::process::Command;
-        // cmd 的 start 会把路径中的正斜杠当作开关分隔符解析，混用分隔符的路径会被拆坏
-        // （例如 "...\Local/Programs\Zed\Zed.exe" 会报"Windows 找不到文件"），
-        // 与 open_in_folder 保持一致，先统一成反斜杠再交给 cmd。
+        // cmd's start parses forward slashes in a path as switch separators, so a path with mixed separators gets broken
+        // (e.g., "...\Local/Programs\Zed\Zed.exe" reports "Windows cannot find the file"),
+        // stay consistent with open_in_folder: normalize to backslashes before handing it to cmd.
         let windows_path = path.replace('/', "\\");
         let quoted_path = format!("\"{}\"", windows_path);
         Command::new("cmd")
@@ -99,7 +99,7 @@ pub fn open_file(path: String) -> Result<(), String> {
     }
 }
 
-/// 打开 Windows 系统回收站视图，而不是物理 `$Recycle.Bin` 内部目录。
+/// Open the Windows Recycle Bin view, not the physical `$Recycle.Bin` internal directory.
 #[tauri::command]
 pub fn open_recycle_bin() -> Result<(), String> {
     info!("打开系统回收站");
@@ -119,7 +119,7 @@ pub fn open_recycle_bin() -> Result<(), String> {
     }
 }
 
-/// 打开任务管理器的启动项管理页面
+/// Open Task Manager's Startup apps page
 #[tauri::command]
 pub fn open_startup_manager() -> Result<(), String> {
     info!("打开启动项管理器");
@@ -138,7 +138,7 @@ pub fn open_startup_manager() -> Result<(), String> {
     Ok(())
 }
 
-/// 打开 Windows 存储感知设置页面
+/// Open the Windows Storage Sense settings page
 #[tauri::command]
 pub fn open_storage_settings() -> Result<(), String> {
     info!("打开存储感知设置");

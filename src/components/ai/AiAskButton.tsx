@@ -1,11 +1,11 @@
 // ============================================================================
-// 数据行上的「咨询 AI 助手」快捷按钮
+// Quick "Ask AI Assistant" button on data rows
 //
-// 各模块的数据行统一挂这个组件，样式与行为就自然一致，不用各写一遍。
-// 点击后由助手打开面板并把问题直接发出去 —— 用户不需要把关键字再手打一遍。
+// All modules attach this component to their data rows, so styling and behavior stay consistent without rewriting it everywhere.
+// On click, the assistant opens the panel and sends the question directly — users need not retype the keywords.
 //
-// 问题文本由调用方给出，通常是**复用模块原有的「一键搜索」关键字**（路径 + 是什么/能删吗），
-// 这样浏览器搜索与问 AI 用的是同一句话，不会出现两套措辞。
+// The question text is provided by the caller, usually **reusing the module's existing "one-click search" keywords** (path + what is it/can it be deleted),
+// so browser search and asking the AI use the same sentence, avoiding two sets of wording.
 // ============================================================================
 
 import { useTranslation } from 'react-i18next';
@@ -14,14 +14,14 @@ import { requestAiAsk } from './aiAsk';
 import { useSettings } from '../../contexts';
 
 interface AiAskButtonProps {
-  /** 要问 AI 的问题；空字符串时按钮不渲染，避免出现点了没反应的入口 */
+  /** The question to ask the AI; when empty the button does not render, avoiding a dead entry that does nothing when clicked */
   question: string;
   /**
-   * 这一问不需要去查数据（用户已经在界面上把这行展开看到了，问句里带的路径就是那行本身）。
-   * 置位后助手不声明任何工具，直接用模型自己的知识作答 —— 否则它会白试一次读取。
+   * This question needs no data lookup (the user has already expanded and seen the row in the UI; the path in the question is that very row).
+   * When set, the assistant declares no tools and answers directly from the model's own knowledge — otherwise it would waste a read attempt.
    */
   skipLookup?: boolean;
-  /** 允许调用方补充定位类（例如模块自己的 hover 态） */
+  /** Allows the caller to add positioning classes (e.g. the module's own hover state) */
   className?: string;
 }
 
@@ -29,8 +29,8 @@ export function AiAskButton({ question, skipLookup = false, className = '' }: Ai
   const { t } = useTranslation('ai');
   const { settings } = useSettings();
 
-  // 入口关掉后行内按钮一起隐藏：只藏悬浮球的话，列表里还留着一堆点了会弹出
-  // 助手面板的入口，等于没关干净。
+  // When the entry is disabled, inline buttons hide too: hiding only the floating ball leaves a bunch of entries in the list that pop up
+  // the assistant panel when clicked, meaning it was not fully turned off.
   if (!settings.aiAssistantEnabled) return null;
 
   if (!question.trim()) return null;

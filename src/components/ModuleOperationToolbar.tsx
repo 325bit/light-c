@@ -6,35 +6,35 @@ export type ModuleOperationToolbarId = 'junk' | 'bigFiles' | 'social' | 'context
 interface ModuleOperationToolbarProps {
   moduleId: ModuleOperationToolbarId;
   /**
-   * 忙碌态：用进度内容替换操作按钮。
+   * Busy state: replace the action buttons with progress content.
    *
-   * 操作条是 position: fixed 的悬浮层，所以进度放在这里**完全不占文档流** ——
-   * 删除期间列表不会被撑开、也不会有位移。这是"用户自己挑子集删除"的模块
-   * （社交专清/大文件/右键菜单/注册表）需要保留列表参照、又不想要布局跳动时的做法。
+   * The action bar is a position: fixed floating layer, so putting progress here **takes no space in document flow** —
+   * during deletion the list is neither stretched nor shifted. This is the approach for modules where "users pick a subset to delete"
+   * (social-specific cleanup / big files / context menu / registry) need to keep the list as reference but avoid layout jumps.
    */
   busy?: boolean;
-  /** 忙碌态要显示的内容（通常是一段进度）。忙碌时替换掉 children，调用方无需改动原有按钮。 */
+  /** Content to show in busy state (usually a progress segment). When busy it replaces children; callers need not change their existing buttons. */
   busyContent?: ReactNode;
   children: ReactNode;
 }
 
 /**
- * 批量操作条：固定在视口底部居中。
+ * Batch action bar: fixed at the bottom center of the viewport.
  *
- * 为什么在底部而不是右侧悬浮：右侧会压住列表里的数字和行内图标，
- * 用户要先把它折叠起来才能看清内容；底部横排是「对选中项批量做事」的常规位置，
- * 而且横向排布不占用任何数据列。
+ * Why at the bottom rather than floating on the right: the right side would cover numbers and inline icons in the list,
+ * users would have to collapse it first to see content; a horizontal bottom row is the conventional place for "batch actions on selected items",
+ * and a horizontal layout takes up no data columns.
  *
- * 为什么不做折叠：折叠态只剩一个图标，多数用户认不出那里是操作区 ——
- * 这比「挡住内容」更糟。收起/展开的代价会被转嫁到每一次使用上。
+ * Why not collapsible: collapsed state leaves only an icon, and most users would not recognize that as the action area —
+ * that is worse than "covering content". The cost of collapsing/expanding would be passed on to every use.
  *
- * moduleId 只用于标记操作区归属（React 靠调用位置区分实例），不参与渲染。
+ * moduleId only marks which module the action area belongs to (React distinguishes instances by call site), it is not used in rendering.
  */
 export function ModuleOperationToolbar({ moduleId: _moduleId, busy = false, busyContent, children }: ModuleOperationToolbarProps) {
   return createPortal(
     <div className={`module-operation-toolbar${busy ? ' module-operation-toolbar--busy' : ''}`}>
-      {/* 忙碌态用调用方给的现成内容替换按钮。组件本身不认识"删除"这件事 ——
-          它只负责把内容放进悬浮层，文案与业务都不在这里，避免主题无关的逻辑渗透进来。 */}
+      {/* Busy state replaces buttons with ready-made content from the caller. The component itself knows nothing about "deleting" —
+          it only places content into the floating layer; wording and business logic are not here, keeping theme-agnostic logic from leaking in. */}
       <div className="module-operation-toolbar__actions">
         {busy ? busyContent : children}
       </div>

@@ -1,11 +1,11 @@
 // ============================================================================
-// 格式化工具函数
+// Formatting utilities
 // ============================================================================
 
 /**
- * 格式化文件大小为人类可读格式
- * @param bytes 字节数
- * @returns 格式化后的字符串
+ * Format a file size into a human-readable string
+ * @param bytes number of bytes
+ * @returns the formatted string
  */
 export function formatSize(bytes: number): string {
   const KB = 1024;
@@ -24,9 +24,9 @@ export function formatSize(bytes: number): string {
 }
 
 /**
- * 格式化时间戳为日期字符串
- * @param timestamp Unix时间戳（秒）
- * @returns 格式化后的日期字符串
+ * Format a timestamp into a date string
+ * @param timestamp Unix timestamp (seconds)
+ * @returns the formatted date string
  */
 export function formatDate(timestamp: number): string {
   const date = new Date(timestamp * 1000);
@@ -40,9 +40,9 @@ export function formatDate(timestamp: number): string {
 }
 
 /**
- * 格式化耗时
- * @param ms 毫秒数
- * @returns 格式化后的字符串
+ * Format a duration
+ * @param ms milliseconds
+ * @returns the formatted string
  */
 export function formatDuration(ms: number): string {
   if (ms < 1000) {
@@ -57,9 +57,9 @@ export function formatDuration(ms: number): string {
 }
 
 /**
- * 获取风险等级的颜色
- * @param level 风险等级 (1-5)
- * @returns 颜色类名
+ * Get the color for a risk level
+ * @param level risk level (1-5)
+ * @returns color class name
  */
 export function getRiskLevelColor(level: number): string {
   switch (level) {
@@ -79,9 +79,9 @@ export function getRiskLevelColor(level: number): string {
 }
 
 /**
- * 获取风险等级的背景颜色
- * @param level 风险等级 (1-5)
- * @returns 背景颜色类名
+ * Get the background color for a risk level
+ * @param level risk level (1-5)
+ * @returns background color class name
  */
 export function getRiskLevelBgColor(level: number): string {
   switch (level) {
@@ -101,9 +101,9 @@ export function getRiskLevelBgColor(level: number): string {
 }
 
 /**
- * 获取风险等级文字描述
- * @param level 风险等级 (1-5)
- * @returns 风险描述
+ * Get the text description of a risk level
+ * @param level risk level (1-5)
+ * @returns risk description
  */
 export function getRiskLevelText(level: number): string {
   switch (level) {
@@ -122,7 +122,7 @@ export function getRiskLevelText(level: number): string {
   }
 }
 
-// 风险等级是后端稳定的数值枚举，交给调用方使用语言包生成显示文案。
+// Risk level is a stable numeric enum from the backend; the caller uses the language pack to generate the display text.
 export function getRiskLevelKey(level: number): string {
   switch (level) {
     case 1: return 'safe';

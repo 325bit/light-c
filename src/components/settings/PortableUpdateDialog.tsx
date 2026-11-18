@@ -1,9 +1,9 @@
 // ============================================================================
-// 便携版更新引导弹窗
+// Portable edition update guidance dialog
 //
-// 便携版不能走安装器式自动更新，否则会把 NSIS 包静默装到系统里。这个弹窗只做二次确认
-// 与渠道引导：告诉用户便携版需要手动替换文件，并提供官网与网盘两个官方入口。
-// 与 ClearLocalDataDialog 保持一致，统一用 framer-motion 处理进出场动画。
+// The portable edition can't use installer-style auto-update, or it would silently install the NSIS package into the system. This dialog only does second confirmation
+// and channel guidance: it tells users the portable edition requires manually replacing files, and offers two official entries, website and net disk.
+// Kept consistent with ClearLocalDataDialog, both use framer-motion for enter/exit animations.
 // ============================================================================
 
 import { useEffect } from 'react';
@@ -15,19 +15,19 @@ import { MODAL_BACKDROP_MOTION, MODAL_CARD_MOTION } from '../../utils/modalMotio
 
 export interface PortableUpdateDialogProps {
   isOpen: boolean;
-  /** 远端最新版本号；未查到时为 null，此时只展示渠道引导。 */
+  /** Remote latest version string; null when not found, in which case only channel guidance is shown. */
   latestVersion: string | null;
-  /** 当前应用版本号。 */
+  /** Current application version. */
   currentVersion: string;
-  /** 正在查询远端版本。 */
+  /** Currently querying the remote version. */
   isChecking: boolean;
-  /** 版本查询是否失败（失败时不谎称"已是最新"）。 */
+  /** Whether the version check failed (on failure, don't falsely claim "up to date"). */
   checkFailed?: boolean;
-  /** 作者网盘入口，取自官方 download.json，失败时回退内置地址。 */
+  /** Author's net-disk entry, taken from the official download.json, falls back to a built-in address on failure. */
   netDiskUrl: string;
-  /** 官方网站入口。 */
+  /** Official website entry. */
   officialWebsiteUrl: string;
-  /** 点击渠道按钮时回调，由调用方负责打开外部链接。 */
+  /** Callback when a channel button is clicked; the caller opens the external link. */
   onOpenChannel: (url: string, channel: 'website' | 'netDisk') => void;
   onClose: () => void;
 }
@@ -55,7 +55,7 @@ export function PortableUpdateDialog({
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [isOpen, onClose]);
 
-  // 三种状态依次降级：查询中 → 查到新版本 → 已是最新 / 查询失败。
+  // Three states degrade in order: checking → new version found → up to date / check failed.
   const subtitle = isChecking && !latestVersion
     ? t('portableUpdateChecking')
     : latestVersion
@@ -80,9 +80,9 @@ export function PortableUpdateDialog({
             {...MODAL_BACKDROP_MOTION}
           />
 
-          {/* 尺寸统一用 em：body 继承 :root 字号，弹窗宽高随全局字号设置缩放。
-              高度必须叠加视口约束，否则窗口偏矮时底部按钮会被顶出可视区；
-              overflow-hidden 改为 overflow-y-auto，让内容在弹窗内滚动。 */}
+          {/* Sizes all use em: body inherits the :root font size, so dialog width and height scale with the global font setting.
+              Height must also be clamped by the viewport, otherwise in a short window the bottom buttons get pushed out of view;
+              changed overflow-hidden to overflow-y-auto so content scrolls inside the dialog. */}
           <motion.div
             className="relative mx-[1em] w-[31.43em] max-w-[calc(100vw-2em)] max-h-[calc(100vh-2em)] overflow-y-auto rounded-[0.86em] border border-[var(--border-default)] bg-[var(--bg-card)] glass-dialog shadow-2xl"
             {...MODAL_CARD_MOTION}
@@ -97,7 +97,7 @@ export function PortableUpdateDialog({
             </button>
 
             <div className="p-[1.43em]">
-              {/* 标题区：浅绿底图标 + 版本信息，与主界面模块卡片同一语汇 */}
+              {/* Title area: light-green icon background + version info, same visual language as the main UI's module cards */}
               <div className="mb-[1.14em] flex items-start gap-[0.86em]">
                 <div className="flex h-[2.57em] w-[2.57em] shrink-0 items-center justify-center rounded-[0.71em] bg-[var(--brand-green-10)]">
                   <HardDriveDownload className="h-[1.29em] w-[1.29em] text-[var(--brand-green)]" />

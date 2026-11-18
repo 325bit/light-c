@@ -1,9 +1,9 @@
 // ============================================================================
-// 命令模块 - 按功能域拆分
+// Command module - split by functional domain
 //
-// 每个子模块对应一组相关的 Tauri 命令，避免单文件过大。
-// 所有命令和公共类型通过 mod.rs 统一重新导出，
-// lib.rs 只需 `use commands::*` 即可注册全部命令。
+// Each submodule corresponds to a group of related Tauri commands, avoiding an oversized single file.
+// All commands and public types are re-exported uniformly through mod.rs,
+// so lib.rs can register everything with just `use commands::*`.
 // ============================================================================
 
 mod ai;
@@ -28,7 +28,7 @@ mod system;
 pub(crate) mod tools;
 mod verify;
 
-// 公共类型（供前端和其他模块使用）
+// Public types (for the frontend and other modules)
 pub use ai::*;
 pub use ai_models::*;
 pub use app::*;

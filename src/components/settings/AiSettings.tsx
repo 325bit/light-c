@@ -1,8 +1,8 @@
 // ============================================================================
-// AI 助手设置页
+// AI assistant settings page
 //
-// 只做界面与交互：网络请求、密钥存储、协议适配全在后端，
-// 所以这里**永远接触不到明文 API Key** —— 只显示掩码。
+// Only handles UI and interaction: network requests, key storage and protocol adaptation are all in the backend,
+// so here we **never touch the plaintext API Key** — only the masked form is shown.
 // ============================================================================
 
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
@@ -27,14 +27,14 @@ import { notifyAiConfigChanged, subscribeAiConfig } from '../ai/aiConfigSignal';
 import { ConfirmDialog } from '../ConfirmDialog';
 import type { AiProviderPreset, AiPublicConfig } from '../../types/ai';
 
-/** 统一的设置行：左侧标题与描述，右侧控件。
+/** Unified settings row: title and description on the left, control on the right.
  *
- *  ⚠️ 窄窗口下右侧控件整体换到下一行，而不是把左侧文字压成一条竖线。
- *  之前是「左 min-w-0（可无限压缩）+ 右 shrink-0（不可压缩）」的硬两列：
- *  AI 数据目录这一行右侧是「长路径 + 打开/更改/恢复三个按钮」，宽度不够时
- *  左侧描述被挤成 4~5 行（issue 截图）。
- *  现在容器允许 wrap、左侧给一个 em 基准宽度：够宽仍是左右两列，
- *  不够时右侧整块落到下一行，描述保持可读。 */
+ *  ⚠️ In narrow windows the right-side control moves entirely to the next line, instead of squeezing the left text into a thin vertical strip.
+ *  Previously it was a rigid two-column layout of "left min-w-0 (infinitely compressible) + right shrink-0 (not compressible)":
+ *  on the AI data directory row, the right side has "a long path + three buttons Open/Change/Restore", and when space was insufficient
+ *  the left description was squeezed into 4~5 lines (issue screenshot).
+ *  Now the container allows wrapping and the left side gets an em-based base width: when wide enough it is still two columns,
+ *  and when narrow the whole right block drops to the next line, keeping the description readable. */
 function SettingRow({
   title,
   description,
@@ -55,7 +55,7 @@ function SettingRow({
   );
 }
 
-/** 统一样式的文本输入框（设置页里目前只有本页用到）。 */
+/** Text input box with unified styling (currently only used on this page in the settings). */
 function TextField({
   value,
   placeholder,
@@ -94,26 +94,26 @@ export function AiSettings() {
   const [errorMessage, setErrorMessage] = useState('');
   const [loaded, setLoaded] = useState(false);
 
-  // 表单草稿：与已保存配置分开，改动不落盘直到点保存/测试
-  /** 档案显示名。可留空 —— 后端会回落到服务商名，避免列表出现空白项。 */
+  // Form draft: kept separate from the saved config; changes are not persisted until Save/Test is clicked
+  /** Profile display name. Can be left empty — the backend falls back to the provider name, avoiding blank entries in the list. */
   const [profileName, setProfileName] = useState('');
   const [providerId, setProviderId] = useState('deepseek');
   const [baseUrl, setBaseUrl] = useState('');
   const [model, setModel] = useState('');
-  // 密钥输入框始终为空：留空 = 沿用已保存的密钥（后端约定）
+  // The API key input is always empty: leaving it empty = reuse the saved key (backend convention)
   const [apiKey, setApiKey] = useState('');
-  // AI 数据目录：留空 = 跟随主数据目录（默认位置，显示为占位提示）。
-  // 它是**全局设置**，不属于某个服务商 —— 换服务商不该把聊天记录也搬走。
+  // AI data directory: leaving it empty = follow the main data directory (default location, shown as a placeholder hint).
+  // It is a **global setting** and does not belong to any provider — switching providers should not move the chat history along with it.
   const [dataDir, setDataDir] = useState('');
-  // 当前正在编辑的档案 id。表单里的字段都属于它。
+  // The id of the profile currently being edited. All fields in the form belong to it.
   const [activeId, setActiveId] = useState('');
-  // 思考强度。**默认空 = 不发这个参数** —— 无法自动探测模型是否支持，
-  // 发了不支持的模型可能直接报错，所以默认保持安静。
+  // Reasoning effort. **Empty by default = do not send this parameter** — there is no way to auto-detect whether the model supports it,
+  // and sending it to an unsupported model may cause an error, so it stays quiet by default.
   const [reasoningEffort, setReasoningEffort] = useState('');
   /**
-   * 是否展开了编辑区。
-   * 列表默认是**只读**的：字段只在点「编辑」或「新增」时展开，
-   * 平时不占版面、也不会让人误以为"随便改改就生效了"。
+   * Whether the edit area is expanded.
+   * The list is **read-only** by default: fields only expand when "Edit" or "Add" is clicked,
+   * so it takes no extra space normally and does not give the impression that "casual edits take effect".
    */
   const [isEditing, setIsEditing] = useState(false);
 
@@ -125,7 +125,7 @@ export function AiSettings() {
         if (cancelled) return;
         setProviders(presetList);
         setSaved(config);
-        // 表单初值取自"当前档案"，不是某个全局字段 —— 多档案之后只有档案才是配置单位
+        // Initial form values come from the "current profile", not some global field — with multiple profiles, only a profile is a config unit
         const active = config.profiles.find((item) => item.id === config.activeProfileId) ?? config.profiles[0];
         const preset = presetList.find((item) => item.id === active?.providerId);
         setActiveId(active?.id ?? '');
@@ -133,19 +133,19 @@ export function AiSettings() {
         setProviderId(active?.providerId || preset?.id || 'deepseek');
         setBaseUrl(active?.baseUrl || preset?.baseUrl || '');
         setModel(active?.model || '');
-        // 模型下拉直接读档案里缓存的列表：重启后也还在，不用每次进来重新拉
+        // The model dropdown reads the list cached in the profile directly: it is still there after restart, no need to re-fetch each time
         setModelOptions(active?.models ?? []);
         setReasoningEffort(active?.reasoningEffort ?? '');
         setDataDir(config.dataDir || '');
 
-        // 模型列表为空时自动拉一次：用户不该为了"看见有哪些模型"先去点一次测试连接。
-        // 失败在这里静默忽略 —— 多半是还没填密钥或没联网，点「测试连接」会给明确错误。
+        // When the model list is empty, fetch it once automatically: users should not have to click "Test Connection" first just to "see which models are available".
+        // Failure is silently ignored here — most likely the key has not been filled in or there is no network; clicking "Test Connection" gives an explicit error.
         if (active && active.hasApiKey && active.models.length === 0) {
           void testAiConnection()
             .then((models) => {
               if (cancelled || models.length === 0) return;
               setModelOptions(models);
-              // 还没选模型就顺手选第一个，省一步
+              // If no model is selected yet, pick the first one as a convenience, saving a step
               if (!active.model) setModel(models[0]);
             })
             .catch(() => undefined);
@@ -161,7 +161,7 @@ export function AiSettings() {
     };
   }, []);
 
-  /** 当前档案：密钥状态与新档案名都取它 —— 多档案之后没有"全局密钥"这种东西。 */
+  /** Current profile: both the key status and the new profile name come from it — with multiple profiles there is no such thing as a "global key". */
   const activeProfile = useMemo(
     () => saved?.profiles.find((item) => item.id === saved.activeProfileId) ?? saved?.profiles[0],
     [saved],
@@ -172,7 +172,7 @@ export function AiSettings() {
     [providers, providerId],
   );
 
-  /** 切换服务商时，把地址与默认模型一并带过去 —— 用户只需要再填一个密钥。 */
+  /** When switching providers, carry the address and default model over as well — the user only needs to fill in one more key. */
   const handleProviderChange = useCallback(
     (nextId: string) => {
       const previousPreset = providers.find((item) => item.id === providerId);
@@ -181,8 +181,8 @@ export function AiSettings() {
       if (preset) {
         setBaseUrl(preset.baseUrl);
         setModel(preset.defaultModel);
-        // 名称跟随服务商**仅在用户没改过名时**：还是空或仍等于旧预设名，说明没自定义过。
-        // 用户手填过就保留，别把他起的名字覆盖掉。
+        // The name follows the provider **only if the user has not changed it**: still empty or still equal to the old preset name means it was not customized.
+        // If the user filled it in manually, keep it; do not overwrite the name they chose.
         setProfileName((current) =>
           current.trim() === '' || current === previousPreset?.name ? preset.name : current,
         );
@@ -193,12 +193,12 @@ export function AiSettings() {
     [providers, providerId],
   );
 
-  /** 保存草稿。apiKey 为空时后端会沿用已保存的密钥。 */
+  /** Save the draft. When apiKey is empty the backend reuses the saved key. */
   const persist = useCallback(async () => {
-    // 密钥留空 = 后端沿用已保存的（前端只拿得到掩码，回传不了明文）
+    // Key left empty = backend reuses the saved one (the frontend can only get the masked form, not send back the plaintext)
     const next = await saveAiProfile({
       id: activeId,
-      // 用户填的名称；留空交给后端回落到服务商名（避免列表出现空白项）
+      // The name the user filled in; if empty, the backend falls back to the provider name (avoids blank entries in the list)
       name: profileName.trim(),
       providerId,
       baseUrl,
@@ -206,18 +206,18 @@ export function AiSettings() {
       apiKey,
       reasoningEffort,
     });
-    // 数据目录是全局的，单独保存；它不属于任何一份档案。
-    // **只有真的变了才写** —— 否则每次保存都要多写一次磁盘、多广播一次"配置已变更"。
+    // The data directory is global and saved separately; it does not belong to any profile.
+    // **Only write when it actually changed** — otherwise every save adds an extra disk write and an extra "config changed" broadcast.
     const withDir =
       dataDir === (saved?.dataDir ?? '') ? await getAiConfig() : await setAiDataDir(dataDir);
     setSaved(withDir);
     setActiveId(withDir.activeProfileId);
-    // 保存后端会回填 id（新增档案时），这里同步一次，否则再保存会又插入一份
+    // Saving fills in the id (when adding a new profile); sync it here, otherwise saving again would insert another copy
     const active = withDir.profiles.find((item) => item.id === withDir.activeProfileId);
     if (active) setActiveId(active.id);
-    setApiKey(''); // 保存成功后清空输入框，回到"掩码显示"状态
-    // ⚠️ 保存**不走** applyConfig，所以这里要单独广播一次：
-    // 不广播的话助手那份配置副本还是旧的，"刚配好 Key 就点快捷提问"仍会被误拦（Evan 反馈过）。
+    setApiKey(''); // Clear the input after a successful save, returning to the "masked display" state
+    // ⚠️ Saving **does not go through** applyConfig, so we must broadcast once separately here:
+    // without broadcasting, the assistant's copy of the config is still stale, and "clicking a quick question right after configuring the Key" would still be wrongly blocked (Evan reported this).
     notifyAiConfigChanged();
     return next;
   }, [activeId, profileName, providerId, baseUrl, model, apiKey, reasoningEffort, dataDir, saved]);
@@ -227,7 +227,7 @@ export function AiSettings() {
     setErrorMessage('');
     try {
       await persist();
-      setIsEditing(false); // 保存即完成：收起编辑区，回到只读列表
+      setIsEditing(false); // Saving completes it: collapse the edit area, back to the read-only list
       showToast({ type: 'success', title: t('aiAssistant.saved') });
     } catch (error) {
       setErrorMessage(String(error));
@@ -237,8 +237,8 @@ export function AiSettings() {
   }, [persist, showToast, t]);
 
   /**
-   * 测试连接 = 先保存再拉模型列表。
-   * 必须先保存：后端拉列表时读的是**已保存**的配置，不保存就会拿着旧配置去测。
+   * Test connection = save first, then fetch the model list.
+   * It must save first: the backend reads the **saved** config when fetching the list; without saving, it would test with the old config.
    */
   const handleTest = useCallback(async () => {
     setIsTesting(true);
@@ -247,7 +247,7 @@ export function AiSettings() {
       await persist();
       const models = await testAiConnection();
       setModelOptions(models);
-      // 拉到了列表但还没选模型时，自动选中第一个，省一步操作
+      // If a list was fetched but no model is selected, auto-select the first one, saving a step
       if (!model.trim() && models.length > 0) setModel(models[0]);
       showToast({
         type: 'success',
@@ -261,7 +261,7 @@ export function AiSettings() {
     }
   }, [persist, model, showToast, t]);
 
-  /** 把一个配置应用到表单上（切换档案、保存后回填都走这里，保证只有一处同步逻辑）。 */
+  /** Apply a config to the form (used both when switching profiles and when filling in values after saving, keeping a single sync path). */
   const applyConfig = useCallback(
     (config: AiPublicConfig) => {
       const active = config.profiles.find((item) => item.id === config.activeProfileId) ?? config.profiles[0];
@@ -276,31 +276,31 @@ export function AiSettings() {
       setReasoningEffort(active?.reasoningEffort ?? '');
       setApiKey('');
       setErrorMessage('');
-      // 磁盘上的配置已经变了 —— 通知助手重新读取，否则它那份副本还是旧的，
-      // 刚配好服务商就点快捷提问会被误判成没配好
+      // The config on disk has changed — notify the assistant to re-read it, otherwise its copy is still stale,
+      // and clicking a quick question right after configuring a provider is wrongly judged as not configured
       notifyAiConfigChanged();
     },
     [providers],
   );
 
-  /** 编辑态镜像：订阅回调里读它，避免每次展开/收起编辑区都重新订阅。 */
+  /** Mirror of the editing state: read from the subscription callback, so expanding/collapsing the edit area does not re-subscribe every time. */
   const isEditingRef = useRef(isEditing);
   useEffect(() => {
     isEditingRef.current = isEditing;
   }, [isEditing]);
 
   /**
-   * 外部改了配置时同步过来：助手面板在输入框里就地切模型后，磁盘上的 model 已变，
-   * 这里不更新的话用户随后点「保存」会用旧模型把它写回去。
+   * Sync when the config is changed externally: after the assistant panel switches models in place in the input, the model on disk has changed,
+   * and if this is not updated the user's subsequent "Save" would write the old model back.
    *
-   * ⚠️ 只更新状态、**不再广播** —— persist / applyConfig 都会广播，
-   * 这里再广播就会和设置页自己形成通知循环。
+   * ⚠️ Only update state, **do not broadcast again** — persist / applyConfig both broadcast,
+   * and broadcasting here would create a notification loop with the settings page itself.
    */
   useEffect(() => subscribeAiConfig(() => {
     void getAiConfig()
       .then((config) => {
         setSaved(config);
-        // 编辑中保留用户草稿：只换基准值，别覆盖他正在填的模型名
+        // While editing, preserve the user's draft: only replace the baseline value, do not overwrite the model name they are typing
         if (isEditingRef.current) return;
         const active = config.profiles.find((item) => item.id === config.activeProfileId) ?? config.profiles[0];
         setActiveId(active?.id ?? '');
@@ -311,15 +311,15 @@ export function AiSettings() {
   }), []);
 
   /**
-   * 表单里有没有没保存的改动。
+   * Whether the form has unsaved changes.
    *
-   * 只是用来在"切档案 / 新增 / 删除"这三个**会丢改动**的入口先问一句。
-   * 判据是"和新密钥是否填了 + 四个字段是否偏离已保存值"，不比时间戳 —— 简单且不会误报。
+   * Only used to ask first at the three entry points that **lose changes**: "switch profile / add / delete".
+   * The criterion is "whether a new key was filled in + whether the four fields differ from the saved values", not timestamps — simple and no false positives.
    */
   const isDirty = useMemo(() => {
     if (apiKey.trim()) return true;
     const current = saved?.profiles.find((item) => item.id === activeId);
-    // 新建中的草稿没有对照物，不当作"未保存改动"（用户本来就在编辑）
+    // A draft being newly created has no reference, so it is not treated as "unsaved changes" (the user is editing anyway)
     if (!current) return false;
     return (
       profileName.trim() !== current.name ||
@@ -330,10 +330,10 @@ export function AiSettings() {
     );
   }, [apiKey, saved, activeId, profileName, providerId, baseUrl, model, reasoningEffort]);
 
-  /** 待确认的"丢弃改动"动作：有未保存改动时先把动作挂在这里，确认后再执行 */
+  /** Pending "discard changes" action: when there are unsaved changes, park the action here first and execute it after confirmation */
   const [pendingDiscard, setPendingDiscard] = useState<(() => void) | null>(null);
 
-  /** 执行一个会丢改动的操作：干净就直接执行，脏就先问一句 */
+  /** Perform an operation that would lose changes: execute directly if clean, ask first if dirty */
   const confirmUnsaved = useCallback(
     (action: () => void) => {
       if (!isDirty) {
@@ -358,18 +358,18 @@ export function AiSettings() {
   );
 
   /**
-   * 新增：**先不建档**，只展开一张空白表单。
-   * 保存成功后才真正创建并出现在列表里 —— 否则列表里会先多出一条半成品配置，
-   * 用户取消掉还留着一条空壳（Evan 反馈过）。
+   * Add: **do not create a profile yet**, just expand a blank form.
+   * The profile is actually created and appears in the list only after a successful save — otherwise a half-finished config appears in the list first,
+   * and if the user cancels, an empty shell is left behind (Evan reported this).
    *
-   * ⚠️ 默认服务商（DeepSeek）的**地址和默认模型也要一并带出来**：
-   * 只设 providerId 的话，下拉框显示 DeepSeek、接口地址却是空的，
-   * 用户得先切到别家再切回来才出现（Evan 反馈过）。这里复用同一份预设，和切换时一致。
+   * ⚠️ The default provider (DeepSeek)'s **address and default model must be brought out as well**:
+   * if only providerId is set, the dropdown shows DeepSeek but the API address is empty,
+   * and the user has to switch away and back before it appears (Evan reported this). Reuse the same preset here, consistent with switching.
    */
   const handleAddProfile = useCallback(() => {
     const preset = providers.find((item) => item.id === 'deepseek') ?? providers[0];
     setActiveId('');
-    // 预填服务商名作为初始名，用户可以改成自己好认的；留空则由后端回落到服务商名。
+    // Prefill the provider name as the initial name; the user can change it to something recognizable; if left empty the backend falls back to the provider name.
     setProfileName(preset?.name ?? '');
     setProviderId(preset?.id ?? 'deepseek');
     setBaseUrl(preset?.baseUrl ?? '');
@@ -392,8 +392,8 @@ export function AiSettings() {
   );
 
   /**
-   * 移除这块档案已保存的密钥（档案保留）。
-   * 撤销一份可能泄露的 Key 是安全操作，所以要能单独做 —— 不必删掉整份档案。
+   * Remove the saved key for this profile (the profile itself is kept).
+   * Revoking a potentially leaked Key is a security operation, so it must be doable on its own — no need to delete the whole profile.
    */
   const handleClearKey = useCallback(async () => {
     if (!activeId) return;
@@ -411,10 +411,10 @@ export function AiSettings() {
   }, [activeId, applyConfig, showToast, t]);
 
   /**
-   * 下拉选项：拉取到的模型 + **当前模型本身**。
+   * Dropdown options: the fetched models + **the current model itself**.
    *
-   * 必须把当前值也放进去：模型可能不在拉取结果里（列表还没拉到、或这个模型已下线），
-   * 那种情况下 Select 找不到匹配项会显示成空白，用户会以为配置丢了。
+   * The current value must be included: the model may not be in the fetched results (list not fetched yet, or the model was retired),
+   * in which case Select finds no match and shows blank, making the user think the config was lost.
    */
   const modelSelectOptions = useMemo(() => {
     const options = modelOptions.map((id) => ({ value: id, label: id }));
@@ -422,7 +422,7 @@ export function AiSettings() {
     return options;
   }, [modelOptions, model]);
 
-  /** 点某一行的「编辑」：先切到它（表单永远编辑当前档案），再展开编辑区。 */
+  /** Click "Edit" on a row: first switch to it (the form always edits the current profile), then expand the edit area. */
   const handleStartEdit = useCallback(
     async (profileId: string) => {
       if (profileId !== activeId) await handleSwitchProfile(profileId);
@@ -431,13 +431,13 @@ export function AiSettings() {
     [activeId, handleSwitchProfile],
   );
 
-  /** 取消编辑：收起并**把表单恢复成已保存的样子**，丢弃这次改动。 */
+  /** Cancel editing: collapse and **restore the form to its saved state**, discarding these changes. */
   const handleCancelEdit = useCallback(() => {
     if (saved) applyConfig(saved);
     setIsEditing(false);
   }, [saved, applyConfig]);
 
-  /** 打开 AI 数据目录（用系统文件管理器）。目录不存在时提示一下，不要静默失败。 */
+  /** Open the AI data directory (with the system file manager). If the directory does not exist, show a hint; do not fail silently. */
   const handleOpenDataDir = useCallback(async () => {
     const target = saved?.resolvedDataDir;
     if (!target) return;
@@ -449,14 +449,14 @@ export function AiSettings() {
   }, [saved]);
 
   /**
-   * 选择 AI 数据目录。reset = 恢复默认位置（跟随主数据目录）。
-   * 选完**立即保存** —— 文件夹选择器点完还要用户再去找"保存"按钮很反直觉。
+   * Select the AI data directory. reset = restore the default location (follow the main data directory).
+   * Save **immediately** after selection — after the folder picker closes, making the user hunt for the "Save" button is counter-intuitive.
    */
   const handlePickDataDir = useCallback(
     async (reset: boolean) => {
       try {
         const folder = reset ? '' : await pickFolderDialog();
-        if (folder === null) return; // 用户取消
+        if (folder === null) return; // User cancelled
         applyConfig(await setAiDataDir(folder));
       } catch (error) {
         setErrorMessage(String(error));
@@ -473,8 +473,8 @@ export function AiSettings() {
           {t('aiAssistant.section')}
         </h4>
 
-        {/* 入口显示开关：没配服务商的用户不希望右下角悬浮球和行内 AI 按钮一直占着界面。
-            关掉只隐藏入口，服务商配置与密钥全部保留（重新打开立刻恢复）。 */}
+        {/* Entry display toggle: users who have not configured a provider do not want the floating ball in the lower-right corner and the inline AI button occupying the UI all the time.
+            Turning it off only hides the entry; provider config and API keys are all kept (re-enabling restores them immediately). */}
         <div className="glass-block bg-[var(--bg-main)] rounded-2xl px-5 py-3.5 flex items-center justify-between gap-4">
           <div className="min-w-0">
             <p className="text-sm font-medium text-[var(--text-primary)]">{t('aiAssistant.enableEntry')}</p>
@@ -488,10 +488,10 @@ export function AiSettings() {
         </div>
 
         <div className="glass-block bg-[var(--bg-main)] rounded-2xl p-5 space-y-5">
-          {/* 服务商列表：参考 deepseek harness —— 竖排列表、每行一个删除、
-              底部整行「新增服务商」。
-              ⚠️ 只剩一条时**也允许删除**：之前按"至少保留一条"藏起删除按钮，
-              用户想清空就得先加一条再删，非常别扭（Evan 反馈过）。*/}
+          {/* Provider list: following the deepseek harness — a vertical list, one delete per row,
+              with a full-width "Add Provider" row at the bottom.
+              ⚠️ Deletion is allowed **even when only one remains**: previously the delete button was hidden under a "keep at least one" rule,
+              so to clear it the user had to add one first and then delete it, which was very awkward (Evan reported this). */}
           <div className="space-y-1.5">
             {saved?.profiles.map((profile) => {
               const isActive = profile.id === saved.activeProfileId;
@@ -514,7 +514,7 @@ export function AiSettings() {
                     onClick={() => confirmUnsaved(() => void handleSwitchProfile(profile.id))}
                     className="flex min-w-0 flex-1 items-center gap-2 text-left"
                   >
-                    {/* 圆点 = 是否已配置密钥，一眼看出哪条能用 */}
+                    {/* Dot = whether a key is configured, so you can tell at a glance which entry is usable */}
                     <span
                       className={`h-1.5 w-1.5 shrink-0 rounded-full ${
                         profile.hasApiKey ? 'bg-[var(--brand-green)]' : 'bg-[var(--text-muted)]'
@@ -555,8 +555,8 @@ export function AiSettings() {
 
           {isEditing ? (
           <>
-          {/* 名称放在服务商之上：先给这份配置起个名字，再看它接的是哪家。
-              留空会回落到服务商名，列表里不会出现空白项。 */}
+          {/* Name goes above the provider: first give this config a name, then see which provider it connects to.
+              If left empty it falls back to the provider name, so no blank entries appear in the list. */}
           <SettingRow title={t('aiAssistant.profileName')} description={t('aiAssistant.profileNameDesc')}>
             <TextField
               value={profileName}
@@ -590,8 +590,8 @@ export function AiSettings() {
                 activeProfile?.hasApiKey
                   ? t('aiAssistant.apiKeySaved', { masked: activeProfile?.apiKeyMasked ?? '' })
                   : currentPreset?.local
-                    // 本地推理（Ollama / LM Studio / vLLM）不需要鉴权，提示可以直接留空，
-                    // 不然用户会以为必填而卡在这一步。
+                    // Local inference (Ollama / LM Studio / vLLM) needs no authentication, so the hint can be left empty,
+                    // otherwise users would think it is required and get stuck at this step.
                     ? t('aiAssistant.apiKeyOptionalDesc')
                     : t('aiAssistant.apiKeyDesc')
               }
@@ -610,7 +610,7 @@ export function AiSettings() {
                   widthClass="w-64"
                   password
                 />
-                {/* 已配置时才出现：撤销一份可能泄露的 Key 必须做得到，但不能误点到空白按钮上 */}
+                {/* Only shown when configured: revoking a potentially leaked Key must be possible, but must not be triggered by accidentally clicking a blank button */}
                 {activeProfile?.hasApiKey ? (
                   <button
                     type="button"
@@ -627,9 +627,9 @@ export function AiSettings() {
 
           <div className="border-t border-[var(--border-color)] pt-5">
             <SettingRow title={t('aiAssistant.model')} description={t('aiAssistant.modelDesc')}>
-              {/* 用项目自己的 Select（与通用设置里"语言"那个是同一个组件），
-                  不自己造下拉 —— 之前用原生 datalist 时它会按已输入内容过滤候选，
-                  结果当前值把其它候选项全筛掉了，看起来"选不上"。 */}
+              {/* Use the project's own Select (the same component as "Language" in general settings),
+                  rather than building a dropdown — previously with a native datalist it filtered candidates by what was already typed,
+                  so the current value filtered out all other candidates, making it look like "nothing can be selected". */}
               {modelSelectOptions.length > 0 ? (
                 <Select<string>
                   value={model}
@@ -638,8 +638,8 @@ export function AiSettings() {
                   widthClass="w-64"
                 />
               ) : (
-                /* 连当前值都没有（没配过、也没拉到列表）：退化成文本输入，
-                   避免出现一个点不动的空下拉。 */
+                /* If even the current value is missing (never configured and no list fetched): fall back to a text input,
+                   to avoid showing an empty dropdown that cannot be clicked. */
                 <TextField
                   value={model}
                   onChange={setModel}
@@ -650,9 +650,9 @@ export function AiSettings() {
             </SettingRow>
           </div>
 
-          {/* 思考强度：只在用户主动选择时才发送。
-              ⚠️ 无法自动探测模型支持与否（模型列表不返回能力信息），
-              所以默认留空不发送 —— 这比替用户猜要不要发更可靠。 */}
+          {/* Reasoning effort: only sent when the user actively selects it.
+              ⚠️ There is no way to auto-detect model support (the model list does not return capability info),
+              so it is left empty and not sent by default — more reliable than guessing for the user. */}
           <div className="border-t border-[var(--border-color)] pt-5">
             <SettingRow
               title={t('aiAssistant.reasoningEffort')}
@@ -676,7 +676,7 @@ export function AiSettings() {
           </>) : null}
 
 
-          {/* 动作行也只在编辑态出现：不编辑时看到「保存」会让人以为有未保存的改动 */}
+          {/* The action row also only appears in edit mode: seeing "Save" when not editing would suggest there are unsaved changes */}
           {isEditing ? (
           <div className="border-t border-[var(--border-color)] pt-5 flex items-center justify-between gap-4">
             <div className="min-w-0 text-xs">
@@ -732,15 +732,15 @@ export function AiSettings() {
         </div>
       </div>
 
-      {/* AI 数据目录：**全局设置**，不属于任何一份厂商档案，所以单独一张卡片。
-          厂商卡片回答"用哪家模型"，这张回答"东西存在哪"，是两件事。 */}
+      {/* AI data directory: a **global setting**, not belonging to any provider profile, so it gets its own card.
+          The provider card answers "which model to use", this one answers "where things are stored" — two different things. */}
       <div className="glass-block bg-[var(--bg-main)] rounded-2xl p-5">
         <SettingRow title={t('aiAssistant.dataDir')} description={t('aiAssistant.dataDirDesc')}>
-          {/* 路径 + 按钮本身也允许换行：窄窗口下三个按钮排到路径下一行，
-              而不是让整块溢出卡片。路径给了 min-w-0 才能正常截断。 */}
+          {/* The path + buttons are also allowed to wrap: in narrow windows the three buttons move to the line below the path,
+              rather than the whole block overflowing the card. The path needs min-w-0 to truncate properly. */}
           <div className="flex flex-wrap items-center justify-end gap-2">
-            {/* 直接显示解析后的**真实路径**：用户问的就是"到底存在哪"，
-                只写一句"数据目录下的 ai 文件夹"等于没回答。 */}
+            {/* Show the resolved **real path** directly: what the user asks is "where exactly is it stored",
+                and just writing "the ai folder under the data directory" is no answer at all. */}
             <span
               className="min-w-0 max-w-[20em] truncate text-xs text-[var(--text-muted)]"
               title={saved?.resolvedDataDir || ''}
@@ -776,7 +776,7 @@ export function AiSettings() {
 
       <p className="text-xs text-[var(--text-muted)] leading-relaxed">{t('aiAssistant.privacyNote')}</p>
 
-      {/* 有未保存改动时才拦一次：切档案 / 新增 / 删除都会把当前表单冲掉 */}
+      {/* Only block once when there are unsaved changes: switching profile / adding / deleting all wipe the current form */}
       <ConfirmDialog
         isOpen={pendingDiscard !== null}
         title={t('aiAssistant.unsavedTitle')}

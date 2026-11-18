@@ -1,35 +1,35 @@
 // ============================================================================
-// 主题上下文 - 支持浅色/深色/跟随系统
+// Theme context - supports light / dark / follow system
 // ============================================================================
 
 import { createContext, useContext, useEffect, useState, useCallback, type ReactNode } from 'react';
 
-/** 主题类型 */
+/** Theme type */
 export type ThemeMode = 'light' | 'dark' | 'system';
 
-/** 实际应用的主题 */
+/** The theme actually applied */
 export type AppliedTheme = 'light' | 'dark';
 
 interface ThemeContextValue {
-  /** 用户选择的主题模式 */
+  /** Theme mode selected by the user */
   mode: ThemeMode;
-  /** 实际应用的主题 */
+  /** The theme actually applied */
   theme: AppliedTheme;
-  /** 设置主题模式 */
+  /** Set the theme mode */
   setMode: (mode: ThemeMode) => void;
-  /** 液态玻璃外观是否开启（与明暗模式正交，默认关闭） */
+  /** Whether the liquid-glass look is enabled (orthogonal to light/dark mode, off by default) */
   glass: boolean;
-  /** 开关液态玻璃 */
+  /** Toggle liquid glass */
   setGlass: (enabled: boolean) => void;
 }
 
 const ThemeContext = createContext<ThemeContextValue | null>(null);
 
 const STORAGE_KEY = 'c-cleanup-theme';
-/** 液态玻璃单独持久化：它与明暗模式是两个正交的轴，切换明暗不该影响这个开关 */
+/** Liquid glass is persisted separately: it and light/dark mode are two orthogonal axes, switching modes shouldn't affect this toggle */
 const GLASS_STORAGE_KEY = 'c-cleanup-glass';
 
-/** 获取系统主题 */
+/** Get the system theme */
 function getSystemTheme(): AppliedTheme {
   if (typeof window !== 'undefined' && window.matchMedia) {
     return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
@@ -37,7 +37,7 @@ function getSystemTheme(): AppliedTheme {
   return 'dark';
 }
 
-/** 根据模式获取实际主题 */
+/** Resolve the actual theme from the mode */
 function resolveTheme(mode: ThemeMode): AppliedTheme {
   if (mode === 'system') {
     return getSystemTheme();
@@ -50,7 +50,7 @@ interface ThemeProviderProps {
 }
 
 export function ThemeProvider({ children }: ThemeProviderProps) {
-  // 从localStorage读取保存的主题模式
+  // Read the saved theme mode from localStorage
   const [mode, setModeState] = useState<ThemeMode>(() => {
     if (typeof window !== 'undefined') {
       const saved = localStorage.getItem(STORAGE_KEY);
@@ -58,34 +58,34 @@ export function ThemeProvider({ children }: ThemeProviderProps) {
         return saved;
       }
     }
-    return 'dark'; // 默认深色主题
+    return 'dark'; // default to dark theme
   });
 
   const [theme, setTheme] = useState<AppliedTheme>(() => resolveTheme(mode));
 
-  // 液态玻璃默认开启（v2.16.15 起）。它现在是产品的主视觉，默认给到最好的一面；
-  // 低配设备上 backdrop-filter 确实会掉帧，用户可以在「设置 - 通用」里关掉。
+  // Liquid glass is on by default (since v2.16.15). It's now the product's main visual, so give users the best side by default;
+  // on low-end devices backdrop-filter does drop frames, and users can turn it off in "Settings - General".
   //
-  // 判断刻意写成「不等于 disabled」而不是「等于 enabled」：
-  // 老用户本地没有这个键，这样他们升级后也能拿到新的默认值，
-  // 而主动关过的用户存的是 'disabled'，不会被重新打开。
+  // The check is deliberately written as "not equal to disabled" rather than "equal to enabled":
+  // existing users have no such key locally, so this gives them the new default after upgrading,
+  // while users who actively turned it off have stored 'disabled' and it won't be re-enabled.
   const [glass, setGlassState] = useState<boolean>(
     () => localStorage.getItem(GLASS_STORAGE_KEY) !== 'disabled',
   );
 
-  // 切换玻璃并持久化，写法与上面的 setMode 保持一致
+  // Toggle glass and persist it, written consistently with setMode above
   const setGlass = useCallback((enabled: boolean) => {
     setGlassState(enabled);
     localStorage.setItem(GLASS_STORAGE_KEY, enabled ? 'enabled' : 'disabled');
   }, []);
 
-  // 设置主题模式
+  // Set the theme mode
   const setMode = useCallback((newMode: ThemeMode) => {
     setModeState(newMode);
     localStorage.setItem(STORAGE_KEY, newMode);
   }, []);
 
-  // 监听系统主题变化
+  // Listen for system theme changes
   useEffect(() => {
     const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
     
@@ -99,20 +99,20 @@ export function ThemeProvider({ children }: ThemeProviderProps) {
     return () => mediaQuery.removeEventListener('change', handleChange);
   }, [mode]);
 
-  // 当模式改变时更新实际主题
+  // Update the actual theme when the mode changes
   useEffect(() => {
     setTheme(resolveTheme(mode));
   }, [mode]);
 
-  // 应用主题到document
+  // Apply the theme to document
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme);
     document.documentElement.classList.remove('light', 'dark');
     document.documentElement.classList.add(theme);
   }, [theme]);
 
-  // 玻璃开关只切换 html 上的标记类，具体配色、模糊半径和背景层都由 App.css 的 .glass 规则统一负责，
-  // 这样新增表面时不需要再写任何 JS 逻辑。
+  // The glass toggle only switches the marker class on html; the actual colors, blur radius and background layers are all handled uniformly by the .glass rules in App.css,
+  // so adding new surfaces doesn't need any JS logic.
   useEffect(() => {
     document.documentElement.classList.toggle('glass', glass);
   }, [glass]);
@@ -124,7 +124,7 @@ export function ThemeProvider({ children }: ThemeProviderProps) {
   );
 }
 
-/** 使用主题Hook */
+/** Hook for using the theme */
 export function useTheme() {
   const context = useContext(ThemeContext);
   if (!context) {

@@ -6,8 +6,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
-/// blobs 目录里未被 manifest 引用的权重，至少要有这么大才当作模型。
-/// Ollama 的 blob 都是分片权重，远大于这个值；阈值只用于过滤残留的小文件。
+/// Blobs in the blobs directory not referenced by any manifest must be at least this large to count as a model.
+/// Ollama's blobs are all sharded weights, far larger than this value; the threshold only filters leftover small files.
 const ORPHAN_BLOB_MIN_SIZE: u64 = 1024 * 1024;
 
 pub struct OllamaDetector;
@@ -49,16 +49,16 @@ impl ModelDetector for OllamaDetector {
                 Err(error) => warnings.push(error),
             }
 
-            // 有些用户的模型是通过复制目录、"导入"等方式放进去的，完全没有 manifest。
-            // 只按 manifest 统计会整体报 0，因此再按文件特征补一遍，靠去重避免和上面的结果重复。
+            // Some users place models by copying directories or "importing", with no manifest at all.
+            // Counting only manifests would report 0 overall, so scan again by file characteristics, using dedup to avoid duplicating results from above.
             merged_models.extend(collect_blobs_without_manifest(
                 &blobs_dir,
                 &mut referenced_blobs,
             ));
         }
 
-        // 没有任何模型时不再返回空来源：目录存在但没有权重（只装过 Ollama 还没拉模型），
-        // 报成"已发现 Ollama"会让用户误以为扫到了东西。
+        // When there are no models, do not return an empty source: the directory exists but has no weights (Ollama installed but no model pulled),
+        // and reporting "Ollama discovered" would make users think something was found.
         if merged_models.is_empty() {
             return DetectorOutput {
                 source: None,
@@ -67,8 +67,8 @@ impl ModelDetector for OllamaDetector {
         }
 
         merged_models.sort_by(|left, right| right.size.cmp(&left.size));
-        // 总量按"真实引用的 blob 文件"统计：多层模型之间会共享同一份权重，
-        // 逐模型累加会把共享部分重复计入，导致总额大于磁盘实际占用。
+        // Total is counted by "actually referenced blob files": multiple models share the same weight,
+        // summing per model would double-count the shared part, making the total larger than actual disk usage.
         let total_size = referenced_blobs
             .iter()
             .filter_map(|path| file_size(path))
@@ -87,10 +87,10 @@ impl ModelDetector for OllamaDetector {
     }
 }
 
-/// 收集 blobs 下没有被任何 manifest 引用的权重文件。
+/// Collect weight files under blobs not referenced by any manifest.
 ///
-/// Ollama 的 blob 文件名是 `sha256-<摘要>`，没有可读名字，这里用摘要前 12 位做展示名，
-/// 保证用户至少能在列表里认出这是一个未被 manifest 记录的权重文件。
+/// Ollama blob file names are `sha256-<digest>`, with no readable name; use the first 12 digits of the digest as display name,
+/// so users can at least recognize in the list that this is a weight file not recorded by any manifest.
 fn collect_blobs_without_manifest(
     blobs_dir: &Path,
     referenced_blobs: &mut HashSet<PathBuf>,
@@ -105,7 +105,7 @@ fn collect_blobs_without_manifest(
         .filter(|entry| entry.file_type().is_file())
     {
         let path = entry.path().to_path_buf();
-        // 已由 manifest 记录过的权重不再重复统计
+        // Weights already recorded by a manifest are not counted again
         if referenced_blobs.contains(&path) {
             continue;
         }
@@ -113,8 +113,8 @@ fn collect_blobs_without_manifest(
         let Some(size) = file_size(&path) else {
             continue;
         };
-        // 过小的文件是残留碎片，不算模型；注意此时不能把它记进 referenced_blobs，
-        // 否则会被误标成"已统计"而跳过后续判断。
+        // Files that are too small are leftover fragments, not models; note that at this point they must not be added to referenced_blobs,
+        // otherwise they would be mislabeled as "counted" and skip later checks.
         if size < ORPHAN_BLOB_MIN_SIZE {
             continue;
         }
@@ -201,7 +201,7 @@ fn read_ollama_models(
         models.push(ModelItem {
             name: manifest_model_name(&manifests_dir, manifest_path),
             size,
-            // Ollama 的真实权重是共享 blob，展示根目录比 sha256 文件更符合用户定位心智。
+            // Ollama's real weights are shared blobs; showing the root directory better matches users' mental model than sha256 files
             path: root.to_path_buf(),
         });
     }
@@ -259,7 +259,7 @@ mod tests {
         dir
     }
 
-    /// 写一个 Ollama manifest，层摘要与配置文件摘要都指向 blobs 下的 sha256 文件。
+    /// Write an Ollama manifest, with layer digests and config-file digest pointing to sha256 files under blobs.
     fn write_manifest(
         root: &Path,
         model: &str,
@@ -292,7 +292,7 @@ mod tests {
         let blobs_dir = root.join("blobs");
         std::fs::create_dir_all(&blobs_dir).unwrap();
 
-        // 两个模型共享同一份权重层 d0，各自再带一个独有的小层
+        // Two models share the same weight layer d0, each with its own small extra layer
         std::fs::write(blobs_dir.join("sha256-d0"), vec![0u8; 1024]).unwrap();
         std::fs::write(blobs_dir.join("sha256-a1"), vec![0u8; 256]).unwrap();
         std::fs::write(blobs_dir.join("sha256-a2"), vec![0u8; 128]).unwrap();
@@ -308,7 +308,7 @@ mod tests {
             .sum();
 
         assert_eq!(models.len(), 2);
-        // 逐模型累加会把共享的 d0 算两次，磁盘真实占用只有一份
+        // Summing per model would count the shared d0 twice, while actual disk usage has only one copy
         assert_eq!(per_model_total, 1024 + 256 + 1024 + 128);
         assert_eq!(distinct_total, 1024 + 256 + 128);
 
@@ -327,11 +327,11 @@ mod tests {
         let mut referenced_blobs = HashSet::new();
         read_ollama_models(&root, &mut referenced_blobs).unwrap();
 
-        // d0 已被 manifest 引用，不应再作为"未记录权重的 blob"重复出现
+        // d0 is already referenced by a manifest and should not appear again as an "unrecorded weight blob"
         let orphans = collect_blobs_without_manifest(&blobs_dir, &mut referenced_blobs);
         assert!(orphans.is_empty());
 
-        // 未被引用的权重会被补进来；明显小于阈值（1MB）的碎片文件仍然被过滤
+        // Unreferenced weights are added back; fragment files clearly below the threshold (1MB) are still filtered
         std::fs::write(blobs_dir.join("sha256-orphan"), vec![0u8; 2 * 1024 * 1024]).unwrap();
         let orphans = collect_blobs_without_manifest(&blobs_dir, &mut referenced_blobs);
         assert_eq!(orphans.len(), 1);

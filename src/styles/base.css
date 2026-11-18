@@ -1,5 +1,5 @@
 /* ============================================================================
-   滚动条样式 - 现代简约风格
+   Scrollbar styles - modern minimalist style
    ============================================================================ */
 ::-webkit-scrollbar {
   width: 6px;
@@ -21,26 +21,26 @@
   background: var(--scrollbar-thumb-hover);
 }
 
-/* 滚动条角落 */
+/* Scrollbar corner */
 ::-webkit-scrollbar-corner {
   background: var(--scrollbar-track);
 }
 
-/* Firefox滚动条 */
+/* Firefox scrollbars */
 * {
   scrollbar-width: thin;
   scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
 }
 
 /* ============================================================================
-   基础样式
+   Base styles
    ============================================================================ */
 body {
   background-color: var(--bg-base);
   color: var(--fg-primary);
 }
 
-/* 禁用文本选择（桌面应用风格） */
+/* Disable text selection (desktop app style) */
 .no-select {
   user-select: none;
   -webkit-user-select: none;
@@ -51,7 +51,7 @@ body {
   color: #ffffff;
 }
 
-/* 平滑过渡 */
+/* Smooth transitions */
 * {
   transition-property: background-color, border-color, color, fill, stroke, font-size;
   transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
@@ -59,21 +59,21 @@ body {
 }
 
 
-/* ===== 类型 / 状态徽章（大目录分析的 L1、System、系统保护、仅查看 这类小标签）=====
-   底色**由文字色推导**（`color-mix` 取 12%），所以深浅主题自动适配 ——
-   只要给一个文字色 + `.status-chip`，不用再写背景色。
-   ⚠️ 原来的写法是 `text-orange-500 bg-orange-50 dark:bg-orange-900/20`：
-   `dark:` 变体绑的是系统深浅色、不跟应用主题（见 项目UI约定.md），
-   所以深色下标签一直是浅色底，看着和亮色模式一模一样（Evan 指出过）。 */
+/* ===== Type / status badges (small labels such as L1, System, System Protected, View Only from large-directory analysis)=====
+   The background is **derived from the text color** (`color-mix` at 12%), so light and dark themes adapt automatically ——
+   Just provide a text color + `.status-chip`; no need to write a background color.
+   ⚠️ the old form was `text-orange-500 bg-orange-50 dark:bg-orange-900/20`:
+   `dark:` variant follows the system light/dark setting, not the app theme (see Project UI Conventions.md),
+   so in dark mode the badge always had a light background, looking identical to light mode (Evan pointed this out). */
 .status-chip {
   background: color-mix(in srgb, currentColor 12%, transparent);
 }
 
-/* ===== 柔和的语义块（淡底 + 淡边框 + 语义文字色）=====
-   用于"停止扫描"这类危险按钮、不可勾选的勾选框、管理员提示框。
-   底色从 `--color-danger` / `--color-warning`（本身就是按明暗各定义一份的）推导，
-   所以深浅主题自动适配 —— 不要再写 `bg-red-50 dark:bg-red-900/20`（dark 变体不跟应用主题）。
-   ⚠️ 元素自己仍要带 `border` / `border-2` 这类**宽度**类，这里只改 border-color。 */
+/* ===== Soft semantic blocks (light background + light border + semantic text color)=====
+   For dangerous buttons like "Stop Scan", non-checkable checkboxes, and admin hint boxes.
+   The background is derived from `--color-danger` / `--color-warning` (each is defined separately for light and dark),
+   so light and dark themes adapt automatically — do not write `bg-red-50 dark:bg-red-900/20` (the dark variant does not follow the app theme).
+   ⚠️ the element itself must still carry a `border` / `border-2` **width** class; this only changes border-color. */
 .soft-danger {
   background: color-mix(in srgb, var(--color-danger) 10%, transparent);
   border-color: color-mix(in srgb, var(--color-danger) 30%, transparent);

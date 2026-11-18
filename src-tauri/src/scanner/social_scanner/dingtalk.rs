@@ -1,9 +1,9 @@
 // ============================================================================
-// 社交软件路径适配器
+// Social software path adapter
 // ============================================================================
 //
-// 每个适配器只负责发现软件数据目录，实际遍历和分类由 core.rs 统一处理。
-// 这样可以在增强单个软件路径时避免复制扫描、去重和风险分级逻辑。
+// Each adapter is only responsible for discovering the software's data directory; actual traversal and classification is handled uniformly by core.rs.
+// This avoids duplicating scan, dedup and risk-grading logic when enhancing a single software's path.
 // ============================================================================
 
 use super::core::{FileCategory, SocialAppPath, SocialScanner};
@@ -11,10 +11,10 @@ use log::info;
 use std::path::PathBuf;
 
 impl SocialScanner {
-    // 钉钉路径检测
+    // DingTalk path detection
     // ========================================================================
 
-    /// 检测钉钉路径
+    /// Detect the DingTalk path
     pub(super) fn detect_dingtalk_paths(&self) -> Option<Vec<SocialAppPath>> {
         let mut paths = Vec::new();
 
@@ -37,7 +37,7 @@ impl SocialScanner {
 
                     let sub_dir = entry.path();
 
-                    // 图片视频
+                    // Images and videos
                     for dir_name in &["Image", "Video"] {
                         let dir = sub_dir.join(dir_name);
                         if dir.exists() {
@@ -51,7 +51,7 @@ impl SocialScanner {
                         }
                     }
 
-                    // 文件
+                    // Files
                     let file_dir = sub_dir.join("File");
                     if file_dir.exists() {
                         Self::add_scan_path(
@@ -63,7 +63,7 @@ impl SocialScanner {
                         );
                     }
 
-                    // 缓存和存储
+                    // Cache and storage
                     for dir_name in &["Cache", "storage", "cache"] {
                         let dir = sub_dir.join(dir_name);
                         if dir.exists() {
@@ -78,8 +78,8 @@ impl SocialScanner {
                     }
 
                     // --------------------------------------------------------
-                    // 钉钉数据库 (CRITICAL)
-                    // 特征：Database 目录
+                    // DingTalk database (CRITICAL)
+                    // Characteristic: Database directory
                     // --------------------------------------------------------
                     let db_dir = sub_dir.join("Database");
                     if db_dir.exists() {
@@ -95,7 +95,7 @@ impl SocialScanner {
             }
         }
 
-        // 钉钉文档目录
+        // DingTalk documents directory
         let dingtalk_docs = PathBuf::from(format!("{}\\DingTalk", self.documents_dir));
         Self::add_scan_path(
             &mut paths,

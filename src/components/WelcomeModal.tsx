@@ -1,11 +1,11 @@
 // ============================================================================
-// 欢迎弹窗组件
-// 首次使用时显示欢迎信息，支持"不再显示"选项。
+// Welcome modal component
+// Shows a welcome message on first use, with a "Don't show again" option.
 //
-// 视觉与尺寸都跟随全局设置：
-// - 颜色用主题变量，深色模式自动适配；
-// - 所有尺寸用 em，继承 :root 的 font-size（= --base-font-size + --font-size-offset），
-//   因此用户调整字号时，弹窗的宽高与文字会与主界面同比例放大缩小。
+// Visuals and sizing follow global settings:
+// - colors use theme variables, auto-adapting in dark mode;
+// - all sizes use em, inheriting :root's font-size (= --base-font-size + --font-size-offset),
+//   so when the user adjusts font size, the modal's width/height and text scale proportionally with the main UI.
 // ============================================================================
 
 import { useState, useEffect, useRef } from 'react';
@@ -15,9 +15,9 @@ import { useTranslation } from 'react-i18next';
 import { Checkbox } from './ui/Checkbox';
 
 interface WelcomeModalProps {
-  /** 是否显示弹窗 */
+  /** Whether to show the modal */
   isOpen: boolean;
-  /** 关闭弹窗回调 */
+  /** Callback to close the modal */
   onClose: () => void;
 }
 
@@ -58,24 +58,24 @@ export function WelcomeModal({ isOpen, onClose }: WelcomeModalProps) {
   ];
 
   return createPortal(
-    // 内部尺寸统一用 em：body 已继承 :root 的字号，勾选/宽度会随全局字号一起缩放。
+    // Internal sizes uniformly use em: body has already inherited :root's font size, so checkboxes/width scale with the global font size.
     <div className="fixed inset-0 z-[9999] flex items-center justify-center">
       <div
         className={`absolute inset-0 bg-black/40 backdrop-blur-sm glass-backdrop ${isVisible ? 'modal-overlay-in' : enteredRef.current ? 'modal-overlay-out' : 'opacity-0'}`}
         onClick={handleClose}
       />
-      {/* 宽度随字号缩放：标准字号下约 400px，同时用 vw 上限兜住大字号的小窗口场景。
-          高度同理要叠加视口约束，否则矮窗口下底部按钮会被顶出可视区；
-          overflow-hidden 改为 overflow-y-auto，让内容在弹窗内滚动。 */}
+      {/* Width scales with font size: about 400px at standard size, with a vw cap to handle small windows at large font sizes.
+          Height likewise needs a viewport constraint, otherwise in short windows the bottom buttons get pushed out of view;
+          overflow-hidden changed to overflow-y-auto so content scrolls inside the modal. */}
       <div
         className={`glass-dialog relative mx-[1em] w-[28.5em] max-w-[calc(100vw-2em)] max-h-[calc(100vh-2em)] overflow-y-auto rounded-[0.86em] border border-[var(--border-default)] bg-[var(--bg-card)] shadow-2xl ${isVisible ? 'modal-content-in' : enteredRef.current ? 'modal-content-out' : 'opacity-0'}`}
         onClick={(e) => e.stopPropagation()}
       >
         <div className="p-[1.43em]">
-          {/* 标题区：图标与标题同行，右侧固定关闭入口 */}
+          {/* Title area: icon and title on the same line, fixed close entry on the right */}
           <div className="flex items-start gap-[0.86em]">
-            {/* 用项目自己的 logo（和启动屏同一个资源），不再拿字母占位当图标。
-                logo 本身带绿色渐变底和圆角，所以这里只控制尺寸，不加底色和圆角。 */}
+            {/* Use the project's own logo (same asset as the splash screen), no longer a letter placeholder as icon.
+                The logo itself has a green gradient background and rounded corners, so here we only control size, no background or radius. */}
             <img
               src="/logo.svg"
               alt=""
@@ -99,12 +99,12 @@ export function WelcomeModal({ isOpen, onClose }: WelcomeModalProps) {
             </button>
           </div>
 
-          {/* 描述 */}
+          {/* Description */}
           <p className="mt-[1.14em] text-[0.86em] leading-relaxed text-[var(--text-muted)]">
             {t('welcomeDescription')}
           </p>
 
-          {/* 功能亮点：三行列表，用极淡分隔线区分，比并排卡片更贴近面板排版 */}
+          {/* Highlights: three-line list, separated by very faint dividers, closer to panel layout than side-by-side cards */}
           <div className="mt-[1.14em] divide-y divide-[var(--border-color)] border-y border-[var(--border-color)]">
             {features.map((feature) => (
               <div key={feature.text} className="flex items-center gap-[0.86em] py-[0.71em]">
@@ -124,7 +124,7 @@ export function WelcomeModal({ isOpen, onClose }: WelcomeModalProps) {
           </div>
         </div>
 
-        {/* 底部操作区：复选框在左、主按钮在右，与设置类弹窗一致 */}
+        {/* Bottom action area: checkbox on the left, primary button on the right, consistent with settings modals */}
         <div className="glass-bar flex items-center justify-between gap-[0.86em] border-t border-[var(--border-color)] bg-[var(--bg-main)] px-[1.43em] py-[0.86em]">
           <label className="flex cursor-pointer select-none items-center gap-[0.57em]">
             <Checkbox
@@ -147,14 +147,14 @@ export function WelcomeModal({ isOpen, onClose }: WelcomeModalProps) {
 }
 
 /**
- * 检查是否应该显示欢迎弹窗
+ * Checks whether the welcome modal should be shown
  */
 export function shouldShowWelcome(): boolean {
   return localStorage.getItem(STORAGE_KEY) !== 'true';
 }
 
 /**
- * 重置欢迎弹窗状态（用于测试）
+ * Resets the welcome modal state (for testing)
  */
 export function resetWelcomeState(): void {
   localStorage.removeItem(STORAGE_KEY);

@@ -1,34 +1,34 @@
 // ============================================================================
-// 永久删除引擎 - 卸载残留深度清理
+// Permanent delete engine - deep cleanup of uninstall leftovers
 //
-// ⚠️ 警告：此模块执行直接物理删除，数据不可恢复！
+// ⚠️ WARNING: this module performs direct physical deletion; data cannot be recovered!
 //
-// 【核心功能】
-// 直接使用 std::fs::remove_dir_all 和 std::fs::remove_file 从磁盘永久删除文件，
-// 而非移动到回收站。这是为了彻底清理已卸载软件的残留数据。
+// [Core functionality]
+// Directly use std::fs::remove_dir_all and std::fs::remove_file to permanently delete files from disk,
+// rather than moving them to the recycle bin. This is to thoroughly clean up leftover data from uninstalled software.
 //
-// 【为什么需要检查 .exe 文件？】
-// 在删除前检查文件夹内是否存在 .exe/.dll/.sys 文件至关重要，原因如下：
-// 1. 便携软件（Portable Apps）：用户可能将便携软件放在 AppData 目录下运行，
-//    这些软件没有安装记录，但仍在正常使用中。
-// 2. 自启动程序：某些程序的可执行文件可能存放在 AppData 中并设置了自启动。
-// 3. 系统组件：部分系统服务的 DLL 文件可能存放在扫描目录中。
-// 4. 驱动文件：.sys 文件是内核驱动，误删可能导致系统崩溃。
+// [Why check .exe files?]
+// Checking whether .exe/.dll/.sys files exist in a folder before deletion is crucial, for these reasons:
+// 1. Portable apps: users may run portable software placed under AppData,
+//    which has no installation record but is still in active use.
+// 2. Auto-start programs: some executables may reside in AppData and be configured to start automatically.
+// 3. System components: DLL files of some system services may be located in scanned directories.
+// 4. Driver files: .sys files are kernel drivers; deleting them by mistake may crash the system.
 //
-// 如果检测到这些文件，我们将跳过该文件夹并标记为"需要人工审核"，
-// 让用户自行决定是否删除，从而避免误删正在使用的软件。
+// If such files are detected, we skip the folder and mark it as "requires manual review",
+// letting the user decide whether to delete it, thus avoiding accidental deletion of software in use.
 //
-// 【安全检查协议】
-// Check 1: 核心白名单检查 - 确保路径不在系统关键目录内
-// Check 2: 可执行文件检查 - 扫描 .exe/.dll/.sys 文件，发现则标记人工审核
+// [Safety check protocol]
+// Check 1: core whitelist check - ensure the path is not inside a critical system directory
+// Check 2: executable file check - scan for .exe/.dll/.sys files; if found, mark for manual review
 //
-// 注意：不再执行注册表匹配检查，因为评分引擎已确认目标为卸载残留，
-// 而已卸载程序的注册表键本身就是残留数据（zombie entry），不应用来阻止清理。
+// Note: the registry matching check is no longer performed, because the scoring engine has already confirmed the target is an uninstall leftover,
+// and registry keys of uninstalled programs are themselves leftover data (zombie entry), so they must not be used to block cleanup.
 //
-// 【错误处理】
-// - 所有 IO 操作都包裹在 Result 中
-// - 文件锁定时自动切换到"重启后删除"队列
-// - 权限不足时尝试获取所有权后重试
+// [Error handling]
+// - All IO operations are wrapped in Result
+// - When a file is locked, automatically switch to the "delete on reboot" queue
+// - When permissions are insufficient, try taking ownership and retry
 // ============================================================================
 
 use std::fs;
@@ -46,22 +46,22 @@ use crate::scanner::leftover_whitelist::{self, LeftoverWhitelistEntry};
 use crate::cleaner::enhanced_delete::windows_api;
 
 // ============================================================================
-// 安全检查结果类型
+// Safety check result type
 // ============================================================================
 
-/// 安全检查结果
+/// Safety check result
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum SafetyCheckResult {
-    /// 通过所有检查，可以安全删除
+    /// Passed all checks, safe to delete
     Safe,
-    /// 在注册表中找到匹配项（Check 1 失败）
+    /// A match was found in the registry (Check 1 failed)
     FoundInRegistry {
         matched_field: String,
         matched_value: String,
     },
-    /// 发现可执行文件（Check 2 失败）
+    /// Executable files were found (Check 2 failed)
     ContainsExecutables { files: Vec<String> },
-    /// 路径在系统保护目录内（Check 3 失败）
+    /// The path is inside a system-protected directory (Check 3 failed)
     InProtectedPath { reason: String },
 }
 
@@ -95,102 +95,102 @@ impl SafetyCheckResult {
     }
 }
 
-/// 单个残留的删除结果
+/// Deletion result for a single leftover
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LeftoverDeleteResult {
-    /// 文件夹路径
+    /// Folder path
     pub path: String,
-    /// 是否成功删除
+    /// Whether deletion succeeded
     pub success: bool,
-    /// 删除的文件数量
+    /// Number of files deleted
     pub deleted_files: u32,
-    /// 释放的空间（字节）
+    /// Space freed (bytes)
     pub freed_size: u64,
-    /// 失败原因
+    /// Failure reason
     pub failure_reason: Option<String>,
-    /// 是否标记为重启删除
+    /// Whether it is marked for deletion on reboot
     pub marked_for_reboot: bool,
-    /// 是否需要人工审核
+    /// Whether manual review is required
     pub needs_manual_review: bool,
-    /// 安全检查结果
+    /// Safety check result
     pub safety_check: SafetyCheckResult,
 }
 
-/// 永久删除的总体结果
+/// Overall result of permanent deletion
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PermanentDeleteResult {
-    /// 成功删除的文件夹数
+    /// Number of folders successfully deleted
     pub success_count: usize,
-    /// 失败的文件夹数
+    /// Number of folders that failed
     pub failed_count: usize,
-    /// 需要人工审核的数量
+    /// Number requiring manual review
     pub manual_review_count: usize,
-    /// 标记为重启删除的数量
+    /// Number marked for deletion on reboot
     pub reboot_pending_count: usize,
-    /// 实际释放的空间（字节）
+    /// Actual space freed (bytes)
     pub freed_size: u64,
-    /// 各文件夹的详细结果
+    /// Detailed results for each folder
     pub details: Vec<LeftoverDeleteResult>,
-    /// 删除耗时（毫秒）
+    /// Deletion duration (milliseconds)
     pub duration_ms: u64,
 }
 
 // ============================================================================
-// 核心白名单 - 绝对禁止删除的系统路径
+// Core whitelist - system paths that are absolutely forbidden to delete
 // ============================================================================
 
-/// 系统核心保护路径（Check 3）
-/// 这些路径下的任何内容都不允许通过本模块删除
+/// Core system-protected paths (Check 3)
+/// Nothing under these paths may be deleted through this module
 const PROTECTED_PATHS: &[&str] = &[
-    // Windows 系统目录
+    // Windows system directories
     r"C:\Windows",
     r"C:\Windows\System32",
     r"C:\Windows\SysWOW64",
     r"C:\Windows\WinSxS",
-    // 用户关键目录
+    // Critical user directories
     r"\Desktop",
     r"\Documents",
     r"\Downloads",
     r"\Pictures",
     r"\Videos",
     r"\Music",
-    // 系统根目录
+    // System root directories
     r"C:\Program Files",
     r"C:\Program Files (x86)",
     r"C:\ProgramData\Microsoft",
-    // 引导相关
+    // Boot-related
     r"C:\Boot",
     r"C:\Recovery",
     r"C:\$Recycle.Bin",
     r"C:\System Volume Information",
 ];
 
-/// 可执行文件扩展名（Check 2）
+/// Executable file extensions (Check 2)
 const EXECUTABLE_EXTENSIONS: &[&str] = &["exe", "dll", "sys", "drv", "ocx", "cpl", "scr"];
 
 // ============================================================================
-// 永久删除引擎
+// Permanent delete engine
 // ============================================================================
 
-/// 永久删除引擎
+/// Permanent delete engine
 ///
-/// 【中文说明】
-/// 此引擎负责执行卸载残留的深度清理。与普通删除不同，它直接从磁盘物理删除文件，
-/// 不经过回收站，因此数据不可恢复。
+/// Explanation
+/// This engine performs deep cleanup of uninstall leftovers. Unlike normal deletion, it physically deletes files directly from disk,
+/// without going through the recycle bin, so data cannot be recovered.
 ///
-/// 为确保安全，每次删除前都会执行"三重安全检查协议"：
-/// 1. 注册表检查：确认目标不是已安装程序的一部分
-/// 2. 可执行文件检查：确认目标不包含正在使用的程序
-/// 3. 白名单检查：确认目标不在系统关键路径内
+/// To ensure safety, a "triple safety check protocol" is run before every deletion:
+/// 1. Registry check: confirm the target is not part of an installed program
+/// 2. Executable check: confirm the target does not contain a program in use
+/// 3. Whitelist check: confirm the target is not inside a critical system path
 pub struct PermanentDeleteEngine {
-    /// 是否启用重启删除回退
+    /// Whether delete-on-reboot fallback is enabled
     enable_reboot_fallback: bool,
-    /// 构建删除引擎时固定白名单快照，批量并发删除无需为每个路径重复读取磁盘。
+    /// Fix the whitelist snapshot when building the delete engine, so concurrent batch deletions do not need to re-read the disk for every path.
     user_whitelist: Result<Vec<LeftoverWhitelistEntry>, String>,
 }
 
 impl PermanentDeleteEngine {
-    /// 创建新的永久删除引擎
+    /// Create a new permanent delete engine
     pub fn new() -> Self {
         info!("永久删除引擎初始化完成");
 
@@ -201,24 +201,24 @@ impl PermanentDeleteEngine {
     }
 
     // ========================================================================
-    // 安全检查协议（白名单 + 可执行文件检查）
+    // Safety check protocol (whitelist + executable check)
     // ========================================================================
 
-    /// 执行完整的三重安全检查
+    /// Perform the full triple safety check
     ///
-    /// 【中文说明】
-    /// 此函数依次执行三项安全检查，任何一项失败都会阻止删除操作。
-    /// 这是保护用户数据安全的核心机制。
+    /// Explanation
+    /// This function runs the three safety checks in sequence; any failure blocks the deletion.
+    /// This is the core mechanism protecting user data safety.
     pub fn perform_safety_checks(&self, path: &Path) -> SafetyCheckResult {
         self.perform_safety_checks_with(path, false)
     }
 
-    /// 同上，但可以选择**放行"含可执行文件"这一条**。
+    /// Same as above, but may optionally **allow the "contains executable files" check**.
     ///
-    /// 只有用户在结果弹窗里明确点过「强制删除」才会走到这里：
-    /// 白名单保护、系统目录保护、以及残留路径本身的校验**一条都不会跳过** ——
-    /// 放开的只是「目录里有 .exe/.dll/.sys 就拒绝」这一道，
-    /// 因为卸载残留里最常见的就是带程序的目录（模拟器、便携软件）。
+    /// This is only reached when the user explicitly clicks "Force Delete" in the results dialog:
+    /// whitelist protection, system-directory protection, and validation of the leftover path itself **are never skipped** —
+    /// the only check relaxed is "reject if the directory contains .exe/.dll/.sys",
+    /// because the most common uninstall leftovers are directories containing programs (emulators, portable software).
     fn perform_safety_checks_with(
         &self,
         path: &Path,
@@ -226,7 +226,7 @@ impl PermanentDeleteEngine {
     ) -> SafetyCheckResult {
         let path_str = path.to_string_lossy().to_string();
 
-        // 无法加载保护规则时默认拒绝，避免配置异常削弱永久删除的安全边界。
+        // If the protection rules cannot be loaded, reject by default, so a config problem cannot weaken the permanent-delete safety boundary.
         let user_whitelist = match &self.user_whitelist {
             Ok(entries) => entries,
             Err(error) => {
@@ -243,14 +243,14 @@ impl PermanentDeleteEngine {
         }
 
         // ====================================================================
-        // Check 1: 核心白名单检查（最先执行，最严格）
+        // Check 1: core whitelist check (runs first, strictest)
         // ====================================================================
         if let Some(reason) = self.check_protected_path(&path_str) {
             return SafetyCheckResult::InProtectedPath { reason };
         }
 
         // ====================================================================
-        // Check 2: 可执行文件检查
+        // Check 2: executable file check
         // ====================================================================
         if !allow_executables {
             let executables = self.scan_executables(path);
@@ -259,24 +259,24 @@ impl PermanentDeleteEngine {
             }
         }
 
-        // 注意：不再执行注册表匹配检查。
-        // 原因：调用深度清理的前提是评分引擎已将文件夹判定为卸载残留，
-        // 而已卸载程序的注册表键本身就可能是残留（zombie entry），
-        // 用残留的注册表键来阻止删除残留文件夹是自相矛盾的。
-        // 白名单 + 可执行文件检查已提供足够的安全保障。
+        // Note: the registry matching check is no longer performed.
+        // Reason: calling deep cleanup requires the scoring engine to have already determined the folder is an uninstall leftover,
+        // and registry keys of uninstalled programs may themselves be leftovers (zombie entry),
+        // so using leftover registry keys to block deletion of leftover folders is self-contradictory.
+        // The whitelist + executable checks already provide sufficient safety guarantees.
 
         SafetyCheckResult::Safe
     }
 
-    /// Check 2: 扫描目录中的可执行文件
+    /// Check 2: scan the directory for executable files
     ///
-    /// 【中文说明】
-    /// 递归扫描目标目录，查找 .exe、.dll、.sys 等可执行文件。
-    /// 发现这些文件意味着该目录可能包含正在使用的软件，需要人工审核。
+    /// Explanation
+    /// Recursively scan the target directory for executable files such as .exe, .dll and .sys.
+    /// Finding these files means the directory may contain software in use and requires manual review.
     fn scan_executables(&self, path: &Path) -> Vec<String> {
         let mut executables = Vec::new();
 
-        // 限制扫描深度和数量，避免性能问题
+        // Limit scan depth and count to avoid performance issues
         let max_depth = 5;
         let max_results = 10;
 
@@ -303,28 +303,28 @@ impl PermanentDeleteEngine {
         executables
     }
 
-    /// Check 3: 检查路径是否在系统保护目录内
+    /// Check 3: check whether the path is inside a system-protected directory
     ///
-    /// 【中文说明】
-    /// 验证目标路径不在 C:\Windows、桌面、文档等系统关键目录内。
-    /// 这是最后一道防线，确保不会误删系统文件。
+    /// Explanation
+    /// Verify the target path is not inside critical system directories such as C:\Windows, Desktop or Documents.
+    /// This is the last line of defense, ensuring system files are never deleted by mistake.
     ///
-    /// 路径匹配规则：
-    /// - 绝对路径（如 C:\Windows）：仅使用 starts_with + 路径分隔符边界检查
-    /// - 相对路径（如 \Desktop、\Documents）：使用路径组件匹配（\Desktop\ 或以 \Desktop 结尾）
+    /// Path matching rules:
+    /// - Absolute paths (e.g. C:\Windows): only use starts_with plus a path-separator boundary check
+    /// - Relative paths (e.g. \Desktop, \Documents): use path-component matching (\Desktop\ or ends with \Desktop)
     fn check_protected_path(&self, path: &str) -> Option<String> {
         let path_lower = path.to_lowercase();
 
         for protected in PROTECTED_PATHS {
             let protected_lower = protected.to_lowercase();
 
-            // 判断是绝对路径（含盘符）还是相对路径（以 \ 开头）
+            // Determine whether it is an absolute path (with a drive letter) or a relative path (starting with \)
             let is_absolute = protected_lower.len() >= 2
                 && protected_lower.as_bytes().get(1).copied() == Some(b':');
 
             if is_absolute {
-                // 绝对路径：仅 starts_with + 路径分隔符边界检查
-                // 例如 C:\Windows 匹配 C:\Windows\System32，但不匹配 C:\WindowsApp
+                // Absolute path: only starts_with plus a path-separator boundary check
+                // For example C:\Windows matches C:\Windows\System32, but not C:\WindowsApp
                 if path_lower.starts_with(&protected_lower) {
                     let next_char = path_lower[protected_lower.len()..].chars().next();
                     if next_char.is_none() || next_char == Some('\\') {
@@ -332,9 +332,9 @@ impl PermanentDeleteEngine {
                     }
                 }
             } else {
-                // 相对路径（如 \Desktop）：路径组件级别匹配
-                // 检查路径中是否包含 \Desktop\ 或以 \Desktop 结尾
-                // 防止 \Desktop 误匹配 \DesktopApp
+                // Relative path (e.g. \Desktop): match at the path-component level
+                // Check whether the path contains \Desktop\ or ends with \Desktop
+                // Prevent \Desktop from wrongly matching \DesktopApp
                 let comp_with_sep = format!("{}\\", protected_lower);
                 if path_lower
                     .starts_with(&format!("{}\\", protected_lower.trim_start_matches('\\')))
@@ -348,12 +348,12 @@ impl PermanentDeleteEngine {
             }
         }
 
-        // 额外检查：不允许删除驱动器根目录
+        // Extra check: do not allow deleting a drive root directory
         if path.len() <= 3 {
             return Some("不允许删除驱动器根目录".to_string());
         }
 
-        // 检查是否是用户目录的直接子目录（如 C:\Users\xxx 本身）
+        // Check whether it is a direct child of a user directory (e.g. C:\Users\xxx itself)
         if path_lower.starts_with(r"c:\users\") {
             let parts: Vec<&str> = path.split('\\').collect();
             if parts.len() <= 3 {
@@ -365,14 +365,14 @@ impl PermanentDeleteEngine {
     }
 
     // ========================================================================
-    // 删除执行
+    // Deletion execution
     // ========================================================================
 
-    /// 执行永久删除（并发处理）
+    /// Perform permanent deletion (concurrent processing)
     ///
-    /// 【中文说明】
-    /// 使用 rayon 线程池并发删除多个目录，确保 UI 保持响应。
-    /// 每个目录删除前都会执行三重安全检查。
+    /// Explanation
+    /// Uses a rayon thread pool to delete multiple directories concurrently, keeping the UI responsive.
+    /// Every directory runs the triple safety check before deletion.
     pub fn delete_leftovers(
         &self,
         paths: Vec<String>,
@@ -380,25 +380,25 @@ impl PermanentDeleteEngine {
     ) -> PermanentDeleteResult {
         let start_time = std::time::Instant::now();
 
-        // 使用原子计数器进行并发统计
+        // Use atomic counters for concurrent statistics
         let success_count = AtomicUsize::new(0);
         let failed_count = AtomicUsize::new(0);
         let manual_review_count = AtomicUsize::new(0);
         let reboot_pending_count = AtomicUsize::new(0);
         let freed_size = AtomicU64::new(0);
 
-        // 并发执行删除
+        // Execute deletions concurrently
         let details: Vec<LeftoverDeleteResult> = paths
             .par_iter()
             .map(|path_str| {
                 let path = Path::new(path_str);
 
-                // 执行三重安全检查
+                // Run the triple safety check
                 let safety_check = self.perform_safety_checks_with(path, allow_executables);
 
                 match &safety_check {
                     SafetyCheckResult::Safe => {
-                        // 通过安全检查，执行删除
+                        // Passed the safety check, perform the deletion
                         let result = self.delete_single_leftover(path);
 
                         if result.success {
@@ -413,7 +413,7 @@ impl PermanentDeleteEngine {
                         result
                     }
                     SafetyCheckResult::ContainsExecutables { .. } => {
-                        // 包含可执行文件，标记为需要人工审核
+                        // Contains executable files, mark as requiring manual review
                         manual_review_count.fetch_add(1, Ordering::Relaxed);
 
                         LeftoverDeleteResult {
@@ -428,7 +428,7 @@ impl PermanentDeleteEngine {
                         }
                     }
                     _ => {
-                        // 其他安全检查失败
+                        // Other safety checks failed
                         failed_count.fetch_add(1, Ordering::Relaxed);
 
                         LeftoverDeleteResult {
@@ -469,22 +469,22 @@ impl PermanentDeleteEngine {
         }
     }
 
-    /// 删除单个残留目录
+    /// Delete a single leftover directory
     ///
-    /// 【中文说明】
-    /// 此函数执行实际的物理删除操作。首先尝试直接删除，
-    /// 如果遇到锁定文件，则自动切换到"重启后删除"队列。
+    /// Explanation
+    /// This function performs the actual physical deletion. It first tries direct deletion,
+    /// and automatically switches to the "delete on reboot" queue when locked files are encountered.
     fn delete_single_leftover(&self, path: &Path) -> LeftoverDeleteResult {
         let path_str = path.to_string_lossy().to_string();
 
-        // 先计算目录大小
+        // First calculate the directory size
         let (total_size, file_count) = self.calculate_dir_size(path);
 
         // ====================================================================
-        // ⚠️ 警告：以下代码执行永久删除，数据不可恢复！
+        // ⚠️ WARNING: the following code performs permanent deletion; data cannot be recovered!
         // ====================================================================
 
-        // 尝试直接删除整个目录
+        // Try to delete the entire directory directly
         match self.try_remove_dir_all(path) {
             Ok(()) => {
                 info!(
@@ -506,7 +506,7 @@ impl PermanentDeleteEngine {
             Err(e) => {
                 warn!("直接删除失败: {} - {}", path_str, e);
 
-                // 尝试重启后删除
+                // Try deletion on reboot
                 if self.enable_reboot_fallback {
                     if self.mark_for_reboot_delete(path) {
                         return LeftoverDeleteResult {
@@ -536,19 +536,19 @@ impl PermanentDeleteEngine {
         }
     }
 
-    /// 尝试删除整个目录
+    /// Try to delete the entire directory
     ///
-    /// 【中文说明】
-    /// 使用 std::fs::remove_dir_all 递归删除目录及其所有内容。
-    /// 如果遇到只读文件，会先尝试移除只读属性后重试。
+    /// Explanation
+    /// Uses std::fs::remove_dir_all to recursively delete the directory and all its contents.
+    /// If read-only files are encountered, it first tries to remove the read-only attribute and retry.
     fn try_remove_dir_all(&self, path: &Path) -> Result<(), String> {
         // ====================================================================
-        // ⚠️ 警告：此操作将永久删除磁盘数据，不可恢复！
+        // ⚠️ WARNING: this operation permanently deletes disk data and cannot be undone!
         // ====================================================================
 
-        // 卸载残留里有一类条目是**文件**（孤立的 ext4.vhdx / vmdk 之类）。
-        // remove_dir_all 对文件必然报「目录名无效」，然后一路落到「重启后删除」——
-        // 用户以为删了，空间其实一点没释放。
+        // One kind of uninstall leftover is a **file** (an orphaned ext4.vhdx / vmdk, etc.).
+        // remove_dir_all always reports "invalid directory name" for a file, then falls through to "delete on reboot" —
+        // the user thinks it was deleted, but no space was actually freed.
         if fs::symlink_metadata(path)
             .map(|metadata| metadata.is_file())
             .unwrap_or(false)
@@ -556,7 +556,7 @@ impl PermanentDeleteEngine {
             return fs::remove_file(path).map_err(|error| format!("{}", error));
         }
 
-        // 首先尝试直接删除
+        // First try direct deletion
         match fs::remove_dir_all(path) {
             Ok(()) => return Ok(()),
             Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
@@ -565,16 +565,16 @@ impl PermanentDeleteEngine {
             Err(e) => return Err(format!("{}", e)),
         }
 
-        // 尝试移除所有文件的保护属性后重试
+        // Try removing protection attributes from all files and retry
         self.remove_all_protection_attributes(path);
 
         // ====================================================================
-        // ⚠️ 警告：此操作将永久删除磁盘数据，不可恢复！
+        // ⚠️ WARNING: this operation permanently deletes disk data and cannot be undone!
         // ====================================================================
         fs::remove_dir_all(path).map_err(|e| format!("{}", e))
     }
 
-    /// 移除目录下所有文件的保护属性
+    /// Remove protection attributes from all files under a directory
     fn remove_all_protection_attributes(&self, path: &Path) {
         for entry in WalkDir::new(path).into_iter().filter_map(|e| e.ok()) {
             let entry_path = entry.path().to_string_lossy().to_string();
@@ -583,14 +583,14 @@ impl PermanentDeleteEngine {
         }
     }
 
-    /// 标记目录为重启后删除
+    /// Mark a directory for deletion on reboot
     ///
-    /// MoveFileExW + MOVEFILE_DELAY_UNTIL_REBOOT 要求目录在其所有内容
-    /// 被删除之后才能被删除。因此标记顺序必须是：最深子目录 → 文件 → 顶层目录。
+    /// MoveFileExW + MOVEFILE_DELAY_UNTIL_REBOOT requires a directory to be deleted only after all its contents
+    /// have been removed. Therefore the marking order must be: deepest subdirectory → files → top-level directory.
     fn mark_for_reboot_delete(&self, path: &Path) -> bool {
         let mut any_marked = false;
 
-        // 收集所有条目并按深度从深到浅排序（目录优先于同深度文件）
+        // Collect all entries and sort by depth from deepest to shallowest (directories before files at the same depth)
         let mut entries: Vec<(usize, std::path::PathBuf, bool)> = WalkDir::new(path)
             .into_iter()
             .filter_map(|e| e.ok())
@@ -609,7 +609,7 @@ impl PermanentDeleteEngine {
         any_marked
     }
 
-    /// 计算目录大小
+    /// Calculate directory size
     fn calculate_dir_size(&self, path: &Path) -> (u64, u32) {
         let mut total_size = 0u64;
         let mut file_count = 0u32;
@@ -638,7 +638,7 @@ impl Default for PermanentDeleteEngine {
 }
 
 // ============================================================================
-// 单元测试
+// Unit tests
 // ============================================================================
 
 #[cfg(test)]
@@ -660,8 +660,8 @@ mod tests {
         assert!(matches!(result, SafetyCheckResult::InProtectedPath { .. }));
     }
 
-    /// 「强制删除」只放开「含可执行文件」这一条：
-    /// 带 exe 的目录能过，但系统目录仍然拦得住 —— 这是那个按钮的安全边界。
+    /// "Force Delete" only relaxes the "contains executable files" check:
+    /// directories with an exe can pass, but system directories are still blocked — that is the safety boundary of that button.
     #[test]
     fn force_delete_only_skips_the_executable_check() {
         let root = std::env::temp_dir().join(format!("lightc-force-delete-{}", std::process::id()));
@@ -672,20 +672,20 @@ mod tests {
 
         let engine = PermanentDeleteEngine::new();
 
-        // 默认：含可执行文件 → 需要人工审核
+        // Default: contains executable files → requires manual review
         assert!(matches!(
             engine.perform_safety_checks(&app_dir),
             SafetyCheckResult::ContainsExecutables { .. }
         ));
 
-        // 放行后：这一道不再拦（白名单与系统目录检查仍在下面验证）
+        // After allowing: this check no longer blocks (whitelist and system-directory checks are still verified below)
         assert!(matches!(
             engine.perform_safety_checks_with(&app_dir, true),
             SafetyCheckResult::Safe
         ));
 
-        // 放行可执行文件 ≠ 放行白名单：用户白名单仍然优先拦下。
-        // （系统目录那条由 test_protected_path_check 单独覆盖，这里不重复。）
+        // Allowing executables ≠ allowing the whitelist: the user whitelist still takes priority and blocks.
+        // (The system-directory check is covered separately by test_protected_path_check, not repeated here.)
         let guarded = PermanentDeleteEngine {
             enable_reboot_fallback: true,
             user_whitelist: Ok(vec![LeftoverWhitelistEntry {
@@ -705,7 +705,7 @@ mod tests {
     fn test_protected_path_check() {
         let engine = PermanentDeleteEngine::new();
 
-        // 应该被保护的路径
+        // Paths that should be protected
         assert!(engine
             .check_protected_path(r"C:\Windows\System32\test")
             .is_some());
@@ -714,7 +714,7 @@ mod tests {
             .is_some());
         assert!(engine.check_protected_path(r"C:\").is_some());
 
-        // 应该允许的路径
+        // Paths that should be allowed
         assert!(engine
             .check_protected_path(r"C:\Users\test\AppData\Local\SomeApp")
             .is_none());

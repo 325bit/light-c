@@ -1,7 +1,7 @@
 import { useAiModuleBridge } from '../ai/useAiModuleBridge';
 // ============================================================================
-// 外壳入口包含“此电脑”和左侧导航窗格，不涉及真实磁盘驱动器。
-// 后端负责重新校验 CLSID、Hive、入口类型和系统保护边界，前端只维护选择与交互状态。
+// Shell entries include "This PC" and the left navigation pane, not real disk drives.
+// The backend re-validates the CLSID, Hive, entry type, and system protection boundary; the frontend only maintains selection and interaction state.
 // ============================================================================
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -53,7 +53,7 @@ function getRiskStyle(entry: ShellIconInfo, translate: (key: string) => string):
 }
 
 function targetOf(entry: ShellIconInfo): ShellIconTarget {
-  // 入口类型参与后端固定路径校验，不能仅凭 CLSID 推断，以免同一 CLSID 的不同挂载点互相影响。
+  // The entry type participates in the backend fixed-path validation and cannot be inferred from the CLSID alone, so different mount points sharing one CLSID do not affect each other.
   return { clsid: entry.clsid, hive: entry.hive, registryView: entry.registryView, entryKind: entry.entryKind as ShellIconTarget['entryKind'] };
 }
 
@@ -154,9 +154,9 @@ export function ShellIconModule({ isPageActive = true }: ModuleRenderProps) {
   const { moduleState, updateModuleState, oneClickScanTrigger } = useModuleDashboard('shellIcons');
   const { showToast } = useToast();
   const [entries, setEntries] = useState<ShellIconInfo[] | null>(null);
-  // 接入 AI 助手（只读）：只给摘要，不提供操作动作。
+  // AI assistant integration (read-only): provide summaries only, no action buttons.
   useAiModuleBridge('shell-icons', {
-    // 只读读取：让助手能"往下看"到底有哪些条目（一次一页，由模型决定要不要继续）。
+    // Read-only access: let the assistant "look deeper" to see exactly which entries exist (one page at a time; the model decides whether to continue).
     readItems: (_targetId, offset, limit) => {
       const list = entries ?? [];
       if (list.length === 0) return null;
@@ -167,7 +167,7 @@ export function ShellIconModule({ isPageActive = true }: ModuleRenderProps) {
         ),
       };
     },
-    // 只读：单条详情。itemId 用 read_items 行首那个入口名，找不到再用 CLSID 兜一次。
+    // Read-only: single-item detail. itemId uses the entry name at the start of the read_items row; if not found, fall back to the CLSID once.
     readItemDetail: (itemId) => {
       const wanted = itemId.trim();
       if (!wanted) return null;
@@ -176,7 +176,7 @@ export function ShellIconModule({ isPageActive = true }: ModuleRenderProps) {
         list.find((entry) => entry.name.trim() === wanted) ??
         list.find((entry) => entry.clsid.trim() === wanted);
       if (!item) return null;
-      // 挂载位置与风险判定都由后端给出，这里只做转述，不自己下结论。
+      // Mount location and risk determination both come from the backend; here we only relay them and draw no conclusions of our own.
       return [
         `名称：${item.name}`,
         `关联应用：${item.applicationName || '（无法识别，可能是第三方或已卸载的程序）'}`,
@@ -226,7 +226,7 @@ export function ShellIconModule({ isPageActive = true }: ModuleRenderProps) {
     }
   }, [oneClickScanTrigger, scan]);
 
-  // 旧版本遗留的空锁定节点仍保留操作入口，重新执行时会物理删除并校验结果。
+  // Empty locked nodes left over from older versions still keep their action entry; on re-execution they are physically deleted and the result validated.
   const actionableCount = useMemo(() => entries?.filter(entry => !entry.isSystemProtected && entry.riskLevel !== 'unknown').length ?? 0, [entries]);
   const myComputerEntries = useMemo(() => entries?.filter(entry => entry.entryKind !== 'navigationPane') ?? [], [entries]);
   const navigationEntries = useMemo(() => entries?.filter(entry => entry.entryKind === 'navigationPane') ?? [], [entries]);

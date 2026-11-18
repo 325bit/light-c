@@ -1,8 +1,8 @@
 // ============================================================================
-// 大目录分析模块（原 C盘热点扫描）
-// 支持两种扫描模式：
-// 1. 默认模式：仅扫描 AppData 目录
-// 2. 深度扫描模式：扫描指定磁盘（顺序 IO + 深度限制 + 巨型目录跳过）
+// Large-directory analysis module (formerly C-drive hotspot scan)
+// Supports two scan modes:
+// 1. Default mode: scan only the AppData directory
+// 2. Deep scan mode: scan a specified disk (sequential IO + depth limit + huge-directory skip)
 // ============================================================================
 
 use serde::{Deserialize, Serialize};
@@ -14,89 +14,89 @@ use tauri::Emitter;
 use walkdir::WalkDir;
 
 // ============================================================================
-// 数据结构定义
+// Data structure definitions
 // ============================================================================
 
-/// 大目录条目信息
-/// 记录单个文件夹的空间占用和最后修改时间
+/// Large-directory entry information
+/// Records the disk usage and last modified time of a single folder
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HotspotEntry {
-    /// 文件夹完整路径
+    /// Full path of the folder
     pub path: String,
-    /// 文件夹名称
+    /// Folder name
     pub name: String,
-    /// 总大小（字节）- 包含所有子文件
+    /// Total size (bytes) - includes all child files
     pub total_size: u64,
-    /// 文件数量
+    /// File count
     pub file_count: usize,
-    /// 最后修改时间（Unix 时间戳，毫秒）
-    /// 取该目录下所有文件中最晚的修改时间
+    /// Last modified time (Unix timestamp, milliseconds)
+    /// Takes the latest modification time among all files under the directory
     pub last_modified: i64,
-    /// 父目录类型（Local/Roaming/LocalLow/System/Program 等）
+    /// Parent directory type (Local/Roaming/LocalLow/System/Program, etc.)
     pub parent_type: String,
-    /// 是否为缓存目录（包含 cache/tmp/temp/log/download/thumb 等关键字）
+    /// Whether it is a cache directory (contains keywords like cache/tmp/temp/log/download/thumb)
     pub is_cache: bool,
-    /// 是否为程序目录（路径包含 Local\Programs）
+    /// Whether it is a program directory (path contains Local\Programs)
     pub is_program: bool,
-    /// 是否可安全清理（深度扫描模式下强制为 false）
+    /// Whether it is safe to clean (forced to false in deep scan mode)
     pub is_safe_to_clean: bool,
-    /// 是否为系统保护目录（黑名单目录）
+    /// Whether it is a system-protected directory (blacklisted directory)
     pub is_protected: bool,
-    /// 子目录列表（智能下钻：当目录 >5GB 且 >1000 文件时，展示前 3 个最大子目录）
+    /// List of subdirectories (smart drill-down: when a directory is >5GB and has >1000 files, show the top 3 largest subdirectories)
     #[serde(default)]
     pub children: Vec<HotspotEntry>,
-    /// 当前目录的下钻深度（0 = 顶级目录）
+    /// Drill-down depth of the current directory (0 = top-level directory)
     #[serde(default)]
     pub depth: u8,
 }
 
-/// 大目录扫描结果
+/// Large-directory scan result
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HotspotScanResult {
-    /// 大目录列表（已按大小降序排列）
+    /// List of large directories (sorted by size descending)
     pub entries: Vec<HotspotEntry>,
-    /// 扫描的总文件夹数
+    /// Total number of folders scanned
     pub total_folders_scanned: usize,
-    /// 扫描耗时（毫秒）
+    /// Scan duration (milliseconds)
     pub scan_duration_ms: u64,
-    /// 扫描范围总大小（AppData 或所选磁盘总计）
+    /// Total size of the scan scope (AppData or the selected disk total)
     pub scanned_total_size: u64,
-    /// 是否为深度扫描模式
+    /// Whether it is deep scan mode
     pub is_full_scan: bool,
 }
 
-/// 扫描进度信息（用于前端实时展示）
+/// Scan progress information (for real-time display in the frontend)
 #[derive(Debug, Clone, Serialize)]
 pub struct HotspotScanProgress {
-    /// 当前正在扫描的目录路径
+    /// Path of the directory currently being scanned
     pub current_dir: String,
-    /// 已扫描的文件夹总数
+    /// Total number of folders scanned
     pub scanned_dirs: usize,
-    /// 发现的大目录数（≥100MB）
+    /// Number of large directories found (≥100MB)
     pub found_entries: usize,
-    /// 已扫描范围的总大小（字节）
+    /// Total size of the scanned scope (bytes)
     pub total_size: u64,
-    /// 一级目录总数（用于进度百分比）
+    /// Total number of first-level directories (for progress percentage)
     pub total_first_level_dirs: usize,
-    /// 已完成的一级目录数（进度百分比 = completed_roots / total_first_level_dirs）
-    /// 与 scanned_dirs 不同：后者包含子目录，会超过 100%
+    /// Number of completed first-level directories (progress percentage = completed_roots / total_first_level_dirs)
+    /// Unlike scanned_dirs, this includes subdirectories and can exceed 100%
     pub completed_roots: usize,
-    /// 当前后端：mft / walkdir，用于前端判断是否走了降级方案
+    /// Current backend: mft / walkdir, used by the frontend to decide whether a fallback was taken
     #[serde(default)]
     pub backend: String,
-    /// 当前阶段：mft / index / metadata / aggregate / result / walkdir
+    /// Current stage: mft / index / metadata / aggregate / result / walkdir
     #[serde(default)]
     pub stage: String,
-    /// 当前阶段展示文案，避免前端只能从 current_dir 猜测瓶颈
+    /// Text shown for the current stage, so the frontend does not have to guess the bottleneck from current_dir alone
     #[serde(default)]
     pub message: String,
-    /// 扫描总耗时（毫秒）
+    /// Total scan duration (milliseconds)
     #[serde(default)]
     pub elapsed_ms: u64,
-    /// 当前阶段耗时（毫秒）
+    /// Duration of the current stage (milliseconds)
     #[serde(default)]
     pub stage_elapsed_ms: u64,
-    /// 当前阶段的关键数字（分段/读盘/解析、目录数、回退 stat 数…），前端直接展示
+    /// Key numbers for the current stage (segment/read/parse, directory count, fallback stat count…), shown directly in the frontend
     #[serde(default)]
     pub detail: String,
 }
@@ -129,76 +129,76 @@ fn build_hotspot_progress(
     }
 }
 
-/// 全局取消标志，跨线程共享（与 big_files.rs 模式一致）
+/// Global cancellation flag, shared across threads (consistent with the big_files.rs pattern)
 static HOTSPOT_SCAN_CANCELLED: AtomicBool = AtomicBool::new(false);
 
-/// 重置取消标志（扫描开始前调用）
+/// Reset the cancellation flag (called before a scan starts)
 pub fn reset_hotspot_cancelled() {
     HOTSPOT_SCAN_CANCELLED.store(false, Ordering::SeqCst);
 }
 
-/// 设置取消标志（前端点击取消按钮时调用）
+/// Set the cancellation flag (called when the frontend clicks the cancel button)
 pub fn cancel_hotspot_scan() {
     log::info!("收到取消大目录扫描请求");
     HOTSPOT_SCAN_CANCELLED.store(true, Ordering::SeqCst);
 }
 
-/// 暴露给 MFT 引擎的取消状态查询，避免 MFT 阶段无视前端停止按钮继续跑完整流程。
+/// Exposes cancellation-state queries to the MFT engine, so the MFT stage does not ignore the frontend stop button and run the whole flow
 pub(crate) fn is_hotspot_scan_cancelled() -> bool {
     HOTSPOT_SCAN_CANCELLED.load(Ordering::SeqCst)
 }
 
 // ============================================================================
-// 危险目录黑名单配置
-// 这些目录在深度扫描时仅统计大小，严禁执行任何删除操作
+// Dangerous-directory blacklist configuration
+// During deep scans these directories are only counted for size; deletion operations are strictly forbidden
 // ============================================================================
 
-/// 系统保护目录黑名单（全盘扫描时禁止清理）
-/// ProgramData 已移除——其下 Docker/Scoop/VS Code Server 等是用户关心的主要空间占用
+/// System-protected directory blacklist (cannot be cleaned during full-disk scans)
+/// ProgramData has been removed — Docker/Scoop/VS Code Server under it are major space users that users care about
 const PROTECTED_DIRECTORIES: &[&str] = &[
-    // Windows 核心系统目录
+    // Windows core system directories
     "Windows",
     "Windows.old",
     "WinSxS",
     "System32",
     "SysWOW64",
-    // 系统保护目录
+    // System-protected directories
     "System Volume Information",
     "$Recycle.Bin",
     "$WINDOWS.~BT",
     "$WINDOWS.~WS",
     "Recovery",
     "PerfLogs",
-    // 程序安装目录
+    // Program installation directories
     "Program Files",
     "Program Files (x86)",
-    // 硬件驱动（无清理价值）
+    // Hardware drivers (no cleaning value)
     "Intel",
     "AMD",
     "NVIDIA",
-    // 引导相关
+    // Boot-related
     "Boot",
     "EFI",
 ];
 
 // ============================================================================
-// 智能下钻配置
+// Smart drill-down configuration
 // ============================================================================
 
-/// 收录为热点条目的最小目录大小（默认 50MB，用户可配置）
+/// Minimum directory size to include as a hotspot entry (default 50MB, user-configurable)
 const MIN_SIZE_THRESHOLD: u64 = 50 * 1024 * 1024;
-/// 绝对下限（1MB），防止返回过多细碎条目
+/// Absolute lower bound (1MB) to avoid returning too many tiny entries
 const SIZE_THRESHOLD_FLOOR: u64 = 1 * 1024 * 1024;
-/// 触发下钻的最小目录大小（5GB）
+/// Minimum directory size to trigger drill-down (5GB)
 const DRILL_DOWN_SIZE_THRESHOLD: u64 = 5 * 1024 * 1024 * 1024;
-/// 触发下钻的最小文件数量
+/// Minimum file count to trigger drill-down
 const DRILL_DOWN_FILE_COUNT_THRESHOLD: usize = 1000;
-/// 最大下钻深度
+/// Maximum drill-down depth
 const MAX_DRILL_DOWN_DEPTH: u8 = 8;
-/// 下钻时返回的最大子目录数
+/// Maximum number of subdirectories returned during drill-down
 const DRILL_DOWN_TOP_CHILDREN: usize = 3;
 
-/// 需要跳过扫描的目录（无法访问或无意义）
+/// Directories to skip during scanning (inaccessible or meaningless)
 const SKIP_SCAN_DIRECTORIES: &[&str] = &[
     "System Volume Information",
     "$Recycle.Bin",
@@ -209,8 +209,8 @@ const SKIP_SCAN_DIRECTORIES: &[&str] = &[
     "Recovery",
 ];
 
-/// AppData 下需要跳过的系统目录
-/// microsoft 和 packages 已移除——Teams/OneDrive/UWP 应用数据是用户关心的主要空间占用
+/// System directories under AppData to skip
+/// microsoft and packages have been removed — Teams/OneDrive/UWP app data are major space users that users care about
 const APPDATA_SKIP_FOLDERS: &[&str] = &[
     "windows",
     "connecteddevicesplatform",
@@ -222,12 +222,12 @@ const APPDATA_SKIP_FOLDERS: &[&str] = &[
 ];
 
 // ============================================================================
-// 巨型系统目录跳过机制（Win11 性能杀手）
+// Huge system directory skip mechanism (Win11 performance killer)
 // ============================================================================
 
-/// 巨型系统目录（Win11 下文件量暴涨，禁止 WalkDir 深入遍历）
-/// 这些目录仅统计根级大小，不递归进入子目录
-/// SoftwareDistribution 已移除——Windows Update 缓存体积可达数GB，用户应能看到
+/// Huge system directories (file counts explode on Win11; WalkDir is forbidden from traversing deep)
+/// These directories only count root-level size and do not recurse into subdirectories
+/// SoftwareDistribution has been removed — Windows Update cache can reach several GB and users should see it
 const HEAVY_SKIP_DIRS: &[&str] = &[
     "WinSxS",
     "WindowsApps",
@@ -238,7 +238,7 @@ const HEAVY_SKIP_DIRS: &[&str] = &[
     "assembly",
 ];
 
-/// 判断目录名是否为巨型系统目录（大小写不敏感，仅匹配末级目录名）
+/// Check whether a directory name is a huge system directory (case-insensitive, matches only the last path component)
 pub(crate) fn is_heavy_system_dir(path: &Path) -> bool {
     path.file_name()
         .and_then(|n| n.to_str())
@@ -247,11 +247,11 @@ pub(crate) fn is_heavy_system_dir(path: &Path) -> bool {
 }
 
 // ============================================================================
-// 噪音目录配置（不参与 TopN 排名，避免污染结果）
+// Noise directory configuration (excluded from TopN ranking to avoid polluting results)
 // ============================================================================
 
-/// 噪音系统目录（允许统计和展示，但不参与 TopN 排名竞争）
-/// 这些目录体积大但用户无法清理，如 WinSxS、System32 等
+/// Noise system directories (allowed to be counted and displayed, but excluded from TopN ranking competition)
+/// These directories are large but cannot be cleaned by users, e.g. WinSxS, System32
 const NOISE_DIRECTORIES: &[&str] = &[
     "WinSxS",
     "System32",
@@ -261,7 +261,7 @@ const NOISE_DIRECTORIES: &[&str] = &[
     "WindowsApps",
 ];
 
-/// 判断目录名是否为噪音目录（大小写不敏感，仅匹配末级目录名）
+/// Check whether a directory name is a noise directory (case-insensitive, matches only the last path component)
 fn is_noise_directory(path: &Path) -> bool {
     path.file_name()
         .and_then(|n| n.to_str())
@@ -273,12 +273,12 @@ fn is_noise_directory(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
-/// 触发热点展开的大小阈值（20GB）
-/// 大于此值的非保护目录会被"展开"——用其子目录替代它参与 TopN 竞争
+/// Size threshold for triggering hotspot expansion (20GB)
+/// Non-protected directories above this value are "expanded" — replaced by their subdirectories in the TopN ranking
 const EXPAND_SIZE_THRESHOLD: u64 = 20 * 1024 * 1024 * 1024;
 
-/// 隐藏/系统目录的核心名称判断（不调用 metadata()，避免 Win11 Defender IO 拦截）
-/// 仅基于文件名规则：前缀为 . 或 $ 的隐藏/系统目录
+/// Core name check for hidden/system directories (does not call metadata(), avoiding Win11 Defender IO interception)
+/// Based only on filename rules: hidden/system directories prefixed with . or $
 fn is_hidden_name(name: &str) -> bool {
     if name.starts_with('.') && name != "." && name != ".." {
         return true;
@@ -292,7 +292,7 @@ fn is_hidden_name(name: &str) -> bool {
     false
 }
 
-/// Fast 模式文件名过滤（不调用 metadata()，避免 Win11 Defender IO 拦截）
+/// Fast-mode filename filtering (does not call metadata(), avoiding Win11 Defender IO interception)
 fn is_hidden_by_name(entry: &walkdir::DirEntry) -> bool {
     entry
         .file_name()
@@ -301,7 +301,7 @@ fn is_hidden_by_name(entry: &walkdir::DirEntry) -> bool {
         .unwrap_or(false)
 }
 
-/// 基于 Path 的隐藏判断（用于 jwalk 的 process_read_dir 回调，不依赖 DirEntry）
+/// Path-based hidden check (used by jwalk's process_read_dir callback, does not rely on DirEntry)
 pub(crate) fn is_hidden_by_path(path: &Path) -> bool {
     path.file_name()
         .and_then(|n| n.to_str())
@@ -309,8 +309,8 @@ pub(crate) fn is_hidden_by_path(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
-/// 计算 path 相对于 root 的层级深度
-/// 例如 root=C:\ 时，C:\Users → 1，C:\Users\Evan → 2
+/// Calculate the hierarchical depth of path relative to root
+/// For example, with root=C:\: C:\Users → 1, C:\Users\Evan → 2
 fn calculate_relative_depth(root: &Path, path: &Path) -> usize {
     path.strip_prefix(root)
         .map(|p| p.components().count())
@@ -318,24 +318,24 @@ fn calculate_relative_depth(root: &Path, path: &Path) -> usize {
 }
 
 // ============================================================================
-// 扫描精度模式
+// Scan accuracy modes
 // ============================================================================
 
-/// 扫描精度模式
+/// Scan accuracy mode
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ScanAccuracyMode {
-    /// 快速模式（默认）：
-    /// - max_depth = 4，跳过 HEAVY_SKIP_DIRS
-    /// - 不读取 modified time，只统计 size + file_count
+    /// Fast mode (default):
+    /// - max_depth = 4, skip HEAVY_SKIP_DIRS
+    /// - do not read modified time, only count size + file_count
     Fast,
-    /// 精确模式（用户主动开启）：
-    /// - max_depth = 10，保留 modified
-    /// - 允许更深扫描
+    /// Accurate mode (enabled explicitly by the user):
+    /// - max_depth = 10, keep modified
+    /// - allow deeper scanning
     Accurate,
 }
 
 impl ScanAccuracyMode {
-    /// 获取对应模式的扫描深度
+    /// Get the scan depth for the corresponding mode
     fn max_depth(self) -> u8 {
         match self {
             ScanAccuracyMode::Fast => 6,
@@ -343,7 +343,7 @@ impl ScanAccuracyMode {
         }
     }
 
-    /// 是否需要在文件遍历时收集 modified time
+    /// Whether modified time needs to be collected during file traversal
     fn track_modified(self) -> bool {
         match self {
             ScanAccuracyMode::Fast => false,
@@ -353,53 +353,53 @@ impl ScanAccuracyMode {
 }
 
 // ============================================================================
-// 大目录扫描引擎
+// Large-directory scan engine
 // ============================================================================
 
-/// 大目录扫描引擎
-/// 支持两种扫描模式：AppData 扫描和全盘深度扫描
+/// Large-directory scan engine
+/// Supports two scan modes: AppData scan and full-disk deep scan
 pub struct HotspotScanner {
-    /// 是否为深度扫描模式
+    /// Whether it is deep scan mode
     full_scan: bool,
-    /// 返回的最大条目数
+    /// Maximum number of entries to return
     top_n: usize,
-    /// 扫描精度（默认 Fast）
+    /// Scan accuracy (default Fast)
     accuracy_mode: ScanAccuracyMode,
-    /// 最大展示深度（以扫描根路径为 Level 0，默认 3，范围 2-5）
+    /// Maximum display depth (scan root is Level 0, default 3, range 2-5)
     max_display_depth: usize,
-    /// 扫描深度（控制 WalkDir/jwalk 的 max_depth，独立于展示深度）
-    /// Fast 模式固定 6 层，足以覆盖 AppData/Local/App/Cache 深度
+    /// Scan depth (controls WalkDir/jwalk max_depth, independent of display depth)
+    /// Fast mode is fixed at 6 levels, enough to cover AppData/Local/App/Cache depth
     scan_depth: u8,
-    /// 最小展示大小阈值（字节，默认 50MB）
+    /// Minimum display size threshold (bytes, default 50MB)
     size_threshold: u64,
-    /// 深度扫描时是否忽略系统保护目录（默认 true）
-    /// 关闭后 Windows/Program Files/ProgramData 等目录的子目录也会纳入结果
+    /// Whether to ignore system-protected directories during deep scans (default true)
+    /// When disabled, subdirectories of Windows/Program Files/ProgramData etc. are also included in results
     ignore_system_dirs: bool,
-    /// 深度扫描目标盘符；AppData 模式仍按当前用户目录扫描，不受此字段影响。
+    /// Target drive letter for deep scans; AppData mode still scans the current user directory and is unaffected by this field.
     drive_letter: char,
 }
 
 impl HotspotScanner {
-    /// 创建新的扫描器实例
+    /// Create a new scanner instance
     ///
-    /// # 参数
-    /// - `full_scan`: 是否启用全盘深度扫描
-    /// - `top_n`: 返回的最大条目数
+    /// # Arguments
+    /// - `full_scan`: whether to enable full-disk deep scanning
+    /// - `top_n`: maximum number of entries to return
     pub fn new(full_scan: bool, top_n: usize) -> Self {
         Self {
             full_scan,
             top_n,
             accuracy_mode: ScanAccuracyMode::Fast,
             max_display_depth: 3,
-            scan_depth: 6, // Fast 模式固定 6 层，覆盖 AppData/Local/App/Cache 深度
+            scan_depth: 6, // Fast mode fixed at 6 levels, covering AppData/Local/App/Cache depth
             size_threshold: MIN_SIZE_THRESHOLD,
-            ignore_system_dirs: true, // 默认忽略系统目录，保持现有行为
+            ignore_system_dirs: true, // ignore system directories by default, preserving existing behavior
             drive_letter: 'C',
         }
     }
 
-    /// 设置扫描精度模式（链式调用）
-    /// 同时联动设置 scan_depth：Fast=6, Accurate=10
+    /// Set the scan accuracy mode (chainable)
+    /// Also sets scan_depth accordingly: Fast=6, Accurate=10
     pub fn with_accuracy(mut self, mode: ScanAccuracyMode) -> Self {
         self.accuracy_mode = mode;
         self.scan_depth = match mode {
@@ -409,44 +409,44 @@ impl HotspotScanner {
         self
     }
 
-    /// 设置最大展示深度（可用于设置面板联动）
+    /// Set the maximum display depth (can be linked with the settings panel)
     pub fn with_display_depth(mut self, depth: usize) -> Self {
-        self.max_display_depth = depth.clamp(2, 4); // 最大 4 层，超过无实际差异
+        self.max_display_depth = depth.clamp(2, 4); // max 4 levels, beyond that there is no practical difference
         self
     }
 
-    /// 设置大小阈值
+    /// Set the size threshold
     pub fn with_size_threshold(mut self, threshold: u64) -> Self {
         self.size_threshold = threshold.max(SIZE_THRESHOLD_FLOOR);
         self
     }
 
-    /// 设置是否忽略系统保护目录（仅对深度扫描生效）
-    /// 关闭后可发现藏在 Windows/Program Files/ProgramData 下的异常大文件
+    /// Set whether to ignore system-protected directories (only effective for deep scans)
+    /// When disabled, can discover abnormally large files hidden under Windows/Program Files/ProgramData
     pub fn with_ignore_system_dirs(mut self, ignore: bool) -> Self {
         self.ignore_system_dirs = ignore;
         self
     }
 
-    /// 设置深度扫描目标盘符，避免多盘模式下仍固定扫系统盘。
+    /// Set the target drive letter for deep scans, avoiding always scanning the system drive in multi-drive mode.
     pub fn with_drive_letter(mut self, drive_letter: char) -> Self {
         self.drive_letter = drive_letter.to_ascii_uppercase();
         self
     }
 
-    /// 执行扫描（无进度通知，仅用于 AppData 浅扫描和旧 API 兼容）
-    /// 深度扫描请使用 `scan_with_ui()` 以获取实时进度
+    /// Perform a scan (no progress notification; only for shallow AppData scans and legacy API compatibility)
+    /// For deep scans use `scan_with_ui()` to get real-time progress
     pub fn scan(&self) -> Result<HotspotScanResult, String> {
         if self.full_scan {
             log::warn!("深度扫描建议使用 scan_with_ui() 以获得进度反馈");
-            self.scan_full_disk(None) // 不发送进度事件
+            self.scan_full_disk(None) // do not send progress events
         } else {
             self.scan_appdata()
         }
     }
 
-    /// 执行扫描（带实时进度通知）
-    /// 前端通过监听 `hotspot-scan:progress` 事件展示进度条
+    /// Perform a scan (with real-time progress notifications)
+    /// The frontend displays the progress bar by listening for the `hotspot-scan:progress` event
     pub fn scan_with_ui(&self, app_handle: &tauri::AppHandle) -> Result<HotspotScanResult, String> {
         if self.full_scan {
             self.scan_full_disk(Some(app_handle))
@@ -456,32 +456,32 @@ impl HotspotScanner {
     }
 
     // ========================================================================
-    // AppData 扫描（默认模式）
+    // AppData scan (default mode)
     // ========================================================================
 
-    /// 扫描 AppData 目录（默认模式）
-    /// 使用 jwalk 单次遍历 + 祖先聚合，替代原有的逐子目录 WalkDir 循环
+    /// Scan the AppData directory (default mode)
+    /// Uses a single jwalk traversal + ancestor aggregation, replacing the original per-subdirectory WalkDir loop
     fn scan_appdata(&self) -> Result<HotspotScanResult, String> {
         let start_time = std::time::Instant::now();
 
         let appdata_path = Self::get_appdata_path()?;
 
-        let max_depth = self.scan_depth; // 扫描深度（固定 6），独立于展示深度
+        let max_depth = self.scan_depth; // scan depth (fixed at 6), independent of display depth
         let track_modified = self.accuracy_mode.track_modified();
-        let cancel_flag = AtomicBool::new(false); // AppData 扫描不支持取消
+        let cancel_flag = AtomicBool::new(false); // AppData scans do not support cancellation
 
-        // 单次 jwalk 遍历 AppData，祖先聚合所有层级
+        // Single jwalk traversal of AppData, aggregating ancestors at all levels
         let (root_stats, ancestor_map) = aggregate_ancestor_stats(
             &appdata_path,
             max_depth,
             track_modified,
             &cancel_flag,
-            true, /* AppData 扫描无系统目录 */
+            true, /* AppData scan with no system directories */
         );
 
         let scanned_total_size = root_stats.total_size;
 
-        // 从 ancestor_map 筛选符合条件的条目
+        // Filter matching entries from ancestor_map
         let candidate_pairs: Vec<(PathBuf, FolderStats, usize)> = ancestor_map
             .into_iter()
             .filter(|(path, stats)| {
@@ -492,7 +492,7 @@ impl HotspotScanner {
                     return false;
                 }
                 let depth = calculate_relative_depth(&appdata_path, path);
-                // 多包含一层子节点，确保最后一层展示深度的条目也能显示子目录
+                // Include one extra level of child nodes so entries at the last display depth can still show subdirectories
                 depth > 0 && depth <= self.max_display_depth + 1
             })
             .map(|(path, stats)| {
@@ -503,11 +503,11 @@ impl HotspotScanner {
 
         let total_folders_scanned = candidate_pairs.len();
 
-        // 只保留 depth=1 的条目作为顶级结果，递归构建子树
+        // Keep only depth=1 entries as top-level results and recursively build subtrees
         let mut top_entries: Vec<HotspotEntry> = Vec::new();
         for (dir_path, dir_stats, depth) in candidate_pairs.iter().filter(|(_, _, d)| *d == 1) {
             let mut entry = Self::build_entry(dir_path, dir_stats, *depth as u8, false);
-            // 多给一层深度，让末级条目也能构建子节点
+            // Give one extra level of depth so leaf entries can also build child nodes
             entry.children = Self::build_children_from_pairs(
                 dir_path,
                 2,
@@ -517,7 +517,7 @@ impl HotspotScanner {
             top_entries.push(entry);
         }
 
-        // 按大小降序排列
+        // Sort by size descending
         top_entries.sort_by(|a, b| b.total_size.cmp(&a.total_size));
 
         let entries: Vec<HotspotEntry> = top_entries.into_iter().take(self.top_n).collect();
@@ -533,12 +533,12 @@ impl HotspotScanner {
     }
 
     // ========================================================================
-    // 全盘深度扫描（单次遍历 + 祖先聚合）
+    // Full-disk deep scan (single traversal + ancestor aggregation)
     // ========================================================================
 
-    /// 全盘扫描指定磁盘（顺序 IO + 深度限制 + 祖先聚合 + 巨型目录跳过）
+    /// Scan a specified disk in full (sequential IO + depth limit + ancestor aggregation + huge-directory skip)
     ///
-    /// v2.4.5 新增 MFT 直读引擎：管理员 + NTFS 时秒级全盘扫描，非管理员自动降级到 jwalk
+    /// v2.4.5 adds a direct MFT read engine: with admin + NTFS, full-disk scans complete in seconds; non-admin automatically falls back to jwalk
     fn scan_full_disk(
         &self,
         app_handle: Option<&tauri::AppHandle>,
@@ -571,7 +571,7 @@ impl HotspotScanner {
         let cancel_flag = &HOTSPOT_SCAN_CANCELLED;
 
         // ========================================================================
-        // 尝试 MFT 直读引擎（管理员 + NTFS）
+        // Try the direct MFT read engine (admin + NTFS)
         // ========================================================================
         let backend = engine_selector::detect_backend(self.drive_letter);
 
@@ -603,7 +603,7 @@ impl HotspotScanner {
                     track_modified,
                     cancel_flag,
                     |progress| {
-                        // MFT 进度 → 前端事件
+                        // MFT progress → frontend event
                         if let Some(app) = app_handle {
                             let _ = app.emit(
                                 "hotspot-scan:progress",
@@ -634,11 +634,11 @@ impl HotspotScanner {
                 );
 
                 if let Some(root_stats) = ancestor_cache.get(&scan_root) {
-                    // MFT 聚合后的每个目录都包含全部后代，不能把列表项大小再次相加，否则会重复计算祖先目录。
+                    // Each directory after MFT aggregation already includes all descendants; do not sum list item sizes again, or ancestor directories would be double-counted.
                     total_size.store(root_stats.total_size, Ordering::Relaxed);
                 }
 
-                // 从 ancestor_cache 构建 all_entries（与 Walkdir 路径一致的逻辑）
+                // Build all_entries from ancestor_cache (same logic as the Walkdir path)
                 for (path, stats) in &ancestor_cache {
                     if stats.total_size >= self.size_threshold {
                         let depth = calculate_relative_depth(&scan_root, path);
@@ -649,7 +649,7 @@ impl HotspotScanner {
                     }
                 }
 
-                // 补加一级目录的根条目
+                // Add root entries for first-level directories
                 for dir in &first_level_dirs {
                     if let Some(root_stats) = ancestor_cache.get(dir) {
                         if root_stats.total_size >= self.size_threshold {
@@ -666,7 +666,7 @@ impl HotspotScanner {
             }
 
             // ========================================================================
-            // 降级：jwalk 逐目录遍历
+            // Fallback: jwalk traversal directory by directory
             // ========================================================================
             HotspotBackend::Walkdir => {
                 log::info!(
@@ -674,7 +674,7 @@ impl HotspotScanner {
                     self.drive_letter
                 );
 
-                // 顺序扫描每个一级目录（IO 密集型任务，避免 SSD 随机 IO 风暴）
+                // Scan each first-level directory sequentially (IO-intensive task, avoid SSD random IO storms)
                 for dir in &first_level_dirs {
                     if cancel_flag.load(Ordering::SeqCst) {
                         break;
@@ -691,7 +691,7 @@ impl HotspotScanner {
                         self.ignore_system_dirs,
                     );
 
-                    // 合并到全局祖先缓存
+                    // Merge into the global ancestor cache
                     ancestor_cache.insert(dir.clone(), root_stats);
                     for (path, stats) in &ancestor_map {
                         ancestor_cache
@@ -704,7 +704,7 @@ impl HotspotScanner {
                             .or_insert(*stats);
                     }
 
-                    // 1. 添加根目录条目
+                    // 1. Add root directory entries
                     if root_stats.file_count > 0 {
                         total_scanned.fetch_add(1, Ordering::Relaxed);
                         total_size.fetch_add(root_stats.total_size, Ordering::Relaxed);
@@ -718,7 +718,7 @@ impl HotspotScanner {
                         }
                     }
 
-                    // 2. 从 ancestor_map 提取符合条件的祖先条目
+                    // 2. Extract matching ancestor entries from ancestor_map
                     let hide_ancestors = is_protected_root && self.ignore_system_dirs;
                     if !hide_ancestors {
                         for (path, stats) in &ancestor_map {
@@ -767,9 +767,9 @@ impl HotspotScanner {
             }
         }
 
-        // 热点展开 + 树形构建（两种引擎共用，逻辑不变）
+        // Hotspot expansion + tree construction (shared by both engines, logic unchanged)
 
-        // 检查是否被取消
+        // Check whether the scan was cancelled
         if cancel_flag.load(Ordering::SeqCst) {
             log::info!("大目录扫描被用户取消");
             if let Some(app) = app_handle {
@@ -808,8 +808,8 @@ impl HotspotScanner {
             );
         }
 
-        // 先用聚合缓存建立父子索引，后续热点展开和树形结果都只查内存。
-        // 这样既能保持“展示深度”设置生效，也避免 result 阶段反复 read_dir 触发磁盘 IO。
+        // First build a parent-child index from the aggregation cache; subsequent hotspot expansion and tree results only query memory.
+        // This keeps the "display depth" setting effective and avoids repeated read_dir calls in the result stage that trigger disk IO.
         let child_index = build_child_index(
             &ancestor_cache,
             &scan_root,
@@ -817,9 +817,9 @@ impl HotspotScanner {
             self.ignore_system_dirs,
         );
 
-        // 热点展开：递归展开容器目录（Windows/Program Files 等），
-        // 将排行榜让给用户真正关心的可清理热点（微信/npm/Docker 等）
-        // 噪音目录（WinSxS/System32 等）是否过滤由系统目录设置决定
+        // Hotspot expansion: recursively expand container directories (Windows/Program Files, etc.),
+        // giving the ranking over to cleanable hotspots users actually care about (WeChat/npm/Docker, etc.)
+        // Whether noise directories (WinSxS/System32, etc.) are filtered is determined by the system-directory setting
         let mut entries = flatten_hotspots(
             all_entries,
             &child_index,
@@ -828,8 +828,8 @@ impl HotspotScanner {
             self.ignore_system_dirs,
         );
 
-        // 按用户设置的展示深度补齐结果树。这里的深度是“从当前热点条目算起”的可见层数，
-        // 与前端 treeDepth 判断保持一致：设置为 4 时，顶级热点 + 3 层子目录都会返回。
+        // Fill in the result tree according to the user's display depth setting. The depth here is the visible level count "from the current hotspot entry",
+        // consistent with the frontend treeDepth logic: when set to 4, the top hotspot + 3 levels of subdirectories are all returned.
         for entry in &mut entries {
             let entry_path = PathBuf::from(&entry.path);
             let child_max_depth = entry
@@ -870,28 +870,28 @@ impl HotspotScanner {
         })
     }
 
-    /// 智能下钻分析（带统计缓存，避免重复 WalkDir）
+    /// Smart drill-down analysis (with statistics cache to avoid repeated WalkDir)
     ///
-    /// 与 `drill_down_directory` 功能相同，但优先从缓存中获取子目录统计，
-    /// 仅在缓存未命中时才回退为 `calculate_folder_stats()`。
+    /// Same functionality as `drill_down_directory`, but prefers subdirectory statistics from the cache,
+    /// falling back to `calculate_folder_stats()` only on a cache miss.
     ///
-    /// # 参数
-    /// - `dir`: 当前目录
-    /// - `current_depth`: 当前深度层级
-    /// - `is_full_scan`: 是否为全盘扫描
-    /// - `stats_cache`: 子树统计缓存（aggregate_subtree_stats 结果）
+    /// # Arguments
+    /// - `dir`: current directory
+    /// - `current_depth`: current depth level
+    /// - `is_full_scan`: whether this is a full-disk scan
+    /// - `stats_cache`: subtree statistics cache (result of aggregate_subtree_stats)
     fn drill_down_directory_cached(
         dir: &Path,
         current_depth: u8,
         is_full_scan: bool,
         stats_cache: &HashMap<PathBuf, FolderStats>,
     ) -> Vec<HotspotEntry> {
-        // 超过最大深度，停止下钻
+        // Beyond the maximum depth, stop drilling down
         if current_depth > MAX_DRILL_DOWN_DEPTH {
             return Vec::new();
         }
 
-        // 优先从缓存获取统计信息，未命中则回退到 WalkDir
+        // Prefer statistics from the cache; fall back to WalkDir on a miss
         let stats = match stats_cache.get(dir) {
             Some(s) => FolderStats {
                 total_size: s.total_size,
@@ -904,14 +904,14 @@ impl HotspotScanner {
             },
         };
 
-        // 检查是否满足下钻条件
+        // Check whether drill-down conditions are met
         if stats.total_size < DRILL_DOWN_SIZE_THRESHOLD
             || stats.file_count < DRILL_DOWN_FILE_COUNT_THRESHOLD
         {
             return Vec::new();
         }
 
-        // 获取所有子目录并从缓存查询大小
+        // Get all subdirectories and query their sizes from the cache
         let mut sub_dirs: Vec<(PathBuf, FolderStats)> = Vec::new();
 
         if let Ok(entries) = std::fs::read_dir(dir) {
@@ -921,7 +921,7 @@ impl HotspotScanner {
                     && !Self::should_skip_scan(&sub_path)
                     && !is_heavy_system_dir(&sub_path)
                 {
-                    // 优先从缓存获取
+                    // Prefer values from the cache
                     let sub_stats_opt = stats_cache
                         .get(&sub_path)
                         .cloned()
@@ -936,14 +936,14 @@ impl HotspotScanner {
             }
         }
 
-        // 按大小降序排列，取前 N 个
+        // Sort by size descending and take the top N
         sub_dirs.sort_by(|a, b| b.1.total_size.cmp(&a.1.total_size));
 
         sub_dirs
             .into_iter()
             .take(DRILL_DOWN_TOP_CHILDREN)
             .map(|(sub_path, sub_stats)| {
-                // 递归下钻子目录（继续使用缓存）
+                // Recursively drill down into subdirectories (continuing to use the cache)
                 let children = Self::drill_down_directory_cached(
                     &sub_path,
                     current_depth + 1,
@@ -959,10 +959,10 @@ impl HotspotScanner {
             .collect()
     }
 
-    /// 智能下钻分析（回退接口，用于无缓存场景）
+    /// Smart drill-down analysis (fallback interface, for scenarios without a cache)
     ///
-    /// 触发条件：目录 >5GB 且 >1000 文件 → 递归分析子目录结构
-    /// 限制：最大深度 3 层，每层返回前 3 个最大子目录
+    /// Trigger condition: directory >5GB and >1000 files → recursively analyze subdirectory structure
+    /// Limit: max depth 3 levels, each level returns the top 3 largest subdirectories
     fn drill_down_directory(
         dir: &Path,
         current_depth: u8,
@@ -971,11 +971,11 @@ impl HotspotScanner {
         Self::drill_down_directory_cached(dir, current_depth, is_full_scan, &HashMap::new())
     }
 
-    /// 构建保护目录的单层直接子目录列表（不递归下钻）
+    /// Build a single-level direct subdirectory list for protected directories (no recursive drill-down)
     ///
-    /// 保护目录（C:\Windows 等）的子目录中可能包含 WinSxS 等百万级文件目录，
-    /// 禁止递归下钻以避免在缓存未命中时触发 `calculate_folder_stats` 的全量 WalkDir。
-    /// 仅从浅层缓存读取直接子目录统计，取前 N 个返回，不设 children。
+    /// Subdirectories of protected directories (e.g. C:\Windows) can contain million-file directories such as WinSxS,
+    /// so recursive drill-down is forbidden to avoid triggering a full WalkDir from `calculate_folder_stats` on a cache miss.
+    /// Only read direct subdirectory statistics from the shallow cache, take the top N, and do not set children.
     fn build_shallow_children(
         dir: &Path,
         cache: &HashMap<PathBuf, FolderStats>,
@@ -1010,10 +1010,10 @@ impl HotspotScanner {
     }
 
     // ========================================================================
-    // 辅助方法
+    // Helper methods
     // ========================================================================
 
-    /// 获取 AppData 路径
+    /// Get the AppData path
     fn get_appdata_path() -> Result<PathBuf, String> {
         if let Ok(roaming) = std::env::var("APPDATA") {
             let roaming_path = PathBuf::from(&roaming);
@@ -1032,7 +1032,7 @@ impl HotspotScanner {
         Err("无法获取 AppData 路径".to_string())
     }
 
-    /// 判断是否应该跳过 AppData 下的文件夹
+    /// Determine whether a folder under AppData should be skipped
     fn should_skip_appdata_folder(path: &Path) -> bool {
         let folder_name = path
             .file_name()
@@ -1042,21 +1042,21 @@ impl HotspotScanner {
         APPDATA_SKIP_FOLDERS.contains(&folder_name.as_str())
     }
 
-    /// 判断是否应该跳过扫描（无法访问或无意义的目录）
+    /// Determine whether a directory should be skipped during scanning (inaccessible or meaningless)
     fn should_skip_scan(path: &Path) -> bool {
         let folder_name = path
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_default();
 
-        // 检查是否在跳过列表中
+        // Check whether it is in the skip list
         for skip_dir in SKIP_SCAN_DIRECTORIES {
             if folder_name.eq_ignore_ascii_case(skip_dir) {
                 return true;
             }
         }
 
-        // 跳过以 $ 开头的系统目录
+        // Skip system directories starting with $
         if folder_name.starts_with('$') {
             return true;
         }
@@ -1064,31 +1064,31 @@ impl HotspotScanner {
         false
     }
 
-    /// 判断是否为系统保护目录（黑名单）
+    /// Determine whether it is a system-protected directory (blacklist)
     fn is_protected_directory(path: &Path) -> bool {
         let path_str = path.to_string_lossy().to_lowercase();
 
-        // 从路径末尾提取文件夹名（避免额外 String 分配）
+        // Extract the folder name from the end of the path (avoid an extra String allocation)
         let folder_name = path_str.rsplit('\\').next().unwrap_or("");
 
-        // 检查是否在保护列表中
+        // Check whether it is in the protection list
         for protected in PROTECTED_DIRECTORIES {
             if folder_name.eq_ignore_ascii_case(protected) {
                 return true;
             }
         }
 
-        // Windows Update 缓存：可见但不允许自动清理
+        // Windows Update cache: visible but not allowed to be cleaned automatically
         if folder_name.eq_ignore_ascii_case("softwaredistribution") {
             return true;
         }
 
-        // 检查路径是否包含 Windows 系统目录
+        // Check whether the path contains a Windows system directory
         if path_str.contains("\\windows\\") || path_str.ends_with("\\windows") {
             return true;
         }
 
-        // 检查是否为 Program Files 子目录
+        // Check whether it is a Program Files subdirectory
         if path_str.contains("\\program files\\") || path_str.contains("\\program files (x86)\\") {
             return true;
         }
@@ -1096,7 +1096,7 @@ impl HotspotScanner {
         false
     }
 
-    /// 判断是否为缓存目录
+    /// Determine whether it is a cache directory
     fn is_cache_directory(path: &str, folder_name: &str) -> bool {
         let path_lower = path.to_lowercase();
         let name_lower = folder_name.to_lowercase();
@@ -1130,7 +1130,7 @@ impl HotspotScanner {
         false
     }
 
-    /// 判断是否为程序目录
+    /// Determine whether it is a program directory
     fn is_program_directory(path: &str) -> bool {
         let path_lower = path.to_lowercase();
         path_lower.contains("\\programs\\")
@@ -1138,7 +1138,7 @@ impl HotspotScanner {
             || path_lower.contains("\\program files (x86)\\")
     }
 
-    /// 获取父目录类型
+    /// Get the parent directory type
     fn get_parent_type(path: &str) -> String {
         let path_lower = path.to_lowercase();
 
@@ -1161,11 +1161,11 @@ impl HotspotScanner {
         }
     }
 
-    /// 计算文件夹的统计信息
+    /// Calculate folder statistics
     ///
-    /// # 参数
-    /// - `max_depth`: WalkDir 递归深度上限
-    /// - `include_modified`: 是否收集最后修改时间（Fast 模式跳过以减少 IO）
+    /// # Arguments
+    /// - `max_depth`: upper limit of WalkDir recursion depth
+    /// - `include_modified`: whether to collect last modified time (skipped in Fast mode to reduce IO)
     fn calculate_folder_stats(
         path: &Path,
         max_depth: u8,
@@ -1185,12 +1185,12 @@ impl HotspotScanner {
             match entry {
                 Ok(e) => {
                     if e.file_type().is_file() {
-                        // 单次 metadata() 调用，避免 Win11 + Defender 下重复 IO
+                        // Single metadata() call to avoid repeated IO on Win11 + Defender
                         if let Ok(metadata) = e.metadata() {
                             total_size += metadata.len();
                             file_count += 1;
 
-                            // 仅在需要时收集修改时间（快速模式跳过）
+                            // Only collect modified time when needed (skipped in fast mode)
                             if include_modified {
                                 if let Ok(modified) = metadata.modified() {
                                     let timestamp = Self::system_time_to_millis(modified);
@@ -1202,7 +1202,7 @@ impl HotspotScanner {
                         }
                     }
                 }
-                Err(_) => continue, // 静默跳过权限拒绝等错误
+                Err(_) => continue, // silently skip permission-denied and similar errors
             }
         }
 
@@ -1217,9 +1217,9 @@ impl HotspotScanner {
         })
     }
 
-    /// 判断是否为隐藏的系统条目
+    /// Determine whether it is a hidden system entry
     fn is_hidden_system_entry(entry: &walkdir::DirEntry) -> bool {
-        // 先检查名称（避免不必要的 metadata() 调用）
+        // Check the name first (avoid unnecessary metadata() calls)
         if entry
             .file_name()
             .to_str()
@@ -1245,7 +1245,7 @@ impl HotspotScanner {
         false
     }
 
-    /// 将 SystemTime 转换为 Unix 时间戳（毫秒）
+    /// Convert SystemTime to a Unix timestamp (milliseconds)
     pub(crate) fn system_time_to_millis(time: SystemTime) -> i64 {
         match time.duration_since(SystemTime::UNIX_EPOCH) {
             Ok(duration) => duration.as_millis() as i64,
@@ -1253,8 +1253,8 @@ impl HotspotScanner {
         }
     }
 
-    /// 核心构建器：将目录路径和统计信息统一构造为 HotspotEntry
-    /// 消除 scan_appdata / scan_full_disk / drill_down / scan_path_direct 中的重复代码
+    /// Core builder: uniformly construct directory paths and statistics into a HotspotEntry
+    /// Eliminates duplicated code in scan_appdata / scan_full_disk / drill_down / scan_path_direct
     fn build_entry(
         path: &Path,
         stats: &FolderStats,
@@ -1287,10 +1287,10 @@ impl HotspotScanner {
         }
     }
 
-    /// 从候选列表中递归构建子目录树
+    /// Recursively build a subdirectory tree from the candidate list
     ///
-    /// 基于 candidate_pairs 中的路径前缀匹配构建父子关系，无需额外 IO。
-    /// 每个子条目 path 的 parent() 等于 parent_path 即为父子关系。
+    /// Builds parent-child relationships based on path prefix matching in candidate_pairs, with no extra IO.
+    /// A child entry whose path's parent() equals parent_path is considered a parent-child relationship.
     fn build_children_from_pairs(
         parent_path: &Path,
         current_depth: usize,
@@ -1301,7 +1301,7 @@ impl HotspotScanner {
             return Vec::new();
         }
 
-        // 筛选直接子目录：path.parent() == parent_path 且 depth == current_depth
+        // Filter direct subdirectories: path.parent() == parent_path and depth == current_depth
         let mut children: Vec<HotspotEntry> = candidate_pairs
             .iter()
             .filter(|(p, _, d)| *d == current_depth && p.parent() == Some(parent_path))
@@ -1323,7 +1323,7 @@ impl HotspotScanner {
 }
 
 // ============================================================================
-// 祖先聚合 → 已迁移至 hotspot_engine/fallback_scanner.rs
+// Ancestor aggregation → moved to hotspot_engine/fallback_scanner.rs
 // ============================================================================
 use crate::scanner::hotspot_engine::fallback_scanner::aggregate_ancestor_stats;
 
@@ -1336,7 +1336,7 @@ struct IndexedChild {
 
 type ChildIndex = HashMap<PathBuf, Vec<IndexedChild>>;
 
-/// 将聚合后的目录缓存转换成父子索引，后续结果生成只查内存，不再递归读磁盘目录。
+/// Convert the aggregated directory cache into a parent-child index; subsequent result generation only queries memory and no longer recursively reads disk directories.
 fn build_child_index(
     cache: &HashMap<PathBuf, FolderStats>,
     root: &Path,
@@ -1354,8 +1354,8 @@ fn build_child_index(
         }
 
         let skip_heavy = ignore_system_dirs && is_heavy_system_dir(path);
-        // 用户关闭系统目录过滤时，需要让 WinSxS/System32 等目录真实参与排名，
-        // 否则结果会和设置语义、WizTree 这类全盘视图明显不一致。
+        // When the user disables system-directory filtering, directories like WinSxS/System32 must genuinely participate in the ranking,
+        // otherwise results will clearly disagree with the setting semantics and full-disk views like WizTree.
         let skip_noise = ignore_system_dirs && is_noise_directory(path);
         if skip_noise || skip_heavy || HotspotScanner::should_skip_scan(path) {
             continue;
@@ -1379,7 +1379,7 @@ fn build_child_index(
     child_index
 }
 
-/// 从父子索引构建结果页树形子节点，深度严格跟随前端“展示深度”设置。
+/// Build tree child nodes for the results page from the parent-child index; depth strictly follows the frontend "display depth" setting.
 fn build_tree_children_from_index(
     parent: &Path,
     max_depth: u8,
@@ -1411,24 +1411,24 @@ fn build_tree_children_from_index(
 }
 
 // ============================================================================
-// 热点展开机制（Hotspot Expansion）
-// 核心思路：避免 Windows / Program Files 等容器目录霸占 TopN，
-// 通过递归展开，将排行榜让给用户真正关心的可清理热点目录。
+// Hotspot expansion mechanism (Hotspot Expansion)
+// Core idea: prevent container directories such as Windows / Program Files from dominating the TopN,
+// and give the ranking over to cleanable hotspot directories users actually care about through recursive expansion.
 // ============================================================================
 
-/// 判断是否应展开目录（用子目录替代它参与 TopN 竞争）
+/// Determine whether a directory should be expanded (replaced by its subdirectories in the TopN ranking)
 ///
-/// 触发条件（任意满足即展开）：
-/// - 系统保护目录（Windows 等）—— 用户无法操作
-/// - 总大小 > 20GB —— 太大，需要看内部
-/// - depth <= 1 —— C:\ 的直接子级，太笼统
+/// Trigger conditions (any one is enough to expand):
+/// - System-protected directory (Windows, etc.) — the user cannot operate on it
+/// - Total size > 20GB — too large, need to look inside
+/// - depth <= 1 — a direct child of C:\, too general
 ///
-/// 不展开（作为终端热点）的条件：
-/// - 非保护 + 小于阈值 + 深度足够 → 这就是用户要找的目录
+/// Conditions for not expanding (treated as a terminal hotspot):
+/// - Non-protected + below the threshold + sufficient depth → this is the directory the user is looking for
 fn should_expand_directory(entry: &HotspotEntry, ignore_system_dirs: bool) -> bool {
     if entry.is_protected {
-        // 关闭系统目录过滤时，保护目录本身就是用户想看的磁盘占用结果；
-        // 必须优先返回 false，避免又被 20GB 阈值或一级目录规则强制展开。
+        // When system-directory filtering is disabled, protected directories themselves are the disk-usage results the user wants to see;
+        // must return false first, to avoid being forcibly expanded again by the 20GB threshold or first-level directory rule.
         return ignore_system_dirs;
     }
     if entry.total_size > EXPAND_SIZE_THRESHOLD {
@@ -1440,8 +1440,8 @@ fn should_expand_directory(entry: &HotspotEntry, ignore_system_dirs: bool) -> bo
     false
 }
 
-/// 从父子索引中查找目录的直接子目录。
-/// 索引已经完成大小、系统目录与噪音目录过滤，避免热点展开阶段再次触发 read_dir。
+/// Find the direct subdirectories of a directory from the parent-child index.
+/// The index has already applied size, system-directory and noise-directory filtering, avoiding another read_dir during hotspot expansion.
 fn find_meaningful_children(
     dir: &Path,
     child_index: &ChildIndex,
@@ -1465,8 +1465,8 @@ fn find_meaningful_children(
         .unwrap_or_default()
 }
 
-/// BinaryHeap 包装结构：按 total_size 降序排列 HotspotEntry
-/// 大顶堆规则：total_size 更大的排在前面
+/// BinaryHeap wrapper: orders HotspotEntry by total_size descending
+/// Max-heap rule: larger total_size comes first
 struct SizeOrd(HotspotEntry);
 
 impl PartialEq for SizeOrd {
@@ -1487,16 +1487,16 @@ impl PartialOrd for SizeOrd {
     }
 }
 
-/// 热点扁平化：递归展开容器目录，提取真正的用户热点
+/// Hotspot flattening: recursively expand container directories and extract the real user hotspots
 ///
-/// 算法：
-/// 1. 将 all_entries 按大小降序放入 BinaryHeap 候选队列（O(log n) 插入/取出）
-/// 2. 每次取出最大候选
-/// 3. 若应展开：从 cache 找出子目录，子目录加入候选队列继续竞争
-///    若不应展开：作为终端热点加入结果
-/// 4. 直到结果达到 top_n 或候选队列耗尽
+/// Algorithm:
+/// 1. Put all_entries into a BinaryHeap candidate queue in descending size order (O(log n) insert/pop)
+/// 2. Pop the largest candidate each time
+/// 3. If it should be expanded: find subdirectories from the cache and add them to the candidate queue to keep competing;
+///    if not: add it to the results as a terminal hotspot
+/// 4. Until results reach top_n or the candidate queue is exhausted
 ///
-/// 噪音目录（WinSxS/System32 等）在开启系统目录过滤时才会被过滤
+/// Noise directories (WinSxS/System32, etc.) are only filtered when system-directory filtering is enabled
 fn flatten_hotspots(
     all_entries: Vec<HotspotEntry>,
     child_index: &ChildIndex,
@@ -1504,7 +1504,7 @@ fn flatten_hotspots(
     is_full_scan: bool,
     ignore_system_dirs: bool,
 ) -> Vec<HotspotEntry> {
-    // 系统目录过滤关闭时保留噪音目录，便于和 WizTree 的全盘排名语义对齐。
+    // Keep noise directories when system-directory filtering is off, to align semantics with full-disk rankings like WizTree.
     let mut candidates: BinaryHeap<SizeOrd> = all_entries
         .into_iter()
         .filter(|e| !ignore_system_dirs || !is_noise_directory(&PathBuf::from(&e.path)))
@@ -1512,14 +1512,14 @@ fn flatten_hotspots(
         .collect();
 
     let mut result: Vec<HotspotEntry> = Vec::new();
-    // 防止同一个目录被重复加入结果
+    // Prevent the same directory from being added to the results more than once
     let mut seen: HashSet<PathBuf> = HashSet::new();
 
     while !candidates.is_empty() && result.len() < top_n {
         let entry = candidates.pop().unwrap().0;
 
-        // 关闭系统目录过滤时，结果要更接近 WizTree 的全盘占用视图，
-        // 因此保护目录本身允许进入榜单，不再被无条件展开成更深层子目录。
+        // When system-directory filtering is off, results should be closer to WizTree's full-disk usage view,
+        // so protected directories themselves are allowed onto the ranking and are no longer unconditionally expanded into deeper subdirectories.
         if should_expand_directory(&entry, ignore_system_dirs) {
             let dir_path = PathBuf::from(&entry.path);
             let children = find_meaningful_children(&dir_path, child_index, is_full_scan);
@@ -1547,20 +1547,20 @@ fn flatten_hotspots(
 }
 
 // ============================================================================
-// 兼容旧 API 的静态方法
+// Static methods for legacy API compatibility
 // ============================================================================
 
 impl HotspotScanner {
-    /// 兼容旧 API：执行 AppData 扫描
+    /// Legacy API compatibility: perform an AppData scan
     pub fn scan_legacy(top_n: usize) -> Result<HotspotScanResult, String> {
         let scanner = HotspotScanner::new(false, top_n);
         scanner.scan()
     }
 
-    /// 路径钻取扫描（UI 点击下钻）
+    /// Path drill-down scan (UI click to drill down)
     ///
-    /// 单次祖先聚合扫描，返回目标路径下多层子目录的大小统计。
-    /// 不触发多次递归 WalkDir，目标延迟 <1s。
+    /// A single ancestor-aggregation scan returns size statistics for multiple subdirectory levels under the target path.
+    /// Does not trigger multiple recursive WalkDir runs; target latency <1s.
     pub fn scan_path_direct(path: &str) -> Result<HotspotScanResult, String> {
         let start_time = std::time::Instant::now();
         let target = PathBuf::from(path);
@@ -1572,14 +1572,14 @@ impl HotspotScanner {
             return Err(format!("路径不是文件夹: {}", path));
         }
 
-        // 单次 WalkDir + 祖先聚合（max_depth=4, Fast 模式）
+        // Single WalkDir + ancestor aggregation (max_depth=4, Fast mode)
         let cancel_flag = AtomicBool::new(false);
         let (_root_stats, ancestor_map) = aggregate_ancestor_stats(
             &target,
             4,     // max_depth
-            false, // track_modified (快速模式)
+            false, // track_modified (fast mode)
             &cancel_flag,
-            true, // 路径钻取：此上下文无系统目录
+            true, // path drill-down: no system directories in this context
         );
 
         let mut entries: Vec<HotspotEntry> = ancestor_map
@@ -1590,7 +1590,7 @@ impl HotspotScanner {
             })
             .collect();
 
-        // 按大小降序排列
+        // Sort by size descending
         entries.sort_by(|a, b| b.total_size.cmp(&a.total_size));
 
         let total_folders_scanned = entries.len();
@@ -1607,7 +1607,7 @@ impl HotspotScanner {
     }
 }
 
-/// 文件夹统计信息（内部使用，pub(crate) 供 hotspot_engine 子模块引用）
+/// Folder statistics (for internal use; pub(crate) so the hotspot_engine submodule can reference it)
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct FolderStats {
     pub(crate) total_size: u64,

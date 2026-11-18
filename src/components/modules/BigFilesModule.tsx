@@ -2,8 +2,8 @@ import { useAiModuleBridge } from '../ai/useAiModuleBridge';
 import { AiAskButton } from '../ai/AiAskButton';
 import { buildItemQuestion } from '../ai/aiQuestions';
 // ============================================================================
-// 大文件清理模块组件
-// 在仪表盘中展示大文件扫描和清理功能
+// Big file cleanup module component
+// Shows big-file scanning and cleanup in the dashboard
 // ============================================================================
 
 import { useState, useCallback, useEffect, useRef } from 'react';
@@ -34,7 +34,7 @@ import { openSearchUrl } from '../../utils/searchEngine';
 import type { LargeFileEntry, LargeFileScanProgress } from '../../types';
 import type { ModuleRenderProps } from './moduleProps';
 
-// 后端当前返回固定来源标签；只映射已知枚举，未知值不展示，避免误译真实文件信息。
+// The backend currently returns fixed source labels; map only known enums and do not display unknown values, to avoid mistranslating real file info.
 function getLocalizedSourceLabel(sourceLabel: string, translate: (key: string) => string): string {
   const sourceKey: Record<string, string> = {
     '虚拟机磁盘': 'bigFiles.source.virtualDisk',
@@ -62,7 +62,7 @@ function getLocalizedSourceLabel(sourceLabel: string, translate: (key: string) =
 }
 
 // ============================================================================
-// 组件实现
+// Component implementation
 // ============================================================================
 
 export function BigFilesModule({ isPageActive = true }: ModuleRenderProps) {
@@ -73,18 +73,18 @@ export function BigFilesModule({ isPageActive = true }: ModuleRenderProps) {
   const { settings } = useSettings();
   const { drives } = useLocalDrives();
 
-  // 防止重复扫描
+  // Prevent duplicate scans
   const scanningRef = useRef(false);
-  // 扫描开始时间
+  // Scan start time
   const scanStartRef = useRef(0);
-  // 用于跟踪是否已处理过当前的一键扫描触发
+  // Tracks whether the current one-click scan trigger has been handled
   const lastScanTriggerRef = useRef(0);
 
-  // 本地状态
+  // Local state
   const [files, setFiles] = useState<LargeFileEntry[]>([]);
-  // 接入 AI 助手（只读）：只给摘要，不提供操作动作。
+  // Hook up the AI assistant (read-only): provide a summary only, no action tools.
   useAiModuleBridge('big-files', {
-    // 只读：单条详情。itemId 是 read_items 行首的完整路径。
+    // Read-only: single-item details. itemId is the full path at the start of the read_items line.
     readItemDetail: (itemId) => {
       const wanted = itemId.trim();
       const file = files.find((item) => item.path === wanted || wanted.startsWith(item.path));
@@ -96,7 +96,7 @@ export function BigFilesModule({ isPageActive = true }: ModuleRenderProps) {
         `风险等级：${file.risk_level}`,
       ].join('\n');
     },
-    // 只读读取：让助手能"往下看"到底有哪些条目（一次一页，由模型决定要不要继续）。
+    // Read-only: lets the assistant "look further" at what entries exist (one page at a time; the model decides whether to continue).
     readItems: (_targetId, offset, limit) => {
       if (files.length === 0) return null;
       return {
@@ -126,7 +126,7 @@ export function BigFilesModule({ isPageActive = true }: ModuleRenderProps) {
   const [currentPath, setCurrentPath] = useState('');
   const [scanBackend, setScanBackend] = useState(''); // "mft" | "walkdir"
 
-  // 复制路径比打开文件更适合清理列表：用户可以先在其他工具中确认文件用途，再决定是否删除。
+  // Copying a path suits a cleanup list better than opening the file: users can first confirm the file's purpose in another tool, then decide whether to delete.
   const copyFilePath = useCallback(async (path: string) => {
     try {
       await navigator.clipboard.writeText(path);
@@ -157,7 +157,7 @@ export function BigFilesModule({ isPageActive = true }: ModuleRenderProps) {
   }, [drives]);
 
   const resetBigFilesResult = useCallback(() => {
-    // 切换磁盘后旧结果已经不再对应当前目标盘，必须清空避免用户误删其他盘文件。
+    // After switching disks, old results no longer match the current target disk; clear them to prevent deleting files on another disk by mistake.
     setFiles([]);
     setSelectedFiles(new Set());
     setCurrentPath('');
@@ -174,7 +174,7 @@ export function BigFilesModule({ isPageActive = true }: ModuleRenderProps) {
     resetBigFilesResult();
   }, [resetBigFilesResult]);
 
-  // 监听扫描进度事件
+  // Listen for scan progress events
   useEffect(() => {
     let unlisten: (() => void) | null = null;
 
@@ -201,7 +201,7 @@ export function BigFilesModule({ isPageActive = true }: ModuleRenderProps) {
     };
   }, []);
 
-  // 扫描计时器
+  // Scan timer
   useEffect(() => {
     if (moduleState.status !== 'scanning') { setScanElapsed(0); return; }
     const interval = setInterval(() => {
@@ -212,7 +212,7 @@ export function BigFilesModule({ isPageActive = true }: ModuleRenderProps) {
     return () => clearInterval(interval);
   }, [moduleState.status]);
 
-  // 开始扫描 (带防抖 — scanningRef 防止重复触发)
+  // Start scan (with debounce — scanningRef prevents duplicate triggers)
   const handleScan = useCallback(async () => {
     if (scanningRef.current) return;
     scanningRef.current = true;
@@ -246,7 +246,7 @@ export function BigFilesModule({ isPageActive = true }: ModuleRenderProps) {
     }
   }, [updateModuleState, settings.bigFilesScanLimit, selectedDriveLetter]);
 
-  // 监听一键扫描触发器
+  // Listen for the one-click scan trigger
   useEffect(() => {
     if (oneClickScanTrigger > 0 && oneClickScanTrigger !== lastScanTriggerRef.current) {
       lastScanTriggerRef.current = oneClickScanTrigger;
@@ -254,7 +254,7 @@ export function BigFilesModule({ isPageActive = true }: ModuleRenderProps) {
     }
   }, [oneClickScanTrigger, handleScan]);
 
-  // 停止扫描
+  // Stop scan
   const handleStopScan = useCallback(async () => {
     try {
       await cancelLargeFileScan();
@@ -264,10 +264,10 @@ export function BigFilesModule({ isPageActive = true }: ModuleRenderProps) {
     }
   }, [showToast, t]);
 
-  // 切换文件选中状态（后端风险等级 >= 4 锁定不可选）
+  // Toggle file selection (backend risk level >= 4 is locked and unselectable)
   const handleSearchFile = useCallback(async (path: string) => {
     try {
-      // 搜索时带上完整路径，帮助用户在删除前确认文件来源和风险。
+      // Include the full path when searching, to help users confirm the file's origin and risk before deleting.
       await openSearchUrl(t('bigFiles.searchQuery', { path }));
     } catch (err) {
       console.error('搜索文件用途失败:', err);
@@ -293,7 +293,7 @@ export function BigFilesModule({ isPageActive = true }: ModuleRenderProps) {
     });
   }, []);
 
-  // 全选/取消全选（后端风险等级 >= 4 锁定不可选）
+  // Select all / deselect all (backend risk level >= 4 is locked and unselectable)
   const toggleSelectAll = useCallback(() => {
     const selectable = files.filter((f) => f.risk_level <= 3);
     if (selectedFiles.size === selectable.length) {
@@ -303,7 +303,7 @@ export function BigFilesModule({ isPageActive = true }: ModuleRenderProps) {
     }
   }, [selectedFiles.size, files]);
 
-  // 执行删除
+  // Perform deletion
   const handleDelete = useCallback(async () => {
     const paths = Array.from(selectedFiles);
     if (paths.length === 0) return;
@@ -313,7 +313,7 @@ export function BigFilesModule({ isPageActive = true }: ModuleRenderProps) {
     try {
       const result = await deleteFiles(paths);
 
-      // 记录清理日志（所有操作都记录）
+      // Record cleanup log (all operations are recorded)
       const failedPathSet = new Set(result.failed_files?.map((f) => f.path) || []);
       const logEntries: CleanupLogEntryInput[] = paths.map((path) => {
         const file = files.find((f) => f.path === path);
@@ -350,17 +350,17 @@ export function BigFilesModule({ isPageActive = true }: ModuleRenderProps) {
         });
       }
 
-      // 从列表中移除成功删除的文件，以返回结果为准重建状态
+      // Remove successfully deleted files from the list; rebuild state based on the returned result
       if (result.success_count > 0) {
         const failedPaths = new Set(result.failed_files?.map((f) => f.path) ?? []);
 
-        // 从文件列表中移除成功删除的（选中且不在失败列表中的）
+        // Remove the successfully deleted ones from the file list (selected and not in the failure list)
         const newFiles = files.filter(
           (file) => !selectedFiles.has(file.path) || failedPaths.has(file.path)
         );
         setFiles(newFiles);
 
-        // 选中状态只保留实际失败的文件
+        // Keep only actually failed files in the selection state
         setSelectedFiles(
           new Set([...failedPaths].filter((p) => selectedFiles.has(p)))
         );
@@ -385,20 +385,20 @@ export function BigFilesModule({ isPageActive = true }: ModuleRenderProps) {
     }
   }, [selectedFiles, files, updateModuleState, triggerHealthRefresh, showToast, t]);
 
-  // 计算选中文件的总大小
+  // Calculate the total size of selected files
   const selectedSize = files
     .filter((f) => selectedFiles.has(f.path))
     .reduce((sum, f) => sum + f.size, 0);
 
-  // 可选中文件数量（risk_level >= 4 被锁定，不可选）
+  // Number of selectable files (risk_level >= 4 is locked and unselectable)
   const selectableCount = files.filter((f) => f.risk_level <= 3).length;
-  // 由当前模块控制可见性，确保操作区跟随对应结果。
+  // Visibility is controlled by the current module, ensuring the operation area follows its corresponding result.
   const shouldShowOperationToolbar = isPageActive;
   const isScanning = moduleState.status === 'scanning';
   const displayElapsedSeconds = isScanning
     ? scanElapsed
     : Math.round(backendElapsedMs / 1000);
-  // 当前后端所有进度分支都提供稳定 stage，未知阶段统一回退到本地化提示，避免显示历史中文 message。
+  // All backend progress branches now provide a stable stage; unknown stages fall back to a localized hint, avoiding display of legacy Chinese messages.
   const localizedScanStage = scanStage
     ? t(`bigFilesStages.${scanStage}`, { defaultValue: t('bigFiles.detecting') })
     : t('bigFiles.detecting');
@@ -420,7 +420,7 @@ export function BigFilesModule({ isPageActive = true }: ModuleRenderProps) {
 
   return (
     <>
-      {/* 删除确认弹窗 */}
+      {/* Deletion confirmation modal */}
       <ConfirmDialog
         isOpen={showDeleteConfirm}
         title={t('confirmDeleteLargeFiles')}
@@ -462,14 +462,14 @@ export function BigFilesModule({ isPageActive = true }: ModuleRenderProps) {
         }
         allowStickyContent
       >
-            {/* 删除进度改挂在悬浮操作区上（见上面的 busyContent）：
-                那是 position: fixed 的层，不占文档流，所以列表既不被撑开也没有位移 ——
-                大文件需要保留"我在删哪几个"的参照。 */}
-            {/* 展开内容 */}
-            {/* pb-20：底部操作条是 fixed 悬浮层，末端留白免得最后一行文件被它压住 */}
+            {/* Deletion progress is now attached to the floating toolbar (see busyContent above):
+                it's a position: fixed layer outside the document flow, so the list is neither stretched nor shifted —
+                big files need to preserve the reference of "which ones I am deleting". */}
+            {/* Expanded content */}
+            {/* pb-20: the bottom toolbar is a fixed floating layer; bottom padding keeps the last file row from being covered */}
             <div className="pb-20">
               {shouldShowOperationToolbar && files.length > 0 && !isScanning && (
-            // 公共操作条统一处理底部定位，按钮内容仍由大文件模块维护。
+            // The shared toolbar handles bottom positioning; button content is still maintained by the big-files module.
             <ModuleOperationToolbar
               moduleId="bigFiles"
               busy={isDeleting}
@@ -498,15 +498,15 @@ export function BigFilesModule({ isPageActive = true }: ModuleRenderProps) {
             </ModuleOperationToolbar>
           )}
 
-          {/* 非管理员时退回常规遍历（几十秒 vs 几秒）。只说「可加速」——不提权也能扫完。 */}
+          {/* Non-admin falls back to normal traversal (tens of seconds vs a few). Say only "can be accelerated" — scanning still completes without elevation. */}
           <AdminRequiredHint className="mx-4 mt-3" variant="performance" />
 
-          {/* 扫描进度 + 引擎 + 时长（扫描中 & 扫描完成后都显示） */}
+          {/* Scan progress + engine + duration (shown both during and after scanning) */}
           {(isScanning || scanBackend) && (displayScanPath || localizedScanStage) && (
             <div className={`px-4 py-2 border-b border-[var(--border-default)] text-xs flex items-center gap-2 ${
               scanBackend === 'mft' ? 'bg-[var(--brand-green-10)]' : 'bg-emerald-500/5'
             }`}>
-              {/* 左边这段必须单独包一层：truncate 带 overflow-hidden，会把浮层裁掉 */}
+              {/* This left part needs its own wrapper: truncate has overflow-hidden, which would clip the popover */}
               <div className="truncate flex items-center gap-3 min-w-0 flex-1">
                 <span className="truncate text-[var(--fg-muted)]">{isScanning ? t('bigFiles.scanningPrefix') : t('bigFiles.scanCompletedPrefix')} {localizedScanStage}{displayScanPath ? ` · ${displayScanPath}` : ''}</span>
                 {scanBackend && (
@@ -526,14 +526,14 @@ export function BigFilesModule({ isPageActive = true }: ModuleRenderProps) {
                   <span className="shrink-0 text-[var(--fg-faint)]">{displayElapsedSeconds}s</span>
                 )}
               </div>
-              {/* 阶段的关键数字（后端给的原文）：默认收起，点秒表才看 —— 发版后这里只留一个图标 */}
+              {/* Key phase numbers (raw from backend): collapsed by default, click the stopwatch to view — after release only an icon remains here */}
               <ScanTimingPopover
                 groups={scanDetail ? [{ title: '', rows: [], note: scanDetail }] : []}
               />
             </div>
           )}
 
-          {/* 空状态 */}
+          {/* Empty state */}
           {moduleState.status === 'idle' && files.length === 0 && (
             <div className="p-4">
               <EmptyState
@@ -544,10 +544,10 @@ export function BigFilesModule({ isPageActive = true }: ModuleRenderProps) {
             </div>
           )}
 
-          {/* 扫描中状态：统一走公共组件。
-              引擎名（MFT / 常规遍历）、当前阶段、正在扫描的路径都属于实现细节，
-              用户看结果时不需要；阶段耗时要看有 ScanTimingPopover。
-              这里只留"在扫什么"和"结果大概长什么样"。 */}
+          {/* Scanning state: uses the shared component.
+              engine name (MFT / normal traversal), current phase, and the path being scanned are implementation details,
+              not needed when viewing results; phase timings are available via ScanTimingPopover.
+              keep only "what is being scanned" and "roughly what the result looks like" here. */}
           {isScanning && files.length === 0 && (
             <div className="p-4">
               <ModuleScanProgress
@@ -563,13 +563,13 @@ export function BigFilesModule({ isPageActive = true }: ModuleRenderProps) {
             </div>
           )}
 
-          {/* 文件列表 */}
+          {/* File list */}
           {files.length > 0 && (
             <div className="divide-y divide-[var(--border-default)]">
               {files.map((file, index) => {
                 const riskLevel = file.risk_level;
                 const isSelected = selectedFiles.has(file.path);
-                const isLocked = riskLevel >= 4; // 后端风险等级 >= 4，锁定不可删除
+                const isLocked = riskLevel >= 4; // backend risk level >= 4, locked and undeletable
                 const localizedSourceLabel = getLocalizedSourceLabel(file.source_label, t);
 
                 return (
@@ -582,7 +582,7 @@ export function BigFilesModule({ isPageActive = true }: ModuleRenderProps) {
                         isSelected ? 'bg-[var(--brand-green-10)] hover:bg-[var(--brand-green-10)]' : 'hover:bg-[var(--bg-hover)]'}
                     `}
                   >
-                    {/* 序号 + 复选框 */}
+                    {/* Row number + checkbox */}
                     <div className="flex items-center gap-2 shrink-0">
                       <span className="w-5 text-center text-xs font-medium text-[var(--fg-faint)]">
                         {index + 1}
@@ -608,12 +608,12 @@ export function BigFilesModule({ isPageActive = true }: ModuleRenderProps) {
                       </div>
                     </div>
 
-                    {/* 文件图标 */}
+                    {/* File icon */}
                     <div className={`w-9 h-9 rounded-lg flex items-center justify-center shrink-0 ${getRiskLevelBgColor(riskLevel)}`}>
                       <FileWarning className={`w-4 h-4 ${getRiskLevelColor(riskLevel)}`} />
                     </div>
 
-                    {/* 文件信息 */}
+                    {/* File info */}
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2">
                         <p className="text-sm text-[var(--fg-primary)] truncate font-medium" title={file.path}>
@@ -630,7 +630,7 @@ export function BigFilesModule({ isPageActive = true }: ModuleRenderProps) {
                       </p>
                     </div>
 
-                    {/* 右侧信息 */}
+                    {/* Right-side info */}
                     <div className="text-right shrink-0">
                       <p className="text-sm font-bold text-emerald-600">{formatSize(file.size)}</p>
                       <div className="flex items-center justify-end gap-2 mt-0.5">
@@ -641,7 +641,7 @@ export function BigFilesModule({ isPageActive = true }: ModuleRenderProps) {
                       </div>
                     </div>
 
-                    {/* 操作按钮 */}
+                    {/* Action buttons */}
                     <div className="flex items-center gap-0.5 shrink-0">
                       <button
                         onClick={(e) => {
@@ -653,8 +653,8 @@ export function BigFilesModule({ isPageActive = true }: ModuleRenderProps) {
                       >
                         <Search className="w-4 h-4" />
                       </button>
-                      {/* 快捷提问：问的是"这个文件是什么、能不能删"，
-                          所以用完整问句而不是搜索引擎关键字（见 aiQuestions 的说明）。 */}
+                      {/* Quick question: asks "what is this file and can it be deleted",
+                          so use a complete question rather than search-engine keywords (see the aiQuestions note). */}
                       <AiAskButton
                         question={buildItemQuestion(file.path, 'file')}
                         className="inline-flex h-7 w-7 items-center justify-center"

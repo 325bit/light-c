@@ -11,9 +11,9 @@ use super::mft_scan::{
 const SNAPSHOT_DIR: &str = "disk_growth_snapshots";
 const SNAPSHOT_PREFIX: &str = "disk_growth_";
 const SNAPSHOT_SUFFIX: &str = ".json";
-// 文件级明细体量远大于目录聚合快照，单独落到同名 .files 分片目录，避免主 JSON 过大。
+// File-level details are far larger than the directory aggregate snapshot; store them separately in a same-named .files shard directory to keep the main JSON small.
 const FILE_SHARD_SUFFIX: &str = "files";
-// 256 个桶能让百万级文件分散到较小 JSONL 文件，同时不会产生过多目录项。
+// 256 buckets spread millions of files across smaller JSONL files without creating too many directory entries.
 const FILE_SHARD_BUCKETS: u64 = 256;
 const MAX_SNAPSHOTS: usize = 3;
 
@@ -41,7 +41,7 @@ pub struct DiskSnapshot {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DiskFileShardEntry {
-    // parent 和 name 分开存储，减少每行重复完整路径带来的快照膨胀。
+    // Store parent and name separately to reduce snapshot bloat from repeating the full path on every line.
     pub parent: String,
     pub name: String,
     pub size: u64,
@@ -76,7 +76,7 @@ pub struct DiskSnapshotManager {
 
 #[derive(Debug, Clone)]
 pub struct DiskSnapshotHandle {
-    // 明细查询需要同时知道快照内容和快照文件路径，才能定位旁路分片目录。
+    // Detail queries need both the snapshot content and the snapshot file path in order to locate the side-car shard directory.
     pub snapshot: DiskSnapshot,
     pub path: PathBuf,
 }
@@ -113,14 +113,14 @@ impl DiskSnapshotManager {
     ) -> Result<PathBuf, String> {
         let snapshot = build_snapshot(scan);
         let path = self.save_snapshot(&snapshot)?;
-        // 文件级明细单独按目录分片保存，避免主 JSON 在百万文件场景下膨胀到数百 MB。
+        // Save file-level details in per-directory shards to avoid the main JSON ballooning to hundreds of MB with millions of files.
         if let Err(error) = self.save_file_shards(&path, file_records) {
-            // 主快照和文件分片必须成对成功，否则明细查询会拿到不完整的新快照。
+            // The main snapshot and the file shards must succeed together, otherwise detail queries would get an incomplete new snapshot.
             let _ = fs::remove_file(&path);
             let _ = fs::remove_dir_all(self.file_shard_dir(&path));
             return Err(error);
         }
-        // 清理放在整组快照写入成功之后，避免磁盘满等异常导致旧快照被提前删掉。
+        // Do cleanup only after the whole snapshot set is written successfully, to avoid deleting old snapshots early on errors such as a full disk.
         self.cleanup_old_snapshots()?;
         Ok(path)
     }
@@ -217,7 +217,7 @@ impl DiskSnapshotManager {
             return self.load_file_shard(&shard_path, &parent);
         }
 
-        // 旧版快照兼容：历史 JSON 里可能仍包含 file_entries，只在没有分片时回退使用。
+        // Legacy snapshot compatibility: older JSON may still contain file_entries; only fall back to them when no shards exist.
         Ok(snapshot
             .file_entries
             .iter()
@@ -250,7 +250,7 @@ impl DiskSnapshotManager {
             );
         }
 
-        // 旧版快照兼容：旧主 JSON 本身已经把文件明细读入内存，这里只在没有分片时回退。
+        // Legacy snapshot compatibility: older main JSON has already loaded file details into memory; fall back here only when no shards exist.
         Ok(collect_subtree_legacy_diffs(
             previous_snapshot,
             current_snapshot,
@@ -260,7 +260,7 @@ impl DiskSnapshotManager {
     }
 
     pub fn has_file_detail_storage(&self, snapshot_path: &Path, snapshot: &DiskSnapshot) -> bool {
-        // 新版快照使用旁路分片，旧版快照可能仍把文件级明细塞在主 JSON 里；两者都算可查询。
+        // New snapshots use side-car shards; older ones may still stuff file-level details into the main JSON; both count as queryable.
         self.file_shard_dir(snapshot_path).exists() || !snapshot.file_entries.is_empty()
     }
 
@@ -419,7 +419,7 @@ pub fn build_snapshot(scan: &FullDiskScanResult) -> DiskSnapshot {
         total_files_scanned: scan.total_files_scanned,
         root_path: scan.root_path.clone(),
         entries: scan.entries.iter().map(snapshot_entry_from_dir).collect(),
-        // 文件级明细已拆到旁路分片文件，主 JSON 只保留目录聚合快照，避免极端文件数下主快照过大。
+        // File-level details are split into side-car shard files; the main JSON keeps only the directory aggregate snapshot so it stays small even with extreme file counts.
         file_entries: Vec::new(),
         version: 2,
     }
@@ -479,7 +479,7 @@ impl SubtreeDiffCollector {
             return;
         }
 
-        // 递归兜底可能命中极大目录，只保留前端当前分页真正需要的 Top N，避免全量变化明细常驻内存。
+        // Fallback recursion may hit huge directories; keep only the Top N the frontend's current page actually needs, to avoid keeping all change details in memory.
         let Some(last) = self.entries.last() else {
             return;
         };
@@ -527,7 +527,7 @@ fn load_shard_prefix_map(
         }
         let row: DiskFileShardEntry = serde_json::from_str(&line)
             .map_err(|e| format!("解析文件级快照分片失败 {}: {}", shard_path.display(), e))?;
-        // 兜底只关心当前目录后代，提前过滤可以把单分片内的临时 HashMap 控制在局部范围。
+        // The fallback cares only about descendants of the current directory; filtering early keeps the temporary HashMap within a shard local in scope.
         if row.parent.starts_with(parent_prefix) {
             entries.insert(
                 format!("{}/{}", row.parent.trim_end_matches('/'), row.name),
@@ -586,7 +586,7 @@ fn collect_subtree_legacy_diffs(
 }
 
 fn shard_bucket(parent_path: &str) -> u64 {
-    // 分片文件是持久化数据，不能依赖 std::DefaultHasher 这类实现细节不稳定的哈希器。
+    // Shard files are persistent data, so do not rely on a hasher with unstable implementation details such as std::DefaultHasher.
     let mut hash = 0xcbf29ce484222325u64;
     for byte in parent_path.as_bytes() {
         hash ^= u64::from(*byte);
@@ -604,7 +604,7 @@ fn snapshot_prefix_for_drive(drive_letter: &str) -> Result<String, String> {
         return Err("无效的磁盘盘符，无法创建全盘快照".to_string());
     };
 
-    // C 盘沿用历史文件名前缀，确保已发布版本生成的快照无需迁移即可继续对比。
+    // Drive C: keeps the historical filename prefix so snapshots from released versions remain comparable without migration.
     if letter == 'c' {
         Ok(SNAPSHOT_PREFIX.to_string())
     } else {

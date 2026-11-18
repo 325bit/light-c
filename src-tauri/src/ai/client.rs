@@ -1,9 +1,9 @@
 // ============================================================================
-// AI 客户端：发一次对话、拉模型列表
+// AI client: send a chat request, fetch the model list
 //
-// 两种协议在这里归一 —— 上层只提交 AiChatRequest，不关心底层是 DeepSeek 还是
-// Claude。鉴权头、请求体形状、响应解析、超时都集中在本文件，
-// 避免这些细节散落到命令层或配置层。
+// Both protocols are unified here — upper layers only submit an AiChatRequest and do not care whether the backend is DeepSeek or
+// Claude. Auth headers, request body shape, response parsing, and timeouts are all centralized in this file,
+// keeping these details from leaking into the command or config layers.
 // ============================================================================
 
 use super::config::read_config;
@@ -15,24 +15,24 @@ use super::tools::{
 };
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
-/// 对话超时：LLM 首字延迟可能较久，给宽松一些。
+/// Chat timeout: LLM time-to-first-token can be long, so keep it generous.
 const CHAT_TIMEOUT_SECS: u64 = 60;
-/// 拉模型列表是轻量请求，超时收紧，避免设置页"测试连接"卡太久。
+/// Fetching the model list is a lightweight request; keep the timeout tight so the settings page "Test Connection" does not hang too long.
 const MODELS_TIMEOUT_SECS: u64 = 20;
-/// 流式对话的整段超时（兜底上限）。reqwest 的 timeout 覆盖"直到响应体读完"，
-/// 用对话那 60 秒会把长回答从中间切断，所以流式单独放宽。
-/// ⚠️ 真正判断"卡住"的是下面的**空闲超时**，这里只是防止连接永不结束。
+/// Overall timeout for streaming chat (a fallback ceiling). reqwest's timeout covers 'until the response body is fully read',
+/// using the 60-second chat timeout would cut long answers off mid-way, so streaming gets a looser one.
+/// ⚠️ What actually detects a "stall" is the **idle timeout** below; this only prevents a connection from never ending.
 const STREAM_TIMEOUT_SECS: u64 = 600;
-/// 流式的**空闲超时**：这么久没有收到任何新数据就判定卡住并断开。
-/// 30 秒足够覆盖服务商的首字延迟（推理模型偶尔要十几秒），又不会让用户干等。
+/// Streaming **idle timeout**: if no new data arrives for this long, treat it as stalled and disconnect.
+/// 30 seconds covers a provider's time-to-first-token (reasoning models sometimes take over ten seconds) without making the user wait too long.
 const STREAM_IDLE_TIMEOUT_SECS: u64 = 30;
-/// 上面那个值的 Duration 形式（循环里每次都要用，不必反复转）
+/// The Duration form of the value above (used on every loop iteration; no need to convert repeatedly)
 const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(STREAM_IDLE_TIMEOUT_SECS);
-/// Anthropic 要求显式给 max_tokens，这里给一个够用的默认值。
+/// Anthropic requires max_tokens explicitly; give a sensible default here.
 ///
-/// ⚠️ 不能给太大：超过模型自己的输出上限会被直接拒（不同 Claude 型号上限不同，
-/// 小模型只到 4096）。取 4096 是所有在役 Claude 型号都接受的值 ——
-/// 原来的 2048 太紧，助手一次回答带上一页明细就会被截断。
+/// ⚠️ Do not set it too high: exceeding the model's own output limit is rejected outright (limits differ across Claude models,
+/// smaller ones only go to 4096). 4096 is accepted by all Claude models in use —
+/// the old 2048 was too tight; a single reply including a page of details would get truncated.
 const ANTHROPIC_MAX_TOKENS: u32 = 4096;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -40,34 +40,34 @@ const ANTHROPIC_MAX_TOKENS: u32 = 4096;
 pub struct AiChatMessage {
     pub role: String,
     pub content: String,
-    /// 图片附件。为空时按纯文本发送 —— **与加入此功能之前的请求完全一致**。
+    /// Image attachments. When empty, send as plain text — **exactly the same as requests before this feature was added**.
     ///
-    /// 为什么不把 base64 直接塞进 content：两种协议都要求图文**分开作为分片**，
-    /// 而且前端还要显示缩略图、落盘时替换成占位符，分开处理反而更简单。
+    /// Why not put base64 directly into content: both protocols require text and images **as separate parts**,
+    /// and the frontend must show thumbnails and replace them with placeholders when persisting, so handling them separately is simpler.
     #[serde(default)]
     pub images: Vec<AiImage>,
-    /// 思考模式下的思维链。**必须原样回传**给 OpenAI 兼容服务端。
+    /// Chain of thought in thinking mode. **Must be passed back verbatim** to OpenAI-compatible providers.
     ///
-    /// DeepSeek 规定：请求带 `tools` 时，中间那轮 assistant 的 reasoning_content
-    /// 要在后续所有请求里完整回传，不回传直接 400
+    /// DeepSeek requires: when a request carries `tools`, the intermediate assistant turn's reasoning_content
+    /// must be passed back in full on all subsequent requests; omitting it yields a 400
     ///（"The reasoning_content in the thinking mode must be passed back to the API"）。
-    /// 只对 assistant 消息有意义 —— 前端从 `AiChatReply` 拿到后原样带回来。
+    /// Only meaningful on assistant messages — the frontend gets it from `AiChatReply` and passes it back unchanged.
     #[serde(default)]
     pub reasoning_content: Option<String>,
 }
 
-/// 一条消息里的图片附件。前端负责**先压缩再传** ——
-/// 原图 base64 会让每一轮请求都膨胀好几 MB（历史每轮都要重发）。
+/// Image attachments on a message. The frontend is responsible for **compressing before sending** —
+/// raw base64 would inflate every request by several MB (history is resent on every turn).
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AiImage {
-    /// 例如 image/jpeg
+    /// e.g. image/jpeg
     pub media_type: String,
-    /// 不带 `data:` 前缀的纯 base64
+    /// pure base64 without the `data:` prefix
     pub data_base64: String,
 }
 
-/// OpenAI 兼容协议的内容分片：纯文本时直接用字符串，带图时用 `image_url` 分片。
+/// Content parts for the OpenAI-compatible protocol: a plain string for text-only, `image_url` parts when images are present.
 fn build_openai_content(message: &AiChatMessage) -> serde_json::Value {
     if message.images.is_empty() {
         return serde_json::json!(message.content);
@@ -85,7 +85,7 @@ fn build_openai_content(message: &AiChatMessage) -> serde_json::Value {
     serde_json::json!(parts)
 }
 
-/// Anthropic 协议的内容分片：图片用 `source.base64`，不是 data URI。
+/// Content parts for the Anthropic protocol: images use `source.base64`, not a data URI.
 fn build_anthropic_content(message: &AiChatMessage) -> serde_json::Value {
     if message.images.is_empty() {
         return serde_json::json!(message.content);
@@ -111,18 +111,18 @@ fn build_anthropic_content(message: &AiChatMessage) -> serde_json::Value {
 #[serde(rename_all = "camelCase")]
 pub struct AiChatRequest {
     pub messages: Vec<AiChatMessage>,
-    /// 单次调用覆盖模型；不填则用设置里保存的
+    /// Override the model for a single call; if omitted, use the one saved in settings
     #[serde(default)]
     pub model: Option<String>,
-    /// 采样温度；不填用服务端默认
+    /// Sampling temperature; if omitted, use the provider default
     #[serde(default)]
     pub temperature: Option<f32>,
-    /// 本次允许使用的工具名。
-    /// **由前端按「该模块登记了哪些动作」决定** —— 只分析不删除的模块不会传
-    /// propose_delete，于是模型连这个工具都看不到，也就无从提议删除。
+    /// Tool names allowed for this call.
+    /// **Determined by the frontend based on "which actions the module registered"** — a module that only analyzes and never deletes will not send
+    /// propose_delete, so the model never even sees this tool and cannot propose a deletion.
     #[serde(default)]
     pub tools: Vec<String>,
-    /// 本次对话的会话 id。前端按模块生成，只在需要会话亲和的服务商那里变成请求头。
+    /// Session id for this chat. Generated by the frontend per module; only becomes a request header for providers that need session affinity.
     #[serde(default)]
     pub session_id: Option<String>,
 }
@@ -132,26 +132,26 @@ pub struct AiChatRequest {
 pub struct AiChatReply {
     pub content: String,
     pub model: String,
-    /// 这一轮的思维链（思考模式下才有）。前端要把它存到下一条 assistant 消息上，
-    /// 后续请求必须原样回传 —— 否则服务端 400。
+    /// This turn's chain of thought (only in thinking mode). The frontend stores it on the next assistant message,
+    /// and subsequent requests must pass it back verbatim — otherwise the provider returns 400.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning_content: Option<String>,
-    /// 模型请求调用的工具。有值时 content 通常为空 —— 它不是"回复"，而是一个动作意图。
+    /// Tool the model requested to call. When present, content is usually empty — it is not a "reply" but an action intent.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub tool_calls: Vec<AiToolCall>,
 }
 
-/// 拼接接口地址，容忍 base_url 带或不带结尾斜杠。
+/// Joins an endpoint URL, tolerating base_url with or without a trailing slash.
 fn join_url(base_url: &str, path: &str) -> String {
     let trimmed = base_url.trim().trim_end_matches('/');
     let suffix = path.trim_start_matches('/');
     format!("{}/{}", trimmed, suffix)
 }
 
-/// 地址是否指向本机。
+/// Whether an address points to the local machine.
 ///
-/// 只做字符串判断：`base_url` 是用户手填的，值不会带奇怪的结构；
-/// 而引入 URL 解析只为这一处判断不划算。
+/// String check only: `base_url` is entered by the user and will not have strange structure;
+/// and pulling in URL parsing just for this one check is not worth it.
 fn is_local_endpoint(base_url: &str) -> bool {
     let lower = base_url.to_ascii_lowercase();
     lower.contains("127.0.0.1")
@@ -163,15 +163,15 @@ fn is_local_endpoint(base_url: &str) -> bool {
 fn http_client(timeout_secs: u64, base_url: &str) -> Result<reqwest::Client, String> {
     let mut builder = reqwest::Client::builder()
         .timeout(Duration::from_secs(timeout_secs))
-        // 用自身客户端名而不是 reqwest 默认 UA：部分网关按 UA 校验客户端身份，
-        // 通用 HTTP 库名容易被当成脚本流量（OpenCode Console 的文档也明确要求这一点）。
+        // Use our own client name instead of reqwest's default UA: some gateways validate client identity by UA,
+        // a generic HTTP library name is easily treated as script traffic (OpenCode Console's docs explicitly require this too).
         .user_agent(format!("LightC/{}", env!("CARGO_PKG_VERSION")));
 
-    // ⚠️ 本地推理必须绕过系统代理。
-    // reqwest 默认会读取系统/环境变量代理，若用户开着 Clash 这类代理，
-    // 发往 127.0.0.1:11434 的请求会被转给代理，代理返回 502 ——
-    // 界面上显示"服务商暂时不可用"，但本地模型其实一个请求都没收到。
-    // 云端请求保持原样，国内用户访问外部服务仍走代理。
+    // ⚠️ Local inference must bypass the system proxy.
+    // reqwest reads system/environment proxies by default; if the user has a proxy like Clash enabled,
+    // requests to 127.0.0.1:11434 get routed to the proxy, which returns 502 —
+    // the UI shows "provider temporarily unavailable" while the local model never received a single request.
+    // Cloud requests are left unchanged; users in mainland China still reach external services through the proxy.
     if is_local_endpoint(base_url) {
         builder = builder.no_proxy();
     }
@@ -181,16 +181,16 @@ fn http_client(timeout_secs: u64, base_url: &str) -> Result<reqwest::Client, Str
         .map_err(|error| format!("创建网络请求客户端失败: {}", error))
 }
 
-/// 取"当前生效"的连接信息：预设里的协议 + 配置里的地址/密钥/模型。
-/// 地址留空时回落到预设默认值，用户只填密钥也能用。
-/// 把档案里配置的"思考强度"挂到请求体上。
+/// Get the "currently effective" connection info: protocol from the preset + address/key/model from config.
+/// When the address is empty, fall back to the preset default; users can get by with just entering a key.
+/// Attach the "reasoning effort" configured in the profile to the request body.
 ///
-/// ⚠️ **无法自动探测哪些模型支持**：`/models` 只返回模型名，不含能力信息。
-/// 所以做法是"用户设了才发"，并且只走 OpenAI 兼容协议 —— 那是国内多数服务商
-/// 采用的字段名；Anthropic 的思考是 `thinking` 对象、形状完全不同，不在这里猜测。
+/// ⚠️ **Cannot auto-detect which models support it**: `/models` only returns model names, no capability info.
+/// So the approach is "send only if the user set it", and only over the OpenAI-compatible protocol — the field name most mainland providers
+/// use; Anthropic's thinking is a `thinking` object with a completely different shape, so do not guess here.
 ///
-/// 不支持的模型收到这个字段：有的直接忽略，有的会报错。后者会在界面上看到原文，
-/// 用户把这一项改回"默认"即可 —— 这比替他猜要不要发要可靠。
+/// Models that do not support this field either ignore it or error out. In the latter case the user sees the raw message in the UI,
+/// and can simply set the option back to "default" — more reliable than guessing for them.
 fn attach_reasoning_effort(body: &mut serde_json::Value, protocol: AiProtocol) {
     if protocol != AiProtocol::OpenAi {
         return;
@@ -209,14 +209,14 @@ fn attach_reasoning_effort(body: &mut serde_json::Value, protocol: AiProtocol) {
 
 fn resolve_connection() -> Result<(AiProtocol, String, String, String), String> {
     let stored = read_config();
-    // 一切以"当前档案"为准：用户切了服务商，下一次调用就该换一套
+    // Everything follows the "current profile": when the user switches providers, the next call should use the new set
     let profile = stored
         .active_profile()
         .ok_or_else(|| "还没有添加 AI 服务商，请到「设置 - AI 助手」里添加。".to_string())?;
     let preset = find_preset(&profile.provider_id);
 
-    // 密钥允许为空：本地推理（Ollama / LM Studio / vLLM）本来就不需要鉴权。
-    // 不再在这里拦截，改为"空就不发认证头"—— 云端服务商漏填会在 401 时给出更准确的提示。
+    // The API key may be empty: local inference (Ollama / LM Studio / vLLM) needs no auth at all.
+    // Do not block here anymore; instead "empty means no auth header" — a missing key for a cloud provider yields a clearer 401 message.
     let api_key = profile.api_key.trim().to_string();
 
     let base_url = if profile.base_url.trim().is_empty() {
@@ -238,10 +238,10 @@ fn resolve_connection() -> Result<(AiProtocol, String, String, String), String> 
 }
 
 // ---------------------------------------------------------------------------
-// 请求体构造（抽成纯函数，便于单测；不依赖网络）
+// Request body construction (extracted as pure functions for unit testing; no network dependency)
 // ---------------------------------------------------------------------------
 
-/// OpenAI 兼容协议：system 与 user/assistant 混在同一个 messages 数组里。
+/// OpenAI-compatible protocol: system and user/assistant are mixed in the same messages array.
 fn build_openai_body(request: &AiChatRequest, model: &str) -> serde_json::Value {
     let messages: Vec<serde_json::Value> = request
         .messages
@@ -251,9 +251,9 @@ fn build_openai_body(request: &AiChatRequest, model: &str) -> serde_json::Value 
                 "role": message.role,
                 "content": build_openai_content(message),
             });
-            // 思考模式：带 tools 的请求必须把中间那轮 assistant 的 reasoning_content
-            // 一起回传，不回传服务端直接 400（见 AiChatMessage.reasoning_content 的说明）。
-            // 只往 assistant 上加 —— 塞到 user/system 上没有意义，也可能被服务端拒。
+            // Thinking mode: requests with tools must include the intermediate assistant turn's reasoning_content
+            // as well; omitting it yields a 400 from the provider (see AiChatMessage.reasoning_content).
+            // Only add it to assistant messages — putting it on user/system is meaningless and may be rejected.
             if message.role == "assistant" {
                 if let Some(reasoning) = message.reasoning_content.as_deref() {
                     if !reasoning.trim().is_empty() {
@@ -276,8 +276,8 @@ fn build_openai_body(request: &AiChatRequest, model: &str) -> serde_json::Value 
     body
 }
 
-/// Anthropic 协议：**system 不在 messages 里**，要提到顶层单独传；
-/// 而且 max_tokens 是必填项。
+/// Anthropic protocol: **system is not in messages**; it must be hoisted to the top level;
+/// and max_tokens is required.
 fn build_anthropic_body(request: &AiChatRequest, model: &str) -> serde_json::Value {
     let mut system_parts: Vec<String> = Vec::new();
     let mut messages: Vec<serde_json::Value> = Vec::new();
@@ -308,10 +308,10 @@ fn build_anthropic_body(request: &AiChatRequest, model: &str) -> serde_json::Val
 }
 
 // ---------------------------------------------------------------------------
-// 响应解析（同样是纯函数）
+// Response parsing (also pure functions)
 // ---------------------------------------------------------------------------
 
-/// OpenAI 兼容：choices[0].message.content
+/// OpenAI-compatible: choices[0].message.content
 fn parse_openai_reply(value: &serde_json::Value) -> Option<String> {
     value
         .get("choices")?
@@ -322,7 +322,7 @@ fn parse_openai_reply(value: &serde_json::Value) -> Option<String> {
         .map(|text| text.to_string())
 }
 
-/// 非流式响应里的思维链。与流式那份（stream.rs）是同一个约束：必须回传，否则 400。
+/// Chain of thought in non-streaming responses. Same constraint as the streaming version (stream.rs): must be passed back, otherwise 400.
 fn parse_openai_reasoning(value: &serde_json::Value) -> Option<String> {
     value
         .get("choices")?
@@ -333,7 +333,7 @@ fn parse_openai_reasoning(value: &serde_json::Value) -> Option<String> {
         .map(|text| text.to_string())
 }
 
-/// Anthropic：content 是数组，取其中 type == "text" 的部分拼起来。
+/// Anthropic: content is an array; take the parts with type == "text" and join them.
 fn parse_anthropic_reply(value: &serde_json::Value) -> Option<String> {
     let blocks = value.get("content")?.as_array()?;
     let text: String = blocks
@@ -349,7 +349,7 @@ fn parse_anthropic_reply(value: &serde_json::Value) -> Option<String> {
     }
 }
 
-/// 模型列表：两种协议的返回都是 `{ "data": [ { "id": ... } ] }`，可以共用。
+/// Model list: both protocols return `{ "data": [ { "id": ... } ] }`, so this can be shared.
 fn parse_model_ids(value: &serde_json::Value) -> Vec<String> {
     value
         .get("data")
@@ -364,16 +364,16 @@ fn parse_model_ids(value: &serde_json::Value) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// 把服务端返回的错误体摘成人话，避免直接把一大坨 JSON 甩给用户。
-/// `api_key_missing`：本次请求是否没有携带任何密钥。
-/// 用来把"根本没填"和"填错了"分开说 —— 这两种情况用户要做的事完全不同。
+/// Turn the provider's error body into plain language, instead of dumping a huge JSON blob on the user.
+/// `api_key_missing`: whether this request carried no key at all.
+/// Used to distinguish "not filled in at all" from "filled in wrong" — the user must do different things in each case.
 fn describe_http_error(status: u16, body: &str, api_key_missing: bool) -> String {
-    // 服务商返回的是一坨 JSON，直接把整段甩给用户等于没说。
-    // 先把里面的 message 抠出来 —— 那句话通常才是真正有用的信息。
+    // The provider returns a JSON blob; dumping the whole thing on the user is no help.
+    // First extract the message field — that line is usually the actually useful information.
     let detail = extract_error_message(body);
     match status {
-        // 没填密钥 + 401：多半是把云端服务商当成本地模型用了。
-        // 不能只说"检查 Key 是否正确"，用户会去找一个根本不存在的 Key。
+        // No key + 401: most likely the user is treating a cloud provider like a local model.
+        // Do not just say "check that the Key is correct" — the user would go looking for a key that does not exist.
         401 | 403 if api_key_missing => format!(
             "这个服务商要求填写 API Key（{}）：本地模型可以留空，云端服务商需要到「设置 - AI 助手」里填写。{}",
             status, detail
@@ -381,8 +381,8 @@ fn describe_http_error(status: u16, body: &str, api_key_missing: bool) -> String
         401 | 403 => format!("鉴权失败（{}），请检查 API Key 是否正确、是否已开通该模型。{}", status, detail),
         404 => format!("接口地址不对（404），请检查「接口地址」是否填成了正确的服务商地址。{}", detail),
         429 => format!("请求太频繁或额度不足（429）。{}", detail),
-        // 5xx 是**服务商那边**的问题，不是本机也不是配置错了。
-        // 说清楚这一点，用户才不会去反复改设置（实测 503 时错误原文就建议"换个服务商"）。
+        // 5xx is a **provider-side** problem, not local and not a config error.
+        // Say this clearly so users do not keep changing settings (in a real 503 the error text even suggests "switch providers").
         500..=599 => format!(
             "服务商暂时不可用（{}），稍后重试通常就好；持续不行的话可以换一个服务商。{}",
             status, detail
@@ -391,16 +391,16 @@ fn describe_http_error(status: u16, body: &str, api_key_missing: bool) -> String
     }
 }
 
-/// 从错误响应里取出一句人能看懂的话。
+/// Extract a human-readable message from an error response.
 ///
-/// 见到的形状不止一种：OpenAI 兼容是 `{"error":{"message":"..."}}`，
-/// Anthropic 是 `{"error":{"type":"...","message":"..."}}`，
-/// 也有直接 `{"message":"..."}` 的。取不到就退回原文（截断），**绝不返回空串** ——
-/// 宁可给原始内容，也不能让用户只看到一句"请求失败"。
+/// More than one shape occurs: OpenAI-compatible is `{"error":{"message":"..."}}`,
+/// Anthropic is `{"error":{"type":"...","message":"..."}}`,
+/// and sometimes plain `{"message":"..."}`. If nothing is found, fall back to the raw text (truncated); **never return an empty string** —
+/// better to give raw content than let the user see only "request failed".
 fn extract_error_message(body: &str) -> String {
     if let Ok(value) = serde_json::from_str::<serde_json::Value>(body) {
         let error = value.get("error");
-        // 形状一：{"error": {"message": "..."}}（OpenAI 兼容、Anthropic 都是这个）
+        // Shape one: {"error": {"message": "..."}} (both OpenAI-compatible and Anthropic use this)
         if let Some(text) = error
             .and_then(|item| item.get("message"))
             .and_then(|item| item.as_str())
@@ -409,13 +409,13 @@ fn extract_error_message(body: &str) -> String {
                 return text.trim().to_string();
             }
         }
-        // 形状二：{"error": "..."}（少数服务商直接给字符串）
+        // Shape two: {"error": "..."} (a few providers return a plain string)
         if let Some(text) = error.and_then(|item| item.as_str()) {
             if !text.trim().is_empty() {
                 return text.trim().to_string();
             }
         }
-        // 形状三：{"message": "..."} / {"detail": "..."}
+        // Shape three: {"message": "..."} / {"detail": "..."}
         for key in ["message", "detail"] {
             if let Some(text) = value.get(key).and_then(|item| item.as_str()) {
                 if !text.trim().is_empty() {
@@ -423,7 +423,7 @@ fn extract_error_message(body: &str) -> String {
                 }
             }
         }
-        // 连 message 都没有（有些服务商只给 code），把 code 报出来便于排查
+        // No message either (some providers only give a code); report the code to aid troubleshooting
         if let Some(code) = error
             .and_then(|item| item.get("code"))
             .and_then(|item| item.as_str())
@@ -435,15 +435,15 @@ fn extract_error_message(body: &str) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// 流式与非流式共用的步骤
+// Steps shared by streaming and non-streaming
 //
-// 两条路径除了"怎么收响应"以外完全一样：构造请求体、发请求、收尾解析。
-// 这三步以前各抄了一份 —— 后果是实打实的：加了"只交回本次声明过的工具"之后，
-// 它只生效在流式那一份上。抄一份就多一处会忘记同步的地方。
+// The two paths are identical except for "how the response is received": build the body, send the request, parse at the end.
+// These three steps used to be duplicated — with real consequences: after adding "return only tools declared this round",
+// it only took effect in the streaming copy. Every duplicate is one more place that can be forgotten during sync.
 // ---------------------------------------------------------------------------
 
-/// 构造请求体：按协议选形状 + 挂上本次声明的工具 + 采样参数。
-/// `streaming` 只影响 `stream` 字段，其余完全一致。
+/// Build the request body: choose shape by protocol + attach tools declared this round + sampling parameters.
+/// `streaming` only affects the `stream` field; everything else is identical.
 fn build_request_body(
     request: &AiChatRequest,
     protocol: AiProtocol,
@@ -458,8 +458,8 @@ fn build_request_body(
         body["stream"] = serde_json::json!(true);
     }
 
-    // 工具声明与"要不要流式"是两件独立的事：流式下工具参数会分片到达，
-    // 由 stream.rs 按索引拼回去，所以照样声明，不必为了工具放弃流式。
+    // Tool declarations and "whether to stream" are independent: under streaming, tool arguments arrive in fragments,
+    // reassembled by index in stream.rs, so declare them as usual — no need to give up streaming for tools.
     if !request.tools.is_empty() {
         let declarations = match protocol {
             AiProtocol::OpenAi => openai_tools(&request.tools),
@@ -474,11 +474,11 @@ fn build_request_body(
     body
 }
 
-/// 是否给这次请求带上 OpenCode Console 的会话头。
+/// Whether to attach the OpenCode Console session header to this request.
 ///
-/// 只认 `opencode.ai` 及其子域：给别的服务商发陌生头没有意义，还可能被严格网关拒掉。
-/// host 只取 scheme 之后、第一个路径分隔符之前的部分，避免 `opencode.ai.evil.com`
-/// 这类后缀骗进白名单。
+/// Only recognize `opencode.ai` and its subdomains: sending an unfamiliar header to other providers is pointless and may be rejected by strict gateways.
+/// Take the host as only the part after the scheme and before the first path separator, to avoid `opencode.ai.evil.com`
+/// slipping into the whitelist via such a suffix.
 fn opencode_session_header<'a>(
     base_url: &str,
     session_id: Option<&'a str>,
@@ -500,11 +500,11 @@ fn opencode_session_header<'a>(
         .then_some(("x-opencode-session", id))
 }
 
-/// 给请求加上鉴权头；密钥为空时**原样返回，不加任何认证头**。
+/// Add auth headers to a request; when the key is empty, **return it unchanged with no auth header**.
 ///
-/// 本地模型（Ollama、LM Studio、vLLM）不需要密钥，这是它们能跑通的前提。
-/// 抽成函数是为了让两条调用路径（对话、拉模型）共用同一个判断，
-/// 也便于单测直接验证"空密钥不产生 Authorization"。
+/// Local models (Ollama, LM Studio, vLLM) need no key — that is a prerequisite for them to work.
+/// Extracted into a function so both call paths (chat, fetch models) share the same decision,
+/// and so unit tests can directly verify "an empty key produces no Authorization".
 fn apply_auth(
     request: reqwest::RequestBuilder,
     protocol: AiProtocol,
@@ -519,7 +519,7 @@ fn apply_auth(
     }
 }
 
-/// 按协议发对话请求：两种协议只有路径与鉴权头不同。
+/// Sends a chat request per protocol: the two differ only in path and auth header.
 async fn send_chat_request(
     client: &reqwest::Client,
     protocol: AiProtocol,
@@ -528,9 +528,9 @@ async fn send_chat_request(
     session_id: Option<&str>,
     body: &serde_json::Value,
 ) -> Result<reqwest::Response, String> {
-    // match 只产 builder：会话头与请求体在两个协议上完全一样，没必要各写一份 .send()
-    // 鉴权头统一走 apply_auth：空密钥不能发 `Authorization: Bearer `（空值），
-    // 部分服务会把空 Bearer 当成错误凭据直接 401，比不发这个头更糟。
+    // match only produces a builder: session header and body are identical across protocols, so no need to duplicate .send()
+    // Auth headers go through apply_auth uniformly: an empty key must not send `Authorization: Bearer ` (empty value),
+    // some services treat an empty Bearer as bad credentials and return 401, worse than not sending the header.
     let request = match protocol {
         AiProtocol::OpenAi => apply_auth(
             client.post(join_url(base_url, "/chat/completions")),
@@ -556,19 +556,19 @@ async fn send_chat_request(
         .map_err(describe_request_error)
 }
 
-/// 错误信息里是否点名了 `reasoning_effort`。
+/// Whether the error message explicitly names `reasoning_effort`.
 ///
-/// 只在**点名**时才去掉它重试 —— 否则会把别的 400（模型名写错、余额不足）也重试一遍，
-/// 白花一次请求，还把真正的错误盖住。
+/// Only retry without it when it is **explicitly named** — otherwise other 400s (wrong model name, insufficient balance) get retried too,
+/// wasting a request and masking the real error.
 fn error_blames_reasoning_effort(error_text: &str) -> bool {
     error_text.to_ascii_lowercase().contains("reasoning_effort")
 }
 
-/// 把 reqwest 的错误连**底层原因**一起说出来。
+/// Report reqwest errors together with their **underlying causes**.
 ///
-/// ⚠️ reqwest 的 `Display` 只给一句 `error sending request for url (…)`，
-/// 真正的原因（连接被重置 / 握手失败 / DNS / 超时）在 `source()` 链里 ——
-/// 只打第一层，用户和排查的人都只能对着这句话猜（实测踩过）。
+/// ⚠️ reqwest's `Display` only gives `error sending request for url (…)`,
+/// the real cause (connection reset / handshake failure / DNS / timeout) is in the `source()` chain —
+/// logging only the first layer leaves users and debuggers guessing from that single line (encountered in practice).
 fn describe_request_error(error: reqwest::Error) -> String {
     let mut parts = vec![error.to_string()];
     let mut cause = std::error::Error::source(&error);
@@ -579,10 +579,10 @@ fn describe_request_error(error: reqwest::Error) -> String {
     format!("网络请求失败: {}", parts.join(" → "))
 }
 
-/// 发一次请求；**发送阶段的失败重试一次**。
+/// Sends one request; **retries once on send-phase failure**.
 ///
-/// 单次网络抖动（连接被重置、握手失败）不该让用户把问题重打一遍。
-/// 发送失败时请求根本没到服务端，所以重试是安全的 —— 不会重复计费。
+/// A single network blip (connection reset, handshake failure) should not make the user retype the problem.
+/// On a send failure the request never reached the provider, so retrying is safe — no double billing.
 async fn send_chat_request_with_retry(
     client: &reqwest::Client,
     protocol: AiProtocol,
@@ -595,17 +595,17 @@ async fn send_chat_request_with_retry(
         Ok(response) => Ok(response),
         Err(first_error) => {
             log::info!("首次发送失败，重试一次：{}", first_error);
-            // 重试必须用同一个会话 id：换值会把一次对话拆成两段
+            // The retry must use the same session id: changing it would split one conversation into two
             send_chat_request(client, protocol, base_url, api_key, session_id, body).await
         }
     }
 }
 
-/// 发请求；如果服务端明确表示不认 `reasoning_effort`，去掉它再试一次。
+/// Sends a request; if the provider explicitly rejects `reasoning_effort`, remove it and try once more.
 ///
-/// 为什么值得单独做：思考强度是**用户自己填的**，而支持它的模型有限。
-/// 让用户吃一个 400 再回设置页猜"该清哪一栏"，是很糟的体验。
-/// 另外：非 2xx 一律在这里变成 Err —— 流式与非流式共用同一套状态处理，不再各写一份。
+/// Why this deserves its own handling: reasoning effort is **entered by the user**, and only a limited set of models supports it.
+/// Making the user eat a 400 and then go guess "which field to clear" in settings is a poor experience.
+/// Also: all non-2xx become Err here — streaming and non-streaming share the same status handling, no duplication.
 async fn send_with_reasoning_fallback(
     client: &reqwest::Client,
     protocol: AiProtocol,
@@ -643,24 +643,24 @@ async fn send_with_reasoning_fallback(
     Err(describe_http_error(retry_status, &retry_text, api_key.is_empty()))
 }
 
-/// 只读工具名：**任何时候都放行**，不需要"本轮声明过"这个前提。
+/// Read-only tool names: **always allowed**, no requirement that they were "declared this round".
 ///
-/// 理由：它们的共同前提是"不改任何数据"，本来就答应过用户随时可用；
-/// 而这条放行是**必须**的 —— 后续轮次为了绕开思考模式的 `reasoning_content` 回传要求
-/// 不声明任何工具，模型于是改用文本 / DSML 标记表达读取意图。
-/// 一刀切挡住的话，那条回复就变成"正文空 + 无工具" → 前端报
-/// 「服务端没有返回任何内容」（实测踩过）。
-/// ⚠️ **会改数据的工具仍然必须在本轮声明里**，这条底线不动。
+/// Reason: their shared premise is "no data is changed", so they were always promised to be available;
+/// and this allowance is **required** — later rounds, to bypass the `reasoning_content` pass-back requirement of thinking mode,
+/// declare no tools, so the model switches to expressing read intent in text / DSML markup.
+/// If we blocked them across the board, the reply becomes "empty content + no tools" → the frontend reports
+/// "provider returned no content" (encountered in practice).
+/// ⚠️ **Tools that change data must still be declared this round** — this bottom line does not move.
 const READ_ONLY_TOOL_NAMES: [&str; 2] = [TOOL_READ_ITEMS, TOOL_READ_ITEM_DETAIL];
 
-/// 收尾：正文兜底解析 + 只保留本次声明过的工具（只读工具恒放行）。
+/// Finalization: fallback parsing of content + keep only tools declared this round (read-only tools always allowed).
 fn finalize_reply(
     mut content: String,
     mut tool_calls: Vec<AiToolCall>,
     allowed_tools: &[String],
 ) -> (String, Vec<AiToolCall>) {
-    // 有些模型（实测轻量档）不走标准 function calling，而是把调用当文本吐在正文里。
-    // 只在标准解析一无所获时兜底 —— 否则会把正文里正常的说明文字也当成调用。
+    // Some models (lightweight tiers in practice) skip standard function calling and emit calls as text in the content.
+    // Only fall back when standard parsing found nothing — otherwise normal explanatory text would be mistaken for calls.
     if tool_calls.is_empty() {
         let (inline_calls, cleaned) = extract_inline_tool_calls(&content);
         if !inline_calls.is_empty() {
@@ -669,9 +669,9 @@ fn finalize_reply(
         }
     }
 
-    // 只交回**本次声明过**的工具（只读工具除外，见上面常量的说明）：
-    // 模型可能在正文里写出一个根本没声明过的调用（上面那段兜底就会把它解析出来）。
-    // 前端执行前还会再挡一次，两层都要有。
+    // Return only tools **declared this round** (except read-only tools, see the constant above):
+    // The model may write a call in the content that was never declared (the fallback above would parse it out).
+    // The frontend blocks again before execution; both layers are needed.
     tool_calls.retain(|call| {
         allowed_tools.iter().any(|name| name == &call.name)
             || READ_ONLY_TOOL_NAMES.contains(&call.name.as_str())
@@ -679,18 +679,18 @@ fn finalize_reply(
     (content, tool_calls)
 }
 
-/// 收完一个流之后的产物。
+/// The result after consuming a whole stream.
 struct StreamOutcome {
     content: String,
     tool_calls: Vec<AiToolCall>,
-    /// 思维链（只有思考模式的模型会给）。**必须原样回传**给服务端，
-    /// 见 `AiChatMessage.reasoning_content` 的说明。
+    /// Chain of thought (only given by thinking-mode models). **Must be passed back verbatim** to the provider,
+    /// see `AiChatMessage.reasoning_content`.
     reasoning: Option<String>,
 }
 
-/// 收完整个流：增量逐个交给 `on_delta`，返回累积正文、工具调用与思维链。
+/// Consumes the whole stream: feeds each delta to `on_delta`, returns accumulated content, tool calls, and chain of thought.
 ///
-/// 超时是**空闲超时**而不是整段超时：长回答慢慢吐是正常的，"一个字节都不来"才该断。
+/// The timeout is an **idle timeout**, not a whole-stream timeout: slow long answers are normal; only "not a single byte arriving" should disconnect.
 async fn consume_stream<F>(
     response: &mut reqwest::Response,
     protocol: AiProtocol,
@@ -712,12 +712,12 @@ where
                 ))
             }
         };
-        // 流正常结束
+        // Stream ended normally
         let Some(chunk) = next else { break };
 
-        // 直接把字节喂给解码器：**不能在这里按分片解码** ——
-        // 网络分片边界可能落在一个多字节字符中间，那样一个汉字会被解成两个替换字符，
-        // 而这段文本既要实时显示、也要写进会话记录。解码在解码器里按"完整行"做。
+        // Feed bytes straight to the decoder: **do not decode per network chunk here** —
+        // a network chunk boundary may fall in the middle of a multi-byte character, turning one Chinese character into two replacement characters,
+        // and this text is both displayed live and written to the session record. Decoding by "complete lines" happens in the decoder.
         for delta in decoder.push_bytes(&chunk) {
             full.push_str(&delta);
             on_delta(&delta);
@@ -727,7 +727,7 @@ where
         }
     }
 
-    // 服务端一直吐不含换行的数据时解码器会放弃缓冲，这里明确报错，而不是静默截断
+    // When the provider keeps emitting data with no newlines, the decoder gives up buffering; report an explicit error here rather than silently truncating
     if decoder.overflowed {
         return Err("服务端返回的数据格式异常（长时间没有换行），连接已中断。".to_string());
     }
@@ -736,7 +736,7 @@ where
         on_delta(&delta);
     }
 
-    // 思维链要单独取走再判断：空串表示这个模型这一轮没有思考内容
+    // Take the chain of thought separately before checking: an empty string means this model had no thinking content this round
     let reasoning = decoder.take_reasoning();
     Ok(StreamOutcome {
         content: full,
@@ -750,10 +750,10 @@ where
 }
 
 // ---------------------------------------------------------------------------
-// 对外能力
+// Public API
 // ---------------------------------------------------------------------------
 
-/// 发一次对话（非流式）。流式输出属于后续阶段，这里先保证"能问能答"。
+/// Send one chat (non-streaming). Streaming output comes in a later phase; here we first ensure "ask and answer works".
 pub async fn chat_once(request: AiChatRequest) -> Result<AiChatReply, String> {
     let (protocol, base_url, api_key, model) = resolve_connection()?;
     let model = request.model.clone().unwrap_or(model);
@@ -763,7 +763,7 @@ pub async fn chat_once(request: AiChatRequest) -> Result<AiChatReply, String> {
 
     let client = http_client(CHAT_TIMEOUT_SECS, &base_url)?;
     let body = build_request_body(&request, protocol, &model, false);
-    // 发送与非 2xx 处理都在这里面（含"不认 reasoning_effort 就去掉重试一次"）
+    // Sending and non-2xx handling both happen inside (including "drop reasoning_effort and retry once if rejected")
     let response =
         send_with_reasoning_fallback(&client, protocol, &base_url, &api_key, request.session_id.as_deref(), &body)
             .await?;
@@ -779,8 +779,8 @@ pub async fn chat_once(request: AiChatRequest) -> Result<AiChatReply, String> {
         AiProtocol::OpenAi => parse_openai_reply(&value),
         AiProtocol::Anthropic => parse_anthropic_reply(&value),
     };
-    // 先记下"当初解析出正文没有"：下面判断"是不是完全没解析出东西"用的是这个事实，
-    // 而不是兜底清洗之后的结果（清洗只会删内容，不该把"有正文"变成"没正文"）。
+    // First note "whether content was parsed at all": the check below for "whether nothing was parsed" uses this fact,
+    // not the result after fallback cleanup (cleanup only removes content; it should not turn "has content" into "no content").
     let had_content = parsed_content.is_some();
     let (content, tool_calls) = finalize_reply(
         parsed_content.unwrap_or_default(),
@@ -788,8 +788,8 @@ pub async fn chat_once(request: AiChatRequest) -> Result<AiChatReply, String> {
         &request.tools,
     );
 
-    // 有工具调用时正文通常是空的 —— 那是动作意图，不是失败；
-    // 两者都没有才算真的没解析出东西。
+    // When there are tool calls, content is usually empty — that is an action intent, not a failure;
+    // only when both are absent did we truly parse out nothing.
     if !had_content && tool_calls.is_empty() {
         return Err(format!(
             "响应里没有找到回复正文，可能模型不支持该调用方式。原始响应片段: {}",
@@ -797,7 +797,7 @@ pub async fn chat_once(request: AiChatRequest) -> Result<AiChatReply, String> {
         ));
     }
 
-    // 思考模式的思维链（只有 OpenAI 兼容协议有；我们的 Anthropic 路径不开启思考）
+    // Chain of thought in thinking mode (only the OpenAI-compatible protocol has it; our Anthropic path does not enable thinking)
     let reasoning_content = match protocol {
         AiProtocol::OpenAi => parse_openai_reasoning(&value),
         AiProtocol::Anthropic => None,
@@ -811,8 +811,8 @@ pub async fn chat_once(request: AiChatRequest) -> Result<AiChatReply, String> {
     })
 }
 
-/// 拉取可用模型列表。设置页的「测试连接」用的就是它 ——
-/// 能成功拉到列表，说明地址、密钥、网络三者都没问题。
+/// Fetches the available model list. The settings page's "Test Connection" uses this —
+/// a successful fetch means address, key, and network are all fine.
 pub async fn fetch_models() -> Result<Vec<String>, String> {
     let (protocol, base_url, api_key, _) = resolve_connection()?;
     let client = http_client(MODELS_TIMEOUT_SECS, &base_url)?;
@@ -821,7 +821,7 @@ pub async fn fetch_models() -> Result<Vec<String>, String> {
         AiProtocol::OpenAi => "/models",
         AiProtocol::Anthropic => "/v1/models",
     };
-    // Anthropic 的版本头与鉴权无关，任何情况下都要带；鉴权本身交给 apply_auth。
+    // Anthropic's version header is unrelated to auth and must always be sent; auth itself is handled by apply_auth.
     let mut request = client.get(join_url(&base_url, path));
     if protocol == AiProtocol::Anthropic {
         request = request.header("anthropic-version", "2023-06-01");
@@ -848,10 +848,10 @@ pub async fn fetch_models() -> Result<Vec<String>, String> {
     Ok(ids)
 }
 
-/// 流式对话：每收到一段增量就调用一次 `on_delta`，最后返回完整正文。
+/// Streaming chat: calls `on_delta` on each delta received, then returns the full content.
 ///
-/// 用 `reqwest::Response::chunk()` 增量读取 —— 它不需要额外依赖，也不要求开 feature
-/// （`bytes_stream()` 会引入 futures-util）。SSE 的拆包与协议差异交给 stream.rs。
+/// Read incrementally with `reqwest::Response::chunk()` — no extra dependency and no feature flag needed
+/// (`bytes_stream()` would pull in futures-util). SSE unpacking and protocol differences are handled in stream.rs.
 pub async fn chat_stream<F>(request: AiChatRequest, mut on_delta: F) -> Result<AiChatReply, String>
 where
     F: FnMut(&str),
@@ -864,7 +864,7 @@ where
 
     let client = http_client(STREAM_TIMEOUT_SECS, &base_url)?;
     let body = build_request_body(&request, protocol, &model, true);
-    // 发送、重试与非 2xx 处理都在这里面（见 send_with_reasoning_fallback）
+    // Sending, retry, and non-2xx handling all happen inside (see send_with_reasoning_fallback)
     let mut response = send_with_reasoning_fallback(
         &client,
         protocol,
@@ -875,12 +875,12 @@ where
     )
     .await?;
 
-    // 边收边发：用户能立刻看到字出来，而不是等整段返回
+    // Stream as received: the user sees characters immediately instead of waiting for the whole response
     let outcome = consume_stream(&mut response, protocol, &mut on_delta).await?;
     let (content, tool_calls) = finalize_reply(outcome.content, outcome.tool_calls, &request.tools);
 
-    // 只有正文空**且**没有工具调用才算真的没内容：
-    // 模型决定调工具时正文本来就可能为空，那不是错误。
+    // Only empty content **and** no tool calls counts as truly having no content:
+    // when the model decides to call a tool, content may naturally be empty; that is not an error.
     if content.trim().is_empty() && tool_calls.is_empty() {
         return Err("服务端没有返回任何内容，请确认所选模型支持流式输出。".to_string());
     }
@@ -893,15 +893,15 @@ where
 }
 
 // ---------------------------------------------------------------------------
-// 单元测试：只覆盖纯函数（不发网络请求）。
-// 请求体形状是这里最容易出错的地方 —— 尤其 Anthropic 的 system 必须提到顶层。
+// Unit tests: cover only pure functions (no network requests).
+// Request body shape is the most error-prone part here — especially Anthropic's system, which must be hoisted to the top level.
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// 本地地址要被识别出来，否则会走系统代理、拿到代理的 502。
+    /// Local addresses must be recognized, otherwise they go through the system proxy and get its 502.
     #[test]
     fn local_endpoints_are_detected() {
         assert!(is_local_endpoint("http://127.0.0.1:11434/v1"));
@@ -911,8 +911,8 @@ mod tests {
         assert!(!is_local_endpoint("https://api.openai.com/v1"));
     }
 
-    /// 本地模型没有密钥：必须**完全不发** Authorization。
-    /// 发一个空的 `Bearer ` 更糟 —— 部分服务会把它当成错误凭据直接 401。
+    /// Local models have no key: must **send no Authorization at all**.
+    /// Sending an empty `Bearer ` is worse — some services treat it as bad credentials and return 401.
     #[test]
     fn empty_api_key_sends_no_auth_header() {
         let client = reqwest::Client::new();
@@ -942,7 +942,7 @@ mod tests {
         );
     }
 
-    /// 非空密钥仍按协议正确注入，别把原来能用的路径改坏。
+    /// A non-empty key must still be injected correctly per protocol; do not break the previously working path.
     #[test]
     fn non_empty_api_key_is_sent_per_protocol() {
         let client = reqwest::Client::new();
@@ -972,7 +972,7 @@ mod tests {
         );
     }
 
-    /// 没填密钥时收到 401，提示要说清"是没填"而不是"填错了"。
+    /// On a 401 with no key filled in, the hint must say "not filled in" rather than "filled in wrong".
     #[test]
     fn missing_key_401_asks_for_a_key() {
         let text = describe_http_error(401, r#"{"error":{"message":"unauthorized"}}"#, true);
@@ -980,8 +980,8 @@ mod tests {
         assert!(!text.contains("请检查 API Key 是否正确"), "{}", text);
     }
 
-    /// 会话头只发给 OpenCode Console，不能被形近域名骗过去；
-    /// 没带会话 id 或空串时一律不发，其它服务商的请求保持原样。
+    /// The session header goes only to OpenCode Console; it must not be fooled by look-alike domains;
+    /// never sent without a session id or with an empty string; requests to other providers stay unchanged.
     #[test]
     fn opencode_session_header_only_targets_console_hosts() {
         let session = Some("ses_abc123");
@@ -1024,7 +1024,7 @@ mod tests {
             ],
             model: None,
             temperature: Some(0.3),
-            // 默认不带工具：工具声明由前端按模块能力决定
+            // No tools by default: tool declarations are decided by the frontend based on module capabilities
             tools: Vec::new(),
             session_id: None,
         }
@@ -1055,8 +1055,8 @@ mod tests {
 
     #[test]
     fn images_become_parts_for_both_protocols() {
-        // 带图时内容必须从字符串变成分片数组，而且两家形状不同：
-        // OpenAI 用 data URI，Anthropic 用 source.base64 —— 混了就直接被服务端拒绝。
+        // With images, content must change from a string to an array of parts, and the two providers use different shapes:
+        // OpenAI uses a data URI, Anthropic uses source.base64 — mixing them gets rejected outright by the provider.
         let request = AiChatRequest {
             messages: vec![AiChatMessage {
                 role: "user".to_string(),
@@ -1089,7 +1089,7 @@ mod tests {
 
     #[test]
     fn plain_text_messages_still_send_a_plain_string() {
-        // 没图时必须保持原来的字符串形态：不改变既有请求，也少一条服务端分支
+        // Without images, keep the original string form: no change to existing requests and one fewer provider-side branch
         let request = AiChatRequest {
             messages: vec![AiChatMessage {
                 role: "user".to_string(),
@@ -1108,33 +1108,33 @@ mod tests {
 
     #[test]
     fn provider_error_json_is_reduced_to_its_message() {
-        // 服务商返回一坨 JSON，直接甩给用户等于没说。
-        // 实测 503 就是这样：真正有用的只有 message 那一句。
+        // The provider returns a JSON blob; dumping it on the user is no help.
+        // A real 503 was exactly like this: only the message line was useful.
         let body = r#"{"error":{"message":"Service is too busy. We advise users to temporarily switch to alternative LLM API service providers.","type":"service_unavailable_error","code":"service_unavailable_error"}}"#;
         let text = describe_http_error(503, body, false);
         assert!(text.contains("Service is too busy"), "应保留服务商的原文：{}", text);
         assert!(!text.contains("request_id"), "不该把整坨 JSON 带出来：{}", text);
-        // 5xx 必须说清"是服务商那边的问题"，否则用户会去反复改设置
+        // 5xx must make clear "it is a provider-side problem", otherwise users keep changing settings
         assert!(text.contains("服务商暂时不可用"), "{}", text);
     }
 
     #[test]
     fn error_extraction_falls_back_gracefully() {
-        // 不是 JSON：退回原文，绝不能返回空串
+        // Not JSON: fall back to raw text, never return an empty string
         assert_eq!(extract_error_message("plain gateway error"), "plain gateway error");
-        // 只有 code 没有 message
+        // Only a code, no message
         assert_eq!(
             extract_error_message(r#"{"error":{"code":"rate_limited"}}"#),
             "错误代码：rate_limited"
         );
-        // 顶层 message
+        // Top-level message
         assert_eq!(extract_error_message(r#"{"message":"bad request"}"#), "bad request");
     }
 
     #[test]
     fn anthropic_body_hoists_system_and_sets_max_tokens() {
         let body = build_anthropic_body(&sample_request(), "claude-sonnet-4-5");
-        // system 必须提到顶层，**不能**留在 messages 里（否则 Anthropic 直接报错）
+        // system must be hoisted to the top level, **must not** stay inside messages (otherwise Anthropic errors out)
         assert_eq!(body["system"], "你是助手");
         let messages = body["messages"].as_array().expect("messages 应为数组");
         assert_eq!(messages.len(), 1);
@@ -1172,8 +1172,8 @@ mod tests {
 
     #[test]
     fn only_a_named_reasoning_effort_error_triggers_the_retry() {
-        // 只有点名 reasoning_effort 才该去掉它重试 —— 别的 400 重试只会白花一次请求、
-        // 还把真正的错误盖住。
+        // Only remove and retry when reasoning_effort is explicitly named — retrying other 400s just wastes a request
+        // and masks the real error.
         assert!(error_blames_reasoning_effort(
             "{\"error\":{\"message\":\"Unrecognized request argument supplied: reasoning_effort\"}}"
         ));
@@ -1186,8 +1186,8 @@ mod tests {
 
     #[test]
     fn reasoning_content_is_attached_only_to_assistant_messages() {
-        // 思考模式：只有 assistant 消息该带 reasoning_content。
-        // 塞到 user/system 上没有意义，严格的网关还可能因此拒掉整个请求。
+        // Thinking mode: only assistant messages should carry reasoning_content.
+        // Putting it on user/system is meaningless, and strict gateways may reject the whole request because of it.
         let request = AiChatRequest {
             messages: vec![
                 AiChatMessage {
@@ -1219,9 +1219,9 @@ mod tests {
 
     #[test]
     fn read_only_tool_calls_survive_an_undeclared_round() {
-        // 后续轮次为了绕开思考模式的 reasoning_content 回传要求，`tools` 是空的；
-        // 模型于是改用文本 / DSML 标记表达读取意图。一刀切挡住的话，
-        // 这一轮会变成"正文空 + 无工具" → 前端报「服务端没有返回任何内容」（实测踩过）。
+        // Later rounds, to bypass the reasoning_content pass-back requirement of thinking mode, have `tools` empty;
+        // so the model expresses read intent in text / DSML markup. If we blocked them across the board,
+        // this round becomes "empty content + no tools" → the frontend reports "provider returned no content" (encountered in practice).
         let content =
             "<invoke name=\"read_items\"><parameter name=\"path\">D:\\models</parameter></invoke>";
         let (cleaned, calls) = finalize_reply(content.to_string(), Vec::new(), &[]);
@@ -1229,13 +1229,13 @@ mod tests {
         assert_eq!(calls[0].name, "read_items");
         assert!(cleaned.trim().is_empty(), "调用块应当从正文里剔除");
 
-        // ⚠️ 但**会改数据的工具**在没声明的轮次里必须挡住 —— 这条底线不动
+        // ⚠️ But **tools that change data** must be blocked in undeclared rounds — this bottom line does not move
         let write_content =
             "<invoke name=\"select_items\"><parameter name=\"ids\">[\"a\"]</parameter></invoke>";
         let (_, write_calls) = finalize_reply(write_content.to_string(), Vec::new(), &[]);
         assert!(write_calls.is_empty(), "未声明的写工具必须被挡掉");
 
-        // 声明过的时候照旧放行（不能把口子收得太紧）
+        // When declared, allow as before (do not tighten the opening too much)
         let declared = vec!["select_items".to_string()];
         let (_, declared_calls) = finalize_reply(write_content.to_string(), Vec::new(), &declared);
         assert_eq!(declared_calls.len(), 1);

@@ -50,26 +50,26 @@ fn model_file_rule(path: &Path) -> Option<ModelFileRule> {
         .to_ascii_lowercase();
 
     let rule = match extension.as_str() {
-        // 本地大模型/扩散模型最常见的权重格式，扩展名本身置信度高，可以降低阈值覆盖 LoRA。
+        // The most common weight formats for local LLM/diffusion models; the extension itself has high confidence, so the threshold can be lowered to cover LoRA.
         "safetensors" | "gguf" | "ggml" => ModelFileRule {
             min_size_for_mft: HIGH_CONFIDENCE_MIN_SIZE,
         },
-        // PyTorch/Stable Diffusion 常见 checkpoint，体积通常较大，但 .ckpt 在少量软件里也可能被复用。
+        // Common PyTorch/Stable Diffusion checkpoints, usually large, but .ckpt may also be reused by a few pieces of software.
         "ckpt" => ModelFileRule {
             min_size_for_mft: CHECKPOINT_MIN_SIZE,
         },
-        // 推理运行时/跨平台模型格式，扩展名比较明确，适合在平台目录和 MFT 兜底中直接识别。
+        // Inference runtime / cross-platform model formats; the extension is quite specific, suitable for direct recognition in platform directories and MFT fallback.
         "onnx" | "ort" | "tflite" | "pb" | "h5" | "hdf5" | "keras" | "mlmodel" | "mnn" | "rknn"
         | "mindir" | "om" | "engine" | "plan" | "trt" | "uff" | "pdmodel" | "pdiparams"
         | "pdparams" | "caffemodel" | "dlc" | "hef" | "xmodel" | "bmodel" | "pte" | "task"
         | "mar" | "nemo" => ModelFileRule {
             min_size_for_mft: MODEL_RUNTIME_MIN_SIZE,
         },
-        // Darknet 等老生态会使用 .weights，但这个名字也可能被普通软件复用，因此阈值高于通用运行时格式。
+        // Older ecosystems like Darknet use .weights, but that name may also be reused by ordinary software, so the threshold is higher than for generic runtime formats.
         "weights" | "t7" => ModelFileRule {
             min_size_for_mft: CHECKPOINT_MIN_SIZE,
         },
-        // 这些扩展名在 Python/开发环境里太常见，只在体积很大或平台目录中才认为是模型候选。
+        // These extensions are too common in Python/dev environments; only treat them as model candidates when very large or in a platform directory.
         "bin" | "pt" | "pth" | "pkl" | "pickle" | "joblib" | "npz" | "params" => ModelFileRule {
             min_size_for_mft: NOISY_MODEL_MIN_SIZE,
         },
@@ -80,7 +80,7 @@ fn model_file_rule(path: &Path) -> Option<ModelFileRule> {
 }
 
 fn is_tensorflow_checkpoint_data_file(file_name: &str) -> bool {
-    // TensorFlow checkpoint 权重常以 model.ckpt.data-00000-of-00001 形式存在，不能只按最后扩展名判断。
+    // TensorFlow checkpoint weights often exist as model.ckpt.data-00000-of-00001, so you cannot judge by the final extension alone.
     file_name.contains(".ckpt.data-") || file_name.starts_with("ckpt.data-")
 }
 

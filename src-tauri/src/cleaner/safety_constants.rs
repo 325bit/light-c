@@ -1,9 +1,9 @@
 // ============================================================================
-// 删除安全保护常量（delete_engine 和 enhanced_delete 共享）
-// 避免两个引擎各自维护不一致的保护列表
+// Deletion safety constants (shared by delete_engine and enhanced_delete)
+// Avoid two engines maintaining inconsistent protection lists
 // ============================================================================
 
-/// 绝对禁止删除的路径前缀（小写，starts_with 匹配）
+/// Path prefixes absolutely forbidden from deletion (lowercase, starts_with match)
 pub const PROTECTED_PATH_PREFIXES: &[&str] = &[
     "c:\\windows\\system32",
     "c:\\windows\\syswow64",
@@ -23,18 +23,18 @@ pub const PROTECTED_PATH_PREFIXES: &[&str] = &[
     "c:\\programdata\\microsoft\\windows defender",
     "c:\\recovery",
     "c:\\$recycle.bin",
-    // 旧版 Windows 安装（系统升级后保留约 10 天用于回退旧版本）。
-    // 这些目录归系统所有、内部权限不一致：直接 remove_dir_all 会在中途失败并留下
-    // "删一半"的状态，而清理它们只有磁盘清理 / 存储感知两个受支持的入口。
-    // 前端已把该分类标为系统托管、不提供删除，这里是第二道闸门，防止有别的路径绕过去。
+    // Old Windows installations (kept about 10 days after a system upgrade for rollback).
+    // These directories are system-owned with inconsistent internal permissions: a direct remove_dir_all fails midway and leaves
+    // a "half-deleted" state, and only Disk Cleanup / Storage Sense are supported entry points for cleaning them.
+    // The frontend already marks this category as system-managed with no delete option; this is a second gate, in case another path bypasses it.
     "c:\\windows.old",
     "c:\\$windows.~bt",
     "c:\\$windows.~ws",
 ];
 
-/// 绝对禁止删除的文件名（小写，精确匹配）
+/// File names absolutely forbidden from deletion (lowercase, exact match)
 pub const PROTECTED_FILES: &[&str] = &[
-    // Windows 核心系统文件
+    // Windows core system files
     "ntoskrnl.exe",
     "hal.dll",
     "ntdll.dll",
@@ -55,7 +55,7 @@ pub const PROTECTED_FILES: &[&str] = &[
     "desktop.ini",
     "ntuser.dat",
     "usrclass.dat",
-    // 社交软件配置文件（防止误删导致数据丢失）
+    // Social app config files (to prevent data loss from mistaken deletion)
     "config.data",
     "accinfo.dat",
     "msg.db",
@@ -68,13 +68,13 @@ pub const PROTECTED_FILES: &[&str] = &[
     "nt_config",
 ];
 
-/// 在 Windows 目录下禁止删除的扩展名（小写）
+/// Extensions forbidden from deletion under the Windows directory (lowercase)
 pub const PROTECTED_EXTENSIONS_IN_WINDOWS: &[&str] = &[
     "sys", "dll", "exe", "drv", "ocx", "cpl", "msi", "msp", "msu", "cat", "mum", "manifest",
 ];
 
-/// 判断是否为 Windows 清理向导明确允许重建的系统缓存子目录。
-/// 这些目录位于受保护的系统根目录下，因此删除引擎必须只放行精确子路径，不能放宽整个父目录。
+/// Determines whether this is a system cache subdirectory explicitly allowed for rebuild by the Windows Cleanup Wizard.
+/// These directories sit under a protected system root, so the delete engine must allow only exact subpaths, not loosen the whole parent directory.
 pub fn is_rebuildable_system_cache_path(path: &str) -> bool {
     let normalized = path.replace('/', "\\").to_ascii_lowercase();
     [
@@ -82,8 +82,8 @@ pub fn is_rebuildable_system_cache_path(path: &str) -> bool {
         "\\programdata\\microsoft\\windows defender\\localcopy",
         "\\programdata\\microsoft\\windows defender\\support",
         "\\programdata\\microsoft\\windows defender\\scans\\history\\service",
-        // Windows 错误报告的队列与归档目录：只存放崩溃报告，系统会在下次崩溃时重建。
-        // 深度扫描会命中 ReportQueue/ReportArchive，这里必须同样放行，否则会扫出来却删不掉。
+        // Windows Error Reporting queue and archive directories: hold only crash reports, rebuilt by the system at the next crash.
+        // Deep scans hit ReportQueue/ReportArchive, so these must be allowed too, otherwise they would be found but undeletable.
         "\\programdata\\microsoft\\windows\\wer\\reportqueue",
         "\\programdata\\microsoft\\windows\\wer\\reportarchive",
     ]
@@ -94,7 +94,7 @@ pub fn is_rebuildable_system_cache_path(path: &str) -> bool {
         };
         let suffix = &normalized[start + marker.len()..];
         let has_drive_root_boundary = start > 0 && normalized.as_bytes()[start - 1] == b':';
-        // 必须同时匹配系统盘根目录和完整目录名，避免误放行嵌套伪造路径或 Support2。
+        // Must match both the system drive root and the full directory name, to avoid wrongly allowing nested fake paths or Support2.
         has_drive_root_boundary && (suffix.is_empty() || suffix.starts_with('\\'))
     })
 }
@@ -105,7 +105,7 @@ mod tests {
 
     #[test]
     fn matches_only_explicit_cache_directory_boundaries() {
-        // 只允许清理向导明确列出的目录，避免相似目录名被误放行。
+        // Only allow directories explicitly listed by the cleanup wizard, to avoid wrongly allowing similarly named directories.
         assert!(is_rebuildable_system_cache_path(
             r"C:\ProgramData\Microsoft\Windows Defender\Support\MPLog.log"
         ));
@@ -115,7 +115,7 @@ mod tests {
         assert!(!is_rebuildable_system_cache_path(
             r"C:\ProgramData\Microsoft\Windows Defender\Support2\MPLog.log"
         ));
-        // 仿冒目录名不得放行删除。
+        // Spoofed directory names must not be allowed for deletion.
         assert!(!is_rebuildable_system_cache_path(
             r"C:\ProgramData\Microsoft\Windows Defender\Scans\History\ServiceEvil\entry.bin"
         ));

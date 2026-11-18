@@ -29,9 +29,9 @@ export default defineConfig(async () => ({
       // 3. tell Vite to ignore watching `src-tauri`
       ignored: [
         "**/src-tauri/**",
-        // 打包/便携包的产物目录：里面有跑起来的便携版写下的 WebView2 用户数据
-        // （EBWebView/Default/Network/Cookies 这类文件被占用），一旦被 chokidar 盯上就
-        // EBUSY 把 dev server 整个带崩 —— 而它根本不参与前端开发。
+        // Output directory for packaged/portable builds: it contains WebView2 user data written by a running portable build
+        // (files like EBWebView/Default/Network/Cookies are locked); once chokidar watches it,
+        // EBUSY crashes the whole dev server — and it is not part of frontend development at all.
         "**/dist_release/**",
         "**/dist/**",
       ],

@@ -1,6 +1,6 @@
 // ============================================================================
-// 回到顶部按钮
-// 当主内容滚动到一定距离后缓慢出现，点击后平滑回到顶部
+// Back to top button
+// Fades in slowly after the main content scrolls a certain distance; clicking smoothly returns to the top
 // ============================================================================
 
 import { useEffect, useState } from 'react';
@@ -9,9 +9,9 @@ import { AnimatePresence, motion } from 'framer-motion';
 import { useTranslation } from 'react-i18next';
 
 interface BackToTopButtonProps {
-  /** 主内容滚动容器；由调用方传入，组件不自己查 DOM。 */
+  /** Main content scroll container; passed in by the caller, the component does not query the DOM itself. */
   scrollContainerRef: React.RefObject<HTMLElement | null>;
-  /** 超过该滚动距离后显示按钮，默认避开刚进入页面时的轻微滚动误触。 */
+  /** Show the button after this scroll distance; by default avoids accidental triggers from slight scrolling on page entry. */
   threshold?: number;
 }
 
@@ -36,7 +36,7 @@ export function BackToTopButton({ scrollContainerRef, threshold = 360 }: BackToT
     const container = scrollContainerRef.current;
     if (!container) return;
 
-    // 使用原生 smooth scroll，避免自己逐帧计算造成长列表页面额外负担。
+    // Use native smooth scroll, to avoid burdening long-list pages with our own frame-by-frame calculations.
     container.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
@@ -44,15 +44,15 @@ export function BackToTopButton({ scrollContainerRef, threshold = 360 }: BackToT
     // top-1/2
     <AnimatePresence>
       {visible && (
-        /* ⚠️ 层级 z-30：**故意低于** AI 助手面板（z-40）。
-           这个按钮在右下角，而助手面板展开时正好覆盖那块区域；
-           原来写 z-50 会让它从面板上面"穿出来"，既挡内容、又容易误点。
-           它仍高于模块内容与模块操作栏（z-20），该露脸时照常露脸。
+        /* ⚠️ z-index z-30: **deliberately lower** than the AI assistant panel (z-40).
+           This button is in the bottom-right corner, exactly the area the assistant panel covers when expanded;
+           writing z-50 before made it "poke through" above the panel, blocking content and easy to misclick.
+           It is still above module content and the module action bar (z-20), so it shows up when it should.
 
-           ⚠️ 注释位置有讲究：这里处于 {visible && ( … )} 的 JS 表达式位置，
-           只能写这种形式；换成花括号包起来的 JSX 注释写法会被当成对象字面量，
-           直接编不过。反过来，在 JSX 子节点位置则必须用花括号那种写法，
-           否则注释会被当文本渲染到界面上。 */
+           ⚠️ The comment position matters: this is at a JS expression position inside {visible && ( … )},
+           so only this form works; a brace-wrapped JSX comment would be parsed as an object literal
+           and fail to compile. Conversely, at a JSX child position you must use the brace form,
+           otherwise the comment is rendered as text into the UI. */
         <motion.button
           type="button"
           onClick={handleBackToTop}

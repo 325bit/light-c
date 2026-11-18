@@ -1,29 +1,29 @@
 // ============================================================================
-// 社交软件来源名归一化
+// Social app source name normalization
 //
-// 后端各适配器上报的 app_name 对「同一个应用」存在多种写法：
-//   - 微信：微信 3.x 上报 "微信"，微信 4.x 上报 "WeChat"
-//   - 钉钉：上报 "钉钉" 或 "DingTalk"
-// 若直接按 app_name 分组，筛选器会出现两个指向同一应用的标签，用户无从选择。
-// 这里把原始 app_name 映射为稳定的来源 key，再由 i18n 决定展示文案。
+// Backend adapters report app_name for "the same app" in several forms:
+//   - WeChat: 3.x reports the Chinese name, 4.x reports "WeChat"
+//   - DingTalk: reports the Chinese name or "DingTalk"
+// Grouping directly by app_name would give the filter two labels pointing to the same app, leaving the user no choice.
+// Here the raw app_name is mapped to a stable source key, and i18n decides the display text.
 //
-// 注意：QQ 与 NTQQ 是两个可共存的独立客户端，不是同一应用的两种写法，
-// 因此保持为两个独立来源，不做合并。
+// Note: QQ and NTQQ are two independent clients that can coexist, not two spellings of the same app,
+// so they remain two separate sources and are not merged.
 // ============================================================================
 
-/** 原始 app_name（小写）→ 稳定来源 key */
+/** Raw app_name (lowercase) → stable source key */
 const SOURCE_KEY_MAP: Record<string, string> = {
-  // 微信 3.x / 4.x
+  // WeChat 3.x / 4.x
   微信: 'wechat',
   wechat: 'wechat',
-  // 钉钉中英文名
+  // DingTalk Chinese / English names
   钉钉: 'dingtalk',
   dingtalk: 'dingtalk',
   企业微信: 'wxwork',
   wxwork: 'wxwork',
   飞书: 'feishu',
   feishu: 'feishu',
-  // 以下应用后端已使用稳定英文名，映射为自身以复用同一套 key 校验
+  // The following apps already use stable English names on the backend; map to themselves to reuse the same key validation
   qq: 'qq',
   ntqq: 'ntqq',
   telegram: 'telegram',
@@ -31,14 +31,14 @@ const SOURCE_KEY_MAP: Record<string, string> = {
   whatsapp: 'whatsapp',
 };
 
-/** 已收录的稳定来源 key，用于判断是否需要走 i18n 翻译 */
+/** Stable source keys already included, used to decide whether i18n translation is needed */
 const KNOWN_SOURCE_KEYS = new Set(Object.values(SOURCE_KEY_MAP));
 
 /**
- * 把后端上报的 app_name 归一化为稳定来源 key。
+ * Normalize the app_name reported by the backend into a stable source key.
  *
- * 未收录的应用（例如后续新增的适配器）原样返回，
- * 这样筛选器仍然能按它分组，不会因为漏配映射而丢数据。
+ * Unlisted apps (e.g. adapters added later) are returned as-is,
+ * so the filter can still group by them and no data is lost due to a missing mapping.
  */
 export function getSourceKey(appName: string): string {
   const trimmed = appName.trim();
@@ -49,9 +49,9 @@ export function getSourceKey(appName: string): string {
 }
 
 /**
- * 把来源 key 转换为当前语言下的展示名。
+ * Convert a source key to its display name in the current language.
  *
- * 未收录的 key 原样返回，保证新增应用在补齐文案前也能正常展示。
+ * Unlisted keys are returned as-is, so new apps display normally before their text is added.
  */
 export function getSourceLabel(
   sourceKey: string,

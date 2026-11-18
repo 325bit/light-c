@@ -1,9 +1,9 @@
 // ============================================================================
-// 社交软件路径适配器
+// Social software path adapters
 // ============================================================================
 //
-// 每个适配器只负责发现软件数据目录，实际遍历和分类由 core.rs 统一处理。
-// 这样可以在增强单个软件路径时避免复制扫描、去重和风险分级逻辑。
+// Each adapter is only responsible for discovering a piece of software's data directory; the actual traversal and classification is handled uniformly by core.rs.
+// This avoids duplicating the scan, deduplication, and risk-grading logic when enhancing a single software's paths.
 // ============================================================================
 
 use super::core::{FileCategory, SocialAppPath, SocialScanner};
@@ -11,28 +11,28 @@ use log::info;
 use std::path::{Path, PathBuf};
 
 impl SocialScanner {
-    // QQ 路径检测
+    // QQ path detection
     // ========================================================================
 
-    /// 检测传统 QQ 路径
+    /// Detects legacy QQ paths
     ///
-    /// 路径溯源优先级：
-    /// 1. 注册表 HKCU\Software\Tencent\QQ\PersonalFolder
-    /// 2. 默认文档目录下的 "Tencent Files"
-    /// 3. 全盘搜索 "Tencent Files" 文件夹
+    /// Path trace priority:
+    /// 1. Registry HKCU\Software\Tencent\QQ\PersonalFolder
+    /// 2. "Tencent Files" under the default Documents directory
+    /// 3. Full-disk search for the "Tencent Files" folder
     pub(super) fn detect_qq_paths(&self) -> Option<Vec<SocialAppPath>> {
         let mut paths = Vec::new();
         let mut found_base_paths = Vec::new();
         let registry_path = self.read_qq_registry_path();
         let is_custom = registry_path.is_some();
 
-        // 尝试从注册表读取 QQ 自定义路径
+        // Try reading QQ's custom path from the registry
         if let Some(registry_path) = registry_path {
             info!("QQ 注册表路径: {}", registry_path);
             Self::add_candidate(&mut found_base_paths, PathBuf::from(registry_path));
         }
 
-        // 同时保留文档目录候选；用户可能安装过多个版本或迁移过数据。
+        // Also keep the Documents directory candidate; the user may have installed multiple versions or migrated data.
         Self::add_candidate(
             &mut found_base_paths,
             PathBuf::from(format!("{}\\Tencent Files", self.documents_dir)),
@@ -44,17 +44,17 @@ impl SocialScanner {
             );
         }
 
-        // 安装目录旁的 data 目录：自定义数据位置不一定写进注册表，
-        // 例如 D:\software\qq\install + D:\software\qq\data\<QQ号>
+        // The data directory beside the install directory: a custom data location isn't always written to the registry,
+        // e.g. D:\software\qq\install + D:\software\qq\data\<QQ number>
         for candidate in self.qq_install_adjacent_data_paths() {
             info!("QQ 安装目录旁数据目录: {}", candidate.display());
             Self::add_candidate(&mut found_base_paths, candidate);
         }
 
-        // 全盘搜索备选（无条件执行）
-        // ⚠️ 与微信侧同理（Issue #89）：自带的候选目录只要"存在"就会占住位置，
-        // 而用户把数据搬到别的盘之后，原位置的旧目录往往还在（可能已空）——
-        // 那样搜索就被整个跳过，D:\ 上的数据永远扫不到。
+        // Full-disk search fallback (unconditional)
+        // ⚠️ Same as on the WeChat side (Issue #89): a built-in candidate directory occupies a slot merely by "existing",
+        // and after the user moves data to another drive the old directory at the original location often remains (possibly empty) —
+        // that causes the search to be skipped entirely, so data on D:\ is never scanned.
         if let Some(search_paths) = self.search_qq_files_on_all_drives() {
             for path in search_paths {
                 Self::add_candidate(&mut found_base_paths, path);
@@ -79,13 +79,13 @@ impl SocialScanner {
                         .to_string_lossy()
                         .to_string();
 
-                    // QQ号通常是纯数字，跳过非用户目录
+                    // QQ numbers are usually all digits; skip non-user directories
                     if Self::is_qq_non_account_name(&user_name) {
                         continue;
                     }
 
-                    // 账号目录特征是"存在 Msg/Image/FileRecv 之类子目录"，
-                    // 不满足就跳过，避免把 All Users 之外的杂项目录也扫一遍。
+                    // An account directory is characterized by "containing subdirectories like Msg/Image/FileRecv";
+                    // skip those that don't, to avoid scanning miscellaneous directories other than All Users.
                     if !Self::looks_like_qq_account(&user_dir) {
                         continue;
                     }
@@ -112,17 +112,17 @@ impl SocialScanner {
         }
     }
 
-    /// QQ 数据根目录下需要跳过的非账号目录。
+    /// Non-account directories to skip under the QQ data root.
     fn is_qq_non_account_name(dir_name: &str) -> bool {
         dir_name.eq_ignore_ascii_case("all users")
             || dir_name.eq_ignore_ascii_case("global")
             || dir_name.starts_with('.')
     }
 
-    /// 从 QQ 传统版安装目录推断数据目录。
+    /// Infers the data directory from a legacy QQ installation directory.
     ///
-    /// 老架构 QQ 把数据放在安装目录同级的 `data`（自定义位置）或 `Tencent Files`，
-    /// 注册表可能没有记录，这里作为补充来源。
+    /// Legacy QQ puts data in `data` (custom location) or `Tencent Files` alongside the install directory;
+    /// the registry may have no record, so this serves as a supplementary source.
     #[cfg(target_os = "windows")]
     pub(super) fn qq_install_adjacent_data_paths(&self) -> Vec<PathBuf> {
         use winreg::enums::*;
@@ -144,7 +144,7 @@ impl SocialScanner {
                 if !install_dir.is_dir() {
                     continue;
                 }
-                // QQ 的注册表 Install 多指向 exe，取其所在目录
+                // QQ's registry Install often points to the exe; take its containing directory
                 let base_dir = if install_dir.is_file() {
                     install_dir.parent().map(|p| p.to_path_buf())
                 } else {
@@ -159,7 +159,7 @@ impl SocialScanner {
             }
         }
 
-        // 注册表没有安装信息时（自定义安装目录、绿色版），退回文件系统推断
+        // When the registry has no install info (custom install directory, portable version), fall back to filesystem inference
         for install_dir in self.find_qq_install_directories() {
             if let Some(parent) = install_dir.parent() {
                 bases.push(parent.to_path_buf());
@@ -171,7 +171,7 @@ impl SocialScanner {
         for base in bases {
             for relative in ["data", "Tencent Files", "data\\Tencent Files"] {
                 let candidate = base.join(relative);
-                // 只接受含账号目录特征的目录，避免把无关的 data 目录当 QQ 数据
+                // Only accept directories with account-directory characteristics, to avoid treating an unrelated data directory as QQ data
                 if candidate.is_dir() && Self::looks_like_qq_data_root(&candidate) {
                     if !found.contains(&candidate) {
                         found.push(candidate);
@@ -183,12 +183,12 @@ impl SocialScanner {
         found
     }
 
-    /// 在常见安装根目录下按名字找出 QQ 安装目录。
+    /// Finds the QQ install directory by name under common install roots.
     ///
-    /// 覆盖"注册表里没有安装路径"的情况：用户把 QQ 装在自定义目录（如 D:\software\qq\install），
-    /// 或只装了新版 NTQQ（C:\Program Files\Tencent\QQNT）。
+    /// Covers the case "no install path in the registry": the user installed QQ in a custom directory (e.g. D:\software\qq\install),
+    /// or only installed the new NTQQ (C:\Program Files\Tencent\QQNT).
     pub(super) fn find_qq_install_directories(&self) -> Vec<PathBuf> {
-        // 安装根目录候选：逐盘符的程序目录 + 常见的自定义软件目录
+        // Install-root candidates: program directories on each drive + common custom software directories
         let install_roots: [&str; 6] = [
             "Program Files\\Tencent",
             "Program Files (x86)\\Tencent",
@@ -206,7 +206,7 @@ impl SocialScanner {
                     continue;
                 }
 
-                // 只看一层：安装目录本身、或安装根目录下的第一层子目录
+                // Only one level: the install directory itself, or the first-level subdirectory under an install root
                 if Self::looks_like_qq_install_dir(&base) {
                     install_dirs.push(base.clone());
                 }
@@ -231,7 +231,7 @@ impl SocialScanner {
         install_dirs
     }
 
-    /// 判断目录是否像 QQ 安装目录：目录名含 QQ，或目录内有 QQ 系可执行文件。
+    /// Determines whether a directory looks like a QQ install directory: its name contains QQ, or it contains QQ-family executables.
     pub(super) fn looks_like_qq_install_dir(path: &Path) -> bool {
         let name_matches = path
             .file_name()
@@ -242,7 +242,7 @@ impl SocialScanner {
             return true;
         }
 
-        // 名字不含 QQ 的目录（例如 D:\software\qq\install 这类自定义命名）用可执行文件判断
+        // Directories whose name doesn't contain QQ (custom naming like D:\software\qq\install) are judged by executables
         ["QQ.exe", "QQScLauncher.exe", "QQUninst.exe", "PCQQ2021.exe"]
             .iter()
             .any(|exe| path.join(exe).is_file())
@@ -253,7 +253,7 @@ impl SocialScanner {
         Vec::new()
     }
 
-    /// 判断目录是否为 QQ 数据根：其下直接存在账号目录或 nt_qq。
+    /// Determines whether a directory is a QQ data root: it directly contains account directories or nt_qq.
     pub(super) fn looks_like_qq_data_root(path: &Path) -> bool {
         if path.join("nt_qq").is_dir() {
             return true;
@@ -269,7 +269,7 @@ impl SocialScanner {
             .any(|entry| Self::looks_like_qq_account(&entry.path()))
     }
 
-    /// 扫描传统 QQ 的单个用户目录，覆盖消息、媒体、接收文件和缓存。
+    /// Scans a single user directory of legacy QQ, covering messages, media, received files, and cache.
     fn scan_qq_account_directory(
         &self,
         account_path: &Path,
@@ -309,12 +309,12 @@ impl SocialScanner {
             paths,
         );
 
-        // 新旧架构混装的机器上，老账号目录里也会出现 nt_qq（新版数据落在老路径下），
-        // 这里顺带解析，避免同一份数据只因为所在位置不同而漏扫。
-        // ⚠️ 必须走 collect_ntqq_paths 而不是 scan_ntqq_directory：
-        // 这类 nt_qq 目录下面**直接就是 nt_data**（`<账号>\nt_qq\nt_data\Pic`），
-        // 而 scan_ntqq_directory 只遍历子目录、不会把"自己"当账号目录 ——
-        // 于是整棵子树的图片视频全被跳过（用户反馈新版 QQ 只能扫到少量临时缓存）。
+        // On machines with mixed old/new architecture, nt_qq can also appear inside old account directories (new data landing in old paths),
+        // so we parse those here too, to avoid missing the same data just because of where it lives.
+        // ⚠️ Must go through collect_ntqq_paths, not scan_ntqq_directory:
+        // such nt_qq directories contain **nt_data directly** (`<account>\nt_qq\nt_data\Pic`),
+        // while scan_ntqq_directory only traverses subdirectories and won't treat "itself" as an account directory —
+        // so the entire subtree's images and videos would be skipped (users reported new QQ only scanning a little temporary cache).
         let nested_ntqq = account_path.join("nt_qq");
         if nested_ntqq.is_dir() {
             info!("  QQ账号内 NTQQ 数据: {}", nested_ntqq.display());
@@ -323,16 +323,16 @@ impl SocialScanner {
     }
 
     fn looks_like_qq_account(path: &Path) -> bool {
-        // 🚨 必须带上 nt_qq：装在默认路径（Documents\Tencent Files）或自定义 data 目录的
-        // 新版 QQ，账号目录下只有 `nt_qq`，没有 Msg / Image / FileRecv 这些老标记。
-        // 少了这一项，整棵 `<账号>\nt_qq\nt_data\Pic` 连"是不是账号目录"这一关都过不了，
-        // 后面的嵌套解析根本不会被执行 —— 用户反馈"默认路径扫不到任何内容"就是这里。
+        // 🚨 Must include nt_qq: new QQ installed in the default path (Documents\Tencent Files) or a custom data directory
+        // has only `nt_qq` in the account directory, without the old markers Msg / Image / FileRecv.
+        // Without this, the whole `<account>\nt_qq\nt_data\Pic` fails even the "is it an account directory" check,
+        // and the nested parsing never runs — the user report "nothing scanned in the default path" comes from here.
         ["Msg", "Msg2", "FileRecv", "Image", "Database", "nt_qq"]
             .iter()
             .any(|name| path.join(name).is_dir())
     }
 
-    /// 从注册表读取 QQ 自定义路径
+    /// Reads QQ's custom path from the registry
     #[cfg(target_os = "windows")]
     pub(super) fn read_qq_registry_path(&self) -> Option<String> {
         use winreg::enums::*;
@@ -340,15 +340,15 @@ impl SocialScanner {
 
         let hkcu = RegKey::predef(HKEY_CURRENT_USER);
 
-        // 尝试读取 QQ 注册表路径
+        // Try reading QQ's registry path
         if let Ok(qq_key) = hkcu.open_subkey("Software\\Tencent\\QQ") {
-            // 尝试 PersonalFolder
+            // Try PersonalFolder
             if let Ok(path) = qq_key.get_value::<String, _>("PersonalFolder") {
                 if !path.is_empty() && Path::new(&path).exists() {
                     return Some(path);
                 }
             }
-            // 尝试 Install
+            // Try Install
             if let Ok(path) = qq_key.get_value::<String, _>("Install") {
                 let tencent_files = PathBuf::from(&path)
                     .parent()
@@ -369,17 +369,17 @@ impl SocialScanner {
         None
     }
 
-    /// 全盘搜索 Tencent Files 文件夹
+    /// Full-disk search for the Tencent Files folder
     ///
-    /// Issue #87：用户把聊天记录位置改到 `D:\QQ\Tencent Files` 后扫不到 ——
-    /// 原因是候选基目录只有 Users / Documents / Data，而 `QQ` 是盘符根下的自建目录，
-    /// 三个基目录里都没有它。现在盘符根也纳入搜索（跳过系统目录），
-    /// 并对根下每个顶层目录做有界下钻，而不是只看一层。
+    /// Issue #87: after the user changed the chat-record location to `D:\QQ\Tencent Files` it wasn't scanned —
+    /// the reason was that candidate base directories only included Users / Documents / Data, while `QQ` is a self-created
+    /// directory at the drive root and wasn't in any of the three. Now drive roots are also searched (skipping system directories),
+    /// and each top-level directory under the root gets a bounded drill-down rather than checking only one level.
     pub(super) fn search_qq_files_on_all_drives(&self) -> Option<Vec<PathBuf>> {
         let mut found_paths = Vec::new();
 
-        // 含 ""（盘符根目录）：自定义保存位置基本都长这样 —— `D:\QQ\Tencent Files`。
-        // 系统目录在下面会被跳过，所以不会扫进 Windows / Program Files。
+        // Includes "" (drive root): custom save locations basically always look like this — `D:\QQ\Tencent Files`.
+        // System directories are skipped below, so Windows / Program Files won't be scanned.
         let common_locations = ["", "Users", "Documents", "Data", "software", "Programs", "downloads"];
 
         for drive in &self.available_drives {
@@ -388,16 +388,16 @@ impl SocialScanner {
                 if !search_base.is_dir() {
                     continue;
                 }
-                // 走缓存：微信侧的兜底搜索已经把这批目录读过一遍，这里直接命中。
+                // Use the cache: the WeChat-side fallback search already read this batch of directories, so we hit directly here.
                 let subdirectories = self.read_subdirectories_cached(&search_base);
 
                 for path in subdirectories {
-                    // 盘符根下的系统目录不下钻：里面不可能放聊天数据，只会白花时间。
+                    // Don't drill into system directories at the drive root: chat data can't be there, it only wastes time.
                     if location.is_empty() && Self::is_system_top_level_dir(&path) {
                         continue;
                     }
 
-                    // 情况一：目录本身就叫 Tencent Files
+                    // Case one: the directory itself is named Tencent Files
                     if path
                         .file_name()
                         .map(|n| n.to_string_lossy().to_lowercase() == "tencent files")
@@ -408,13 +408,13 @@ impl SocialScanner {
                         continue;
                     }
 
-                    // 情况二：目录下面还有一层才到 Tencent Files。
-                    // 复用微信那边的有界查找（内部带目录检查次数上限）。
+                    // Case two: there's one more level below the directory before Tencent Files.
+                    // Reuse the bounded lookup from the WeChat side (with a built-in cap on directory checks).
                     //
-                    // 深度取 2 而不是 1：不少用户把聊天数据放在**自己建的分类目录**里，
-                    // 例如 issue #97 的 `D:\聊天记录\QQ\Tencent Files` ——
-                    // 从盘符根算起是"分类 → 软件 → 数据"三层，只下钻一层永远够不到。
-                    // 只多一层 readdir，且有 20000 目录上限兜底，大目录不会卡住。
+                    // Use depth 2 instead of 1: many users put chat data in a **self-created category directory**,
+                    // e.g. issue #97's `D:\ChatRecords\QQ\Tencent Files` —
+                    // counting from the drive root that's three levels "category → software → data"; a one-level drill-down can never reach it.
+                    // Only one extra readdir, with a 20000-directory cap as fallback, so big directories won't hang.
                     if let Some(found) = self.find_directory_by_name(&path, "Tencent Files", 2) {
                         info!("全盘搜索发现QQ目录: {}", found.display());
                         found_paths.push(found);
@@ -432,7 +432,7 @@ impl SocialScanner {
 }
 
 // ============================================================================
-// 单元测试
+// Unit tests
 // ============================================================================
 
 #[cfg(test)]
@@ -442,8 +442,8 @@ mod tests {
 
     static FIXTURE_SEQUENCE: AtomicUsize = AtomicUsize::new(0);
 
-    /// 默认路径（Documents\Tencent Files）下只装新版 QQ 的机器：
-    /// 账号目录里除了 nt_qq 什么都没有，整条链路必须能把 Pic 挖出来。
+    /// A machine with only new QQ installed under the default path (Documents\Tencent Files):
+    /// the account directory has nothing but nt_qq; the whole chain must be able to dig out Pic.
     #[test]
     fn scans_account_holding_only_ntqq_data() {
         let root = std::env::temp_dir().join(format!(
@@ -458,7 +458,7 @@ mod tests {
 
         let scanner = SocialScanner::new();
         let mut paths = Vec::new();
-        // detect_qq_paths 对 Tencent Files 下每个账号调的就是这个函数
+        // detect_qq_paths calls this function for each account under Tencent Files
         scanner.scan_qq_account_directory(&account, false, &mut paths);
 
         let found = |suffix: &str| paths.iter().any(|p| p.path.ends_with(suffix));
@@ -468,9 +468,9 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// 新版 QQ 装在默认路径（Documents\Tencent Files）或自定义 data 目录时，
-    /// 账号目录下只有 nt_qq，没有 Msg / Image 这些老标记。
-    /// 旧特征会把这类目录判成"不是账号"，整棵 `<账号>\nt_qq\nt_data\Pic` 被跳过。
+    /// When new QQ is installed in the default path (Documents\Tencent Files) or a custom data directory,
+    /// the account directory has only nt_qq, without the old markers Msg / Image.
+    /// The old characteristics would judge such a directory as "not an account", skipping the whole `<account>\nt_qq\nt_data\Pic`.
     #[test]
     fn recognizes_account_that_only_contains_nt_qq() {
         let root = std::env::temp_dir().join(format!(
@@ -490,9 +490,9 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// Issue #87 的守卫：盘符根下的系统目录必须跳过，其余目录不能跳过。
-    /// 用户的自建目录（`D:\QQ`、`D:\weixin`）就在"其余"里 ——
-    /// 一旦这里放宽成"根目录一律不下钻"，#87 立刻重现。
+    /// Guard for Issue #87: system directories at the drive root must be skipped, all other directories must not be skipped.
+    /// The user's self-created directories (`D:\QQ`, `D:\weixin`) are in "all others" —
+    /// if this is relaxed to "never drill into the root directory", #87 immediately reappears.
     #[test]
     fn skips_only_system_directories_at_drive_root() {
         for system in [
@@ -536,12 +536,12 @@ mod tests {
     fn recognizes_qq_install_directory() {
         let root = fixture("install-shape");
 
-        // 目录名含 QQ：直接认定
+        // Directory name contains QQ: recognize directly
         let named = root.join("QQ");
         std::fs::create_dir_all(&named).unwrap();
         assert!(SocialScanner::looks_like_qq_install_dir(&named));
 
-        // 目录名不含 QQ（自定义命名）：靠可执行文件认定
+        // Directory name doesn't contain QQ (custom naming): recognize via executables
         let custom = root.join("install");
         std::fs::create_dir_all(&custom).unwrap();
         assert!(!SocialScanner::looks_like_qq_install_dir(&custom));
@@ -555,17 +555,17 @@ mod tests {
     fn recognizes_qq_data_root_by_account_directories() {
         let root = fixture("data-shape");
 
-        // 含数字账号目录（老架构）
+        // Contains a numeric account directory (old architecture)
         let legacy = root.join("legacy");
         std::fs::create_dir_all(legacy.join("1378813463/Image")).unwrap();
         assert!(SocialScanner::looks_like_qq_data_root(&legacy));
 
-        // 含 nt_qq（新架构）
+        // Contains nt_qq (new architecture)
         let nt = root.join("nt");
         std::fs::create_dir_all(nt.join("nt_qq")).unwrap();
         assert!(SocialScanner::looks_like_qq_data_root(&nt));
 
-        // 普通目录不应被当成 QQ 数据根，避免误扫无关的 data 目录
+        // A plain directory shouldn't be treated as a QQ data root, to avoid scanning unrelated data directories by mistake
         let unrelated = root.join("unrelated");
         std::fs::create_dir_all(unrelated.join("notes")).unwrap();
         assert!(!SocialScanner::looks_like_qq_data_root(&unrelated));
@@ -580,7 +580,7 @@ mod tests {
         std::fs::create_dir_all(account.join("Image")).unwrap();
         std::fs::create_dir_all(account.join("FileRecv")).unwrap();
         std::fs::create_dir_all(account.join("Msg2")).unwrap();
-        // 老账号目录里嵌套的 nt_qq 也要解析
+        // Nested nt_qq inside old account directories must also be parsed
         std::fs::create_dir_all(account.join("nt_qq/123/nt_data/Pic")).unwrap();
 
         let scanner = SocialScanner::new();

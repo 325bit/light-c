@@ -1,8 +1,8 @@
 // ============================================================================
-// 类型定义 - 与Rust后端数据结构对应
+// Type definitions - correspond to Rust backend data structures
 // ============================================================================
 
-/** 垃圾文件分类 */
+/** Junk file categories */
 export type JunkCategory =
   | 'WindowsTemp'
   | 'SystemCache'
@@ -22,61 +22,61 @@ export type JunkCategory =
   | 'ClipboardCache'
   | 'ShaderCache';
 
-/** 单个文件信息 */
+/** Info for a single file */
 export interface FileInfo {
-  /** 文件完整路径 */
+  /** Full file path */
   path: string;
-  /** 文件名 */
+  /** File name */
   name: string;
-  /** 文件大小（字节） */
+  /** File size (bytes) */
   size: number;
-  /** 文件被删除前的原始路径（仅回收站条目有值） */
+  /** Original path before the file was deleted (only recycle bin entries have a value) */
   original_path?: string | null;
-  /** 最后修改时间（Unix时间戳） */
+  /** Last modification time (Unix timestamp) */
   modified_time: number;
-  /** 是否为目录 */
+  /** Whether it is a directory */
   is_dir: boolean;
-  /** 所属分类 */
+  /** Category it belongs to */
   category: JunkCategory;
 }
 
-/** 分类扫描结果 */
+/** Category scan result */
 export interface CategoryScanResult {
-  /** 分类 */
+  /** Category */
   category: JunkCategory;
-  /** 分类显示名称 */
+  /** Category display name */
   display_name: string;
-  /** 分类描述 */
+  /** Category description */
   description: string;
-  /** 风险等级 */
+  /** Risk level */
   risk_level: number;
-  /** 是否由系统托管：为 true 时不提供直接删除，只引导用户使用系统磁盘清理 */
+  /** Whether managed by the system: when true, no direct deletion is offered; the user is guided to use system Disk Cleanup */
   system_managed: boolean;
-  /** 该分类下的所有文件 */
+  /** All files in this category */
   files: FileInfo[];
-  /** 总大小（字节） */
+  /** Total size (bytes) */
   total_size: number;
-  /** 文件数量 */
+  /** Number of files */
   file_count: number;
-  /** 深度扫描是否还有未加载的文件 */
+  /** Whether the deep scan still has unloaded files */
   has_more?: boolean;
 }
 
-/** 完整扫描结果 */
+/** Full scan result */
 export interface ScanResult {
-  /** 各分类的扫描结果 */
+  /** Scan results for each category */
   categories: CategoryScanResult[];
-  /** 总大小（字节） */
+  /** Total size (bytes) */
   total_size: number;
-  /** 总文件数量 */
+  /** Total number of files */
   total_file_count: number;
-  /** 扫描耗时（毫秒） */
+  /** Scan duration (milliseconds) */
   scan_duration_ms: number;
-  /** 扫描时间戳 */
+  /** Scan timestamp */
   scan_timestamp: number;
 }
 
-/** 深度垃圾扫描的分区摘要。 */
+/** Partition summary of a deep junk scan. */
 export interface DeepJunkDriveSummary {
   drive_letter: string;
   file_system: string;
@@ -84,30 +84,30 @@ export interface DeepJunkDriveSummary {
   matched_file_count: number;
   matched_size: number;
   warning?: string | null;
-  /** 各阶段耗时，用来定位一次扫描慢在哪一段 */
+  /** Duration of each stage, used to locate which part of a scan is slow */
   stage_durations?: { stage: string; duration_ms: number }[];
-  /** 本盘总耗时 */
+  /** Total duration for this drive */
   total_duration_ms?: number;
-  /** $MFT 的 data run 个数，段数越多说明表越碎 */
+  /** Number of data runs in $MFT; more segments mean a more fragmented table */
   mft_fragments?: number;
-  /** 读 $MFT 等磁盘的时间 */
+  /** Time waiting on disk while reading $MFT */
   mft_io_ms?: number;
-  /** 解析 $MFT 记录的时间 */
+  /** Time spent parsing $MFT records */
   mft_parse_ms?: number;
 }
 
-/** 深度垃圾扫描结果，分类文件结构与普通扫描保持一致。 */
+/** Deep junk scan result; the category file structure stays consistent with a normal scan. */
 export interface DeepJunkScanResult extends ScanResult {
   scan_mode: 'deep';
   scan_id: string;
   drives: DeepJunkDriveSummary[];
-  /** 各盘之外的开销：发现分区 / 回收站 / 并行等待 / 汇总 */
+  /** Overhead outside the drives: partition discovery / recycle bin / parallel waits / aggregation */
   outer_stages?: { stage: string; duration_ms: number }[];
-  /** 进度上报累计等待（多线程求和） */
+  /** Cumulative wait for progress reporting (summed across threads) */
   emit_wait_ms?: number;
 }
 
-/** 深度垃圾扫描阶段进度。 */
+/** Deep junk scan stage progress. */
 export interface DeepJunkScanProgress {
   stage: string;
   drive_letter: string;
@@ -117,119 +117,119 @@ export interface DeepJunkScanProgress {
   elapsed_ms: number;
 }
 
-/** 垃圾清理删除阶段的批量进度事件。 */
+/** Batch progress event for the junk cleanup deletion phase. */
 export interface EnhancedDeleteProgress {
-  /** 当前阶段：准备中或清理中。核验由前端在命令完成后单独展示。 */
+  /** Current phase: preparing or cleaning. Verification is shown separately by the frontend after the command completes. */
   phase: 'preparing' | 'cleaning';
-  /** 已处理的文件数量。 */
+  /** Number of files processed. */
   processed_count: number;
-  /** 去重后的待处理文件总数。 */
+  /** Total number of deduplicated files to process. */
   total_count: number;
-  /** 已成功删除的文件数量。 */
+  /** Number of files successfully deleted. */
   success_count: number;
-  /** 已失败的文件数量。 */
+  /** Number of files that failed. */
   failed_count: number;
-  /** 已标记为重启删除的文件数量。 */
+  /** Number of files marked for deletion on reboot. */
   reboot_pending_count: number;
-  /** 已确认释放的物理空间。 */
+  /** Physical space confirmed freed. */
   freed_physical_size: number;
-  /** 后端删除耗时（毫秒）。 */
+  /** Backend deletion duration (milliseconds). */
   elapsed_ms: number;
 }
 
-/** 删除结果 */
+/** Deletion result */
 export interface DeleteResult {
-  /** 成功删除的文件数 */
+  /** Number of files successfully deleted */
   success_count: number;
-  /** 删除失败的文件数 */
+  /** Number of files that failed to delete */
   failed_count: number;
-  /** 标记为重启后删除的文件数 */
+  /** Number of files marked for deletion on reboot */
   reboot_pending_count: number;
-  /** 释放的空间大小（字节） */
+  /** Size of space freed (bytes) */
   freed_size: number;
-  /** 是否需要重启完成清理 */
+  /** Whether a reboot is needed to complete cleanup */
   needs_reboot: boolean;
-  /** 失败的文件列表及原因 */
+  /** List of failed files and reasons */
   failed_files: DeleteError[];
 }
 
-/** 删除错误信息 */
+/** Deletion error info */
 export interface DeleteError {
-  /** 文件路径 */
+  /** File path */
   path: string;
-  /** 错误原因 */
+  /** Error reason */
   reason: string;
 }
 
-/** 磁盘信息 */
+/** Disk info */
 export interface DiskInfo {
-  /** 磁盘总容量（字节） */
+  /** Total disk capacity (bytes) */
   total_space: number;
-  /** 已用空间（字节） */
+  /** Used space (bytes) */
   used_space: number;
-  /** 可用空间（字节） */
+  /** Free space (bytes) */
   free_space: number;
-  /** 使用百分比 */
+  /** Usage percentage */
   usage_percent: number;
-  /** 磁盘盘符 */
+  /** Drive letter */
   drive_letter: string;
 }
 
-/** 分类信息 */
+/** Category info */
 export interface CategoryInfo {
-  /** 分类名称 */
+  /** Category name */
   name: string;
-  /** 分类描述 */
+  /** Category description */
   description: string;
-  /** 风险等级 */
+  /** Risk level */
   risk_level: number;
 }
 
-/** 扫描请求参数 */
+/** Scan request parameters */
 export interface ScanRequest {
-  /** 要扫描的分类列表 */
+  /** List of categories to scan */
   categories?: string[];
 }
 
-/** 删除请求参数 */
+/** Delete request parameters */
 export interface DeleteRequest {
-  /** 要删除的文件路径列表 */
+  /** List of file paths to delete */
   paths: string[];
 }
 
-/** 大文件扫描结果条目 */
+/** Big file scan result entry */
 export interface LargeFileEntry {
-  /** 文件路径 */
+  /** File path */
   path: string;
-  /** 文件大小（字节） */
+  /** File size (bytes) */
   size: number;
-  /** 最后修改时间（Unix时间戳，秒） */
+  /** Last modification time (Unix timestamp, seconds) */
   modified: number;
-  /** 风险等级 (1-5)，由后端路径规则计算 */
+  /** Risk level (1-5), calculated by backend path rules */
   risk_level: number;
-  /** 来源标签（如"微信文件"、"虚拟机磁盘"、"系统临时文件"） */
+  /** Source label (e.g. "WeChat files", "virtual machine disk", "system temp files") */
   source_label: string;
 }
 
-/** 大文件扫描进度事件负载 */
+/** Big file scan progress event payload */
 export interface LargeFileScanProgress {
-  /** 当前正在扫描的文件路径 */
+  /** File path currently being scanned */
   current_path: string;
-  /** 已扫描的文件数 */
+  /** Number of files scanned */
   scanned_count: number;
-  /** 当前 Top N 已收集的文件数 */
+  /** Number of Top N files collected so far */
   found_count: number;
-  /** 扫描引擎: "mft" | "walkdir" */
+  /** Scan engine: "mft" | "walkdir" */
   backend: string;
-  /** MFT 扫描阶段，用于定位耗时瓶颈 */
+  /** MFT scan stage, used to locate timing bottlenecks */
   stage?: string;
-  /** 后端阶段说明 */
+  /** Backend stage description */
   message?: string;
-  /** 后端已耗时（毫秒） */
+  /** Time elapsed on the backend (milliseconds) */
   elapsed_ms?: number;
-  /** 当前阶段的关键数字（分段/读盘/解析、记录数、候选数…），用于定位瓶颈 */
+  /** Key numbers for the current stage (segments/disk read/parsing, record count, candidate count…), used to locate bottlenecks */
   detail?: string;
 }
 
-/** 应用状态 */
+/** Application state */
 export type AppStatus = 'idle' | 'scanning' | 'deleting';

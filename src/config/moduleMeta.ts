@@ -1,6 +1,6 @@
 // ============================================================================
-// 功能模块元信息
-// 这里只放纯配置，避免设置状态依赖具体模块组件造成循环引用。
+// Feature module metadata
+// Only pure config goes here, avoiding settings state depending on concrete module components and causing circular references.
 // ============================================================================
 
 import {
@@ -37,7 +37,7 @@ export type AppModuleId =
   | 'shell-icons';
 
 export interface AppModuleMeta {
-  /** 模块在页面和导航里的稳定 ID，必须和 data-module-id 保持一致。 */
+  /** The module's stable ID in pages and navigation, must match data-module-id. */
   id: AppModuleId;
   label: string;
   icon: ComponentType<{ className?: string }>;
@@ -47,10 +47,10 @@ export const APP_MODULE_META: AppModuleMeta[] = [
   { id: 'junk-clean', label: 'junkClean', icon: Trash2 },
   { id: 'big-files', label: 'bigFiles', icon: FileBox },
   { id: 'social-clean', label: 'socialClean', icon: MessageCircle },
-  // AI 工具清理和社交专清同属「清理」组：都是按工具聚合、可勾选删除的形态。
+  // AI tool cleanup and social cleanup both belong to the "cleanup" group: both aggregate by tool and allow checkable deletion.
   { id: 'ai-tool-cleanup', label: 'aiToolCleanup', icon: Bot },
-  // 开发空间：工具链缓存 + 多版本残留。和 AI 工具清理同属「清理」组，
-  // 差别是它盯的是编译器/包管理器这类开发工具链，而不是 AI 客户端。
+  // Dev space: toolchain caches + multi-version leftovers. Also in the "cleanup" group with AI tool cleanup,
+  // the difference is it targets developer toolchains like compilers/package managers, rather than AI clients.
   { id: 'dev-cache', label: 'devCache', icon: Package },
   { id: 'system-slim', label: 'systemSlim', icon: Layers },
   { id: 'driver-cleanup', label: 'driverCleanup', icon: Cpu },
@@ -60,7 +60,7 @@ export const APP_MODULE_META: AppModuleMeta[] = [
   { id: 'hotspot', label: 'hotspot', icon: Flame },
   { id: 'disk-growth', label: 'diskGrowth', icon: HardDrive },
   { id: 'shell-icons', label: 'shellIcons', icon: HardDriveDownload },
-  // AI 模型空间覆盖模型、LoRA、Embedding 和缓存，用“空间”强调这是占用分析而不是自动清理。
+  // AI model space covers models, LoRAs, embeddings and caches; "space" emphasizes this is usage analysis, not automatic cleanup.
   { id: 'ai-models', label: 'aiModels', icon: BrainCircuit },
 ];
 

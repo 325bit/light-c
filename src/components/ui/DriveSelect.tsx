@@ -17,12 +17,12 @@ export function useLocalDrives() {
   const [drives, setDrives] = useState<LocalDriveInfo[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
-  /** 组件卸载后不再 setState，避免刷新请求回来时报警告。 */
+  /** Don't setState after unmount, to avoid warnings when a refresh request comes back. */
   const mountedRef = useRef(true);
 
   /**
-   * 读取磁盘列表（含各盘剩余空间）。
-   * 返回是否成功 —— 调用方要用它决定弹"已更新"还是"更新失败"。
+   * Reads the disk list (including each drive's free space).
+   * Returns whether it succeeded — the caller uses it to decide whether to toast "Updated" or "Update failed".
    */
   const loadDrives = useCallback(async (): Promise<boolean> => {
     setLoading(true);
@@ -42,10 +42,10 @@ export function useLocalDrives() {
   }, []);
 
   useEffect(() => {
-    // ⚠️「置 true」必须和「置 false」写在同一个 effect 里。
-    // 之前只在 cleanup 里置 false，React 严格模式下 effect 会 mount → unmount → mount，
-    // 第二次挂载时 mountedRef 已经是 false，loadDrives 一进门就提前返回，
-    // setLoading(false) 永远执行不到 —— 表现就是顶栏一直 loading、控件 disabled 点不动。
+    // ⚠️ "Setting true" must be in the same effect as "setting false".
+    // Previously false was set only in cleanup; in React Strict Mode the effect does mount → unmount → mount,
+    // and on the second mount mountedRef was already false, so loadDrives returned early on entry,
+    // and setLoading(false) was never reached — the symptom was the top bar loading forever and controls stuck disabled.
     mountedRef.current = true;
     void loadDrives();
     return () => {
@@ -76,12 +76,12 @@ export function driveOptionTitle(drive: LocalDriveInfo): string {
 }
 
 /**
- * 盘符下拉项的短标签。
- * ⚠️ 必须 export 给顶栏复用 —— 之前顶栏自己拼了一份 `${letter} ${volume}`，
- * 少了中间的 ` · `，同一个下拉在设置页和顶栏里长得不一样。
+ * Short label for the drive dropdown item.
+ * ⚠️ Must be exported for the top bar to reuse — previously the top bar built its own `${letter} ${volume}`,
+ * missing the ` · ` in the middle, so the same dropdown looked different in the settings page and the top bar.
  */
 export function driveOptionLabel(drive: LocalDriveInfo): string {
-  // 下拉触发器空间有限，只显示盘符和卷标；容量、文件系统等完整信息放进 title。
+  // The dropdown trigger has limited space, so show only the drive letter and volume label; put capacity, file system, and full info in title.
   return drive.volume_name ? `${drive.drive_letter} · ${drive.volume_name}` : drive.drive_letter;
 }
 
@@ -98,7 +98,7 @@ export function DriveSelect({
   drives,
   onChange,
   disabled = false,
-  // 统一盘符选择器宽度，避免卡片模式下不同模块标题区域出现视觉跳变。
+  // Unify the drive-selector width to avoid visual jumps in the title areas of different modules in card mode.
   widthClass = 'w-28',
 }: DriveSelectProps) {
   const options = useMemo<SelectOption[]>(

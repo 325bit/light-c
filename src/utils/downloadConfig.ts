@@ -1,6 +1,6 @@
 // ============================================================================
-// 官方下载渠道配置
-// 从 GitHub Release 的 download.json 动态读取网盘等渠道，避免把第三方下载链接固化进前端组件。
+// Official download channel config
+// Dynamically read channels like cloud drives from GitHub Release's download.json, avoiding hard-coding third-party download links into frontend components.
 // ============================================================================
 
 import { LIGHTC_DEFAULT_DOWNLOAD_CONFIG } from '../config/officialLinks';
@@ -16,7 +16,7 @@ const DOWNLOAD_CONFIG_URL = 'https://github.com/Chunyu33/light-c/releases/latest
 
 const DEFAULT_DOWNLOAD_CONFIG: OfficialDownloadConfig = {
   ...LIGHTC_DEFAULT_DOWNLOAD_CONFIG,
-  // 该对象的字段由独立官方链接常量集中维护，避免设置页再次硬编码。
+  // This object's fields are maintained centrally by separate official-link constants, avoiding the settings page hard-coding them again.
   githubReleasesUrl: LIGHTC_DEFAULT_DOWNLOAD_CONFIG.githubReleasesUrl ?? 'https://github.com/Chunyu33/light-c/releases',
 };
 
@@ -34,7 +34,7 @@ function mergeDownloadConfig(remoteConfig: unknown): OfficialDownloadConfig {
   const config = remoteConfig as Partial<Record<keyof OfficialDownloadConfig, unknown>>;
 
   return {
-    // 远端字段必须是 https，避免被异常 JSON 注入到非官方或本地协议。
+    // Remote fields must be https, preventing abnormal JSON from injecting non-official or local protocols.
     githubReleasesUrl: isSafeHttpsUrl(config.githubReleasesUrl)
       ? config.githubReleasesUrl
       : DEFAULT_DOWNLOAD_CONFIG.githubReleasesUrl,
@@ -44,7 +44,7 @@ function mergeDownloadConfig(remoteConfig: unknown): OfficialDownloadConfig {
     douyinUrl: isSafeHttpsUrl(config.douyinUrl)
       ? config.douyinUrl
       : DEFAULT_DOWNLOAD_CONFIG.douyinUrl,
-    // 远端字段缺失时必须回退到作者网盘，否则设置页会因为条件渲染而完全隐藏入口。
+    // When a remote field is missing, fall back to the author's cloud drive, otherwise the settings page would hide the entry entirely due to conditional rendering.
     netDiskUrl: isSafeHttpsUrl(config.netDiskUrl)
       ? config.netDiskUrl
       : DEFAULT_DOWNLOAD_CONFIG.netDiskUrl,

@@ -1,10 +1,10 @@
-//! 扫描与测量。
+//! Scanning and measurement.
 //!
-//! 和 LightC 原有的 `ai_tool_cleaner` 不同：那里是在工具根目录下**找**白名单子目录，
-//! 这里每一个目标就是一个确定目录，直接量体积即可。
+//! Unlike LightC's existing `ai_tool_cleaner`, which **finds** whitelist subdirectories under a tool root,
+//! here each target is a definite directory and we just measure its size directly.
 //!
-//! 并行用 rayon 逐层 BFS：一层目录一次 `par_iter` 摊到所有核，收完再进下一层。
-//! 不用「递归 + par_iter」，那样会在深层目录炸出指数级任务。
+//! Parallel per-level BFS with rayon: one directory level is spread across all cores in one `par_iter`, then we move to the next level.
+//! Do not use "recursion + par_iter", which would blow up into exponentially many tasks in deep directories.
 
 use rayon::prelude::*;
 use std::path::{Path, PathBuf};
@@ -25,10 +25,10 @@ struct LevelPart {
     dirs: Vec<PathBuf>,
 }
 
-/// 给绝对路径加 `\\?\` 前缀，绕开 MAX_PATH。
+/// Add a `\\?\` prefix to an absolute path to bypass MAX_PATH.
 ///
-/// 同时把正斜杠归一成反斜杠：Win32 的扩展路径 `\\?\` **不认** `C:/Windows`，
-/// 而调用方（Git Bash、部分 shell）会把路径悄悄转成正斜杠。
+/// Also normalize forward slashes to backslashes: Win32 extended paths `\\?\` **do not accept** `C:/Windows`,
+/// while callers (Git Bash, some shells) silently convert paths to forward slashes.
 pub fn long_path(path: &Path) -> PathBuf {
     let text = path.to_string_lossy().replace('/', "\\");
     if text.starts_with(r"\\?\") {
@@ -44,7 +44,7 @@ pub fn long_path(path: &Path) -> PathBuf {
     }
 }
 
-/// 展示用路径：去掉 `\\?\` 前缀，正斜杠归一。
+/// Display path: strip the `\\?\` prefix and normalize forward slashes.
 pub fn display_path(path: &Path) -> String {
     let text = path.to_string_lossy().replace('/', "\\");
     if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
@@ -61,14 +61,14 @@ fn read_level(dir: &Path) -> LevelPart {
     let reader = match std::fs::read_dir(long_path(dir)) {
         Ok(reader) => reader,
         Err(_) => {
-            // 权限不足或目录被占用：跳过这一层，不让整次扫描失败
+            // Insufficient permissions or directory in use: skip this level rather than failing the whole scan
             part.skipped += 1;
             return part;
         }
     };
     for entry in reader.filter_map(|item| item.ok()) {
         match entry.file_type() {
-            // 符号链接与 junction 的 is_dir() 为 false，天然不会跟进到别的盘
+            // Symlinks and junctions have is_dir() == false, so they are naturally not followed onto other drives
             Ok(kind) if kind.is_dir() => part.dirs.push(entry.path()),
             Ok(kind) if kind.is_file() => match entry.metadata() {
                 Ok(meta) => {
@@ -83,7 +83,7 @@ fn read_level(dir: &Path) -> LevelPart {
     part
 }
 
-/// 逐层并行统计目录体积，返回 (字节, 文件数, 跳过数)。
+/// Measure directory size level by level in parallel; return (bytes, file count, skipped count).
 pub fn measure(root: &Path) -> (u64, usize, usize) {
     let mut bytes = 0u64;
     let mut files = 0usize;
@@ -104,12 +104,12 @@ pub fn measure(root: &Path) -> (u64, usize, usize) {
     (bytes, files, skipped)
 }
 
-/// 完整扫描：工具链缓存 + 多版本残留。
+/// Full scan: toolchain caches + multi-version leftovers.
 pub fn scan() -> DevCacheScanResult {
     let started = Instant::now();
     let env = Env::detect();
 
-    // 目标之间互不依赖，并行量体积；最慢的那个决定总耗时
+    // Targets are independent of each other; measure in parallel and the slowest one determines total time
     let specs = targets::targets(&env);
     let measured: Vec<(u64, usize, usize)> = specs.par_iter().map(|spec| measure(&spec.path)).collect();
 
@@ -129,20 +129,20 @@ pub fn scan() -> DevCacheScanResult {
                 risk: spec.risk,
                 note: spec.note.to_string(),
                 exists,
-                // 搬迁过的目录（junction / symlink）要标出真实落点：
-                // 否则 `.workbuddy` 明明在 D 盘，界面却说是 `C:\Users\...\.workbuddy`
+                // Relocated directories (junction / symlink) must be labeled with their real location:
+                // otherwise `.workbuddy` is clearly on drive D but the UI says `C:\Users\...\.workbuddy`
                 link: crate::scanner::reparse::analyze(&spec.path),
             }
         })
         .collect();
 
-    // 目录不存在就整条不展示：那种 0 B 的行只是"这个工具没装"，
-    // 摆在列表里既不能勾也占地方，反而让人以为扫描漏了东西。
-    // （只读项也一样 —— 只有在它真的存在时，"这里有个东西但不该动"才成立）
+    // If a directory does not exist, do not show the row at all: a 0 B row just means "that tool is not installed",
+    // and sitting in the list it can neither be checked nor serves a purpose, only making users think the scan missed something.
+    // (Read-only entries are the same — "there is something here but it should not be touched" only holds when it really exists)
     entries.retain(|entry| entry.exists);
 
     let mut groups = build_groups(&specs, entries);
-    // 组内、组间都按体积倒序：第一眼看到的就是最能省的那块
+    // Sort by size descending both within and across groups: the first thing seen is the block that saves the most
     for group in &mut groups {
         group.entries.sort_by(|a, b| b.size.cmp(&a.size));
     }
@@ -158,8 +158,8 @@ pub fn scan() -> DevCacheScanResult {
         .sum();
 
     DevCacheScanResult {
-        // 总计要**含**多版本目录：界面上"总计占用"和两个页签的体积之和必须对得上，
-        // 否则用户会以为版本那块没被算进去（或者被重复算了）
+        // The total must **include** multi-version directories: the UI's "total usage" must match the sum of the two tabs' sizes,
+        // otherwise users would think the version block was left out (or counted twice)
         total_size: groups.iter().map(|g| g.total_size).sum::<u64>() + version_total_size,
         total_files: groups.iter().map(|g| g.file_count).sum::<usize>() + version_total_files,
         safe_size: groups
@@ -176,7 +176,7 @@ pub fn scan() -> DevCacheScanResult {
     }
 }
 
-/// 按 `spec.group` 归类；分组顺序沿用 targets.rs 里的出现顺序，避免每次刷新顺序乱跳。
+/// Group by `spec.group`; group order follows the appearance order in targets.rs to avoid jumping around on each refresh.
 fn build_groups(specs: &[targets::TargetSpec], entries: Vec<DevCacheEntry>) -> Vec<DevCacheGroup> {
     const GROUP_NAMES: &[(&str, &str)] = &[
         ("pkg", "包管理器缓存"),
@@ -225,7 +225,7 @@ fn build_groups(specs: &[targets::TargetSpec], entries: Vec<DevCacheEntry>) -> V
         .collect()
 }
 
-/// 扫描多版本目录。父目录本身永远不删，删除粒度只到版本子目录。
+/// Scan version directories. The parent directory itself is never deleted; deletion only goes down to version subdirectories.
 fn scan_versions(env: &Env) -> Vec<VersionGroup> {
     let specs = targets::version_specs(env);
     specs
@@ -234,10 +234,10 @@ fn scan_versions(env: &Env) -> Vec<VersionGroup> {
         .collect()
 }
 
-/// 列出版本根目录下的「版本号子目录」，按版本号降序（当前版本通常排在最前）。
+/// List "version-number subdirectories" under the version root, descending by version number (current version is usually first).
 ///
-/// 扫描和删除**共用这一份**：之前两边各写了一套，结果同一个"目录名 vs 解析后版本号"
-/// 的比对 bug 在两个地方各犯了一次，改一处漏一处。
+/// Scanning and deletion **share this one implementation**: previously each side wrote its own, so the same bug comparing
+/// "directory name vs parsed version number" was made twice, fixing one and missing the other.
 pub(super) fn list_versions(spec: &VersionSpec) -> Vec<(String, PathBuf)> {
     let Ok(reader) = std::fs::read_dir(long_path(&spec.base)) else {
         return Vec::new();
@@ -248,8 +248,8 @@ pub(super) fn list_versions(spec: &VersionSpec) -> Vec<(String, PathBuf)> {
             continue;
         }
         let name = entry.file_name().to_string_lossy().to_string();
-        // 只认版本号目录：`Optimized`（硬链接聚合）、`*.deleting`（卸载中的半成品）
-        // 这类非版本目录一律跳过，删了后果不可预期
+        // Only recognize version-number directories: `Optimized` (hard-link aggregation), `*.deleting` (half-uninstalled leftovers)
+        // and other non-version directories are skipped entirely — deleting them has unpredictable consequences
         if parse_version(&name, &spec.pattern).is_none() {
             continue;
         }
@@ -259,10 +259,10 @@ pub(super) fn list_versions(spec: &VersionSpec) -> Vec<(String, PathBuf)> {
     versions
 }
 
-/// 判定当前正在使用的版本目录名，以及**凭什么这么判定**（展示给用户看）。
+/// Determine the name of the currently used version directory, and **the basis for that decision** (shown to users).
 ///
-/// 优先读注册表；读不到才退化成"版本号最高"，并在 reason 里说清楚是推断。
-/// 注册表读到了但目录不存在（刚升级、或刚回滚）也要说明，不能默默当成推断。
+/// Prefer the registry; only fall back to "highest version number" when unreadable, and say clearly in the reason that it is an inference.
+/// If the registry has a value but the directory does not exist (just upgraded or rolled back), say so too — do not silently treat it as an inference.
 pub(super) fn resolve_current(
     spec: &VersionSpec,
     versions: &[(String, PathBuf)],
@@ -277,8 +277,8 @@ pub(super) fn resolve_current(
         return (fallback, "未读到注册表，按版本号最高推断".to_string());
     };
 
-    // 注册表里记的是纯版本号（`3.6.11`），目录名可能是 `app-3.6.11`，
-    // 所以必须拿**解析后的版本号**去比，直接拿目录名比永远对不上
+    // The registry stores a pure version number (`3.6.11`) while a directory name may be `app-3.6.11`,
+    // so we must compare **parsed version numbers**; comparing raw directory names never matches
     let matched = versions
         .iter()
         .find(|(name, _)| {
@@ -324,7 +324,7 @@ fn scan_one_version_group(spec: &VersionSpec) -> Option<VersionGroup> {
                 size,
                 file_count,
                 is_current,
-                // 判定依据只挂在当前版本那一项上：旧版本没有"为什么不是当前"可讲
+                // Attach the basis only to the current-version item: old versions have no "why it is not current" to explain
                 current_reason: if is_current {
                     current_reason.clone()
                 } else {
@@ -351,13 +351,13 @@ fn scan_one_version_group(spec: &VersionSpec) -> Option<VersionGroup> {
     })
 }
 
-/// 目录名 → 版本号字符串。解析不出来返回 None。
+/// Directory name → version string. Return None if it cannot be parsed.
 ///
-/// 两种命名形态的段数不一样，所以段数必须按 pattern 分别约束：
-/// - `FourPart`（Edge / WebView / Copilot）：整串就是四段版本号，**不许带前缀** ——
-///   放宽成「几段都行」会让 `157.0.4341` 这种半截目录、甚至 `1.2` 都被当成版本目录；
-/// - `AppPrefix`（GitHub Desktop）：`app-3.6.11` 这种「前缀 + 三段」，**必须带前缀**，
-///   否则同级的 `packages` 之类一旦凑巧长得像版本号就会被误认。
+/// The two naming forms have different segment counts, so segment count must be constrained per pattern:
+/// - `FourPart` (Edge / WebView / Copilot): the whole string is a four-part version number, **no prefix allowed** —
+///   loosening it to "any number of parts" would treat half directories like `157.0.4341`, or even `1.2`, as version directories;
+/// - `AppPrefix` (GitHub Desktop): the "prefix + three parts" form like `app-3.6.11` **must have the prefix**,
+///   otherwise a sibling like `packages` that happens to look like a version number would be misrecognized.
 pub fn parse_version(name: &str, pattern: &VersionPattern) -> Option<String> {
     let candidate = match pattern {
         VersionPattern::FourPart => {
@@ -367,8 +367,8 @@ pub fn parse_version(name: &str, pattern: &VersionPattern) -> Option<String> {
             name
         }
         VersionPattern::AppPrefix => {
-            // Windows 目录名大小写不敏感，`App-3.6.11` 也要认；
-            // 前缀是纯 ASCII，按字节切片不会切到多字节字符中间
+            // Windows directory names are case-insensitive, so `App-3.6.11` must be recognized too;
+            // the prefix is pure ASCII, so slicing by byte will not cut into a multibyte character
             if name.len() < 4 || !name[..4].eq_ignore_ascii_case("app-") {
                 return None;
             }
@@ -383,7 +383,7 @@ pub fn parse_version(name: &str, pattern: &VersionPattern) -> Option<String> {
     Some(candidate.to_string())
 }
 
-/// 按 `.` 切段，全部是纯数字才返回各段，否则返回空 Vec（表示"不是版本号"）。
+/// Split on `.`; return the segments only if all are pure digits, otherwise return an empty Vec (meaning "not a version number").
 fn version_segments(value: &str) -> Vec<&str> {
     let parts: Vec<&str> = value.split('.').collect();
     if parts
@@ -411,24 +411,24 @@ fn compare_version(a: &str, b: &str, pattern: &VersionPattern) -> std::cmp::Orde
     version_tuple(a, pattern).cmp(&version_tuple(b, pattern))
 }
 
-/// 目录名是不是「版本号目录」这种形态。删除校验复用同一套判断，
-/// 保证「扫得出来」和「删得掉」用的是同一个口径。
+/// Whether a directory name has the shape of a "version directory". Deletion validation reuses the same check,
+/// ensuring "scan can find it" and "delete can remove it" use the same rule.
 pub fn has_version_form(name: &str, pattern: &VersionPattern) -> bool {
     parse_version(name, pattern).is_some()
 }
 
-/// 读注册表里的「当前版本号」。
+/// Read the "current version number" from the registry.
 ///
-/// 同一个键可能在 64 位视图、32 位视图（WOW6432Node）或显式写了 `WOW6432Node` 的
-/// 路径下 —— Edge 系就踩过：目录明明存在，却因为只试了一种组合而读不到，
-/// 白白退化成"按版本号最高推断"。这里把几种组合都试一遍，读到算数。
+/// The same key may be under the 64-bit view, the 32-bit view (WOW6432Node), or an explicitly written
+/// path containing `WOW6432Node` — the Edge family has hit this: the directory clearly existed but was unreadable because only one combination was tried,
+/// needlessly degrading to "infer by highest version number". Try all combinations here and accept whichever reads successfully.
 fn probe_current_version(probe: &RegProbe) -> Option<String> {
     let hive = match probe.hive {
         ProbeHive::Hklm => HKEY_LOCAL_MACHINE,
     };
     let base = probe.key.replace("SOFTWARE\\WOW6432Node\\", "SOFTWARE\\");
 
-    // 先按 32 位视图（Edge 的 EdgeUpdate 键通常登记在这里），再试 64 位视图
+    // Try the 32-bit view first (Edge's EdgeUpdate key is usually registered there), then the 64-bit view
     let attempts: [(&str, u32); 3] = [
         (base.as_str(), KEY_WOW64_32KEY),
         (base.as_str(), KEY_WOW64_64KEY),

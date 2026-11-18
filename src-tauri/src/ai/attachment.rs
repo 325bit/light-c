@@ -1,38 +1,38 @@
 // ============================================================================
-// AI 对话里的图片附件：落盘与回读
+// AI chat image attachments: write to disk and read back
 //
-// 存放位置：{AI 数据目录}/attachments/{name}.jpg
+// Storage location: {AI data directory}/attachments/{name}.jpg
 //
-// **为什么不把 base64 写进会话文件**：一张压缩后的截图仍有 200~400KB，
-// base64 还要再大 1/3；会话 jsonl 是逐条追加的文本，塞进去会让文件迅速膨胀，
-// 而且每次读历史都要把它们全部解析出来。改成"图片存文件、记录存文件名"之后：
-//   - 会话文件仍然很小、可读、可 grep；
-//   - 图片能用系统看图工具直接打开（用户想留存也方便）；
-//   - 界面上按需读回来显示缩略图与预览。
+// **Why not write base64 into the session file**: a compressed screenshot is still 200~400KB,
+// and base64 makes it about 1/3 larger; the session jsonl is text appended line by line, so stuffing it in makes the file balloon quickly,
+// and every history read must parse it all. After switching to "images in files, records store filenames":
+//   - the session file stays small, readable, and greppable;
+//   - images can be opened directly with the system image viewer (handy if users want to keep them);
+//   - the UI reads them back on demand to show thumbnails and previews.
 //
-// 文件名是唯一入参，**必须校验**：它会被拼进路径，否则 `..\\` 就能写到目录外。
-// 自己生成的名字天然满足 `[a-z0-9_-]`，回读时也按同一规则卡一遍。
+// The filename is the only input and **must be validated**: it is concatenated into a path, otherwise `..\` could write outside the directory.
+// Names we generate naturally satisfy `[a-z0-9_-]`, and on read-back we enforce the same rule.
 // ============================================================================
 
 use std::fs;
 use std::path::PathBuf;
 
-/// 单张附件的上限（压缩后通常 200~400KB，这里留足余量）。
-/// 超过说明前端没压缩或数据异常，直接拒绝，避免写坏磁盘。
+/// Upper limit for a single attachment (a compressed image is usually 200~400KB; leave ample margin here).
+/// Exceeding it means the frontend did not compress or the data is abnormal; reject directly to avoid corrupting the disk.
 const MAX_ATTACHMENT_BYTES: usize = 8 * 1024 * 1024;
 
 fn attachments_dir() -> PathBuf {
     super::config::resolve_data_dir().join("attachments")
 }
 
-/// 文件名只允许小写字母、数字、连字符与下划线 —— 生成时满足，回读时也要卡住。
+/// Filenames may contain only lowercase letters, digits, hyphens, and underscores - satisfied when generated, enforced again on read-back.
 fn is_safe_name(name: &str) -> bool {
     !name.is_empty()
         && name.len() <= 96
         && name
             .chars()
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_' || c == '.')
-        // 单独挡一下 `..`：点号本身允许（扩展名要用），但不能是路径片段
+        // Block `..` separately: dots themselves are allowed (needed for the extension), but not as a path segment
         && !name.contains("..")
 }
 
@@ -43,9 +43,9 @@ fn attachment_path(name: &str) -> Result<PathBuf, String> {
     Ok(attachments_dir().join(name))
 }
 
-/// 保存一张附件，返回可用于回读的文件名。前端把这个名字写进会话记录。
+/// Save one attachment and return a filename usable for read-back. The frontend writes this name into the session record.
 pub fn save_attachment(data_base64: &str, media_type: &str) -> Result<String, String> {
-    // 统一按 jpeg 落盘：前端压缩后就是 jpeg，这里再兜一层，避免奇怪的后缀进文件名
+    // Always persist as jpeg: the frontend compresses to jpeg, and this is a second safeguard to avoid odd extensions in filenames
     let _ = media_type;
     let bytes = base64_decode(data_base64)?;
     if bytes.len() > MAX_ATTACHMENT_BYTES {
@@ -56,7 +56,7 @@ pub fn save_attachment(data_base64: &str, media_type: &str) -> Result<String, St
     fs::create_dir_all(&directory)
         .map_err(|error| format!("创建附件目录失败 {}: {}", directory.display(), error))?;
 
-    // 用时间戳 + 进程内计数避免重名；不引第三方 uuid，够用
+    // Use a timestamp + in-process counter to avoid collisions; no third-party uuid needed, this is enough
     let stamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_millis())
@@ -68,8 +68,8 @@ pub fn save_attachment(data_base64: &str, media_type: &str) -> Result<String, St
     Ok(name)
 }
 
-/// 读回一张附件，返回可直接放进 `<img src>` 的 data URL。
-/// 文件不存在时返回空串（历史里的图可能被清理过，界面按"没有图"处理即可）。
+/// Read back an attachment and return a data URL that can be put directly into `<img src>`.
+/// Returns an empty string if the file does not exist (images in history may have been cleaned; the UI treats it as "no image").
 pub fn read_attachment(name: &str) -> Result<String, String> {
     let path = attachment_path(name)?;
     if !path.is_file() {
@@ -79,7 +79,7 @@ pub fn read_attachment(name: &str) -> Result<String, String> {
     Ok(format!("data:image/jpeg;base64,{}", base64_encode(&bytes)))
 }
 
-// --- 极小的 base64：只为附件服务，不引依赖 ---
+// --- Minimal base64: only for attachments, no dependencies ---
 
 const BASE64_TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
@@ -129,7 +129,7 @@ fn base64_encode(bytes: &[u8]) -> String {
     out
 }
 
-/// 进程内自增序号：同一毫秒内连存两张也不会重名。
+/// In-process incrementing counter: two saves in the same millisecond still get distinct names.
 fn next_sequence() -> u64 {
     use std::sync::atomic::{AtomicU64, Ordering};
     static COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -151,7 +151,7 @@ mod tests {
 
     #[test]
     fn base64_round_trips() {
-        // 长度 1/2/3 的边界都要对（补 = 的位置不同）
+        // Boundaries of length 1/2/3 must all be correct (the position of padding = differs)
         for raw in [b"a".as_slice(), b"ab".as_slice(), b"abc".as_slice(), b"abcd".as_slice()] {
             let encoded = base64_encode(raw);
             assert_eq!(base64_decode(&encoded).unwrap(), raw, "编码 {}", encoded);

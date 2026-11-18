@@ -1,9 +1,9 @@
 // ============================================================================
-// 社交软件路径适配器
+// Social app path adapters
 // ============================================================================
 //
-// 每个适配器只负责发现软件数据目录，实际遍历和分类由 core.rs 统一处理。
-// 这样可以在增强单个软件路径时避免复制扫描、去重和风险分级逻辑。
+// Each adapter only discovers the app's data directory; actual traversal and classification is handled uniformly by core.rs.
+// This avoids duplicating the scan, dedup, and risk-ranking logic when enhancing a single app's paths.
 // ============================================================================
 
 use super::core::{FileCategory, SocialAppPath, SocialScanner};
@@ -11,14 +11,14 @@ use log::info;
 use std::path::{Path, PathBuf};
 
 impl SocialScanner {
-    /// 扫描一个 nt_qq 数据目录（其下按账号分子目录，另有 global 全局目录）。
+    /// Scan one nt_qq data directory (account subdirectories underneath, plus a global directory).
     ///
-    /// 调用方传入的可能是数据根（`...\nt_qq`），也可能是自定义路径直接指向账号目录，
-    /// 这里按"账号目录 / 数据根"两种形态分别处理。
+    /// The caller may pass the data root (`...\nt_qq`) or a custom path pointing directly at an account directory;
+    /// the two forms, "account directory / data root", are handled separately here.
     pub(super) fn collect_ntqq_paths(&self, base: &Path, paths: &mut Vec<SocialAppPath>) {
         if Self::looks_like_ntqq_account(base) {
             self.scan_ntqq_account_directory(base, paths);
-            // 账号目录下还可能再嵌一层 nt_qq（老架构账号目录里常见）
+            // An account directory may itself contain another nt_qq level (common in the old architecture's account directories)
             let nested = base.join("nt_qq");
             if nested.is_dir() {
                 self.scan_ntqq_directory(&nested, paths);
@@ -29,29 +29,29 @@ impl SocialScanner {
         self.scan_ntqq_directory(base, paths);
     }
 
-    /// NTQQ 账号目录特征：直接用 nt_data / nt_db / nt_msg 标记，不再依赖目录名。
+    /// NTQQ account directory signature: marked directly by nt_data / nt_db / nt_msg, no longer relying on the directory name.
     pub(super) fn looks_like_ntqq_account(path: &Path) -> bool {
         ["nt_data", "nt_db", "nt_msg"]
             .iter()
             .any(|name| path.join(name).is_dir())
     }
 
-    /// 扫描 NTQQ 的账号目录结构（nt_qq 下的一个账号子目录）。
+    /// Scan the NTQQ account directory structure (one account subdirectory under nt_qq).
     pub(super) fn scan_ntqq_account_directory(&self, account_dir: &Path, paths: &mut Vec<SocialAppPath>) {
-        // nt_data 目录 - 媒体文件
+        // nt_data directory - media files
         let nt_data = account_dir.join("nt_data");
         if nt_data.is_dir() {
-            // 图片视频 (LOW)
+            // Images and videos (LOW)
             for media_dir in &["Pic", "Video", "Ptt"] {
                 let dir = nt_data.join(media_dir);
                 Self::add_scan_path(paths, "NTQQ", dir, FileCategory::ImageVideo, false);
             }
 
-            // 文件 (MEDIUM)
+            // Files (MEDIUM)
             let file_dir = nt_data.join("File");
             Self::add_scan_path(paths, "NTQQ", file_dir, FileCategory::FileTransfer, false);
 
-            // 表情、头像等业务缓存 (NONE)
+            // Emoji, avatars, and other business caches (NONE)
             self.add_named_subdirectories(
                 &nt_data,
                 &["Emoji", "PokeFace", "Skin", "ntnnModel", "onlineStatus", "msf"],
@@ -61,7 +61,7 @@ impl SocialScanner {
                 paths,
             );
 
-            // 运行日志 (NONE)
+            // Runtime logs (NONE)
             self.add_named_subdirectories(
                 &nt_data,
                 &["Log", "Login", "mmkv", "search"],
@@ -73,20 +73,20 @@ impl SocialScanner {
         }
 
         // --------------------------------------------------------
-        // nt_msg 目录（消息数据库）(CRITICAL)
-        // 包含 .db 文件：
-        //   - nt_msg.db      - 主消息数据库
-        //   - nt_msg.db-wal  - WAL 日志
-        //   - nt_msg.db-shm  - 共享内存
+        // nt_msg directory (message database) (CRITICAL)
+        // Contains .db files:
+        //   - nt_msg.db      - main message database
+        //   - nt_msg.db-wal  - WAL log
+        //   - nt_msg.db-shm  - shared memory
         // --------------------------------------------------------
         let nt_msg = account_dir.join("nt_msg");
         Self::add_scan_path(paths, "NTQQ", nt_msg, FileCategory::ChatDatabase, false);
 
-        // nt_db 目录（用户数据库）(CRITICAL)
+        // nt_db directory (user databases) (CRITICAL)
         let nt_db = account_dir.join("nt_db");
         Self::add_scan_path(paths, "NTQQ", nt_db, FileCategory::ChatDatabase, false);
 
-        // nt_temp 目录（临时数据）(NONE)
+        // nt_temp directory (temporary data) (NONE)
         let nt_temp = account_dir.join("nt_temp");
         Self::add_scan_path(paths, "NTQQ", nt_temp, FileCategory::TempCache, false);
     }
@@ -94,14 +94,14 @@ impl SocialScanner {
     pub(super) fn detect_ntqq_paths(&self) -> Option<Vec<SocialAppPath>> {
         let mut paths = Vec::new();
 
-        // NTQQ 主目录
+        // NTQQ main directory
         let ntqq_base = PathBuf::from(format!("{}\\Tencent\\QQ\\nt_qq", self.local_appdata));
         if ntqq_base.is_dir() {
             info!("发现NTQQ目录: {}", ntqq_base.display());
             self.collect_ntqq_paths(&ntqq_base, &mut paths);
         }
 
-        // 尝试从注册表读取 NTQQ 自定义路径
+        // Try reading the NTQQ custom path from the registry
         if let Some(registry_path) = self.read_ntqq_registry_path() {
             let custom_base = PathBuf::from(&registry_path);
             if custom_base.is_dir() && custom_base != ntqq_base {
@@ -110,8 +110,8 @@ impl SocialScanner {
             }
         }
 
-        // 安装目录推出的 nt_qq：QQ 常把数据放在安装目录或同级目录的自定义位置，
-        // 例如 D:\software\qq\install + D:\software\qq\data\nt_qq
+        // nt_qq inferred from the install directory: QQ often puts data in the install directory or a custom location beside it,
+        // e.g. D:\software\qq\install + D:\software\qq\data\nt_qq
         for candidate in self.ntqq_install_adjacent_paths() {
             if candidate != ntqq_base {
                 info!("发现NTQQ安装目录旁数据目录: {}", candidate.display());
@@ -119,7 +119,7 @@ impl SocialScanner {
             }
         }
 
-        // NTQQ 全局缓存
+        // NTQQ global cache
         let qq_root = PathBuf::from(&self.local_appdata).join("Tencent\\QQ");
         self.add_named_subdirectories(
             &qq_root,
@@ -137,7 +137,7 @@ impl SocialScanner {
         }
     }
 
-    /// 扫描 NTQQ 数据根目录：其下是各账号目录，另有 global 全局目录。
+    /// Scan the NTQQ data root: account directories underneath, plus a global directory.
     pub(super) fn scan_ntqq_directory(&self, base: &Path, paths: &mut Vec<SocialAppPath>) {
         let Ok(entries) = std::fs::read_dir(base) else {
             return;
@@ -159,26 +159,26 @@ impl SocialScanner {
                 continue;
             }
 
-            // global 不是账号目录，但里面有 Emoji、表情、临时文件等可清理内容；
-            // 之前整个跳过，导致只装了新版 QQ 的机器扫不出任何 QQ 数据。
+            // global is not an account directory, but it contains Emoji, stickers, temporary files, and other cleanable content;
+            // skipping it entirely before meant machines with only the new QQ could not find any QQ data.
             if dir_name.eq_ignore_ascii_case("global") {
                 info!("  NTQQ全局目录: {}", dir_name);
                 self.scan_ntqq_account_directory(&sub_dir, paths);
                 continue;
             }
 
-            // 只处理账号目录特征明确的子目录，避免把 global 下的杂项目录当成账号
+            // Only process subdirectories with a clear account-directory signature, avoiding treating miscellaneous directories under global as accounts
             if Self::looks_like_ntqq_account(&sub_dir) {
                 info!("  NTQQ用户目录: {}", dir_name);
                 self.scan_ntqq_account_directory(&sub_dir, paths);
                 continue;
             }
 
-            // 子目录里还嵌着 nt_qq：两种常见形态都要认
-            //   ① 数据根本身被当作 base（`<数据根>\nt_qq\...`）
-            //   ② 老架构账号目录里塞了新版数据（`<数据根>\<账号>\nt_qq\nt_data\Pic`）
-            // 这两种目录都没有 nt_data 特征，会被上面的判断漏掉 ——
-            // 用户反馈"默认路径扫不到任何内容"主要就是这一条。
+            // A subdirectory may also contain a nested nt_qq: both common forms must be recognized
+            //   ① The data root itself is used as base (`<data root>\nt_qq\...`)
+            //   ② New-format data placed inside an old-architecture account directory (`<data root>\<account>\nt_qq\nt_data\Pic`)
+            // Neither of these has an nt_data signature and would be missed by the check above -
+            // this is the main reason user reports said "the default path finds nothing".
             let nested = if dir_name.eq_ignore_ascii_case("nt_qq") {
                 Some(sub_dir.clone())
             } else {
@@ -187,17 +187,17 @@ impl SocialScanner {
             };
             if let Some(nested_dir) = nested {
                 info!("  NTQQ嵌套数据: {}", nested_dir.display());
-                // 走 collect 而不是 scan：嵌套目录下可能直接就是 nt_data
+                // Use collect rather than scan: a nested directory may directly contain nt_data
                 self.collect_ntqq_paths(&nested_dir, paths);
             }
         }
     }
 
-    /// 从 QQ 安装目录推断 nt_qq 数据目录位置。
+    /// Infer the nt_qq data directory location from the QQ install directory.
     ///
-    /// 新版 QQ 允许把数据放到自定义位置，注册表不一定记录；
-    /// 但安装目录通常是已知的（注册表 QQNT / QQ 的 Install / InstallPath），
-    /// 数据目录大多就在安装目录或其同级目录下。
+    /// New QQ allows data in a custom location, which may not be recorded in the registry;
+    /// however the install directory is usually known (registry QQNT / QQ Install / InstallPath),
+    /// and the data directory is mostly in or beside the install directory.
     #[cfg(target_os = "windows")]
     pub(super) fn ntqq_install_adjacent_paths(&self) -> Vec<PathBuf> {
         use winreg::enums::*;
@@ -206,7 +206,7 @@ impl SocialScanner {
         let hkcu = RegKey::predef(HKEY_CURRENT_USER);
         let mut bases: Vec<PathBuf> = Vec::new();
 
-        // 收集安装目录候选
+        // Collect install directory candidates
         for key_path in ["Software\\Tencent\\QQNT", "Software\\Tencent\\QQ"] {
             let Ok(key) = hkcu.open_subkey(key_path) else {
                 continue;
@@ -230,8 +230,8 @@ impl SocialScanner {
             }
         }
 
-        // 注册表没有安装信息时（自定义安装目录、绿色版），退回文件系统推断，
-        // 例如 D:\software\qq\install -> D:\software\qq\data\nt_qq
+        // When the registry has no install info (custom install directory, portable build), fall back to filesystem inference,
+        // e.g. D:\software\qq\install -> D:\software\qq\data\nt_qq
         for install_dir in self.find_qq_install_directories() {
             if let Some(parent) = install_dir.parent() {
                 bases.push(parent.to_path_buf());
@@ -239,16 +239,16 @@ impl SocialScanner {
             bases.push(install_dir);
         }
 
-        // 在安装目录及其同级目录中寻找 nt_qq / data\nt_qq
+        // Look for nt_qq / data\nt_qq in the install directory and its siblings
         let mut found = Vec::new();
         for base in bases {
             for relative in ["nt_qq", "data\\nt_qq"] {
                 let candidate = base.join(relative);
                 if candidate.is_dir() && !found.contains(&candidate) {
                     found.push(candidate.clone());
-                    // `data\nt_qq` 命中说明 data 就是 QQ 的数据根，
-                    // 老架构的账号目录（`<账号>\nt_qq\nt_data\...`）挂在它下面，
-                    // 只扫 data\nt_qq 永远够不到那些账号目录，所以把根也纳入。
+                    // A `data\nt_qq` hit means data is QQ's data root,
+                    // and old-architecture account directories (`<account>\nt_qq\nt_data\...`) hang off it;
+                    // scanning only data\nt_qq can never reach those account directories, so include the root too.
                     if relative == "data\\nt_qq" {
                         if let Some(root) = candidate.parent() {
                             let root = root.to_path_buf();
@@ -269,7 +269,7 @@ impl SocialScanner {
         Vec::new()
     }
 
-    /// 从注册表读取 NTQQ 自定义路径
+    /// Read the NTQQ custom path from the registry
     #[cfg(target_os = "windows")]
     pub(super) fn read_ntqq_registry_path(&self) -> Option<String> {
         use winreg::enums::*;
@@ -277,7 +277,7 @@ impl SocialScanner {
 
         let hkcu = RegKey::predef(HKEY_CURRENT_USER);
 
-        // 尝试读取 NTQQ 注册表路径；不同版本写入的值名不一致，逐个尝试
+        // Try reading the NTQQ registry path; different versions write different value names, so try each in turn
         if let Ok(qq_key) = hkcu.open_subkey("Software\\Tencent\\QQNT") {
             for value_name in ["PersonalPath", "DataPath", "PersonalFolder"] {
                 if let Ok(path) = qq_key.get_value::<String, _>(value_name) {
@@ -298,7 +298,7 @@ impl SocialScanner {
 }
 
 // ============================================================================
-// 单元测试
+// Unit tests
 // ============================================================================
 
 #[cfg(test)]
@@ -328,7 +328,7 @@ mod tests {
         std::fs::create_dir_all(account.join("nt_data/Pic")).unwrap();
         assert!(SocialScanner::looks_like_ntqq_account(&account));
 
-        // 只有 global 那种空目录不算账号
+        // Only an empty directory like global does not count as an account
         let global = root.join("global");
         std::fs::create_dir_all(&global).unwrap();
         assert!(!SocialScanner::looks_like_ntqq_account(&global));
@@ -338,15 +338,15 @@ mod tests {
 
     #[test]
     fn scans_ntqq_global_directory() {
-        // 只装新版 QQ 的机器上，nt_qq 下可能只有 global，
-        // 旧实现直接跳过 global，导致这类机器完全扫不出 QQ 缓存。
+        // On a machine with only the new QQ installed, nt_qq may contain only global;
+        // the old implementation skipped global, so such machines found no QQ cache at all.
         let root = fixture("global-scan");
         let global = root.join("global");
         std::fs::create_dir_all(global.join("nt_data/Emoji")).unwrap();
         std::fs::create_dir_all(global.join("nt_data/Log")).unwrap();
         std::fs::create_dir_all(global.join("nt_temp")).unwrap();
         std::fs::create_dir_all(global.join("nt_db")).unwrap();
-        // 账号目录仍要照常解析
+        // Account directories must still be parsed as usual
         std::fs::create_dir_all(root.join("123456789/nt_data/Pic")).unwrap();
 
         let scanner = SocialScanner::new();
@@ -370,13 +370,13 @@ mod tests {
 
     #[test]
     fn scans_nt_qq_nested_inside_legacy_account() {
-        // 实测结构（D:\software\qq\data）：
-        //   <账号>\Image\...                  老架构
-        //   <账号>\nt_qq\nt_data\Pic\...      ← 新版数据写在老账号目录里
-        //   nt_qq\global\nt_data\Emoji\...    新版全局
-        // `nt_qq` 下面**直接是 nt_data**，不是账号目录；
-        // 旧实现把扫描根定在 `data\nt_qq`、账号目录却挂在 `data` 下，
-        // 两边都够不到这棵树 —— 表现就是新版 QQ 只能扫到 global 的少量临时缓存。
+        // Measured structure (D:\software\qq\data):
+        //   <account>\Image\...                  old architecture
+        //   <account>\nt_qq\nt_data\Pic\...      <- new-format data written inside the old account directory
+        //   nt_qq\global\nt_data\Emoji\...    new-format global
+        // Under `nt_qq` there is **directly nt_data**, not an account directory;
+        // the old implementation set the scan root at `data\nt_qq` while account directories hung off `data`,
+        // so neither could reach this tree - the symptom was that new QQ only found a little temporary cache under global.
         let root = fixture("legacy-account-nested");
         let account = root.join("1378813463");
         std::fs::create_dir_all(account.join("Image")).unwrap();
@@ -386,7 +386,7 @@ mod tests {
 
         let scanner = SocialScanner::new();
 
-        // 入口一：数据根被当作 base（安装目录旁推出 data）
+        // Entry 1: the data root is used as base (data inferred beside the install directory)
         let mut from_root = Vec::new();
         scanner.scan_ntqq_directory(&root, &mut from_root);
         let found = |paths: &Vec<SocialAppPath>, suffix: &str, category: FileCategory| {
@@ -405,7 +405,7 @@ mod tests {
             "数据根下 nt_qq/global 应被收录"
         );
 
-        // 入口二：老扫描器把 `<账号>\nt_qq` 直接交给 collect（账号目录里嵌新版数据）
+        // Entry 2: the old scanner passes `<account>\nt_qq` directly to collect (new-format data inside an account directory)
         let mut from_nested = Vec::new();
         scanner.collect_ntqq_paths(&account.join("nt_qq"), &mut from_nested);
         assert!(
@@ -418,7 +418,7 @@ mod tests {
 
     #[test]
     fn collects_paths_when_root_points_at_account() {
-        // 自定义路径可能直接指向账号目录而不是 nt_qq 根目录
+        // A custom path may point directly at an account directory rather than the nt_qq root
         let root = fixture("account-root");
         std::fs::create_dir_all(root.join("nt_data/Pic")).unwrap();
 

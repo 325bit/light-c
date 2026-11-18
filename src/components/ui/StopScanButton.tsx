@@ -1,12 +1,12 @@
 // ============================================================================
-// 扫描中的「停止」按钮
+// The "Stop" button during scanning
 //
-// 位置固定在卡片头部（`ModuleCard` 的 `headerExtra`），和"扫描中…"按钮、开关同一行：
-// 用户想中断扫描时视线本来就在右上角，按钮不该随正文内容滚动、更不该被骨架屏挤走。
+// Fixed position in the card header (`ModuleCard`'s `headerExtra`), on the same row as the "scanning…" button and toggle:
+// when users want to stop a scan their eyes are already at the top-right, the button should not scroll with body content, let alone be pushed away by the skeleton screen.
 //
-// 垃圾清理 / 热点分析 / 磁盘变化分析三处共用，样式只在这里维护一份 ——
-// 之前三个模块各画了一个橙色按钮，颜色和内边距都对不齐。
-// 配色走 `--color-warning`（不是硬编码 amber），深浅主题下都不会糊。
+// Shared by junk cleanup / hotspot analysis / disk change analysis, styles maintained in only one place here —
+// previously each of the three modules drew its own orange button, and colors and padding did not line up.
+// Color goes through `--color-warning` (not hard-coded amber), so it stays clear in both light and dark themes.
 // ============================================================================
 
 import { StopCircle } from 'lucide-react';
@@ -14,7 +14,7 @@ import { useTranslation } from 'react-i18next';
 
 interface StopScanButtonProps {
   onClick: () => void;
-  /** 覆盖默认文案（默认取 `common:stop`） */
+  /** Override the default text (defaults to `common:stop`) */
   label?: string;
 }
 

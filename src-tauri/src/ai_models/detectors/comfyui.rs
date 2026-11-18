@@ -55,10 +55,10 @@ impl ModelDetector for ComfyUiDetector {
             ));
         }
 
-        // 遍历真实存在的盘符，而不是写死 C~F：把 ComfyUI 装在 G 盘及之后的用户会整体漏扫
+        // Iterate over drives that actually exist, instead of hard-coding C~F: users who install ComfyUI on G: or later would be entirely missed
         for drive in available_drive_roots() {
-            // 官方 Windows 便携包解压后是 `ComfyUI_windows_portable\ComfyUI\models`，
-            // 常见整合包的目录名也不统一（Easy-Install 等），因此按盘根浅扫一层找 `ComfyUI*`。
+            // The official Windows portable package extracts to `ComfyUI_windows_portable\ComfyUI\models`,
+            // and common all-in-one bundles have inconsistent directory names (Easy-Install, etc.), so shallow-scan one level at the drive root for `ComfyUI*`.
             for install_root in find_portable_comfyui_roots(&drive) {
                 candidate_roots.push(install_root.join("models"));
                 install_roots.push(install_root);
@@ -74,8 +74,8 @@ impl ModelDetector for ComfyUiDetector {
         }
 
         let mut models = Vec::new();
-        // 来源路径记录"实际扫出模型的那个根目录"，而不是第一个存在的候选目录：
-        // 两者可能不同（例如配置指向 D 盘数据目录），写错会让用户以为另一个目录占了这些空间。
+        // Record the source path as "the root directory where models were actually found", not the first existing candidate:
+        // the two may differ (e.g. config points to a D: data directory), and writing the wrong one makes users think another directory took up this space.
         let resolved_roots = unique_existing_paths(candidate_roots);
         let mut best_root_match: Option<(PathBuf, u64)> = None;
 
@@ -105,7 +105,7 @@ impl ModelDetector for ComfyUiDetector {
     }
 }
 
-/// 枚举本机真实存在的盘符根目录（如 `D:\`）。
+/// Enumerate root directories of drives that actually exist on this machine (e.g. `D:\`).
 #[cfg(target_os = "windows")]
 fn available_drive_roots() -> Vec<PathBuf> {
     (b'C'..=b'Z')
@@ -119,12 +119,12 @@ fn available_drive_roots() -> Vec<PathBuf> {
     vec![PathBuf::from("/")]
 }
 
-/// 在盘根浅扫一层，找 ComfyUI 的安装目录。
+/// Shallow-scan one level at the drive root to find ComfyUI's installation directory.
 ///
-/// 官方 Windows 便携包解压后是 `ComfyUI_windows_portable\ComfyUI\models`，
-/// 整合包的目录名更是五花八门（`ComfyUI-Easy-Install`、`ComfyUI-aki-v1.x` 等），
-/// 但只要名字以 `ComfyUI` 开头，就按「目录下有 models」还是「下级 ComfyUI 有 models」来认。
-/// 只读一层目录，开销与盘根无关。
+/// The official Windows portable package extracts to `ComfyUI_windows_portable\ComfyUI\models`,
+/// and bundle directory names are all over the place (`ComfyUI-Easy-Install`, `ComfyUI-aki-v1.x`, etc.),
+/// but as long as the name starts with `ComfyUI`, recognize it by "directory has models" or "sub-level ComfyUI has models".
+/// Only read one level of directories, so the cost is independent of the drive root.
 fn find_portable_comfyui_roots(drive_root: &Path) -> Vec<PathBuf> {
     let Ok(entries) = fs::read_dir(drive_root) else {
         return Vec::new();
@@ -166,7 +166,7 @@ fn collect_comfyui_models(models_root: &Path) -> Vec<ModelItem> {
             continue;
         }
 
-        // ComfyUI 的子目录本身就是资产类型，放进名称里能降低用户理解成本。
+        // ComfyUI's subdirectories are asset types themselves; putting them in the name reduces the user's comprehension cost.
         models.extend(collect_prefixed_model_files(&model_type_dir, directory_name));
     }
 
@@ -201,7 +201,7 @@ fn read_comfyui_desktop_model_paths(config_dir: &Path) -> Vec<PathBuf> {
     };
 
     let base_path = resolve_yaml_path(config_dir, &base_path_value);
-    // 桌面版 basePath 指向 ComfyUI 工作区，模型仍按标准 models 子目录组织。
+    // In the desktop version basePath points to the ComfyUI workspace, and models are still organized under the standard models subdirectory.
     vec![base_path.join("models")]
 }
 
@@ -335,12 +335,12 @@ mod tests {
         dir
     }
 
-    /// 官方 Windows 便携包的结构：整合包外层目录 + 内层真正的 ComfyUI。
+    /// Structure of the official Windows portable package: outer bundle directory + inner real ComfyUI.
     #[test]
     fn finds_portable_and_integrated_install_roots() {
         let drive = fixture("portable");
 
-        // 官方便携包：ComfyUI_windows_portable\ComfyUI\models
+        // Official portable package: ComfyUI_windows_portable\ComfyUI\models
         let portable = drive.join("ComfyUI_windows_portable");
         std::fs::create_dir_all(portable.join("ComfyUI").join("models").join("checkpoints"))
             .unwrap();
@@ -354,11 +354,11 @@ mod tests {
         )
         .unwrap();
 
-        // 整合包：根目录下直接就是 models
+        // All-in-one bundle: models is directly under the root directory
         let integrated = drive.join("ComfyUI-aki-v1.6");
         std::fs::create_dir_all(integrated.join("models").join("loras")).unwrap();
 
-        // 名字像但不是安装目录（没有 models）的要忽略
+        // Names that look right but are not installation directories (no models) must be ignored
         std::fs::create_dir_all(drive.join("ComfyUI_backup").join("python")).unwrap();
 
         let mut roots: Vec<String> = find_portable_comfyui_roots(&drive)
@@ -369,7 +369,7 @@ mod tests {
 
         assert_eq!(roots, vec!["ComfyUI", "ComfyUI-aki-v1.6"]);
 
-        // 便携包路径下必须能真的扫出模型，否则只是找对了目录却读不到东西
+        // A portable-package path must actually yield scanned models, otherwise finding the right directory but reading nothing is useless
         let models = collect_comfyui_models(&portable.join("ComfyUI").join("models"));
         assert_eq!(models.len(), 1);
         assert_eq!(models[0].name, "checkpoints / sd_xl_base.safetensors");

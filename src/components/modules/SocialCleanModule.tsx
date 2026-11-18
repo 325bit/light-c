@@ -1,10 +1,10 @@
 import { useAiModuleBridge } from '../ai/useAiModuleBridge';
-/** 稳定的可删判断：目录树按它决定哪些文件能勾选，每次渲染换新函数会让整棵树的集合重算 */
+/** Stable deletability check: the directory tree uses it to decide which files can be checked; a new function on every render would recompute the whole tree's selection set */
 const isFileDeletable = (file: SocialFileEntry) => file.deletable;
 
 // ============================================================================
-// 社交软件清理模块组件 - 带风险分级
-// 支持智能路径溯源和文件类型深度分类
+// Social software cleanup module component - with risk classification
+// Supports smart path tracing and in-depth file type classification
 // ============================================================================
 
 import { useState, useCallback, useRef, useMemo, useEffect } from 'react';
@@ -58,7 +58,7 @@ import { applyDeletedPaths, resolveDeletedPaths } from '../../utils/socialScanRe
 import type { ModuleRenderProps } from './moduleProps';
 
 // ============================================================================
-// 分类配置
+// Category config
 // ============================================================================
 
 const categoryIcons: Record<string, typeof Image> = {
@@ -77,7 +77,7 @@ const categoryColors: Record<string, { bg: string; text: string }> = {
   momentscache: { bg: 'bg-cyan-500/10', text: 'text-cyan-600' },
 };
 
-// 风险等级配置
+// Risk level config
 const riskLevelConfig: Record<RiskLevel, { 
   icon: typeof Shield; 
   color: string; 
@@ -111,10 +111,10 @@ const riskLevelConfig: Record<RiskLevel, {
 };
 
 // ============================================================================
-// 耗时明细展示
+// Timing details display
 // ============================================================================
 
-/** 浮层里一行一个数字，用 ms / s 短格式比「1.4 秒」省地方 */
+/** One number per line in the popover; the short ms / s format saves space compared with "1.4 seconds" */
 function formatElapsed(milliseconds: number): string {
   if (milliseconds <= 0) return '<1ms';
   if (milliseconds < 1000) return `${milliseconds}ms`;
@@ -122,24 +122,24 @@ function formatElapsed(milliseconds: number): string {
 }
 
 /**
- * 阶段名走 common 命名空间的 scanStages，和另外几个扫描模块共用一套文案。
+ * Stage names use scanStages in the common namespace, sharing one set of text with several other scan modules.
  *
- * 这里用全局 i18n 而不是 useTranslation 的 t：文案在 useMemo 里生成，
- * 把 t 放进依赖数组会让这段映射在每次渲染重跑（t 的引用会变，详见
- * docs/dev/03-社交软件专清.md §4.6）。
+ * Here we use global i18n instead of useTranslation's t: the text is generated inside useMemo,
+ * putting t in the dependency array would rerun this mapping on every render (t's reference changes; see
+ * docs/dev/03-social-cleanup.md §4.6).
  */
 function getScanStageLabel(stage: string): string {
   return i18n.t(`scanStages.${stage}`, { ns: 'common', defaultValue: stage });
 }
 
-/** 路径太长，浮层只显示最后一级目录；同名路径靠「目录数 / 文件数」区分 */
+/** Paths can be long, so the popover shows only the last directory level; paths with the same name are distinguished by "directory count / file count" */
 function getLastPathSegment(path: string): string {
   const segments = path.split(/[\\/]/).filter(Boolean);
   return segments[segments.length - 1] ?? path;
 }
 
 // ============================================================================
-// 组件实现
+// Component implementation
 // ============================================================================
 
 export function SocialCleanModule({ isPageActive = true }: ModuleRenderProps) {
@@ -149,18 +149,18 @@ export function SocialCleanModule({ isPageActive = true }: ModuleRenderProps) {
   const { moduleState, updateModuleState, triggerHealthRefresh, oneClickScanTrigger } = useModuleDashboard('social');
   const { showToast } = useToast();
 
-  // 用于跟踪是否已处理过当前的一键扫描触发
+  // Tracks whether the current one-click scan trigger has been handled
   const lastScanTriggerRef = useRef(0);
 
-  // 本地状态
+  // Local state
   const [scanResult, setScanResult] = useState<SocialScanResult | null>(null);
 
   /**
-   * 耗时明细：默认不显示，点秒表才展开。
+   * Timing details: hidden by default; expand by clicking the stopwatch.
    *
-   * 只在扫描结果变化时重建 —— 勾选、筛选、列表滚动都不重算。
-   * 数据本身由后端在阶段边界收集（一次扫描多花 8 µs，实测上界），
-   * 见 docs/dev/扫描性能优化.md §6.7。
+   * Rebuilt only when scan results change — checking, filtering, and list scrolling do not recompute it.
+   * The data itself is collected by the backend at phase boundaries (about 8 µs extra per scan, measured upper bound),
+   * see docs/dev/scan-performance-optimization.md §6.7.
    */
   const timingGroups = useMemo<TimingGroup[]>(() => {
     if (!scanResult) return [];
@@ -203,9 +203,9 @@ export function SocialCleanModule({ isPageActive = true }: ModuleRenderProps) {
 
     return groups;
   }, [scanResult]);
-  // 接入 AI 助手（只读）：只给摘要，不提供操作动作。
+  // Hook up the AI assistant (read-only): provide a summary only, no action tools.
   useAiModuleBridge('social-clean', {
-    // 只读读取：分类列表（截图里也是"有哪些聊天软件"这种问法）
+    // Read-only: category list (screenshots also show questions like "which chat apps are there")
     readItems: (_targetId, offset, limit) => {
       const list = scanResult?.categories ?? [];
       if (list.length === 0) return null;
@@ -216,8 +216,8 @@ export function SocialCleanModule({ isPageActive = true }: ModuleRenderProps) {
         ),
       };
     },
-    // 只读：单条详情。itemId 用 read_items 行首那个分类名 —— 该模块每行开头就是它，
-    // 名字对不上再用分类 id 兜一次。
+    // Read-only: single-item details. itemId uses the category name at the start of the read_items line — that is how every line in this module begins,
+    // if the name doesn't match, fall back to the category id.
     readItemDetail: (itemId) => {
       const wanted = itemId.trim();
       if (!wanted) return null;
@@ -226,8 +226,8 @@ export function SocialCleanModule({ isPageActive = true }: ModuleRenderProps) {
         list.find((entry) => entry.name.trim() === wanted) ??
         list.find((entry) => entry.id.trim() === wanted);
       if (!item) return null;
-      // 「能删不能删」是这里最容易说错的地方：可清理数与总数是两件事，
-      // 所以两个数都给出来，别让模型只看到总量就说"都能删"。
+      // "What can and cannot be deleted" is the easiest thing to get wrong here: the deletable count and the total count are two different things,
+      // so give both numbers; do not let the model see only the total and say "everything can be deleted".
       const keepCount = Math.max(0, item.file_count - item.deletable_count);
       return [
         `分类：${item.name}`,
@@ -254,18 +254,18 @@ export function SocialCleanModule({ isPageActive = true }: ModuleRenderProps) {
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
   /**
-   * 详情弹窗只记录「在看哪个分类」，文件列表实时从 scanResult 取。
-   * 不再持有文件快照，这样删除后本地更新 scanResult 时弹窗自动跟着更新，
-   * 也不会出现「弹窗里还是旧快照」的问题。
+   * The detail modal only records "which category is being viewed"; the file list is read live from scanResult.
+   * It no longer holds a file snapshot, so when scanResult is updated locally after deletion the modal updates automatically,
+   * and there is no "modal still showing an old snapshot" problem.
    */
   const [fileModalData, setFileModalData] = useState<{ categoryId: string; name: string } | null>(null);
-  /** 待删除范围：由触发动作决定（工具栏＝全局选中；详情弹窗＝当前筛选内选中）。
-   *  确认弹窗的统计与文案都基于这个范围，保证「确认里写的」和「实际删的」始终一致。 */
+  /** Scope of pending deletion: decided by the triggering action (toolbar = global selection; detail modal = selection within current filter).
+   *  The confirmation modal's counts and text are all based on this scope, keeping "what the confirmation says" and "what is actually deleted" always consistent. */
   const [pendingDeletePaths, setPendingDeletePaths] = useState<string[]>([]);
-  /** 本次删除的文件数快照：进度遮罩用它，避免删除完成后统计被清空导致数字闪回 0 */
+  /** Snapshot of this deletion's file count; the progress overlay uses it to avoid the number flashing back to 0 after deletion clears the stats */
   const [deletingCount, setDeletingCount] = useState(0);
 
-  // 开始扫描
+  // Start scan
   const handleScan = useCallback(async () => {
     updateModuleState('social', { status: 'scanning', error: null });
     setScanResult(null);
@@ -276,7 +276,7 @@ export function SocialCleanModule({ isPageActive = true }: ModuleRenderProps) {
       const result = await scanSocialCache();
       setScanResult(result);
       
-      // 默认只选中可删除的文件（排除 Critical 级别）
+      // By default select only deletable files (exclude Critical level)
       const deletablePaths = result.categories
         .flatMap(c => c.files)
         .filter(f => f.deletable)
@@ -294,7 +294,7 @@ export function SocialCleanModule({ isPageActive = true }: ModuleRenderProps) {
     }
   }, [updateModuleState]);
 
-  // 监听一键扫描触发器
+  // Listen for the one-click scan trigger
   useEffect(() => {
     if (oneClickScanTrigger > 0 && oneClickScanTrigger !== lastScanTriggerRef.current) {
       lastScanTriggerRef.current = oneClickScanTrigger;
@@ -302,9 +302,9 @@ export function SocialCleanModule({ isPageActive = true }: ModuleRenderProps) {
     }
   }, [oneClickScanTrigger, handleScan]);
 
-  // 切换单个文件选中（只允许可删除的文件）
+  // Toggle selection of a single file (only deletable files allowed)
   const toggleFile = useCallback((file: SocialFileEntry) => {
-    if (!file.deletable) return; // Critical 级别不允许选中
+    if (!file.deletable) return; // Critical level cannot be selected
     
     setSelectedPaths(prev => {
       const next = new Set(prev);
@@ -317,7 +317,7 @@ export function SocialCleanModule({ isPageActive = true }: ModuleRenderProps) {
     });
   }, []);
 
-  // 批量设置选中状态：筛选内全选一次性提交，避免逐条 toggle 产生成百上千次状态更新
+  // Batch-set selection: select all within the filter in one commit, avoiding hundreds or thousands of state updates from toggling one by one
   const setSelectionForPaths = useCallback((paths: string[], select: boolean) => {
     setSelectedPaths(previous => {
       const next = new Set(previous);
@@ -332,7 +332,7 @@ export function SocialCleanModule({ isPageActive = true }: ModuleRenderProps) {
     });
   }, []);
 
-  // 切换分类选中（只选中可删除的文件）
+  // Toggle category selection (only select deletable files)
   const toggleCategory = useCallback((category: SocialCategoryStats) => {
     const deletableFiles = category.files.filter(f => f.deletable);
     const categoryPaths = deletableFiles.map(f => f.path);
@@ -349,7 +349,7 @@ export function SocialCleanModule({ isPageActive = true }: ModuleRenderProps) {
     });
   }, [selectedPaths]);
 
-  // 全选/取消全选（只选中可删除的文件）
+  // Select all / deselect all (only select deletable files)
   const toggleSelectAll = useCallback(() => {
     if (!scanResult) return;
     const deletablePaths = scanResult.categories
@@ -365,8 +365,8 @@ export function SocialCleanModule({ isPageActive = true }: ModuleRenderProps) {
     }
   }, [scanResult, selectedPaths]);
 
-  // 扫描结果按路径建索引：删除日志与确认统计都要按路径反查文件，
-  // 用 Array.find 逐条线性查找在十万级文件下会退化成 O(n²)。
+  // Index scan results by path: both deletion logs and confirmation counts need to look up files by path,
+  // using Array.find for a linear lookup per item degrades to O(n²) at the hundred-thousand-file scale.
   const allFilesByPath = useMemo(() => {
     const index = new Map<string, SocialFileEntry>();
     for (const category of scanResult?.categories ?? []) {
@@ -377,25 +377,25 @@ export function SocialCleanModule({ isPageActive = true }: ModuleRenderProps) {
     return index;
   }, [scanResult]);
 
-  // 发起删除：范围由调用方给定，避免出现「点了当前筛选、却删了别处」的偏差
+  // Request deletion: the scope is given by the caller, avoiding the mismatch of "clicked the current filter but deleted elsewhere"
   const requestDelete = useCallback((paths: string[]) => {
     if (paths.length === 0) return;
     setPendingDeletePaths(paths);
     setShowDeleteConfirm(true);
   }, []);
 
-  // 执行删除：只删 pendingDeletePaths 记录的范围
+  // Perform deletion: delete only the scope recorded in pendingDeletePaths
   const handleDelete = useCallback(async () => {
     const paths = pendingDeletePaths;
     if (paths.length === 0) return;
 
     setIsDeleting(true);
-    // 快照本次删除数量：进度遮罩用它，避免本地更新后统计变 0 导致数字闪回
+    // Snapshot this deletion's count; the progress overlay uses it to avoid the number flashing when stats go to 0 after local update
     setDeletingCount(paths.length);
     try {
       const result = await deleteFiles(paths);
 
-      // 记录清理日志
+      // Record cleanup log
       const failedPathIndex = new Map((result.failed_files ?? []).map((item) => [item.path, item]));
       const logEntries: CleanupLogEntryInput[] = paths.map((path) => {
         const file = allFilesByPath.get(path);
@@ -431,10 +431,10 @@ export function SocialCleanModule({ isPageActive = true }: ModuleRenderProps) {
         });
       }
 
-      // 删除成功后本地更新结果集，不再重跑一次全量扫描：
-      // 重扫既昂贵（要重新遍历所有软件的数据目录），又会把用户的勾选整块重置成「默认全选」。
-      // resolveDeletedPaths 返回 null 表示有文件无法确认是否真的被删掉（例如被标记为重启后删除），
-      // 这时退回重新扫描 —— 宁可慢一点，也不能把还在磁盘上的文件显示成已删除。
+      // After a successful deletion, update the result set locally instead of rerunning a full scan:
+      // a rescan is expensive (it must traverse every app's data directory again) and would reset the user's whole selection to "select all by default".
+      // resolveDeletedPaths returning null means some files cannot be confirmed as actually deleted (e.g. marked for deletion on restart),
+      // in that case fall back to a rescan — better to be a bit slower than show files still on disk as deleted.
       const removedPaths = resolveDeletedPaths(paths, result);
       if (result.success_count > 0) {
         if (removedPaths && removedPaths.size > 0 && scanResult) {
@@ -453,7 +453,7 @@ export function SocialCleanModule({ isPageActive = true }: ModuleRenderProps) {
             return remaining;
           });
         } else {
-          // 本地无法安全更新，退回重扫；重扫期间结果集先被清空，关掉弹窗避免闪一下空白
+          // Cannot safely update locally; fall back to rescan. The result set is cleared during rescan, so close the modal to avoid a flash of blank content
           setFileModalData(null);
           handleScan();
         }
@@ -467,8 +467,8 @@ export function SocialCleanModule({ isPageActive = true }: ModuleRenderProps) {
     }
   }, [pendingDeletePaths, allFilesByPath, scanResult, handleScan, triggerHealthRefresh, showToast, moduleT, updateModuleState]);
 
-  // 工具栏用的全局选中统计。原本每次渲染都重算，选择变化会反复遍历整个结果集，改成缓存 +
-  // 走路径索引，复杂度从 O(全量文件) 降到 O(选中数量)。
+  // Global selection stats for the toolbar. Originally recomputed on every render; selection changes repeatedly traversed the whole result set. Now cached +
+  // using the path index, dropping complexity from O(all files) to O(selection size).
   const selectedStats = useMemo(() => {
     let files = 0;
     let size = 0;
@@ -482,7 +482,7 @@ export function SocialCleanModule({ isPageActive = true }: ModuleRenderProps) {
     return { files, size };
   }, [selectedPaths, allFilesByPath]);
 
-  // 待删除范围的统计：确认弹窗与删除进度都基于它，保证与实际删除范围一致
+  // Stats for the pending-delete scope: both the confirmation modal and deletion progress use it, keeping them consistent with the actual deletion scope
   const pendingDeleteStats = useMemo(() => {
     let files = 0;
     let size = 0;
@@ -496,7 +496,7 @@ export function SocialCleanModule({ isPageActive = true }: ModuleRenderProps) {
     return { files, size };
   }, [pendingDeletePaths, allFilesByPath]);
 
-  // 确认文案里的名称占位符只认「本次真正要删的文件所属分类」，避免把未涉及的软件名列出来
+  // The name placeholder in the confirmation text only considers "categories of files actually being deleted this time", avoiding listing software not involved
   const confirmTargetName = useMemo(() => {
     const pendingPathSet = new Set(pendingDeletePaths);
     const categoryNames = Array.from(new Set(
@@ -509,15 +509,15 @@ export function SocialCleanModule({ isPageActive = true }: ModuleRenderProps) {
       : moduleT('social.confirmTargetFallback');
   }, [pendingDeletePaths, scanResult, moduleT]);
 
-  // 详情弹窗的文件列表实时取自 scanResult，不另存快照：
-  // 删除后本地更新 scanResult 时弹窗自动跟着更新，也不会出现「弹窗里还是旧数据」的问题。
+  // The detail modal's file list comes live from scanResult, with no separate snapshot:
+  // after deletion, updating scanResult locally updates the modal automatically, avoiding "modal still showing old data".
   const fileModalFiles = useMemo(() => {
     if (!fileModalData || !scanResult) {
       return [];
     }
     return scanResult.categories.find(category => category.id === fileModalData.categoryId)?.files ?? [];
   }, [fileModalData, scanResult]);
-  // 由当前模块控制可见性，避免误判为共用操作区。
+  // Visibility is controlled by the current module, avoiding misidentification as a shared operation area.
   const shouldShowOperationToolbar = isPageActive;
 
   if (!isPageActive && !isDeleting && !showDeleteConfirm && !fileModalData) {
@@ -526,8 +526,8 @@ export function SocialCleanModule({ isPageActive = true }: ModuleRenderProps) {
 
   return (
     <>
-      {/* 删除进度遮罩 */}
-      {/* 删除确认弹窗 */}
+      {/* Deletion progress overlay */}
+      {/* Deletion confirmation modal */}
       <SocialDeleteConfirmModal
         isOpen={showDeleteConfirm}
         onConfirm={() => {
@@ -552,13 +552,13 @@ export function SocialCleanModule({ isPageActive = true }: ModuleRenderProps) {
         error={moduleState.error}
         allowStickyContent
       >
-            {/* 删除进度改挂在悬浮操作区上（见上面的 busyContent）：
-                那是 position: fixed 的层，不占文档流，所以列表既不被撑开也没有位移 ——
-                社交专清需要保留"我在删哪几条"的参照。 */}
-            {/* 展开内容 */}
+            {/* Deletion progress is now attached to the floating toolbar (see busyContent above):
+                it's a position: fixed layer outside the document flow, so the list is neither stretched nor shifted —
+                social cleanup needs to preserve the reference of "which items I am deleting". */}
+            {/* Expanded content */}
             <div className="min-h-[21.43rem]">
               {shouldShowOperationToolbar && scanResult && scanResult.total_files > 0 && (
-            // 公共操作条统一处理底部定位，按钮内容仍由社交软件模块维护。
+            // The shared toolbar handles bottom positioning; button content is still maintained by the social software module.
             <ModuleOperationToolbar
               moduleId="social"
               busy={isDeleting}
@@ -588,7 +588,7 @@ export function SocialCleanModule({ isPageActive = true }: ModuleRenderProps) {
           )}
 
 
-          {/* 空状态 */}
+          {/* Empty state */}
           {moduleState.status === 'idle' && (
             <div className="p-4">
               <EmptyState
@@ -599,9 +599,9 @@ export function SocialCleanModule({ isPageActive = true }: ModuleRenderProps) {
             </div>
           )}
 
-          {/* 扫描中状态 */}
-          {/* 外层 p-4 与本模块其余状态（空状态 / 提示条）保持一致：
-              模块内容容器只设了 min-h，不留内边距，padding 由各状态自己补 */}
+          {/* Scanning state */}
+          {/* The outer p-4 matches the module's other states (empty state / hint bar):
+              the module content container only sets min-h with no padding; each state adds its own padding */}
           {moduleState.status === 'scanning' && (
             <div className="p-4">
               <ModuleScanProgress
@@ -612,7 +612,7 @@ export function SocialCleanModule({ isPageActive = true }: ModuleRenderProps) {
             </div>
           )}
 
-          {/* 无结果状态 */}
+          {/* No-results state */}
           {moduleState.status === 'done' && scanResult && scanResult.total_files === 0 && (
             <div className="p-4">
               <EmptyState
@@ -624,14 +624,14 @@ export function SocialCleanModule({ isPageActive = true }: ModuleRenderProps) {
             </div>
           )}
 
-          {/* 分类列表：改成和垃圾清理一致的"卡片列"——每行是一张独立卡片，靠留白分组，
-              不再用分隔线把整块连成一条长表。 */}
+          {/* Category list: changed to the same "card column" style as junk cleanup — each row is a standalone card grouped by whitespace,
+              no longer using separators to join the whole block into one long table. */}
           {moduleState.status === 'done' && scanResult && (
-            // pb-20：底部操作条是 fixed 悬浮层，末端留白免得最后一条分类被它压住
+            // pb-20: the bottom toolbar is a fixed floating layer; bottom padding keeps the last category from being covered
             <div className="space-y-2 p-4 pb-20">
-              {/* 耗时明细默认不展开：多数用户只看分类和大小，排查的人点秒表才看阶段与慢路径。
-                  刻意放左边 —— 右边是 ModuleOperationToolbar 的专属区域（fixed 悬浮、z-index 20），
-                  浮在右侧时秒表会被它盖住，点不到。 */}
+              {/* Timing details are collapsed by default: most users only look at categories and sizes; those troubleshooting click the stopwatch to see phases and slow paths.
+                  Deliberately placed on the left — the right side belongs to ModuleOperationToolbar (fixed floating, z-index 20),
+                  floating on the right would cover the stopwatch and make it unclickable. */}
               {scanResult.phase_durations.length > 0 && (
                 <div className="flex items-center gap-2 text-xs text-[var(--text-muted)]">
                   <span className="tabular-nums">
@@ -655,7 +655,7 @@ export function SocialCleanModule({ isPageActive = true }: ModuleRenderProps) {
                 const isAllSelected = selectedInCategory === categoryPaths.length && categoryPaths.length > 0;
                 const isPartialSelected = selectedInCategory > 0 && selectedInCategory < categoryPaths.length;
             
-                // 判断是否为危险分类（聊天记录）
+                // Determine whether this is a dangerous category (chat history)
                 const isCriticalCategory = category.id === 'chatdatabase';
 
                 return (
@@ -663,7 +663,7 @@ export function SocialCleanModule({ isPageActive = true }: ModuleRenderProps) {
                     key={category.id}
                     className={`rounded-2xl shadow-sm overflow-hidden ${isCriticalCategory ? 'bg-red-500/5 border border-red-500/20' : 'bg-[var(--bg-card)]'}`}
                   >
-                    {/* 分类行 */}
+                    {/* Category row */}
                     <div
                       className={`px-5 py-4 flex items-center gap-4 transition-all ${hasFiles ? 'cursor-pointer hover:bg-[var(--bg-hover)]' : 'opacity-50'}`}
                       onClick={() => hasFiles && setExpandedCategory(isCategoryExpanded ? null : category.id)}
@@ -672,7 +672,7 @@ export function SocialCleanModule({ isPageActive = true }: ModuleRenderProps) {
                         <ChevronRight className="w-5 h-5" />
                       </div>
 
-                      {/* 复选框 - 危险分类禁用 */}
+                      {/* Checkbox - disabled for dangerous categories */}
                       <div
                         onClick={(e) => { 
                           e.stopPropagation(); 
@@ -698,8 +698,8 @@ export function SocialCleanModule({ isPageActive = true }: ModuleRenderProps) {
                         )}
                       </div>
 
-                      {/* 图标容器统一成垃圾清理那套：40px、rounded-xl、品牌绿 10% 底 + 绿色图标。
-                          原来按分类换颜色，会和右侧标签抢表达，一屏里颜色太多。 */}
+                      {/* Icon container unified with the junk cleanup style: 40px, rounded-xl, 10% brand-green background + green icon.
+                          Changing colors per category used to compete with the labels on the right, making a screen too colorful. */}
                       <div className="w-10 h-10 shrink-0 rounded-xl bg-[var(--brand-green-10)] flex items-center justify-center text-[var(--brand-green)]">
                         <Icon className="w-5 h-5" />
                       </div>
@@ -729,7 +729,7 @@ export function SocialCleanModule({ isPageActive = true }: ModuleRenderProps) {
                       </div>
                     </div>
 
-                    {/* 展开的文件列表 */}
+                    {/* Expanded file list */}
                     <AnimatePresence initial={false}>
                       {isCategoryExpanded && hasFiles && (
                         <motion.div
@@ -740,7 +740,7 @@ export function SocialCleanModule({ isPageActive = true }: ModuleRenderProps) {
                           exit={{ height: 0, opacity: 0 }}
                           transition={{ duration: 0.24, ease: [0.22, 1, 0.36, 1] }}
                         >
-                          {/* 目录树：同一目录下的缓存文件折叠成一行，勾文件夹就整批选中 */}
+                          {/* Directory tree: cache files under the same directory collapse into one row; checking a folder selects the whole batch */}
                           <FileTreeList
                             files={category.files.slice(0, 20)}
                             selectedPaths={selectedPaths}
@@ -755,8 +755,8 @@ export function SocialCleanModule({ isPageActive = true }: ModuleRenderProps) {
                           {category.files.length > 20 && (
                             <button
                               onClick={(e) => { e.stopPropagation(); setFileModalData({ categoryId: category.id, name: moduleT(`social.category.${category.id}.name`) }); }}
-                              // 不再画上边框：它上面已经是数据行的分隔线，再加一条会让这一块显得很密。
-                              // 用主题色文字本身表达"可点"，悬停给一层淡底作为反馈。
+                              // No top border here: the row above already has a separator line, and another one would make this area look crowded.
+                              // Let the theme-colored text itself convey "clickable", with a light hover background as feedback.
                               className="w-full rounded-b-xl px-4 py-2.5 text-center text-xs text-emerald-600 hover:bg-emerald-500/5 transition"
                             >
                               {moduleT('social.viewFiles')} ({category.files.length.toLocaleString()} {moduleT('social.files')}) →
@@ -773,7 +773,7 @@ export function SocialCleanModule({ isPageActive = true }: ModuleRenderProps) {
         </div>
       </ModuleCard>
 
-      {/* 文件详情弹窗 */}
+      {/* File detail modal */}
       <FileListModal
         isOpen={fileModalData !== null}
         title={fileModalData?.name || ''}
@@ -789,12 +789,12 @@ export function SocialCleanModule({ isPageActive = true }: ModuleRenderProps) {
 }
 
 // ============================================================================
-// 文件行组件
+// File row components
 // ============================================================================
 
 interface SocialDeleteConfirmModalProps {
   isOpen: boolean;
-  /** 本次实际会被清理的范围描述，用于填充确认文案里的名称占位符 */
+  /** Description of the scope actually being cleaned, used to fill the name placeholder in the confirmation text */
   targetName: string;
   selectedFiles: number;
   selectedSize: number;
@@ -823,8 +823,8 @@ function SocialDeleteConfirmModal({
           transition={{ duration: 0.18, ease: 'easeOut' }}
         >
           <div className="absolute inset-0 bg-black/50 backdrop-blur-sm glass-backdrop" onClick={onCancel} />
-          {/* 尺寸统一用 em：body 继承 :root 字号，弹窗随全局字号设置缩放，30em ≈ 420px。
-              高度同样要叠加视口约束，避免矮窗口下标题与确认按钮被顶出可视区。 */}
+          {/* Use em for all sizing: body inherits the :root font size, so the modal scales with the global font setting; 30em ≈ 420px.
+              Height also applies viewport constraints to keep the title and confirm button from being pushed out of view in short windows. */}
           <motion.div
             className="glass-dialog relative bg-[var(--bg-elevated)] rounded-xl shadow-2xl border border-[var(--border-default)] w-[30em] max-w-[calc(100vw-2em)] max-h-[calc(100vh-2em)] overflow-y-auto"
             initial={{ opacity: 0, scale: 0.96, y: 12 }}
@@ -887,7 +887,7 @@ function SocialDeleteConfirmModal({
   );
 }
 
-// 风险文案由稳定的风险枚举驱动，避免直接展示后端返回的中文文本。
+// Risk text is driven by stable risk enums, avoiding direct display of Chinese text returned by the backend.
 function getSocialRiskLabel(translate: (key: string) => string, level: RiskLevel): string {
   return translate(`social.risk.${level}`);
 }
@@ -896,7 +896,7 @@ function getSocialRiskTooltip(translate: (key: string) => string, level: RiskLev
   return translate(`social.risk.${level}Tip`);
 }
 
-/** 目录树行内的附加信息：来源应用 + 风险等级。树行本身只渲染名称与大小。 */
+/** Extra info inside a directory tree row: source app + risk level. The row itself renders only name and size. */
 function SocialFileMeta({ file }: { file: SocialFileEntry }) {
   const { t: moduleT } = useTranslation('modules');
   const riskConfig = riskLevelConfig[file.risk_level];
@@ -918,7 +918,7 @@ function SocialFileMeta({ file }: { file: SocialFileEntry }) {
   );
 }
 
-/** 目录树行尾操作：打开所在文件夹 / 打开文件 */
+/** Actions at the end of a directory tree row: open containing folder / open file */
 function SocialFileActions({ file }: { file: SocialFileEntry }) {
   const { t } = useTranslation('common');
 
@@ -943,7 +943,7 @@ function SocialFileActions({ file }: { file: SocialFileEntry }) {
 }
 
 // ============================================================================
-// 文件列表弹窗组件
+// File list modal component
 // ============================================================================
 
 interface FileListModalProps {
@@ -951,16 +951,16 @@ interface FileListModalProps {
   files: SocialFileEntry[];
   selectedPaths: Set<string>;
   onToggleFile: (file: SocialFileEntry) => void;
-  /** 批量设置选中状态：筛选内全选一次性提交，避免逐条更新触发大量重渲染 */
+  /** Batch-set selection: select all within the filter in one commit, avoiding many re-renders from per-item updates */
   onSetSelectionForPaths: (paths: string[], select: boolean) => void;
-  /** 请求打开删除确认框。作用范围由弹窗给定（当前筛选内已选中的文件），
-   *  避免因为「扫描后默认全选」而误删其它分类的文件。 */
+  /** Request opening the deletion confirmation dialog. The scope is given by the modal (files selected within the current filter),
+   *  avoiding accidental deletion of files in other categories due to "select all by default after scan". */
   onRequestDelete: (paths: string[]) => void;
   isOpen: boolean;
   onClose: () => void;
 }
 
-/** 来源分组：同一应用的多种写法已由 getSourceKey 归一化 */
+/** Source grouping: different spellings of the same app have been normalized by getSourceKey */
 interface SourceGroup {
   key: string;
   count: number;
@@ -977,24 +977,24 @@ function FileListModal({
   onClose,
 }: FileListModalProps) {
   const { t: moduleT } = useTranslation('modules');
-  /** 当前筛选的来源 key 集合，空集合代表「全部」 */
+  /** Set of source keys for the current filter; an empty set means "all" */
   const [activeSources, setActiveSources] = useState<Set<string>>(new Set());
 
-  // 关闭时清空筛选，避免下次打开还停在上一次的来源状态
+  // Clear the filter on close so reopening does not stay on the previous source selection
   useEffect(() => {
     if (!isOpen) {
       setActiveSources(new Set());
     }
   }, [isOpen]);
 
-  // 表头统计与来源分组只依赖 files，一律收进 useMemo：
-  // 虚拟列表滚动会触发重渲染，不缓存的话每一帧都要重新遍历整个列表
+  // Header stats and source grouping depend only on files, so both go into useMemo:
+  // virtual list scrolling triggers re-renders; without caching, the whole list would be traversed on every frame
   const totalSize = useMemo(() => files.reduce((sum, file) => sum + file.size, 0), [files]);
   const deletableCount = useMemo(() => files.filter(file => file.deletable).length, [files]);
 
-  // 来源分组只依赖 files，不依赖 moduleT：
-  // t 函数的引用可能随渲染变化，一旦进依赖数组会让这个 O(N) 遍历在每次滚动重渲染时都重跑。
-  // 展示名放到渲染时按 key 取（分组数很少，开销可忽略）。
+  // Source grouping depends only on files, not moduleT:
+  // the t function's reference may change between renders; putting it in the dependency array would make this O(N) traversal rerun on every scroll re-render.
+  // Look up display names by key at render time (few groups, negligible cost).
   const sourceGroups = useMemo<SourceGroup[]>(() => {
     const groups = new Map<string, SourceGroup>();
     for (const file of files) {
@@ -1009,7 +1009,7 @@ function FileListModal({
     return Array.from(groups.values()).sort((left, right) => right.count - left.count);
   }, [files]);
 
-  // 「全部」时直接复用原数组，省掉一次无意义的拷贝
+  // For "all", reuse the original array directly, skipping a pointless copy
   const visibleFiles = useMemo(() => {
     if (activeSources.size === 0) {
       return files;
@@ -1017,24 +1017,24 @@ function FileListModal({
     return files.filter(file => activeSources.has(getSourceKey(file.app_name)));
   }, [files, activeSources]);
 
-  /** 当前筛选下可删除的文件路径 */
+  /** Deletable file paths under the current filter */
   const visibleDeletablePaths = useMemo(
     () => visibleFiles.filter(file => file.deletable).map(file => file.path),
     [visibleFiles],
   );
-  // 同样要缓存：不缓存的话每次滚动重渲染都要对可见集合做一次全量 every 判断
+  // Also needs caching: otherwise every scroll re-render would run a full every() check over the visible set
   const allVisibleSelected = useMemo(
     () => visibleDeletablePaths.length > 0
       && visibleDeletablePaths.every(path => selectedPaths.has(path)),
     [visibleDeletablePaths, selectedPaths],
   );
 
-  // 全选/取消全选只作用于当前筛选结果，避免选中界面上看不见的文件
+  // Select all / deselect all applies only to the current filter results, avoiding selecting files not visible in the UI
   const handleToggleSelectAll = useCallback(() => {
     onSetSelectionForPaths(visibleDeletablePaths, !allVisibleSelected);
   }, [onSetSelectionForPaths, visibleDeletablePaths, allVisibleSelected]);
 
-  // 来源标签支持多选；再点一次已选中的标签即取消
+  // Source tags support multi-select; clicking a selected tag again deselects it
   const handleToggleSource = useCallback((sourceKey: string) => {
     setActiveSources(previous => {
       const next = new Set(previous);
@@ -1049,14 +1049,14 @@ function FileListModal({
 
   const handleClearSources = useCallback(() => setActiveSources(new Set()), []);
 
-  /** 当前筛选内、且已选中的文件路径。这就是详情弹窗里删除按钮的实际作用范围。 */
+  /** File paths that are both within the current filter and selected. This is the actual scope of the detail modal's delete button. */
   const visibleSelectedPaths = useMemo(
     () => visibleDeletablePaths.filter(path => selectedPaths.has(path)),
     [visibleDeletablePaths, selectedPaths],
   );
 
-  // 被当前筛选隐藏、但仍处于选中状态的项。它们不会被本次删除波及，但必须告知用户，
-  // 否则用户会以为「删除」等于删掉全部已选。无筛选时直接跳过整轮遍历。
+  // Items hidden by the current filter but still selected. They will not be affected by this deletion, but the user must be told,
+  // otherwise users would think "delete" means deleting all selected items. With no filter, skip this traversal entirely.
   const hiddenSelectedCount = useMemo(() => {
     if (activeSources.size === 0) {
       return 0;
@@ -1103,8 +1103,8 @@ function FileListModal({
               </button>
             </div>
 
-            {/* 来源筛选：标签可多选，再点一次已选中的标签即取消。
-                「全部」仅在存在多个来源时出现，单一来源时它和来源标签等价，显示出来反而冗余。 */}
+            {/* Source filter: tags support multi-select; clicking a selected tag again deselects it.
+                "All" appears only when there are multiple sources; with a single source it is equivalent to the source tag and showing it would be redundant. */}
             <div className="px-6 py-3 flex items-center gap-3 text-xs shrink-0">
               <div className="flex-1 min-w-0 flex items-center gap-2 overflow-x-auto">
                 {sourceGroups.length > 1 && (
@@ -1136,7 +1136,7 @@ function FileListModal({
                   );
                 })}
               </div>
-              {/* 全选只覆盖当前筛选结果，避免选中界面上看不见的文件 */}
+              {/* Select all covers only the current filter results, avoiding selecting files not visible in the UI */}
               <button
                 onClick={handleToggleSelectAll}
                 disabled={visibleDeletablePaths.length === 0}
@@ -1146,8 +1146,8 @@ function FileListModal({
                 {` (${visibleDeletablePaths.length.toLocaleString()})`}
               </button>
             </div>
-            {/* 列头行随平铺列表一起撤掉：目录树每行自带层级与汇总，
-                再摆一条固定列头反而对不上（目录行没有风险标签、大小列的含义也不同）。 */}
+            {/* The column header row was removed along with the flat list: each directory tree row carries its own hierarchy and summary,
+                adding a fixed header would no longer match (directory rows have no risk tag and the size column means something different). */}
             <div className="min-h-0 flex-1 px-4">
               {visibleFiles.length === 0 ? (
                 <div className="flex h-full items-center justify-center text-xs text-[var(--fg-muted)]">
@@ -1160,8 +1160,8 @@ function FileListModal({
                   onSetSelection={onSetSelectionForPaths}
                   onToggleFile={(file) => onToggleFile(file)}
                   isSelectable={isFileDeletable}
-                  // 弹窗是「查看全部文件」的唯一入口，排序放在这里；
-                  // 卡片里那块 192px 的预览列表仍然不摆排序控件
+                  // The modal is the only entry point for "view all files", so sorting goes here;
+                  // the 192px preview list in the card still has no sorting control
                   sortable
                   height={Math.round(Math.min(560, Math.max(260, window.innerHeight * 0.45)))}
                   rowHeight={44}
@@ -1171,8 +1171,8 @@ function FileListModal({
               )}
             </div>
 
-            {/* 底栏：选中统计 + 删除入口。删除作用域是全局选中项，不限于当前分类，
-                所以要把「被当前筛选隐藏」和「在其它分类」的数量分别说明清楚。 */}
+            {/* Bottom bar: selection stats + delete entry. The deletion scope is the global selection, not limited to the current category,
+                so the counts of "hidden by current filter" and "in other categories" must be stated separately. */}
             <div className="glass-bar px-6 py-3 border-t border-[var(--border-default)] bg-[var(--bg-elevated)] flex items-center justify-between gap-4 shrink-0">
               <div className="flex-1 min-w-0 flex items-center gap-x-2 gap-y-1 text-xs text-[var(--fg-muted)] flex-wrap">
                 {visibleSelectedPaths.length > 0 ? (
@@ -1205,7 +1205,7 @@ function FileListModal({
 }
 
 // ============================================================================
-// 虚拟文件行组件
+// Virtual file row component
 // ============================================================================
 
 export default SocialCleanModule;

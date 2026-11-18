@@ -1,6 +1,6 @@
 // ============================================================================
-// Tauri 鍛戒护璋冪敤灏佽
-// 灏佽鎵€鏈変笌Rust鍚庣鐨勯€氫俊鎺ュ彛
+// Tauri command invocation wrapper
+// Wraps all communication interfaces with the Rust backend
 // ============================================================================
 
 import { invoke } from '@tauri-apps/api/core';
@@ -33,7 +33,7 @@ export interface VerifyIntegrityResult {
   official_url: string;
 }
 
-/** 获取当前发行渠道；后端兼容旧 marker 和新版 manifest。 */
+/** Gets the current distribution channel; the backend is compatible with both the legacy marker and the new manifest. */
 export async function getDistributionChannel(): Promise<DistributionChannel> {
   return invoke<DistributionChannel>('get_distribution_channel');
 }
@@ -53,22 +53,22 @@ export interface StorageLocationInfo {
   migration_completed: boolean;
 }
 
-/** 获取统一的配置、数据目录和便携版迁移状态。 */
+/** Gets the unified config, data directory, and portable-version migration status. */
 export async function getStorageLocationInfo(): Promise<StorageLocationInfo> {
   return invoke<StorageLocationInfo>('get_storage_location_info');
 }
 
-/** 便携目录写入能力诊断：不可写时数据只能临时放在 AppData。 */
+/** Portable directory write-capability diagnostics: when not writable, data can only be temporarily placed in AppData. */
 export interface StorageWriteDiagnostic {
-  /** 便携包（exe）所在目录，安装版为 null。 */
+  /** Directory containing the portable package (exe); null for the installed version. */
   portable_root?: string | null;
-  /** 期望写入的数据目录（便携版即 exe 目录下的 data）。 */
+  /** Expected data directory to write to (for portable builds, the data directory under the exe). */
   preferred_data_directory: string;
-  /** 期望目录是否真的可写。 */
+  /** Whether the expected directory is actually writable. */
   preferred_writable: boolean;
-  /** 是否发生了"便携目录不可写 → 回落到 AppData"。 */
+  /** Whether a "portable directory not writable → fell back to AppData" event occurred. */
   fell_back_to_app_data: boolean;
-  /** 当前实际使用的数据目录是否可写。 */
+  /** Whether the data directory currently in use is writable. */
   active_writable: boolean;
   reason?: string | null;
 }
@@ -77,50 +77,50 @@ export async function getStorageWriteDiagnostic(): Promise<StorageWriteDiagnosti
   return invoke<StorageWriteDiagnostic>('get_storage_write_diagnostic');
 }
 
-/** 重试旧版便携数据迁移，后端只复制 LightC 自有数据且保留源文件。 */
+/** Retries legacy portable data migration; the backend only copies LightC's own data and preserves the source files. */
 export async function migrateLegacyPortableData(): Promise<StorageLocationInfo> {
   return invoke<StorageLocationInfo>('migrate_legacy_portable_data');
 }
 
 /**
- * 校验当前 LightC.exe 是否能通过官方 minisign 签名验证。
- * 网络失败由后端转换为 network_error，便于前端给出不同于篡改风险的提示。
+ * Validates whether the current LightC.exe passes official minisign signature verification.
+ * Network failures are converted by the backend to network_error, so the frontend can give a hint distinct from a tampering risk.
  */
 export async function verifyIntegrity(): Promise<VerifyIntegrityResult> {
   return invoke<VerifyIntegrityResult>('verify_integrity');
 }
 
 /**
- * 鑾峰彇C鐩樼鐩樹俊鎭? */
+ * Gets C drive disk information. */
 export async function getDiskInfo(): Promise<DiskInfo> {
   return invoke<DiskInfo>('get_disk_info');
 }
 
-/** 本机固定磁盘分区信息，供多盘分析模块复用。 */
+/** Local fixed disk partition information, reused by the multi-disk analysis module. */
 export interface LocalDriveInfo {
-  /** 磁盘盘符，例如 C: */
+  /** Drive letter, e.g. C: */
   drive_letter: string;
-  /** 根路径，例如 C:\ */
+  /** Root path, e.g. C:\ */
   root_path: string;
-  /** 卷标，可能为空 */
+  /** Volume label, may be empty */
   volume_name: string;
-  /** 文件系统，例如 NTFS */
+  /** File system, e.g. NTFS */
   file_system: string;
-  /** 磁盘总容量 */
+  /** Total disk capacity */
   total_space: number;
-  /** 已用空间 */
+  /** Used space */
   used_space: number;
-  /** 可用空间 */
+  /** Free space */
   free_space: number;
-  /** 使用率百分比 */
+  /** Usage percentage */
   usage_percent: number;
-  /** 是否为系统盘 */
+  /** Whether it is the system drive */
   is_system: boolean;
-  /** MFT 扫描当前仅支持 NTFS */
+  /** MFT scanning currently supports NTFS only */
   is_ntfs: boolean;
 }
 
-/** 获取本机固定磁盘分区列表。 */
+/** Gets the list of local fixed disk partitions. */
 export async function getLocalDrives(): Promise<LocalDriveInfo[]> {
   return invoke<LocalDriveInfo[]>('get_local_drives');
 }
@@ -149,35 +149,35 @@ export interface DiskHealthInfo {
   volumes: DiskVolumeInfo[];
 }
 
-/** 获取物理磁盘基础信息和 Windows Storage 报告的健康状态。 */
+/** Gets basic physical disk information and the health status reported by Windows Storage. */
 export async function getDiskHealth(): Promise<DiskHealthInfo[]> {
   return invoke<DiskHealthInfo[]>('get_disk_health');
 }
 
 /**
- * 鎵ц鍨冨溇鏂囦欢鎵弿
- * @param request 鎵弿璇锋眰鍙傛暟锛堝彲閫夛級
+ * Performs a junk file scan
+ * @param request Scan request parameters (optional)
  */
 export async function scanJunkFiles(request?: ScanRequest): Promise<ScanResult> {
   return invoke<ScanResult>('scan_junk_files', { request });
 }
 
-/** 扫描所有固定分区的深度垃圾，NTFS 分区优先使用 MFT。 */
+/** Scans deep junk across all fixed partitions, preferring MFT for NTFS partitions. */
 /**
- * 深度扫描垃圾文件。
- * @param maxDepth 目录递归层数上限，来自设置页的「深度发现扫描深度」。
- *                 后端还会再收敛一次（1-24 内兜底），传异常值不会让扫描失控。
+ * Deep-scans junk files.
+ * @param maxDepth Maximum directory recursion depth, from the settings page's "Deep Discovery Scan Depth".
+ *                 The backend clamps it once more (fallback within 1-24); passing an abnormal value won't let the scan run out of control.
  */
 export async function scanDeepJunkFiles(maxDepth: number): Promise<DeepJunkScanResult> {
   return invoke<DeepJunkScanResult>('scan_deep_junk_files', { maxDepth });
 }
 
-/** 取消深度垃圾扫描。 */
+/** Cancels the deep junk scan. */
 export async function cancelDeepJunkScan(): Promise<void> {
   return invoke<void>('cancel_deep_junk_scan');
 }
 
-/** 按需读取深度扫描分类的下一页文件。 */
+/** Reads the next page of files for a deep-scan category on demand. */
 export async function getDeepJunkCategoryPage(
   scanId: string,
   categoryName: string,
@@ -193,16 +193,16 @@ export async function getDeepJunkCategoryPage(
 }
 
 /**
- * 鎵弿鍗曚釜鍒嗙被
- * @param categoryName 鍒嗙被鍚嶇О
+ * Scans a single category
+ * @param categoryName Category name
  */
 export async function scanCategory(categoryName: string): Promise<CategoryScanResult> {
   return invoke<CategoryScanResult>('scan_category', { categoryName });
 }
 
 /**
- * 鍒犻櫎鎸囧畾鏂囦欢
- * @param paths 瑕佸垹闄ょ殑鏂囦欢璺緞鍒楄〃
+ * Deletes the specified files
+ * @param paths List of file paths to delete
  */
 export async function deleteFiles(paths: string[]): Promise<DeleteResult> {
   const request: DeleteRequest = { paths };
@@ -210,64 +210,64 @@ export async function deleteFiles(paths: string[]): Promise<DeleteResult> {
 }
 
 /**
- * 鑾峰彇鎵€鏈夊彲鐢ㄧ殑娓呯悊鍒嗙被
+ * Gets all available cleanup categories
  */
 export async function getCategories(): Promise<CategoryInfo[]> {
   return invoke<CategoryInfo[]>('get_categories');
 }
 
 /**
- * 鏍煎紡鍖栨枃浠跺ぇ灏忥紙璋冪敤Rust绔級
- * @param bytes 瀛楄妭鏁? */
+ * Formats a file size (calls the Rust side)
+ * @param bytes Number of bytes */
 export async function formatSizeFromRust(bytes: number): Promise<string> {
   return invoke<string>('format_size', { bytes });
 }
 
 /**
- * 鎵撳紑Windows纾佺洏娓呯悊宸ュ叿
+ * Opens the Windows Disk Cleanup tool
  */
 export async function openDiskCleanup(): Promise<void> {
   return invoke<void>('open_disk_cleanup');
 }
 
 /**
- * 扫描指定磁盘的大文件
- * @param topN 返回前 N 个最大文件（10-500，默认 50）
- * @param driveLetter 目标盘符，如 C: / D:
+ * Scans large files on the specified disk
+ * @param topN Return the top N largest files (10-500, default 50)
+ * @param driveLetter Target drive letter, e.g. C: / D:
  */
 export async function scanLargeFiles(topN?: number, driveLetter?: string): Promise<LargeFileEntry[]> {
   return invoke<LargeFileEntry[]>('scan_large_files', { topN, driveLetter });
 }
 
 /**
- * 鍙栨秷澶ф枃浠舵壂鎻? */
+ * Cancels the large file scan. */
 export async function cancelLargeFileScan(): Promise<void> {
   return invoke<void>('cancel_large_file_scan');
 }
 
 /**
- * 鍦ㄦ枃浠惰祫婧愮鐞嗗櫒涓墦寮€鏂囦欢鎵€鍦ㄧ洰褰? */
+ * Opens the folder containing a file in File Explorer. */
 export async function openInFolder(path: string): Promise<void> {
   return invoke<void>('open_in_folder', { path });
 }
 
 /**
- * 鐩存帴鎵撳紑鏂囦欢锛堜娇鐢ㄧ郴缁熼粯璁ょ▼搴忥級
+ * Opens a file directly (using the system default program)
  */
 export async function openFile(path: string): Promise<void> {
   return invoke<void>('open_file', { path });
 }
 
-/** 打开 Windows 系统回收站视图，避免暴露内部 SID 目录。 */
+/** Opens the Windows system Recycle Bin view, avoiding exposing internal SID directories. */
 export async function openRecycleBin(): Promise<void> {
   return invoke<void>('open_recycle_bin');
 }
 
 // ============================================================================
-// 绯荤粺鐦﹁韩鐩稿叧
+// System slimming related
 // ============================================================================
 
-/** 绯荤粺鐦﹁韩椤圭姸鎬?*/
+/** System slimming item status */
 export interface SlimItemStatus {
   id: string;
   name: string;
@@ -278,28 +278,28 @@ export interface SlimItemStatus {
   size: number;
   actionable: boolean;
   action_text: string;
-  /** 该项仍在后台分析（目前只有 WinSxS 两项会为 true），分析结束后由事件补推 */
+  /** This item is still being analyzed in the background (currently only the two WinSxS items can be true); pushed via an event once analysis finishes */
   analyzing: boolean;
   /**
-   * 组件存储的可回收构成（只有 winsxs 一项会带上）。
+   * Reclaimable component-store breakdown (only the winsxs item carries this).
    *
-   * 中文说明：`size` 只给总数，看不出 6.9 GB 里有多少是被取代的旧组件、
-   * 多少是缓存临时数据；这两项直接来自 DISM 分析，用来在界面上分解释。
+   * Chinese note: `size` gives only a total, so you can't tell how much of the 6.9 GB is superseded old components,
+   * and how much is cached temporary data; these two come directly from DISM analysis and are used to break it down in the UI.
    */
   breakdown?: WinsxsBreakdown;
 }
 
-/** DISM 分析给出的可回收组件构成 */
+/** Reclaimable component breakdown reported by DISM */
 export interface WinsxsBreakdown {
-  /** 备份和已禁用功能：被取代、暂时保留用于回滚的旧组件副本 */
+  /** Backups and disabled features: superseded old component copies temporarily kept for rollback */
   backups: number;
-  /** 缓存和临时数据 */
+  /** Cache and temporary data */
   cache: number;
-  /** 可回收组件包数量 */
+  /** Number of reclaimable component packages */
   packages: number;
 }
 
-/** 绯荤粺鐦﹁韩鐘舵€佹眹鎬?*/
+/** System slimming status summary */
 export interface SystemSlimStatus {
   is_admin: boolean;
   items: SlimItemStatus[];
@@ -307,76 +307,76 @@ export interface SystemSlimStatus {
 }
 
 /**
- * 妫€鏌ユ槸鍚︿互绠＄悊鍛樻潈闄愯繍琛? */
+ * Checks whether running with administrator privileges. */
 export async function checkAdminPrivilege(): Promise<boolean> {
   return invoke<boolean>('check_admin_privilege');
 }
 
 /**
- * 以管理员权限重新启动当前程序。
+ * Restarts the current program with administrator privileges.
  *
- * 走系统 UAC，用户要在弹窗里点确认。
- * @returns true = 管理员实例已拉起（当前进程随后自动退出）；false = 用户取消了 UAC
+ * Goes through the system UAC; the user must confirm in the popup.
+ * @returns true = admin instance launched (current process will exit automatically); false = user cancelled UAC
  */
 export async function relaunchAsAdmin(): Promise<boolean> {
   return invoke<boolean>('relaunch_as_admin');
 }
 
 /**
- * 鑾峰彇绯荤粺鐦﹁韩鐘舵€? */
+ * Gets the system slimming status. */
 export async function getSystemSlimStatus(forceRefresh = false): Promise<SystemSlimStatus> {
-  // forceRefresh：手动"重新检测"时跳过组件存储分析的 10 分钟缓存，否则点了也像没反应
+  // forceRefresh: when manually "re-checking", skip the 10-minute component-store analysis cache; otherwise clicking seems to have no effect
   return invoke<SystemSlimStatus>('get_system_slim_status', { forceRefresh });
 }
 
 /**
- * 系统瘦身操作进度（后端事件 system-slim:progress）。
+ * System slimming operation progress (backend event system-slim:progress).
  */
 export interface SlimOperationProgress {
-  /** 操作项 id（hibernation / winsxs / winsxs_resetbase）。 */
+  /** Operation item id (hibernation / winsxs / winsxs_resetbase). */
   item_id: string;
-  /** 阶段：preparing / running / waiting / done / error。 */
+  /** Phase: preparing / running / waiting / done / error. */
   phase: string;
-  /** 面向用户的阶段说明。 */
+  /** User-facing phase description. */
   message: string;
-  /** 0-100，0 表示暂时无法估算。 */
+  /** 0-100, 0 means it cannot be estimated yet. */
   percent: number;
   /** running / done / error。 */
   status: 'running' | 'done' | 'error';
-  /** 已用时间（毫秒）。 */
+  /** Elapsed time (milliseconds). */
   elapsed_ms: number;
 }
 
 /**
- * 关闭休眠功能（异步执行，进度通过 system-slim:progress 事件推送）
+ * Disables hibernation (runs asynchronously, progress pushed via the system-slim:progress event)
  */
 export async function disableHibernation(): Promise<string> {
   return invoke<string>('disable_hibernation');
 }
 
 /**
- * 开启休眠功能（异步执行，进度通过 system-slim:progress 事件推送）
+ * Enables hibernation (runs asynchronously, progress pushed via the system-slim:progress event)
  */
 export async function enableHibernation(): Promise<string> {
   return invoke<string>('enable_hibernation');
 }
 
 /**
- * 娓呯悊 WinSxS 缁勪欢瀛樺偍
+ * Cleans the WinSxS component store
  */
 export async function cleanupWinsxs(): Promise<string> {
   return invoke<string>('cleanup_winsxs');
 }
 
 /**
- * 娣卞害娓呯悊 WinSxS 缁勪欢鍩虹嚎
+ * Deep-cleans the WinSxS component baseline
  */
 export async function cleanupWinsxsResetbase(): Promise<string> {
   return invoke<string>('cleanup_winsxs_resetbase');
 }
 
 /**
- * 鎵撳紑绯荤粺铏氭嫙鍐呭瓨璁剧疆
+ * Opens the system virtual memory settings
  */
 export async function openVirtualMemorySettings(): Promise<void> {
   return invoke<void>('open_virtual_memory_settings');
@@ -387,7 +387,7 @@ export async function rebuildSearchIndex(): Promise<string> {
 }
 
 // ============================================================================
-// 旧驱动清理 API
+// Legacy driver cleanup API
 // ============================================================================
 
 export interface DriverPackageInfo {
@@ -404,7 +404,7 @@ export interface DriverPackageInfo {
   installed_device_count: number;
   outranked_device_count: number;
   file_count: number;
-  /** 驱动包目录的估算占用（字节），0 表示无法读取 */
+  /** Estimated footprint of the driver package directory (bytes), 0 means unreadable */
   total_size: number;
   status: 'old_confirmed' | 'recommended' | 'in_use' | 'no_newer_version' | 'unknown';
   actionable: boolean;
@@ -442,31 +442,31 @@ export interface DriverRestoreResult {
   message: string;
 }
 
-/** 检测第三方驱动包，后端只返回经过安全分类的结果。 */
+/** Detects third-party driver packages; the backend only returns safety-classified results. */
 export async function scanOldDrivers(): Promise<DriverScanResult> {
   return invoke<DriverScanResult>('scan_old_drivers');
 }
 
-/** 由后端重新校验、备份并删除选中的驱动包。 */
+/** Re-validates, backs up, and deletes the selected driver packages on the backend. */
 export async function deleteOldDrivers(publishedNames: string[]): Promise<DriverDeleteResult> {
   return invoke<DriverDeleteResult>('delete_old_drivers', { publishedNames });
 }
 
-/** 递归恢复当前数据目录中所有已保存的驱动包备份。 */
+/** Recursively restores all saved driver package backups in the current data directory. */
 export async function restoreAllDriverBackups(): Promise<DriverRestoreResult> {
   return invoke<DriverRestoreResult>('restore_all_driver_backups');
 }
 
-/** 打开当前数据目录下的独立驱动备份目录。 */
+/** Opens the standalone driver backup directory under the current data directory. */
 export async function openDriverBackupDir(): Promise<void> {
   return invoke<void>('open_driver_backup_dir');
 }
 
 // ============================================================================
-// 鍋ュ悍璇勫垎鐩稿叧
+// Health score related
 // ============================================================================
 
-/** 绯荤粺鍋ュ悍璇勫垎缁撴灉 */
+/** System health score result */
 export interface HealthScoreResult {
   score: number;
   disk_score: number;
@@ -479,121 +479,121 @@ export interface HealthScoreResult {
 }
 
 /**
- * 鑾峰彇绯荤粺鍋ュ悍璇勫垎
+ * Gets the system health score
  */
 export async function getHealthScore(driveLetter?: string): Promise<HealthScoreResult> {
-  // 不传盘符时后端按系统盘算；切盘后带上选中的盘符，
-  // 让磁盘空间这一维跟着顶栏走（休眠 / 垃圾仍是系统级指标）。
+  // When no drive letter is passed, the backend calculates against the system drive; after switching drives, pass the selected letter,
+  // so the disk-space dimension follows the top bar (hibernation / junk remain system-level metrics).
   return driveLetter
     ? invoke<HealthScoreResult>('get_health_score', { driveLetter })
     : invoke<HealthScoreResult>('get_health_score');
 }
 
 // ============================================================================
-// 绀句氦杞欢鎵弿 - 甯﹂闄╁垎绾?// ============================================================================
+// Social software scanning - with risk grading// ============================================================================
 
-/** 椋庨櫓绛夌骇 */
+/** Risk level */
 export type RiskLevel = 'critical' | 'medium' | 'low' | 'none';
 
-/** 鏂囦欢鍒嗙被 */
+/** File category */
 export type FileCategory = 'chat_database' | 'image_video' | 'file_transfer' | 'temp_cache' | 'moments_cache';
 
-/** 绀句氦杞欢鏂囦欢鏉＄洰 */
+/** Social software file entry */
 export interface SocialFileEntry {
-  /** 鏂囦欢瀹屾暣璺緞 */
+  /** Full file path */
   path: string;
-  /** 鏂囦欢澶у皬锛堝瓧鑺傦級 */
+  /** File size (bytes) */
   size: number;
-  /** 鎵€灞炲簲鐢ㄥ悕绉?*/
+  /** Owning application name */
   app_name: string;
-  /** 鏂囦欢鍒嗙被 */
+  /** File category */
   category: FileCategory;
-  /** 椋庨櫓绛夌骇 */
+  /** Risk level */
   risk_level: RiskLevel;
-  /** 鏄惁鍙垹闄わ紙Critical 绾у埆寮哄埗涓?false锛?*/
+  /** Whether it can be deleted (forced to false for Critical level) */
   deletable: boolean;
-  /** 最后修改时间（Unix 秒）；0 表示没取到，排序时垫底 */
+  /** Last modified time (Unix seconds); 0 means it wasn't retrieved and sorts last */
   modified_time: number;
 }
 
-/** 绀句氦杞欢鍒嗙被缁熻 */
+/** Social software category statistics */
 export interface SocialCategoryStats {
-  /** 鍒嗙被ID */
+  /** Category ID */
   id: string;
-  /** 鍒嗙被鍚嶇О */
+  /** Category name */
   name: string;
-  /** 鍒嗙被鎻忚堪 */
+  /** Category description */
   description: string;
-  /** 鏂囦欢鏁伴噺 */
+  /** Number of files */
   file_count: number;
-  /** 鎬诲ぇ灏忥紙瀛楄妭锛?*/
+  /** Total size (bytes) */
   total_size: number;
-  /** 鍙垹闄ょ殑鏂囦欢鏁伴噺 */
+  /** Number of deletable files */
   deletable_count: number;
-  /** 鍙垹闄ょ殑鏂囦欢澶у皬 */
+  /** Size of deletable files */
   deletable_size: number;
-  /** 鏂囦欢鍒楄〃 */
+  /** File list */
   files: SocialFileEntry[];
 }
 
-/** 绀句氦杞欢鎵弿缁撴灉 V2 */
+/** Social software scan result V2 */
 export interface SocialScanResult {
-  /** 鎸夊垎绫荤粺璁?*/
+  /** Statistics by category */
   categories: SocialCategoryStats[];
-  /** 鎬绘枃浠舵暟 */
+  /** Total number of files */
   total_files: number;
-  /** 鎬诲ぇ灏?*/
+  /** Total size */
   total_size: number;
-  /** 鍙垹闄ょ殑鏂囦欢鏁?*/
+  /** Number of deletable files */
   deletable_files: number;
-  /** 鍙垹闄ょ殑鏂囦欢澶у皬 */
+  /** Size of deletable files */
   deletable_size: number;
-  /** 妫€娴嬪埌鐨勭ぞ浜よ蒋浠跺垪琛?*/
+  /** List of detected social software */
   detected_apps: string[];
-  /** 阶段耗时明细（排查性能用，前端收在「耗时明细」浮层里） */
+  /** Per-phase timing breakdown (for performance troubleshooting, shown in the "Timing Details" popover in the frontend) */
   phase_durations: SocialPhaseDuration[];
-  /** 最慢的几条扫描路径（最多 5 条），按耗时降序 */
+  /** The slowest scan paths (up to 5), in descending order of elapsed time */
   slow_paths: SocialSlowPath[];
 }
 
-/** 社交扫描的单个阶段耗时 */
+/** Timing of a single phase of the social scan */
 export interface SocialPhaseDuration {
-  /** 阶段标识：detect（路径探测）/ categorize（遍历并分级）/ total（合计） */
+  /** Phase id: detect (path detection) / categorize (traverse and grade) / total (total) */
   stage: string;
-  /** 阶段耗时，单位毫秒 */
+  /** Phase elapsed time, in milliseconds */
   duration_ms: number;
 }
 
 /**
- * 单条扫描路径的耗时明细。
+ * Timing breakdown for a single scan path.
  *
- * `directory_count` 是排查关键：这个模块的开销主要在「列目录」而不是「读文件」，
- * 目录数远大于文件数时（例如 QQ 的 Image：4388 个目录只有 1803 个文件），
- * 慢的原因就是 readdir 次数，看这一项就能判断。
+ * `directory_count` is the key to troubleshooting: this module's cost is mainly "listing directories" rather than "reading files",
+ * when the number of directories far exceeds the number of files (e.g. QQ's Image: 4388 directories but only 1803 files),
+ * the slowness comes from the number of readdir calls — this single metric tells you.
  */
 export interface SocialSlowPath {
-  /** 扫描路径 */
+  /** Scan path */
   path: string;
-  /** 所属应用 */
+  /** Owning application */
   app_name: string;
-  /** 耗时，单位毫秒 */
+  /** Elapsed time, in milliseconds */
   duration_ms: number;
-  /** 该路径下的文件数 */
+  /** Number of files under this path */
   file_count: number;
-  /** 该路径下的目录数（含自身） */
+  /** Number of directories under this path (including itself) */
   directory_count: number;
 }
 
 /**
- * 扫描社交软件缓存（带风险分级）。
+ * Scans social software caches (with risk grading).
  *
- * 这里保留中文说明，是为了让前端风险标签和后端分类语义保持一致，避免后续维护时误改删除策略。
+ * The Chinese explanation is kept here so the frontend risk labels and the backend classification semantics stay consistent, avoiding accidental changes to the deletion policy during later maintenance.
  */
 export async function scanSocialCache(): Promise<SocialScanResult> {
   return invoke<SocialScanResult>('scan_social_cache');
 }
 
-/** 获取风险等级的中文描述，用于社交专清列表里的风险标签展示。 */
+/** Gets the Chinese description of a risk level, used for the risk labels in the social cleanup list. */
 export function getRiskLevelDescription(level: RiskLevel): string {
   switch (level) {
     case 'critical': return '危险（聊天记录）';
@@ -603,7 +603,7 @@ export function getRiskLevelDescription(level: RiskLevel): string {
   }
 }
 
-/** 获取风险等级的提示信息，用于 hover 时解释为什么这样分级。 */
+/** Gets the hint for a risk level, used to explain on hover why it was graded that way. */
 export function getRiskLevelTooltip(level: RiskLevel): string {
   switch (level) {
     case 'critical': return '聊天记录数据库，删除后会永久丢失，强烈建议保留';
@@ -614,134 +614,134 @@ export function getRiskLevelTooltip(level: RiskLevel): string {
 }
 
 // ============================================================================
-// 鍗歌浇娈嬬暀鎵弿鐩稿叧
+// Uninstall leftover scan related
 // ============================================================================
 
-/** 鍗歌浇娈嬬暀鎵弿缁撴灉 */
+/** Uninstall leftover scan result */
 export interface LeftoverScanResult {
-  /** 鍙戠幇鐨勬畫鐣欐枃浠跺す鍒楄〃 */
+  /** List of leftover folders found */
   leftovers: LeftoverEntry[];
-  /** 鎬诲ぇ灏忥紙瀛楄妭锛?*/
+  /** Total size (bytes) */
   total_size: number;
-  /** 鎵弿鑰楁椂锛堟绉掞級 */
+  /** Scan elapsed time (milliseconds) */
   scan_duration_ms: number;
-  /** 实际检查过的一级目录数（含被白名单 / 体积阈值挡掉的） */
+  /** Number of first-level directories actually checked (including those blocked by the whitelist / size threshold) */
   scanned_directories: number;
-  /** 进入评分、但低于门槛被丢弃的条数 */
+  /** Number of entries that entered scoring but were discarded for falling below the threshold */
   below_threshold: number;
-  /** 参与评分的目录里的最高置信度（0~1） */
+  /** Highest confidence among the scored directories (0~1) */
   highest_confidence: number;
-  /** 当前判定门槛（0~1），和后端同源，前端不要另写死 */
+  /** Current decision threshold (0~1), same source as the backend — don't hard-code a separate value in the frontend */
   confidence_threshold: number;
 }
 
-/** 娈嬬暀绫诲瀷 */
+/** Leftover type */
 export type LeftoverType = 'Normal' | 'Emulator' | 'VirtualDisk' | 'RegistryOrphan';
 
-/** 妫€娴嬪垎绫伙紙缃俊搴﹀垎绾э級 */
+/** Detection category (confidence grading) */
 export type DetectionCategory = 'HighConfidenceLeftover' | 'Suspicious' | 'LikelyAppData' | 'SystemShared' | 'UpdaterCache' | 'CacheDir';
 
-/** 鍗曚釜娈嬬暀鏉＄洰 */
+/** Single leftover entry */
 export interface LeftoverEntry {
-  /** 鏂囦欢澶硅矾寰?*/
+  /** Folder path */
   path: string;
-  /** 鏂囦欢澶瑰ぇ灏忥紙瀛楄妭锛?*/
+  /** Folder size (bytes) */
   size: number;
-  /** 鍙兘鐨勮蒋浠跺悕绉?*/
+  /** Possible software name */
   app_name: string;
-  /** 鏉ユ簮绫诲瀷 */
+  /** Source type */
   source: 'LocalAppData' | 'RoamingAppData' | 'LocalLowAppData' | 'ProgramData' | 'VirtualDiskFile';
-  /** 鏈€鍚庝慨鏀规椂闂达紙Unix鏃堕棿鎴筹級 */
+  /** Last modified time (Unix timestamp) */
   last_modified: number;
-  /** 鍖呭惈鐨勬枃浠舵暟閲?*/
+  /** Number of files contained */
   file_count: number;
-  /** 鏄惁涓烘ā鎷熷櫒娈嬬暀 */
+  /** Whether it is an emulator leftover */
   is_emulator: boolean;
-  /** 鏄惁涓鸿櫄鎷熺鐩樻枃浠?*/
+  /** Whether it is a virtual disk file */
   is_virtual_disk: boolean;
-  /** 娈嬬暀绫诲瀷 */
+  /** Leftover type */
   leftover_type: LeftoverType;
-  /** 缃俊搴﹀垎鏁?(0.0 ~ 1.0)锛岃秺楂樿秺鍙兘鏄畫鐣?*/
+  /** Confidence score (0.0 ~ 1.0); higher means more likely to be a leftover */
   confidence: number;
-  /** 妫€娴嬪垎绫?*/
+  /** Detection category */
   detection_category: DetectionCategory;
-  /** 璇勫垎鐞嗙敱鍒楄〃锛堜腑鏂囷級 */
+  /** List of scoring reasons (Chinese) */
   reasons: string[];
 }
 
-/** 鍗歌浇娈嬬暀鍒犻櫎缁撴灉 */
+/** Uninstall leftover deletion result */
 export interface LeftoverDeleteResult {
-  /** 鎴愬姛鍒犻櫎鐨勬枃浠跺す鏁?*/
+  /** Number of folders successfully deleted */
   deleted_count: number;
-  /** 閲婃斁鐨勭┖闂村ぇ灏忥紙瀛楄妭锛?*/
+  /** Amount of space released (bytes) */
   deleted_size: number;
-  /** 鍒犻櫎澶辫触鐨勮矾寰?*/
+  /** Paths that failed to delete */
   failed_paths: string[];
-  /** 閿欒淇℃伅鍒楄〃 */
+  /** List of error messages */
   errors: string[];
-  /** 鍥犲寘鍚彲鎵ц鏂囦欢琚烦杩囩殑璺緞锛堥渶閫氳繃娣卞害娓呯悊澶勭悊锛?*/
+  /** Paths skipped for containing executable files (must be handled via deep cleanup) */
   skipped_executables: string[];
 }
 
-/** 用户确认保留的卸载残留路径 */
+/** Uninstall leftover paths the user chose to keep */
 export interface LeftoverWhitelistEntry {
   path: string;
   addedAt: string;
 }
 
 /**
- * 鎵弿鍗歌浇娈嬬暀
- * 鎵弿 AppData 鍜?ProgramData 涓凡鍗歌浇杞欢閬楃暀鐨勫绔嬫枃浠跺す
- * @param deepScan 鏄惁鍚敤娣卞害鎵弿妯″紡锛堟壂鎻忔ā鎷熷櫒娈嬬暀銆佽櫄鎷熺鐩樻枃浠剁瓑锛? */
+ * Scans uninstall leftovers
+ * Scans orphaned folders left by uninstalled software in AppData and ProgramData
+ * @param deepScan Whether to enable deep scan mode (scan emulator leftovers, virtual disk files, etc.) */
 export async function scanUninstallLeftovers(deepScan?: boolean): Promise<LeftoverScanResult> {
   return invoke<LeftoverScanResult>('scan_uninstall_leftovers', { deepScan });
 }
 
 /**
- * 鍒犻櫎鍗歌浇娈嬬暀鏂囦欢澶? * @param paths 瑕佸垹闄ょ殑鏂囦欢澶硅矾寰勫垪琛? */
+ * Deletes uninstall leftover folders. * @param paths List of folder paths to delete */
 export async function deleteLeftoverFolders(paths: string[]): Promise<LeftoverDeleteResult> {
   return invoke<LeftoverDeleteResult>('delete_leftover_folders', { paths });
 }
 
-/** 获取卸载残留用户白名单 */
+/** Gets the uninstall leftover user whitelist */
 export async function listLeftoverWhitelist(): Promise<LeftoverWhitelistEntry[]> {
   return invoke<LeftoverWhitelistEntry[]>('list_leftover_whitelist');
 }
 
-/** 将扫描结果路径加入卸载残留白名单 */
+/** Adds a scan-result path to the uninstall leftover whitelist */
 export async function addLeftoverWhitelistEntry(path: string): Promise<LeftoverWhitelistEntry> {
   return invoke<LeftoverWhitelistEntry>('add_leftover_whitelist_entry', { path });
 }
 
-/** 移除卸载残留路径保护 */
+/** Removes protection from an uninstall leftover path */
 export async function removeLeftoverWhitelistEntry(path: string): Promise<void> {
   return invoke<void>('remove_leftover_whitelist_entry', { path });
 }
 
 // ============================================================================
-// 娉ㄥ唽琛ㄥ啑浣欐壂鎻忕浉鍏?(v3 鈥?纭繃婊ゆ敹鏁?
+// Registry redundancy scan related (v3 - hard-filter convergence)
 // ============================================================================
 
-/** 娉ㄥ唽琛ㄦ壂鎻忕粨鏋?*/
+/** Registry scan result */
 export interface RegistryScanResult {
   entries: RegistryEntry[];
   total_count: number;
   scan_duration_ms: number;
 }
 
-/** 鍗曚釜娉ㄥ唽琛ㄦ潯鐩?*/
+/** Single registry entry */
 export interface RegistryEntry {
-  /** HKCR\Applications 涓嬬殑瀹屾暣璺緞 */
+  /** Full path under HKCR\Applications */
   path: string;
-  /** 搴旂敤绋嬪簭鍚?*/
+  /** Application name */
   name: string;
-  /** 鍏宠仈鐨勪笉瀛樺湪鐨勫彲鎵ц鏂囦欢璺緞 */
+  /** Associated non-existent executable path */
   associated_path: string;
-  /** 闂鎻忚堪 */
+  /** Problem description */
   issue: string;
 }
 
-/** 娉ㄥ唽琛ㄥ垹闄ょ粨鏋?*/
+/** Registry deletion result */
 export interface RegistryDeleteResult {
   backup_path: string;
   deleted_count: number;
@@ -750,29 +750,29 @@ export interface RegistryDeleteResult {
 }
 
 /**
- * 鎵弿娉ㄥ唽琛ㄥ啑浣? * 鍙壂鎻?MUI 缂撳瓨鍜?HKCR\Applications锛岄€氳繃閾佽瘉鏉′欢杩囨护
+ * Scans registry redundancy. * Only scans MUI cache and HKCR\Applications, filtered by hard-evidence conditions
  */
 export async function scanRegistryRedundancy(): Promise<RegistryScanResult> {
   return invoke<RegistryScanResult>('scan_registry_redundancy');
 }
 
 /**
- * 澶囦唤骞跺垹闄ゆ敞鍐岃〃鏉＄洰
- * @param entries 瑕佸垹闄ょ殑娉ㄥ唽琛ㄦ潯鐩垪琛? */
+ * Backs up and deletes registry entries
+ * @param entries List of registry entries to delete */
 export async function deleteRegistryEntries(entries: RegistryEntry[]): Promise<RegistryDeleteResult> {
   return invoke<RegistryDeleteResult>('delete_registry_entries', { entries });
 }
 
 /**
- * 鎵撳紑娉ㄥ唽琛ㄥ浠界洰褰? */
+ * Opens the registry backup directory */
 export async function openRegistryBackupDir(): Promise<void> {
   return invoke<void>('open_registry_backup_dir');
 }
 
 // ============================================================================
-// 澧炲己鍒犻櫎 API - 鏀寔閿佸畾鏂囦欢澶勭悊鍜岀墿鐞嗗ぇ灏忚绠?// ============================================================================
+// Enhanced delete API - supports locked-file handling and physical-size calculation// ============================================================================
 
-/** 鍒犻櫎澶辫触鍘熷洜 */
+/** Deletion failure reason */
 export type DeleteFailureReason = 
   | 'NotFound'
   | 'PermissionDenied'
@@ -782,71 +782,71 @@ export type DeleteFailureReason =
   | 'MarkedForReboot'
   | { Other: string };
 
-/** 鍗曚釜鏂囦欢鍒犻櫎缁撴灉 */
+/** Single file deletion result */
 export interface FileDeleteResult {
-  /** 鏂囦欢璺緞 */
+  /** File path */
   path: string;
-  /** 鏄惁鎴愬姛鍒犻櫎 */
+  /** Whether it was successfully deleted */
   success: boolean;
-  /** 閫昏緫澶у皬锛堟枃浠跺唴瀹瑰ぇ灏忥級 */
+  /** Logical size (file content size) */
   logical_size: number;
-  /** 鐗╃悊澶у皬锛堝疄闄呯鐩樺崰鐢級 */
+  /** Physical size (actual disk usage) */
   physical_size: number;
-  /** 澶辫触鍘熷洜 */
+  /** Failure reason */
   failure_reason: DeleteFailureReason | null;
-  /** 鏄惁鏍囪涓洪噸鍚垹闄?*/
+  /** Whether it is marked for deletion on reboot */
   marked_for_reboot: boolean;
 }
 
-/** 澧炲己鍒犻櫎缁撴灉 */
+/** Enhanced deletion result */
 export interface EnhancedDeleteResult {
-  /** 鎴愬姛鍒犻櫎鐨勬枃浠舵暟 */
+  /** Number of files successfully deleted */
   success_count: number;
-  /** 澶辫触鐨勬枃浠舵暟 */
+  /** Number of files that failed */
   failed_count: number;
-  /** 鏍囪涓洪噸鍚垹闄ょ殑鏂囦欢鏁?*/
+  /** Number of files marked for deletion on reboot */
   reboot_pending_count: number;
-  /** 瀹為檯閲婃斁鐨勭墿鐞嗙┖闂达紙瀛楄妭锛?*/
+  /** Actual physical space released (bytes) */
   freed_physical_size: number;
-  /** 閫昏緫澶у皬鎬昏 */
+  /** Total logical size */
   freed_logical_size: number;
-  /** 璺宠繃鐨勬枃浠跺ぇ灏?*/
+  /** Size of skipped files */
   skipped_size: number;
-  /** 璇︾粏鐨勬枃浠跺垹闄ょ粨鏋?*/
+  /** Detailed per-file deletion results */
   file_results: FileDeleteResult[];
-  /** 鏄惁闇€瑕侀噸鍚畬鎴愭竻鐞?*/
+  /** Whether a reboot is required to complete the cleanup */
   needs_reboot: boolean;
-  /** 汇总消息（WeChat 风格） */
+  /** Summary message (WeChat style) */
   summary_message: string;
-  /** 清理过程的警告提示（如深度扫描会话过期导致的降级），正常删除时为 null */
+  /** Warning hints during cleanup (e.g. downgrade due to an expired deep-scan session), null on normal deletion */
   warning?: string | null;
 }
 
 /**
- * 澧炲己鍒犻櫎鏂囦欢
- * 鏀寔鐗╃悊澶у皬璁＄畻銆侀攣瀹氭枃浠跺鐞嗐€佽缁嗗け璐ュ師鍥犲弽棣? * @param paths 瑕佸垹闄ょ殑鏂囦欢璺緞鍒楄〃
+ * Enhanced file deletion
+ * Supports physical-size calculation, locked-file handling, and detailed failure-reason feedback. * @param paths List of file paths to delete
  */
 export async function enhancedDeleteFiles(paths: string[]): Promise<EnhancedDeleteResult> {
   return invoke<EnhancedDeleteResult>('enhanced_delete_files', { paths });
 }
 
 export interface DeepJunkDeleteOptions {
-  /** 深度扫描会话 ID，用于在后端取出未分页返回的完整分类文件。 */
+  /** Deep-scan session ID, used to retrieve the full uncategorized-paged category files on the backend. */
   scanId?: string;
-  /** 当前页全部选中且分类仍有分页时，按分类删除完整扫描结果。 */
+  /** When all items on the current page are selected and the category still has more pages, delete by full-category scan result. */
   categoryNames?: string[];
-  /** 用户在完整分类中取消选中的路径，保留接口以避免误删。 */
+  /** Paths the user deselected in the full category; kept to avoid accidental deletion. */
   excludedPaths?: string[];
 }
 
-/** 删除深度扫描结果，后端会重新校验路径规则并展开完整分类。 */
+/** Deletes deep-scan results; the backend re-validates path rules and expands the full category. */
 export async function deleteDeepJunkFiles(
   paths: string[],
   options: DeepJunkDeleteOptions = {},
 ): Promise<EnhancedDeleteResult> {
   return invoke<EnhancedDeleteResult>('delete_deep_junk_files', {
     paths,
-    // Tauri 命令参数默认使用 camelCase；传 snake_case 会被命令层忽略，导致只删除当前页。
+    // Tauri command arguments default to camelCase; passing snake_case is ignored by the command layer, causing only the current page to be deleted.
     scanId: options.scanId,
     categoryNames: options.categoryNames,
     excludedPaths: options.excludedPaths,
@@ -854,22 +854,22 @@ export async function deleteDeepJunkFiles(
 }
 
 /**
- * 鑾峰彇鏂囦欢鐨勭墿鐞嗗ぇ灏忥紙鎸夌皣瀵归綈锛? * @param logicalSize 閫昏緫澶у皬锛堝瓧鑺傦級
+ * Gets a file's physical size (aligned to clusters). * @param logicalSize Logical size (bytes)
  */
 export async function getPhysicalSize(logicalSize: number): Promise<number> {
   return invoke<number>('get_physical_size', { logicalSize });
 }
 
 /**
- * 妫€鏌ヨ矾寰勬槸鍚﹂渶瑕佺鐞嗗憳鏉冮檺
- * @param path 鏂囦欢璺緞
+ * Checks whether a path requires administrator privileges
+ * @param path File path
  */
 export async function checkAdminForPath(path: string): Promise<boolean> {
   return invoke<boolean>('check_admin_for_path', { path });
 }
 
 /**
- * 鑾峰彇澶辫触鍘熷洜鐨勭敤鎴峰弸濂芥弿杩? */
+ * Gets a user-friendly description of the failure reason. */
 export function getFailureReasonMessage(reason: DeleteFailureReason | null): string {
   if (!reason) return '';
   switch (reason) {
@@ -879,14 +879,14 @@ export function getFailureReasonMessage(reason: DeleteFailureReason | null): str
     case 'SystemProtected': return '系统保护文件';
     case 'OutOfScope': return '不在清理范围内';
     case 'MarkedForReboot': return '已标记重启后删除';
-    // Other 携带后端逐层尝试的原始错误（如 os error 5），仅在 tooltip 展示；
-    // 列表内统一显示简短"删除失败"，避免冗长的系统错误打扰用户。
+    // Other carries the raw error the backend hit at each layer (e.g. os error 5), shown only in tooltips;
+    // the list uniformly shows the brief "Deletion failed" to avoid bothering users with verbose system errors.
     default: return '删除失败';
   }
 }
 
 /**
- * 鑾峰彇澶辫触鍘熷洜鐨勮缁嗘彁绀猴紙鐢ㄤ簬 tooltip锛? */
+ * Gets the detailed hint for a failure reason (used in tooltips) */
 export function getFailureReasonTooltip(reason: DeleteFailureReason | null): string {
   if (!reason) return '';
   switch (reason) {
@@ -901,71 +901,71 @@ export function getFailureReasonTooltip(reason: DeleteFailureReason | null): str
 }
 
 // ============================================================================
-// 姘镐箙鍒犻櫎 API - 鍗歌浇娈嬬暀娣卞害娓呯悊
+// Permanent delete API - deep cleanup of uninstall leftovers
 // ============================================================================
 
-/** 瀹夊叏妫€鏌ョ粨鏋滅被鍨?*/
+/** Safety check result type */
 export type SafetyCheckResult = 
-  | 'Safe'  // 閫氳繃鎵€鏈夋鏌ワ紝鍙互瀹夊叏鍒犻櫎
+  | 'Safe'  // Passed all checks, safe to delete
   | { FoundInRegistry: { matched_field: string; matched_value: string } }
   | { ContainsExecutables: { files: string[] } }
   | { InProtectedPath: { reason: string } };
 
-/** 鍗曚釜娈嬬暀鐨勬案涔呭垹闄ょ粨鏋?*/
+/** Permanent deletion result for a single leftover */
 export interface LeftoverPermanentDeleteDetail {
-  /** 鏂囦欢澶硅矾寰?*/
+  /** Folder path */
   path: string;
-  /** 鏄惁鎴愬姛鍒犻櫎 */
+  /** Whether it was successfully deleted */
   success: boolean;
-  /** 鍒犻櫎鐨勬枃浠舵暟閲?*/
+  /** Number of files deleted */
   deleted_files: number;
-  /** 閲婃斁鐨勭┖闂达紙瀛楄妭锛?*/
+  /** Space released (bytes) */
   freed_size: number;
-  /** 澶辫触鍘熷洜 */
+  /** Failure reason */
   failure_reason: string | null;
-  /** 鏄惁鏍囪涓洪噸鍚垹闄?*/
+  /** Whether it is marked for deletion on reboot */
   marked_for_reboot: boolean;
-  /** 鏄惁闇€瑕佷汉宸ュ鏍?*/
+  /** Whether manual review is required */
   needs_manual_review: boolean;
-  /** 瀹夊叏妫€鏌ョ粨鏋?*/
+  /** Safety check result */
   safety_check: SafetyCheckResult;
 }
 
-/** 姘镐箙鍒犻櫎鐨勬€讳綋缁撴灉 */
+/** Overall result of permanent deletion */
 export interface PermanentDeleteResult {
-  /** 鎴愬姛鍒犻櫎鐨勬枃浠跺す鏁?*/
+  /** Number of folders successfully deleted */
   success_count: number;
-  /** 澶辫触鐨勬枃浠跺す鏁?*/
+  /** Number of folders that failed */
   failed_count: number;
-  /** 闇€瑕佷汉宸ュ鏍哥殑鏁伴噺 */
+  /** Number requiring manual review */
   manual_review_count: number;
-  /** 鏍囪涓洪噸鍚垹闄ょ殑鏁伴噺 */
+  /** Number marked for deletion on reboot */
   reboot_pending_count: number;
-  /** 瀹為檯閲婃斁鐨勭┖闂达紙瀛楄妭锛?*/
+  /** Actual space released (bytes) */
   freed_size: number;
-  /** 鍚勬枃浠跺す鐨勮缁嗙粨鏋?*/
+  /** Detailed result of each folder */
   details: LeftoverPermanentDeleteDetail[];
-  /** 鍒犻櫎鑰楁椂锛堟绉掞級 */
+  /** Deletion elapsed time (milliseconds) */
   duration_ms: number;
 }
 
 /**
- * 姘镐箙鍒犻櫎鍗歌浇娈嬬暀锛堟繁搴︽竻鐞嗭級
+ * Permanently deletes uninstall leftovers (deep cleanup)
  * 
- * 鈿狅笍 璀﹀憡锛氭鎿嶄綔灏嗙洿鎺ヤ粠纾佺洏姘镐箙鍒犻櫎鏂囦欢锛屼笉鍙仮澶嶏紒
+ * ⚠️ Warning: this operation permanently deletes files from disk and cannot be undone!
  * 
- * 鎵ц鍒犻櫎鍓嶄細杩涜涓夐噸瀹夊叏妫€鏌ワ細
- * 1. 娉ㄥ唽琛ㄦ鏌?- 纭鐩綍涓嶅湪浠讳綍宸插畨瑁呯▼搴忎腑
- * 2. 鍙墽琛屾枃浠舵鏌?- 鎵弿 .exe/.dll/.sys 鏂囦欢锛屽彂鐜板垯璺宠繃
- * 3. 鏍稿績鐧藉悕鍗曟鏌?- 纭繚璺緞涓嶅湪绯荤粺鍏抽敭鐩綍鍐? * 
- * @param paths 瑕佹案涔呭垹闄ょ殑鏂囦欢澶硅矾寰勫垪琛? */
+ * Three safety checks are performed before deletion:
+ * 1. Registry check - confirm the directory is not part of any installed program
+ * 2. Executable check - scan for .exe/.dll/.sys files, skip if found
+ * 3. Core whitelist check - ensure the path is not in a critical system directory *
+ * @param paths List of folder paths to permanently delete */
 export async function deleteLeftoversPermanent(
   paths: string[],
   /**
-   * 是否放行「目录里含可执行文件」。默认 false。
+   * Whether to allow "directories containing executable files". Default false.
    *
-   * 只在用户在结果弹窗里明确点过「强制删除」时为 true：白名单与系统目录保护
-   * 始终生效，放开的只是「有 .exe/.dll/.sys 就拒绝」这一道。
+   * True only when the user explicitly clicked "Force Delete" in the result popup: whitelist and system-directory
+   * protection always apply; only the rule "reject if .exe/.dll/.sys is present" is relaxed.
    */
   allowExecutables = false,
 ): Promise<PermanentDeleteResult> {
@@ -973,13 +973,13 @@ export async function deleteLeftoversPermanent(
 }
 
 /**
- * 鎵ц鍗曚釜璺緞鐨勫畨鍏ㄦ鏌? * 鍦ㄧ敤鎴风‘璁ゅ垹闄ゅ墠锛屽彲浠ュ厛璋冪敤姝ゆ帴鍙ｆ鏌ヨ矾寰勬槸鍚﹀畨鍏? * @param path 瑕佹鏌ョ殑鏂囦欢澶硅矾寰? */
+ * Performs a safety check on a single path. * You can call this API to check whether a path is safe before the user confirms deletion. * @param path Folder path to check */
 export async function checkLeftoverSafety(path: string): Promise<SafetyCheckResult> {
   return invoke<SafetyCheckResult>('check_leftover_safety', { path });
 }
 
 /**
- * 鑾峰彇瀹夊叏妫€鏌ョ粨鏋滅殑鐢ㄦ埛鍙嬪ソ鎻忚堪
+ * Gets a user-friendly description of the safety check result
  */
 export function getSafetyCheckMessage(result: SafetyCheckResult): string {
   if (result === 'Safe') return '瀹夊叏';
@@ -1003,83 +1003,83 @@ export function getSafetyCheckMessage(result: SafetyCheckResult): string {
 }
 
 /**
- * 妫€鏌ュ畨鍏ㄦ鏌ョ粨鏋滄槸鍚﹀畨鍏? */
+ * Checks whether the safety check result is safe. */
 export function isSafetyCheckPassed(result: SafetyCheckResult): boolean {
   return result === 'Safe';
 }
 
 // ============================================================================
-// 绯荤粺淇℃伅 API
+// System information API
 // ============================================================================
 
-/** 绯荤粺淇℃伅 */
+/** System information */
 export interface SystemInfo {
-  /** 鎿嶄綔绯荤粺鍚嶇О */
+  /** Operating system name */
   os_name: string;
-  /** 鎿嶄綔绯荤粺鐗堟湰 */
+  /** Operating system version */
   os_version: string;
-  /** 绯荤粺鏋舵瀯 */
+  /** System architecture */
   os_arch: string;
-  /** 璁＄畻鏈哄悕绉?*/
+  /** Computer name */
   computer_name: string;
-  /** 鐢ㄦ埛鍚?*/
+  /** User name */
   user_name: string;
-  /** CPU 淇℃伅 */
+  /** CPU information */
   cpu_info: string;
-  /** CPU 鏍稿績鏁?*/
+  /** Number of CPU cores */
   cpu_cores: number;
-  /** 鎬诲唴瀛橈紙瀛楄妭锛?*/
+  /** Total memory (bytes) */
   total_memory: number;
-  /** 鍙敤鍐呭瓨锛堝瓧鑺傦級 */
+  /** Available memory (bytes) */
   available_memory: number;
-  /** 绯荤粺鍚姩鏃堕棿锛堢锛?*/
+  /** System boot time (seconds) */
   uptime_seconds: number;
 }
 
 /**
- * 鑾峰彇绯荤粺淇℃伅
+ * Gets system information
  */
 export async function getSystemInfo(): Promise<SystemInfo> {
   return invoke<SystemInfo>('get_system_info');
 }
 
 // ============================================================================
-// 娓呯悊鏃ュ織鐩稿叧 API
+// Cleanup log related API
 // ============================================================================
 
 /**
- * 娓呯悊鏃ュ織鏉＄洰杈撳叆
+ * Cleanup log entry input
  */
 export interface CleanupLogEntryInput {
-  /** 娓呯悊妯″潡鍒嗙被 */
+  /** Cleanup module category */
   category: string;
-  /** 鏂囦欢璺緞 */
+  /** File path */
   path: string;
-  /** 鏂囦欢澶у皬锛堝瓧鑺傦級 */
+  /** File size (bytes) */
   size: number;
-  /** 鏄惁鎴愬姛 */
+  /** Whether it succeeded */
   success: boolean;
-  /** 閿欒淇℃伅锛堝彲閫夛級 */
+  /** Error message (optional) */
   error_message?: string;
 }
 
 /**
- * 娓呯悊鍘嗗彶鎽樿
+ * Cleanup history summary
  */
 export interface CleanupHistorySummary {
-  /** 鏃ュ織鏂囦欢鍚?*/
+  /** Log file name */
   filename: string;
-  /** 浼氳瘽寮€濮嬫椂闂?*/
+  /** Session start time */
   session_start: string;
-  /** 浼氳瘽缁撴潫鏃堕棿 */
+  /** Session end time */
   session_end: string;
-  /** 鎬绘枃浠舵暟 */
+  /** Total number of files */
   total_files: number;
-  /** 鎴愬姛鏁?*/
+  /** Number of successes */
   success_count: number;
-  /** 澶辫触鏁?*/
+  /** Number of failures */
   failed_count: number;
-  /** 鎬婚噴鏀剧┖闂达紙瀛楄妭锛?*/
+  /** Total space released (bytes) */
   total_freed_bytes: number;
 }
 
@@ -1096,7 +1096,7 @@ function getCleanupLogRetentionSetting(): number {
     if (!raw) return DEFAULT_CLEANUP_LOG_RETENTION;
     const parsed = JSON.parse(raw) as { cleanupLogRetention?: unknown };
     const count = Math.floor(Number(parsed.cleanupLogRetention) || DEFAULT_CLEANUP_LOG_RETENTION);
-    // 前端读取本地设置时也做边界收敛，后端仍会二次校验，避免手动篡改 localStorage。
+    // The frontend also clamps local settings on read; the backend validates again to prevent manual tampering with localStorage.
     return Math.min(100, Math.max(1, count));
   } catch {
     return DEFAULT_CLEANUP_LOG_RETENTION;
@@ -1104,7 +1104,7 @@ function getCleanupLogRetentionSetting(): number {
 }
 
 /**
- * 璁板綍娓呯悊鎿嶄綔鍒版棩蹇楁枃浠? * @param entries 娓呯悊璁板綍鏁扮粍
+ * Records a cleanup operation to the log file. * @param entries Cleanup record array
  */
 export async function recordCleanupAction(entries: CleanupLogEntryInput[]): Promise<string> {
   return invoke<string>('record_cleanup_action', {
@@ -1114,102 +1114,102 @@ export async function recordCleanupAction(entries: CleanupLogEntryInput[]): Prom
 }
 
 /**
- * 鎵撳紑鏃ュ織鏂囦欢澶? */
+ * Opens the log file directory. */
 export async function openLogsFolder(): Promise<void> {
   return invoke<void>('open_logs_folder');
 }
 
 /**
- * 鑾峰彇娓呯悊鍘嗗彶璁板綍鍒楄〃
+ * Gets the cleanup history list
  */
 export async function getCleanupHistory(): Promise<CleanupHistorySummary[]> {
   return invoke<CleanupHistorySummary[]>('get_cleanup_history');
 }
 
 // ============================================================================
-// 澶х洰褰曞垎鏋愮浉鍏?API
+// Big directory analysis related API
 // ============================================================================
 
 /**
- * 澶х洰褰曟潯鐩俊鎭? */
+ * Big directory entry information */
 export interface HotspotEntry {
-  /** 鏂囦欢澶瑰畬鏁磋矾寰?*/
+  /** Full folder path */
   path: string;
-  /** 鏂囦欢澶瑰悕绉?*/
+  /** Folder name */
   name: string;
-  /** 鎬诲ぇ灏忥紙瀛楄妭锛?*/
+  /** Total size (bytes) */
   total_size: number;
-  /** 鏂囦欢鏁伴噺 */
+  /** Number of files */
   file_count: number;
-  /** 鏈€鍚庝慨鏀规椂闂达紙Unix 鏃堕棿鎴筹紝姣锛?*/
+  /** Last modified time (Unix timestamp, milliseconds) */
   last_modified: number;
-  /** 鐖剁洰褰曠被鍨嬶紙Local/Roaming/LocalLow/System/Program 绛夛級 */
+  /** Parent directory type (Local/Roaming/LocalLow/System/Program, etc.) */
   parent_type: string;
-  /** 鏄惁涓虹紦瀛樼洰褰?*/
+  /** Whether it is a cache directory */
   is_cache: boolean;
-  /** 鏄惁涓虹▼搴忕洰褰?*/
+  /** Whether it is a program directory */
   is_program: boolean;
-  /** 鏄惁鍙畨鍏ㄦ竻鐞嗭紙娣卞害鎵弿妯″紡涓嬪己鍒朵负 false锛?*/
+  /** Whether it is safe to clean (forced to false in deep scan mode) */
   is_safe_to_clean: boolean;
-  /** 鏄惁涓虹郴缁熶繚鎶ょ洰褰曪紙榛戝悕鍗曠洰褰曪級 */
+  /** Whether it is a system-protected directory (blacklisted directory) */
   is_protected: boolean;
-  /** 瀛愮洰褰曞垪琛紙鏅鸿兘涓嬮捇锛氬綋鐩綍 >5GB 涓?>1000 鏂囦欢鏃讹紝灞曠ず鍓?3 涓渶澶у瓙鐩綍锛?*/
+  /** Child directory list (smart drill-down: when a directory is >5GB and has >1000 files, show the 3 largest subdirectories) */
   children: HotspotEntry[];
-  /** 褰撳墠鐩綍鐨勪笅閽绘繁搴︼紙0 = 椤剁骇鐩綍锛?*/
+  /** Drill-down depth of the current directory (0 = top-level directory) */
   depth: number;
 }
 
 /**
- * 澶х洰褰曟壂鎻忕粨鏋? */
+ * Big directory scan result */
 export interface HotspotScanResult {
-  /** 澶х洰褰曞垪琛紙宸叉寜澶у皬闄嶅簭鎺掑垪锛?*/
+  /** Big directory list (already sorted by size descending) */
   entries: HotspotEntry[];
-  /** 鎵弿鐨勬€绘枃浠跺す鏁?*/
+  /** Number of folders scanned */
   total_folders_scanned: number;
-  /** 鎵弿鑰楁椂锛堟绉掞級 */
+  /** Scan elapsed time (milliseconds) */
   scan_duration_ms: number;
-  /** 鎵弿鑼冨洿鎬诲ぇ灏忥紙AppData 鎴?C 鐩樻€昏锛?*/
+  /** Total size of the scan scope (AppData or C drive total) */
   scanned_total_size: number;
-  /** 鏄惁涓烘繁搴︽壂鎻忔ā寮?*/
+  /** Whether it is deep scan mode */
   is_full_scan: boolean;
 }
 
 /**
- * 鎵弿杩涘害浜嬩欢锛堜粎娣辨壂鎻忔椂鎺ㄩ€侊級
+ * Scan progress event (pushed only during deep scans)
  */
 export interface HotspotScanProgress {
-  /** 褰撳墠姝ｅ湪鎵弿鐨勭洰褰?*/
+  /** Directory currently being scanned */
   current_dir: string;
-  /** 宸叉壂鎻忕殑鏂囦欢澶规暟 */
+  /** Number of folders scanned */
   scanned_dirs: number;
-  /** 鍙戠幇鐨勫ぇ鐩綍鏁帮紙鈮?00MB锛?*/
+  /** Number of big directories found (>=100MB) */
   found_entries: number;
-  /** 宸叉壂鎻忚寖鍥寸殑鎬诲ぇ灏忥紙瀛楄妭锛?*/
+  /** Total size of the scanned scope (bytes) */
   total_size: number;
-  /** 涓€绾х洰褰曟€绘暟锛堢敤浜庤繘搴︾櫨鍒嗘瘮锛?*/
+  /** Total number of first-level directories (used for progress percentage) */
   total_first_level_dirs: number;
-  /** 宸插畬鎴愮殑涓€绾х洰褰曟暟锛堢敤浜庣簿纭繘搴︾櫨鍒嗘瘮锛?*/
+  /** Number of completed first-level directories (used for precise progress percentage) */
   completed_roots: number;
-  /** 当前扫描后端：mft / walkdir */
+  /** Current scan backend: mft / walkdir */
   backend?: string;
-  /** 当前阶段：mft / index / metadata / aggregate / result / walkdir */
+  /** Current phase: mft / index / metadata / aggregate / result / walkdir */
   stage?: string;
-  /** 当前阶段说明，用于前端展示瓶颈 */
+  /** Current phase description, used by the frontend to show the bottleneck */
   message?: string;
-  /** 扫描总耗时，单位毫秒 */
+  /** Total scan elapsed time, in milliseconds */
   elapsed_ms?: number;
-  /** 当前阶段耗时，单位毫秒 */
+  /** Current phase elapsed time, in milliseconds */
   stage_elapsed_ms?: number;
-  /** 当前阶段的关键数字（分段/读盘/解析、目录数、回退 stat 数…），用于定位瓶颈 */
+  /** Key numbers for the current phase (segments/disk reads/parsing, directory count, fallback stat count...), used to locate bottlenecks */
   detail?: string;
 }
 
 /**
- * 鎵弿澶х洰褰? * @param topN 杩斿洖 Top N 缁撴灉锛岄粯璁?20
- * @param fullScan 鏄惁鍚敤鍏ㄧ洏娣卞害鎵弿锛岄粯璁?false锛堜粎鎵弿 AppData锛? *
- * 銆愬畨鍏ㄦ帾鏂姐€戞繁搴︽壂鎻忔ā寮忎笅锛屾墍鏈夌粨鏋滅殑 is_safe_to_clean 涓?false锛? * 鍓嶇搴旂鐢ㄦ竻鐞嗘寜閽紝浠呭厑璁?鎵撳紑浣嶇疆"鍜?鎼滅储"鎿嶄綔
+ * Scans big directories. * @param topN Return Top N results, default 20
+ * @param fullScan Whether to enable full-disk deep scan, default false (only scans AppData) *
+ * [Safety] In deep scan mode, is_safe_to_clean is false for all results. * The frontend should disable the cleanup button, allowing only "Open Location" and "Search" actions.
  *
- * 銆愯繘搴︿簨浠躲€戞繁搴︽壂鎻忔椂鐩戝惉 `hotspot-scan:progress` 鑾峰彇瀹炴椂杩涘害锛? * `hotspot-scan:cancelled` 琛ㄧず鎵弿琚彇娑? */
+ * [Progress events] During deep scans, listen to `hotspot-scan:progress` for real-time progress. * `hotspot-scan:cancelled` means the scan was cancelled. */
 export async function scanHotspot(
   topN?: number,
   fullScan?: boolean,
@@ -1222,129 +1222,129 @@ export async function scanHotspot(
 }
 
 /**
- * 鍙栨秷姝ｅ湪鎵ц鐨勫ぇ鐩綍鎵弿
+ * Cancels the running big directory scan
  */
 export async function cancelHotspotScan(): Promise<void> {
   return invoke<void>('cancel_hotspot_scan');
 }
 
 /**
- * 鍗曞眰璺緞閽诲彇鎵弿锛堝姩鎬佷笅閽诲姛鑳斤級
- * 鎵弿鎸囧畾璺緞鐨勭洿鎺ュ瓙鏂囦欢澶癸紝鐢ㄤ簬閫愬眰灞曞紑娣卞眰鐩綍缁撴瀯
- * @param path 瑕佹壂鎻忕殑鐩爣鐩綍缁濆璺緞
+ * Single-level path drill-down scan (dynamic drill-down feature)
+ * Scans the direct child folders of a specified path, used to expand deep directory structures level by level
+ * @param path Absolute path of the target directory to scan
  */
 export async function scanPathDirect(path: string): Promise<HotspotScanResult> {
   return invoke<HotspotScanResult>('scan_path_direct', { path });
 }
 
 /**
- * 鐩綍娓呯悊缁撴灉
+ * Directory cleanup result
  */
 export interface CleanupDirectoryResult {
-  /** 鎴愬姛鍒犻櫎鐨勬枃浠?鐩綍鏁?*/
+  /** Number of files/directories successfully deleted */
   deleted_count: number;
-  /** 鍒犻櫎澶辫触鐨勬暟閲?*/
+  /** Number of deletion failures */
   failed_count: number;
-  /** 閲婃斁鐨勭┖闂村ぇ灏忥紙瀛楄妭锛?*/
+  /** Amount of space released (bytes) */
   freed_size: number;
-  /** 閿欒淇℃伅鍒楄〃 */
+  /** List of error messages */
   errors: string[];
 }
 
 /**
- * 娓呯悊鐩綍鍐呭锛堜繚鐣欐牴鐩綍锛? * @param path 鐩綍璺緞
+ * Cleans directory contents (keeps the root directory). * @param path Directory path
  */
 export async function cleanupDirectoryContents(path: string): Promise<CleanupDirectoryResult> {
   return invoke<CleanupDirectoryResult>('cleanup_directory_contents', { path });
 }
 
 // ============================================================================
-// 鍙抽敭鑿滃崟娓呯悊鐩稿叧 API
+// Context menu cleanup related API
 // ============================================================================
 
-/** 鍗曚釜鍙抽敭鑿滃崟鏉＄洰 */
+/** Single context menu entry */
 export interface ContextMenuEntry {
-  /** 鍞竴 ID锛坮eg_root + "||" + reg_subpath锛?*/
+  /** Unique ID (reg_root + "||" + reg_subpath) */
   id: string;
-  /** 鑿滃崟鏄剧ず鍚嶇О锛堝凡瑙ｆ瀽 MUIVerb 闂存帴瀛楃涓诧級 */
+  /** Menu display name (MUIVerb indirect string resolved) */
   display_name: string;
-  /** 娉ㄥ唽琛ㄥ瓙閿悕 */
+  /** Registry subkey name */
   key_name: string;
-  /** 瀹屾暣娉ㄥ唽琛ㄨ矾寰勶紙鐢ㄤ簬 UI 灞曠ず锛?*/
+  /** Full registry path (for UI display) */
   registry_path: string;
-  /** 娉ㄥ唽琛ㄦ牴 ("HKCU" | "HKLM") */
+  /** Registry root ("HKCU" | "HKLM") */
   reg_root: 'HKCU' | 'HKLM';
-  /** 鐩稿浜庢牴鐨勫瓙璺緞 */
+  /** Child path relative to the root */
   reg_subpath: string;
-  /** 浣滅敤鑼冨洿锛?浠绘剰鏂囦欢", "鏂囦欢澶?, "妗岄潰鑳屾櫙", "纾佺洏椹卞姩鍣?, "搴撴枃浠跺す"锛?*/
+  /** Scope ("Any File", "Folder", "Desktop Background", "Disk Drive", "Library Folder") */
   scope: string;
-  /** 鍥炬爣璺緞锛堝師濮嬪€硷紝鍙兘鍚?index 鍚庣紑锛?*/
+  /** Icon path (raw, may have an index suffix) */
   icon_path: string | null;
-  /** 鍘熷鍛戒护瀛楃涓?*/
+  /** Raw command string */
   command: string | null;
-  /** 浠庡懡浠や腑鎻愬彇鐨?exe 璺緞 */
+  /** exe path extracted from the command */
   exe_path: string | null;
-  /** 目标程序三态：ok 文件在 / missing 文件已不在（唯一算"失效"的）/ unknown 提不出路径无法判定 */
+  /** Target program tri-state: ok = file exists / missing = file no longer exists (the only case counted as "invalid") / unknown = no path could be extracted */
   exe_status: 'ok' | 'missing' | 'unknown';
-  /** 鏄惁闇€瑕佺鐞嗗憳鏉冮檺鎵嶈兘鍒犻櫎 */
+  /** Whether administrator privileges are required to delete */
   needs_admin: boolean;
-  /** 鏄惁涓虹郴缁熶繚鎶ゆ潯鐩紙涓嶅彲閫変腑鍒犻櫎锛?*/
+  /** Whether it is a system-protected entry (cannot be selected for deletion) */
   is_system_protected: boolean;
-  /** 椋庨櫓绛夌骇锛?safe" | "caution" | "danger"锛?*/
+  /** Risk level ("safe" | "caution" | "danger") */
   risk_level: string;
 }
 
-/** 鍙抽敭鑿滃崟鎵弿缁撴灉 */
+/** Context menu scan result */
 export interface ContextMenuScanResult {
-  /** 鎵€鏈夋壂鎻忓埌鐨勬潯鐩?*/
+  /** All scanned entries */
   entries: ContextMenuEntry[];
-  /** 鍏朵腑鏃犳晥锛坋xe 涓嶅瓨鍦級鐨勬潯鐩暟 */
+  /** Number of invalid entries (exe does not exist) */
   invalid_count: number;
-  /** 鎵弿鑰楁椂锛堟绉掞級 */
+  /** Scan elapsed time (milliseconds) */
   scan_duration_ms: number;
 }
 
-/** 鍙抽敭鑿滃崟鏉＄洰鍒犻櫎璇锋眰 */
+/** Context menu entry deletion request */
 export interface ContextMenuDeleteRequest {
-  /** 鏉＄洰鍞竴 ID */
+  /** Unique entry ID */
   id: string;
-  /** 娉ㄥ唽琛ㄦ牴 */
+  /** Registry root */
   reg_root: 'HKCU' | 'HKLM';
-  /** 鐩稿浜庢牴鐨勫瓙璺緞 */
+  /** Child path relative to the root */
   reg_subpath: string;
 }
 
-/** 鍗曚釜鏉＄洰鐨勫垹闄よ鎯?*/
+/** Deletion details of a single entry */
 export interface ContextMenuDeleteDetail {
-  /** 鏉＄洰 ID */
+  /** Entry ID */
   id: string;
-  /** 鏄惁鎴愬姛 */
+  /** Whether it succeeded */
   success: boolean;
-  /** 澶辫触鍘熷洜 */
+  /** Failure reason */
   error: string | null;
 }
 
-/** 鍙抽敭鑿滃崟鍒犻櫎缁撴灉 */
+/** Context menu deletion result */
 export interface ContextMenuDeleteResult {
-  /** 鎴愬姛鍒犻櫎鐨勬潯鐩暟 */
+  /** Number of entries successfully deleted */
   deleted_count: number;
-  /** 鍒犻櫎澶辫触鐨勬潯鐩暟 */
+  /** Number of entries that failed to delete */
   failed_count: number;
-  /** 姣忎釜鏉＄洰鐨勮缁嗙粨鏋?*/
+  /** Detailed result of each entry */
   details: ContextMenuDeleteDetail[];
 }
 
 /**
- * 鎵弿 Windows 娉ㄥ唽琛ㄤ腑鐨勫彸閿彍鍗曟潯鐩? *
- * 瑕嗙洊 HKCU 鍜?HKLM 涓嬬殑 *\shell, Directory\shell,
- * Directory\Background\shell, Drive\shell 绛夋牳蹇冭矾寰? */
+ * Scans context menu entries in the Windows registry. *
+ * Covers the core paths under HKCU and HKLM: *\shell, Directory\shell,
+ * Directory\Background\shell, Drive\shell, etc. */
 export async function scanContextMenu(): Promise<ContextMenuScanResult> {
   return invoke<ContextMenuScanResult>('scan_context_menu');
 }
 
 /**
- * 鍒犻櫎閫変腑鐨勫彸閿彍鍗曟敞鍐岃〃鏉＄洰
- * @param entries 瑕佸垹闄ょ殑鏉＄洰鍒楄〃
+ * Deletes the selected context menu registry entries
+ * @param entries List of entries to delete
  */
 export async function deleteContextMenuEntries(
   entries: ContextMenuDeleteRequest[]
@@ -1352,129 +1352,129 @@ export async function deleteContextMenuEntries(
   return invoke<ContextMenuDeleteResult>('delete_context_menu_entries', { entries });
 }
 
-/** 打开右键菜单条目的 .reg 备份目录（误删后手动恢复用） */
+/** Opens the .reg backup directory for context menu entries (for manual recovery after accidental deletion) */
 export async function openContextMenuBackupDir(): Promise<void> {
   return invoke<void>('open_context_menu_backup_dir');
 }
 
 // ============================================================================
-// 绯荤粺蹇嵎宸ュ叿
+// System quick tools
 // ============================================================================
 
 /**
- * 鎵撳紑浠诲姟绠＄悊鍣ㄧ殑鍚姩椤圭鐞嗛〉闈? */
+ * Opens the Task Manager Startup apps page. */
 export async function openStartupManager(): Promise<void> {
   return invoke<void>('open_startup_manager');
 }
 
 /**
- * 鎵撳紑 Windows 瀛樺偍鎰熺煡璁剧疆椤甸潰
+ * Opens the Windows Storage Sense settings page
  */
 export async function openStorageSettings(): Promise<void> {
   return invoke<void>('open_storage_settings');
 }
 
 // ============================================================================
-// 多盘全盘变化分析 API
+// Multi-disk full-disk change analysis API
 // ============================================================================
 
-/** 全盘变化条目 */
+/** Full-disk change entry */
 export interface DiskGrowthDetailEntry {
-  /** 发生变化的直接子目录路径 */
+  /** Path of the changed direct child directory */
   path: string;
-  /** 子目录名称，用于弹窗列表展示 */
+  /** Child directory name, used for display in the popup list */
   name: string;
-  /** 上次快照大小 */
+  /** Size in the previous snapshot */
   old_size: number;
-  /** 本次快照大小 */
+  /** Size in this snapshot */
   new_size: number;
-  /** 与上次快照相比的变化量，正数为新增，负数为减少 */
+  /** Change amount vs the previous snapshot; positive means increase, negative means decrease */
   diff: number;
-  /** 该目录子树内最新文件修改时间，Unix 秒；旧快照缺失时为 0 */
+  /** Latest file modification time within this directory subtree, Unix seconds; 0 if missing from the old snapshot */
   modified: number;
-  /** 明细变化级别 */
+  /** Detail change level */
   level: 'significant' | 'fast' | 'minor' | 'stable' | 'decreased' | 'new';
 }
 
 export interface DiskGrowthFileDetailEntry {
-  /** 发生变化的文件路径 */
+  /** Path of the changed file */
   path: string;
-  /** 文件名，用于弹窗列表展示 */
+  /** File name, used for display in the popup list */
   name: string;
-  /** 上次快照大小 */
+  /** Size in the previous snapshot */
   old_size: number;
-  /** 本次快照大小 */
+  /** Size in this snapshot */
   new_size: number;
-  /** 与上次快照相比的变化量，正数为新增，负数为减少 */
+  /** Change amount vs the previous snapshot; positive means increase, negative means decrease */
   diff: number;
-  /** 文件最后修改时间，Unix 秒；旧快照缺失时为 0 */
+  /** File last modified time, Unix seconds; 0 if missing from the old snapshot */
   modified: number;
-  /** 文件变化级别 */
+  /** File change level */
   level: 'significant' | 'fast' | 'minor' | 'stable' | 'decreased' | 'new';
 }
 
 export interface DiskGrowthFileDetailsResponse {
-  /** 查询目录 */
+  /** Query directory */
   path: string;
-  /** 上次扫描时间 */
+  /** Previous scan time */
   previous_scan_time: string;
-  /** 本次扫描时间 */
+  /** Current scan time */
   current_scan_time: string;
-  /** 文件级变化明细 */
+  /** File-level change details */
   entries: DiskGrowthFileDetailEntry[];
-  /** 实际变化文件数量 */
+  /** Actual number of changed files */
   total_changed_files: number;
-  /** 本次返回文件数量 */
+  /** Number of files returned this time */
   returned_files: number;
-  /** 分页偏移 */
+  /** Pagination offset */
   offset: number;
-  /** 是否还有更多文件 */
+  /** Whether there are more files */
   has_more: boolean;
 }
 
 export interface DiskGrowthDirectoryDetailsResponse {
-  /** 查询目录 */
+  /** Query directory */
   path: string;
-  /** 上次扫描时间 */
+  /** Previous scan time */
   previous_scan_time: string;
-  /** 本次扫描时间 */
+  /** Current scan time */
   current_scan_time: string;
-  /** 目录级变化明细 */
+  /** Directory-level change details */
   entries: DiskGrowthDetailEntry[];
-  /** 实际变化目录数量 */
+  /** Actual number of changed directories */
   total_changed_dirs: number;
-  /** 本次返回目录数量 */
+  /** Number of directories returned this time */
   returned_dirs: number;
-  /** 分页偏移 */
+  /** Pagination offset */
   offset: number;
-  /** 是否还有更多目录 */
+  /** Whether there are more directories */
   has_more: boolean;
 }
 
 export interface DiskGrowthEntry {
-  /** 目录路径 */
+  /** Directory path */
   path: string;
-  /** 上次快照大小，首次出现时为 0 */
+  /** Size in the previous snapshot, 0 on first appearance */
   old_size: number;
-  /** 本次快照大小 */
+  /** Size in this snapshot */
   new_size: number;
-  /** 与上次快照相比的变化量，正数为新增，负数为减少 */
+  /** Change amount vs the previous snapshot; positive means increase, negative means decrease */
   diff: number;
-  /** 该目录子树内最新文件修改时间，Unix 秒；旧快照缺失时为 0 */
+  /** Latest file modification time within this directory subtree, Unix seconds; 0 if missing from the old snapshot */
   modified: number;
-  /** 相对上次快照的变化百分比 */
+  /** Percentage change relative to the previous snapshot */
   diff_percent: number;
-  /** 用于前端提示强弱，避免把小波动渲染成高风险 */
+  /** Used to indicate hint strength in the frontend, avoiding rendering small fluctuations as high risk */
   level: 'significant' | 'fast' | 'minor' | 'stable' | 'decreased' | 'new';
-  /** 后端根据路径和变化方向生成的说明 */
+  /** Description generated by the backend from the path and change direction */
   explanation: string;
-  /** 排查建议，不代表该目录可以直接清理 */
+  /** Troubleshooting suggestion, not a claim that the directory can be cleaned directly */
   suggestion: string;
-  /** 该目录下一级子目录的变化明细，后端默认最多返回 50 条 */
+  /** Change details of the first-level subdirectories under this directory; the backend returns at most 50 by default */
   details: DiskGrowthDetailEntry[];
 }
 
-/** HTML 导出用的多级目录变化树，最多由后端返回三级子目录。 */
+/** Multi-level directory change tree for HTML export, with at most three levels of subdirectories returned by the backend. */
 export interface DiskGrowthExportNode {
   path: string;
   name: string;
@@ -1486,132 +1486,132 @@ export interface DiskGrowthExportNode {
   children: DiskGrowthExportNode[];
 }
 
-/** HTML 导出目录树响应，明确告知是否触发了极端数据量保护上限。 */
+/** HTML export directory tree response, explicitly stating whether the extreme-data-volume protection limit was triggered. */
 export interface DiskGrowthExportTreeResponse {
   nodes: DiskGrowthExportNode[];
   total_nodes: number;
   truncated: boolean;
 }
 
-/** 全盘变化报告 */
+/** Full-disk change report */
 export interface DiskGrowthReport {
-  /** 变化目录按绝对变化量排序，后端最多返回 300 项 */
+  /** Changed directories sorted by absolute change amount, at most 300 returned by the backend */
   entries: DiskGrowthEntry[];
-  /** 所选磁盘净变化量，正数为新增，负数为减少 */
+  /** Net change of the selected disk; positive means increase, negative means decrease */
   total_growth: number;
-  /** 显著增长目录数量 */
+  /** Number of significantly grown directories */
   significant_count: number;
-  /** 快速增长目录数量 */
+  /** Number of rapidly growing directories */
   fast_count: number;
-  /** 新增目录数量 */
+  /** Number of newly added directories */
   new_count: number;
-  /** 减少目录数量 */
+  /** Number of decreased directories */
   decreased_count: number;
-  /** 两次快照的时间跨度 */
+  /** Time span between the two snapshots */
   time_span: string;
-  /** 用户可读的变化摘要 */
+  /** Human-readable change summary */
   summary: string;
 }
 
-/** 全盘目录分析条目 */
+/** Full-disk directory analysis entry */
 export interface DiskGrowthAnalyzeEntry {
-  /** 目录路径 */
+  /** Directory path */
   path: string;
-  /** 当前目录聚合大小 */
+  /** Aggregated size of the current directory */
   size: number;
-  /** 全盘扫描聚合深度 */
+  /** Aggregation depth of the full-disk scan */
   depth?: number;
-  /** 目录分类，仅用于帮助用户定位来源 */
+  /** Directory category, used only to help the user locate the source */
   category: string;
-  /** 该目录子树内最新文件修改时间，Unix 秒；旧快照缺失时为 0 */
+  /** Latest file modification time within this directory subtree, Unix seconds; 0 if missing from the old snapshot */
   modified: number;
-  /** 变化或占用原因说明 */
+  /** Description of the change or usage reason */
   reason: string;
-  /** 排查建议，不承诺可删除 */
+  /** Troubleshooting suggestion, no promise that it can be deleted */
   suggestion: string;
-  /** 兼容 ModuleCard 行组件的展示字段，全盘分析不做风险判定 */
+  /** Display fields compatible with the ModuleCard row component; full-disk analysis makes no risk judgment */
   risk?: 'safe' | 'warning' | 'dangerous';
-  /** 兼容旧行数据结构，全盘分析不提供清理动作 */
+  /** Compatible with the old row data structure; full-disk analysis provides no cleanup action */
   action?: 'delete' | 'suggest' | 'ignore' | 'protect';
-  /** 全盘分析不匹配清理规则，保留空值便于旧展示逻辑复用 */
+  /** Full-disk analysis matches no cleanup rules; empty values are kept so old display logic can be reused */
   matched_rule_id?: string | null;
-  /** 全盘分析暂无规则标签 */
+  /** Full-disk analysis has no rule tags yet */
   tags?: string[];
 }
 
-/** 全盘目录分析结果 */
+/** Full-disk directory analysis result */
 export interface DiskGrowthAnalyzeResult {
-  /** 变化目录；首次扫描时回退为当前占用较大的目录 */
+  /** Changed directories; falls back to the currently largest directories by usage on the first scan */
   entries: DiskGrowthAnalyzeEntry[];
-  /** 本次变化绝对值 */
+  /** Absolute value of this change */
   changed_size: number;
-  /** 本次新增空间 */
+  /** Space added this time */
   increased_size: number;
-  /** 本次减少空间 */
+  /** Space reduced this time */
   decreased_size: number;
 }
 
-/** 所选磁盘全盘变化扫描响应 */
+/** Full-disk change scan response for the selected disk */
 export interface DiskGrowthScanResponse {
-  /** 本次扫描的磁盘盘符 */
+  /** Drive letter of the disk scanned this time */
   drive_letter: string;
-  /** 本次通过 MFT 聚合到的所选磁盘文件总大小 */
+  /** Total size of files on the selected disk aggregated via MFT this time */
   total_size: number;
-  /** 本次成功读取大小的文件数量 */
+  /** Number of files whose size was read successfully this time */
   total_files_scanned: number;
-  /** 扫描耗时，单位毫秒 */
+  /** Scan elapsed time, in milliseconds */
   scan_duration_ms: number;
-  /** 扫描根路径 */
+  /** Scan root path */
   root_path: string;
-  /** 上一次快照时间，首次扫描时为空 */
+  /** Previous snapshot time, empty on the first scan */
   previous_scan_time?: string | null;
-  /** 本次快照时间 */
+  /** Current snapshot time */
   current_scan_time: string;
-  /** 扫描后端，当前应为 mft */
+  /** Scan backend, currently mft */
   backend: string;
-  /** 后端各阶段耗时，用于判断性能瓶颈 */
+  /** Per-phase backend timing, used to judge performance bottlenecks */
   phase_durations: DiskGrowthPhaseDuration[];
-  /** 直接从 MFT FILE record 解析到大小的文件数量 */
+  /** Number of files whose size was parsed directly from MFT FILE records */
   mft_size_count: number;
-  /** MFT 大小解析失败后回退 metadata 的文件数量 */
+  /** Number of files that fell back to metadata after MFT size parsing failed */
   metadata_fallback_count: number;
-  /** $MFT 的 data run 段数 */
+  /** Number of data run segments in $MFT */
   mft_fragments?: number;
-  /** 读 $MFT 等磁盘的时间 */
+  /** Time to read $MFT and other disk data */
   mft_io_ms?: number;
-  /** 解析 $MFT 记录的时间 */
+  /** Time to parse $MFT records */
   mft_parse_ms?: number;
-  /** 分析结果 */
+  /** Analysis result */
   analyze: DiskGrowthAnalyzeResult;
-  /** 与上次快照相比的变化报告 */
+  /** Change report vs the previous snapshot */
   growth: DiskGrowthReport;
 }
 
-/** 后端扫描阶段耗时 */
+/** Backend scan phase timing */
 export interface DiskGrowthPhaseDuration {
-  /** 阶段标识：mft/path/metadata/aggregate */
+  /** Phase id: mft/path/metadata/aggregate */
   stage: string;
-  /** 阶段耗时，单位毫秒 */
+  /** Phase elapsed time, in milliseconds */
   duration_ms: number;
 }
 
-/** 后端扫描阶段进度事件 */
+/** Backend scan phase progress event */
 export interface DiskGrowthScanProgress {
-  /** 阶段标识：mft/path/metadata/aggregate */
+  /** Phase id: mft/path/metadata/aggregate */
   stage: string;
-  /** 当前阶段说明 */
+  /** Current phase description */
   message: string;
-  /** 已处理数量 */
+  /** Number processed */
   processed: number;
-  /** 总数量，无法预估时为空 */
+  /** Total number, empty when it cannot be estimated */
   total?: number | null;
-  /** 扫描总已用时，单位毫秒 */
+  /** Total scan elapsed time, in milliseconds */
   elapsed_ms: number;
 }
 
 /**
- * 扫描所选磁盘并与上次快照对比。
- * 这里只保留全盘变化分析入口，避免前端继续误用旧 ProgramData 清理命令。
+ * Scans the selected disk and compares it with the previous snapshot.
+ * Only the full-disk change analysis entry is kept here, to prevent the frontend from continuing to misuse the old ProgramData cleanup command.
  */
 export async function scanDiskGrowth(
   maxChangeEntries?: number,
@@ -1642,7 +1642,7 @@ export async function getDiskGrowthDirectoryDetails(
   return invoke<DiskGrowthDirectoryDetailsResponse>('get_disk_growth_directory_details', { path, offset, limit, driveLetter });
 }
 
-/** 获取 HTML 导出所需的最多三级目录变化树。 */
+/** Gets up to three levels of directory change trees for HTML export. */
 export async function getDiskGrowthExportTree(
   paths: string[],
   maxDepth?: number,
@@ -1651,7 +1651,7 @@ export async function getDiskGrowthExportTree(
   return invoke<DiskGrowthExportTreeResponse>('get_disk_growth_export_tree', { paths, maxDepth, driveLetter });
 }
 
-/** 通过系统保存对话框导出磁盘空间变化 HTML。 */
+/** Exports the disk-space change HTML via the system save dialog. */
 export async function saveDiskGrowthHtml(
   content: string,
   defaultFileName: string,
@@ -1661,17 +1661,17 @@ export async function saveDiskGrowthHtml(
 }
 
 // ============================================================================
-// AI资产分析 API
+// AI asset analysis API
 // ============================================================================
 
-/** AI资产中的单个模型或缓存条目 */
+/** A single model or cache entry in AI assets */
 export interface AiModelItem {
   name: string;
   size: number;
   path: string;
 }
 
-/** 按平台或深度发现来源聚合后的 AI资产来源 */
+/** AI asset source aggregated by platform or deep-discovery source */
 export interface AiAssetSource {
   name: string;
   path: string;
@@ -1680,7 +1680,7 @@ export interface AiAssetSource {
   models: AiModelItem[];
 }
 
-/** AI资产扫描结果，前端基于它派生首页洞察和列表 */
+/** AI asset scan result, from which the frontend derives home-page insights and the list */
 export interface AiModelScanResult {
   total_size: number;
   total_model_count: number;
@@ -1692,38 +1692,38 @@ export interface AiModelScanResult {
   phase_durations: AiModelPhaseDuration[];
 }
 
-/** AI模型空间扫描阶段耗时，用于解释 MFT 兜底瓶颈 */
+/** AI model-space scan phase timing, used to explain the MFT fallback bottleneck */
 export interface AiModelPhaseDuration {
   stage: string;
   label: string;
   duration_ms: number;
 }
 
-/** AI模型空间扫描实时阶段反馈 */
+/** Real-time phase feedback for the AI model-space scan */
 export interface AiModelScanProgress {
   stage: string;
   message: string;
   elapsed_ms: number;
   stage_elapsed_ms: number;
-  /** 当前阶段涉及的盘符（MFT 阶段才有），用于阶段文案插值 */
+  /** Drive letters involved in the current phase (only in the MFT phase), used for phase-text interpolation */
   drive_label?: string | null;
 }
 
 /**
- * 快速扫描已知 AI 平台目录。
- * 深度发现由用户显式开启，后端才会追加 MFT 兜底扫描，避免默认行为带来全盘 IO 压力。
+ * Quickly scans known AI platform directories.
+ * Deep discovery is enabled explicitly by the user; only then does the backend add an MFT fallback scan, avoiding the full-disk IO pressure of default behavior.
  */
 export async function scanAiModelAssets(enableDeepDiscovery: boolean): Promise<AiModelScanResult> {
   return invoke<AiModelScanResult>('scan_ai_model_assets', { enableDeepDiscovery });
 }
 
-/** 删除单个 AI 模型文件，后端会再次校验模型格式和文件安全边界。 */
+/** Deletes a single AI model file; the backend re-validates the model format and file safety boundaries. */
 export async function deleteAiModel(path: string): Promise<EnhancedDeleteResult> {
   return invoke<EnhancedDeleteResult>('delete_ai_model', { path });
 }
 
 // ============================================================================
-// 外壳图标清理 API
+// Shell icon cleanup API
 // ============================================================================
 
 export interface ShellIconInfo {
@@ -1755,22 +1755,22 @@ export interface ShellIconOperationResult {
   needsExplorerRefresh: boolean;
 }
 
-/** 扫描 Explorer 中的第三方外壳入口，并按挂载位置返回分类。 */
+/** Scans third-party shell entries in Explorer and returns categories by mount location. */
 export async function scanShellIcons(): Promise<ShellIconInfo[]> {
   return invoke<ShellIconInfo[]>('scan_shell_icons');
 }
 
-/** mode=1 为删除节点，mode=2 为彻底清理并防复活。 */
+/** mode=1 deletes the node, mode=2 performs a thorough cleanup and prevents re-creation. */
 export async function removeShellIcon(target: ShellIconTarget, mode: 1 | 2): Promise<ShellIconOperationResult> {
   return invoke<ShellIconOperationResult>('remove_shell_icon', { target, mode });
 }
 
-/** 只恢复原始 ACL，适合允许软件重新注册但不立即恢复图标的场景。 */
+/** Restores only the original ACL, for scenarios where software is allowed to re-register but icons should not return immediately. */
 export async function unlockShellIcon(target: ShellIconTarget): Promise<ShellIconOperationResult> {
   return invoke<ShellIconOperationResult>('unlock_shell_icon', { target });
 }
 
-/** 从最近一次备份恢复注册表内容和原始 ACL。 */
+/** Restores registry content and the original ACL from the most recent backup. */
 export async function restoreShellIcon(target: ShellIconTarget): Promise<ShellIconOperationResult> {
   return invoke<ShellIconOperationResult>('restore_shell_icon', { target });
 }
@@ -1783,29 +1783,29 @@ export async function openShellIconBackupDir(): Promise<void> {
   return invoke<void>('open_shell_icon_backup_dir');
 }
 
-/** 打开虚拟磁盘操作记录，记录文件位于当前配置数据目录的 logs 下。 */
+/** Opens the virtual-disk operation log; the log file is under logs in the current config data directory. */
 export async function openShellIconLog(): Promise<void> {
   return invoke<void>('open_shell_icon_log');
 }
 
-/** 通过注册表编辑器的 LastKey 定位到目标外壳节点。 */
+/** Locates the target shell node via the registry editor's LastKey. */
 export async function openShellIconRegistry(target: ShellIconTarget): Promise<void> {
   return invoke<void>('open_shell_icon_registry', { target });
 }
 
 // ============================================================================
-// 鏁版嵁鐩綍绠＄悊 API
+// Data directory management API
 // ============================================================================
 
 /**
- * 鑾峰彇褰撳墠鏁版嵁鐩綍璺緞
+ * Gets the current data directory path
  */
 export async function getDataDirectory(): Promise<string> {
   return invoke<string>('get_data_directory');
 }
 
 /**
- * 璁剧疆鏁版嵁鐩綍骞惰縼绉诲凡鏈夋暟鎹? * @param path 鏂扮殑鏁版嵁鐩綍璺緞
+ * Sets the data directory and migrates existing data. * @param path New data directory path
  */
 export async function setDataDirectory(path: string): Promise<string> {
   return invoke<string>('set_data_directory', { path });
@@ -1826,28 +1826,28 @@ export interface ClearableDataItem {
 export interface ClearLocalDataResult {
   deleted_files: number;
   freed_bytes: number;
-  /** 成功清理的项数 */
+  /** Number of items successfully cleaned */
   cleared_items: number;
   /**
-   * 清理失败的项。
+   * Items that failed to clean.
    *
-   * 单项失败不会中断整批：其余项照常清理，这里只带回失败的那几项，
-   * 界面据此提示「哪一项没删掉、为什么」。
+   * A single-item failure does not interrupt the whole batch: the rest are cleaned as usual, and only the failed ones are returned here,
+   * so the UI can tell the user "which item wasn't deleted and why".
    */
   failed_items: ClearLocalDataFailure[];
 }
 
-/** 单个清理项的失败原因 */
+/** Failure reason for a single cleanup item */
 export interface ClearLocalDataFailure {
-  /** 清理项标识 */
+  /** Cleanup item identifier */
   item: string;
-  /** 失败原因（可直接展示） */
+  /** Failure reason (can be displayed directly) */
   reason: string;
 }
 
 /**
- * 清空本地数据（安装历史缓存、清理日志、注册表备份和模块专属记录）。
- * @returns [删除文件数, 释放字节数]
+ * Clears local data (installation history cache, cleanup logs, registry backups, and module-specific records).
+ * @returns [number of files deleted, number of bytes released]
  */
 export async function clearLocalData(): Promise<[number, number]> {
   return invoke<[number, number]>('clear_local_data');
@@ -1862,32 +1862,32 @@ export async function clearSelectedLocalData(itemIds: string[]): Promise<ClearLo
 }
 
 /**
- * 鎵撳紑绯荤粺鏂囦欢澶归€夋嫨瀵硅瘽妗? * @returns 鐢ㄦ埛閫夋嫨鐨勬枃浠跺す璺緞锛屽彇娑堝垯杩斿洖 null
+ * Opens the system folder-picker dialog. * @returns The folder path selected by the user, or null if cancelled
  */
 export async function pickFolderDialog(): Promise<string | null> {
   return invoke<string | null>('pick_folder_dialog');
 }
 
 // ============================================================================
-// 背景壁纸
+// Background wallpaper
 // ============================================================================
 
-/** 打开系统图片选择框；取消时返回 null。 */
+/** Opens the system image picker; returns null on cancel. */
 export async function pickWallpaperDialog(): Promise<string | null> {
   return invoke<string | null>('pick_wallpaper_dialog');
 }
 
-/** 把选中的图片装进数据目录，返回文件名（配合数据目录拼 asset URL）。 */
+/** Installs the selected image into the data directory and returns the file name (used with the data directory to build the asset URL). */
 export async function installWallpaper(source: string): Promise<string> {
   return invoke<string>('install_wallpaper', { source });
 }
 
-/** 清除已安装的壁纸。 */
+/** Clears the installed wallpaper. */
 export async function clearWallpaper(): Promise<void> {
   return invoke<void>('clear_wallpaper');
 }
 
-/** 读取当前壁纸的绝对路径；没有安装时返回空字符串。 */
+/** Gets the absolute path of the current wallpaper; returns an empty string if none is installed. */
 export async function getWallpaperPath(): Promise<string> {
   return invoke<string>('get_wallpaper_path');
 }

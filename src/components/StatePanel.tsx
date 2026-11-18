@@ -1,18 +1,18 @@
 // ============================================================================
-// 居中状态面板
+// Centered status panel
 //
-// 只做一件事：在模块正文里摆一块**整体居中、内部文字左对齐**的内容列。
+// Does one thing: place a piece of content in the module body that is **centered as a block, with its text left-aligned inside**.
 //
-// 【为什么文字不居中】
-// 标题 + 统计 + 细项这种 3~4 行的内容，行长度差很多（"成功释放 67.9 MB，352.7 MB 跳过，
-// 42 个文件将在重启后删除" vs "成功 949 个"）。文字居中时每一行都要重新找中轴，
-// 眼睛得左右来回跳；左对齐之后行首对齐，读起来是一段话。所以是"块居中、字靠左"。
+// [Why the text isn't centered]
+// For 3-4 lines of title + stats + details, the line lengths differ a lot ("Released 67.9 MB successfully, 352.7 MB skipped,
+// 42 files will be deleted on reboot" vs "949 succeeded"). With centered text every line has to find its axis again,
+// and the eye jumps back and forth; with left alignment the line starts align and it reads like a paragraph. So it's "block centered, text left".
 //
-// 【谁在用】
-// 「删除中」（ModuleDeleteProgress 的 block 形态）和「清理完成」（ScanSummary 的结果区）。
-// 这两个状态是同一件事的前后两步，几何必须一模一样，只换图标和文案 ——
-// 共用这个外壳就是防止它们再次各画一套（上一版一个是玫红色块、一个是 65vh 绿带，
-// 同一屏里三种视觉语言）。
+// [Who uses it]
+// "Deleting" (the block form of ModuleDeleteProgress) and "Cleanup complete" (the result area of ScanSummary).
+// These two states are two steps of the same thing, so the geometry must be identical — only the icon and wording change —
+// sharing this shell prevents them from drawing their own layouts again (the previous version had one as a rose-red block, the other a 65vh green band,
+// three visual languages on the same screen).
 // ============================================================================
 
 import type { ReactNode } from 'react';
@@ -23,10 +23,10 @@ interface StatePanelProps {
 
 export function StatePanel({ children }: StatePanelProps) {
   return (
-    // `module-scan-progress-area` 只提供最小高度兜底；`flex-1` 让页面模式铺满卡片正文，
-    // 内容在里面垂直居中 —— 不要在内部再写 min-height 去凑高度。
+    // `module-scan-progress-area` only provides a minimum-height fallback; `flex-1` lets page mode fill the card body,
+    // with the content vertically centered inside — don't add another min-height inside to prop up the height.
     <div className="module-scan-progress-area flex flex-1 items-center justify-center p-6">
-      {/* 列宽上限按"一行能读完一句中文"取的，太宽行长会散 */}
+      {/* Column max width chosen so "one line reads one Chinese sentence"; too wide and long lines scatter */}
       <div className="w-full max-w-[34em]">{children}</div>
     </div>
   );

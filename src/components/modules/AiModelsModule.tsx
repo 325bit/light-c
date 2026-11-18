@@ -47,10 +47,10 @@ const DEEP_DISCOVERY_STORAGE_KEY = 'lightc.aiModels.deepDiscovery';
 const LARGE_MODEL_THRESHOLD = 20 * 1024 * 1024 * 1024;
 
 /**
- * 取当前扫描阶段的标题。
+ * Get the title for the current scan stage.
  *
- * 阶段文案统一放在 i18n 的 scanStages 下，MFT 阶段需要盘符插值；
- * 后端同时下发盘符和中文兜底文案，i18n 缺键时回退到后端文案，避免出现 {{drive}} 这类未替换占位符。
+ * Stage text is kept under scanStages in i18n; the MFT stage needs a drive-letter interpolation;
+ * the backend sends both the drive letter and a Chinese fallback text, and i18n falls back to the backend text if a key is missing, avoiding unreplaced placeholders like {{drive}}.
  */
 function getScanStageLabel(progress: AiModelScanProgress | null, enableDeepDiscovery: boolean): string {
   if (!progress) {
@@ -87,26 +87,26 @@ export function AiModelsModule({ isPageActive = true }: ModuleRenderProps) {
   const lastScanTriggerRef = useRef(0);
 
   const [scanResult, setScanResult] = useState<AiModelScanResult | null>(null);
-  // 接入 AI 助手（**只读**：这里只统计占用，不提供删除动作）。
+  // Integrate the AI assistant (**read-only**: this module only reports usage and offers no delete action).
   useAiModuleBridge('ai-models', {
-    // 只读读取：**模型文件列表**（与界面上那一列一致），不是"来源"列表。
+    // Read-only read: the **model file list** (same column as in the UI), not the "source" list.
     //
-    // ⚠️ 这里踩过一次：原来返回的是 `scanResult.sources`（目录级），于是用户问
-    // "某个 .safetensors 是干什么的、占这么大正常吗"，模型只拿到
-    // 「D:\…\models 58.75 GB（8 个模型）」这种目录级信息，**只能凭文件名猜** ✗
-    // 而界面上本来就是"一列模型文件" —— 接口和界面对不上，模型当然答不准。
+    // ⚠️ We hit this before: it used to return `scanResult.sources` (directory level), so when the user asked
+    // "what is this .safetensors for, is it normal for it to be this big", the model only got
+    // directory-level info like "D:\…\models 58.75 GB (8 models)" and **could only guess from the file name** ✗
+    // while the UI itself shows "a column of model files" — the interface and the UI did not match, so of course the model answered poorly.
     readItems: (targetId, offset, limit) => {
       const all = flattenModels(scanResult);
-      // targetId 可以是来源名，也可以是来源路径：模型看到的摘要里写的是路径，
-      // 它据此写回来的大概率也是路径。
+      // targetId may be a source name or a source path: the summary the model sees uses paths,
+      // so what it writes back is most likely also a path.
       const wanted = targetId.trim();
       const models = wanted
         ? all.filter((model) => model.sourceName === wanted || model.path.startsWith(wanted))
         : all;
       if (models.length === 0) {
-        // ⚠️ 这里**不要**返回 null：公共层只会说一句"没有读到内容"，
-        // 而"还没扫描"和"没匹配到"是两件完全不同的排查方向。
-        // 返回一条说明，模型就能把原因直接讲给用户，而不是自己猜一个理由。
+        // ⚠️ Do **not** return null here: the common layer only says "nothing was read",
+        // and "not scanned yet" and "no match" are two completely different troubleshooting directions.
+        // Returning an explanatory line lets the model tell the user the actual reason instead of guessing one.
         return {
           total: 0,
           lines: [
@@ -123,16 +123,16 @@ export function AiModelsModule({ isPageActive = true }: ModuleRenderProps) {
           .map((model) => `${model.path}  ${formatSize(model.size)}  （来源：${model.sourceName}）`),
       };
     },
-    // 只读：单条详情。itemId 通常是上面每行行首那段完整路径，
-    // 但模型手上也可能只有**文件名**（用户问句里就是文件名，甚至被界面截断过）——
-    // 所以匹配要宽容，否则它会拿到一句"没读到"然后只能靠名字猜（实测踩过）。
+    // Read-only: single-item detail. itemId is usually the full path at the start of each line above,
+    // but the model may only have a **file name** (the user's question uses the file name, possibly truncated by the UI) —
+    // so matching must be lenient, otherwise it gets "nothing read" and can only guess from the name (hit in practice).
     readItemDetail: (itemId) => {
       const wanted = itemId.trim();
       if (!wanted) return null;
-      // `\\?\` 这类前缀在不同来源里有的带有的不带，比对前先抹掉
+      // Prefixes like `\\?\` are present in some sources and not others; strip them before comparing
       const normalize = (value: string) => value.trim().replace(/^\\\\\?\\/, '');
-      // 只取文件名再去掉扩展名：界面上的标题是**截短过的**（没有 .safetensors），
-      // 快捷提问带过来的就是那个短名字，只按完整路径/文件名比会全部落空。
+      // Take just the file name then remove the extension: the title in the UI is **truncated** (no .safetensors),
+      // and quick questions carry that short name; matching only full path/file name would miss all of them.
       const stem = (value: string) => {
         const base = normalize(value).split(/[\\/]/).pop() ?? '';
         return base.replace(/\.[^.]+$/, '');
@@ -196,7 +196,7 @@ export function AiModelsModule({ isPageActive = true }: ModuleRenderProps) {
   );
 
   useEffect(() => {
-    // 深度发现会触发全盘 MFT 兜底，记住用户选择可以避免每次进入模块都反复确认。
+    // Deep discovery triggers a whole-disk MFT fallback; remembering the user's choice avoids asking again on every module visit.
     localStorage.setItem(DEEP_DISCOVERY_STORAGE_KEY, JSON.stringify(enableDeepDiscovery));
   }, [enableDeepDiscovery]);
 
@@ -267,7 +267,7 @@ export function AiModelsModule({ isPageActive = true }: ModuleRenderProps) {
   const handleSearchModel = useCallback(async (modelName: string) => {
     try {
       const displayName = splitDisplayModelName(modelName);
-      // 搜索使用用户能理解的模型文件名，避免把 ComfyUI 内部类型目录带进查询词降低结果相关性。
+      // Search using the model file name the user understands, avoiding ComfyUI internal type directories in the query that would lower relevance.
       await openSearchUrl(`${displayName.title} AI 模型`);
     } catch (error) {
       showToast({ type: 'error', title: moduleT('aiModels.openSearchFailed'), description: String(error) });
@@ -344,8 +344,8 @@ export function AiModelsModule({ isPageActive = true }: ModuleRenderProps) {
       }
     >
       <div className="p-5 space-y-5">
-        {/* 深度发现靠直读各盘 $MFT，打开原始卷需要管理员权限。非管理员时后端会直接跳过
-            全盘发现、只留配置层结果 —— 不提示的话，用户会以为"开了深度发现却没反应"。 */}
+        {/* Deep discovery reads each drive's $MFT directly, so opening raw volumes requires admin rights. Without admin rights the backend skips
+            whole-disk discovery and keeps only config-layer results — without a hint, the user thinks "I enabled deep discovery but nothing happened". */}
         {enableDeepDiscovery && (
           <AdminRequiredHint variant="performance" description={moduleT('aiModels.deepAdminHint')} />
         )}
@@ -484,8 +484,8 @@ function DeepDiscoveryToggle({
       title={moduleT('aiModels.deepDiscoveryTip')}
     >
       <span className="text-xs font-medium text-[var(--fg-secondary)]">{moduleT('aiModels.deepDiscovery')}</span>
-      {/* 改用共享的 ui/Switch：全项目开关只保留一份实现，
-          否则散落在各模块里的自绘开关会漏掉主题适配（玻璃态就踩过这个坑） */}
+      {/* Switch to the shared ui/Switch: the whole project keeps only one implementation of toggles,
+          otherwise hand-drawn toggles scattered across modules miss theme adaptation (we hit this with the glass look) */}
       <Switch
         checked={enabled}
         disabled={disabled}
@@ -613,8 +613,8 @@ function InsightsRow({
   ];
 
   return (
-    // glass-metrics / glass-metric / glass-metric-icon 是给液态玻璃外观预留的语义钩子：
-    // 这三个类在关闭玻璃时没有任何样式，原始布局与配色完全不变（见 App.css 的 .glass 分区）。
+    // glass-metrics / glass-metric / glass-metric-icon are semantic hooks reserved for the liquid glass appearance:
+    // these three classes have no styles when glass is off, leaving the original layout and colors unchanged (see the .glass section in App.css).
     <div className="glass-metrics grid gap-3 md:grid-cols-3">
       {insights.map(insight => {
         const Icon = insight.icon;
@@ -745,7 +745,7 @@ function ModelTypeChart({ stats }: { stats: Array<{ type: string; count: number;
       </div>
 
       <div className="mt-4">
-        {/* 柱状图保留 8 个展示位，超出的类别汇总到“其他类型”，避免图表拥挤同时不丢总量。 */}
+        {/* The bar chart keeps 8 display slots and aggregates extra categories into "Other types", avoiding crowding while keeping the total. */}
         <ColumnChart items={chartItems} emptyText={moduleT('aiModels.noData')} />
       </div>
     </div>
@@ -769,7 +769,7 @@ function getVisibleModelTypeStats(
     { type: '__other__', count: 0, size: 0 }
   );
 
-  // 概览统计关注空间结构，长尾类别汇总展示比直接截断更符合“空间分析”的总量认知。
+  // Overview statistics focus on space structure; aggregating long-tail categories is more consistent with "space analysis" totals than plain truncation.
   return [...primaryStats, otherSummary];
 }
 
@@ -935,10 +935,10 @@ function ModelTable({
               <div className="flex shrink-0 items-center gap-1">
                 <IconButton title={moduleT('aiModels.openFolder')} onClick={() => onOpenPath(model.path)} icon={<FolderOpen className="w-4 h-4" />} />
                 <IconButton title={moduleT('aiModels.searchModel')} onClick={() => onSearchModel(model.name)} icon={<Search className="w-4 h-4" />} />
-                {/* 快捷提问：模型文件单独一套问法，用户真正关心的是"占这么大正常吗"。
-                    ⚠️ 传**路径**而不是界面上那个被截短的显示名 —— 问句里的目标要能被
-                    `read_items` / `read_item_detail` 逐字对上，否则模型照抄回来只会得到"没读到"。
-                    其余三个带快捷提问的模块（大文件 / 磁盘变化 / 大目录）传的都是路径，这里对齐。 */}
+                {/* Quick questions: models use a separate phrasing, since what the user really cares about is "is it normal for it to be this big".
+                    ⚠️ Pass the **path** rather than the truncated display name in the UI — the target in the question must be
+                    matched verbatim by `read_items` / `read_item_detail`, otherwise the model copies it back and only gets "nothing read".
+                    The other three modules with quick questions (big files / disk growth / big directories) all pass paths; align with them. */}
                 <AiAskButton
                   question={buildItemQuestion(model.path, 'model')}
                   className="inline-flex h-7 w-7 items-center justify-center"
@@ -990,7 +990,7 @@ function SortHeaderButton({
       title={moduleT('aiModels.sort', { label, direction: sortMode === activeDescMode ? moduleT('aiModels.ascending') : moduleT('aiModels.descending') })}
     >
       <span>{moduleT('aiModels.sortBy', { label })}</span>
-      {/* 只在当前排序列展示方向，避免两个按钮同时出现箭头造成误读。 */}
+      {/* Show the direction only on the currently sorted column, to avoid misreading when two buttons both show arrows. */}
       {isActive && <DirectionIcon className="h-3 w-3" />}
     </button>
   );
@@ -1042,8 +1042,8 @@ function IconButton({ title, icon, onClick, disabled = false }: { title: string;
 function removeDeletedModel(scanResult: AiModelScanResult | null, deletedPath: string): AiModelScanResult | null {
   if (!scanResult) return scanResult;
 
-  // 先记录被删模型原来的体积：来源总量按原有值递减，而不是用剩余模型重新累加。
-  // Ollama 这类来源的多个模型会共享同一份权重，重新累加会得到偏小的数值。
+  // Record the deleted models' original sizes first: reduce the source total by those values instead of re-summing remaining models.
+  // Sources like Ollama share the same weights across multiple models, so re-summing would give a smaller number.
   const deletedSize = scanResult.sources
     .flatMap(source => source.models)
     .find(model => model.path === deletedPath)?.size ?? 0;
@@ -1052,7 +1052,7 @@ function removeDeletedModel(scanResult: AiModelScanResult | null, deletedPath: s
     .map((source) => {
       const models = source.models.filter((model) => model.path !== deletedPath);
       if (models.length === source.models.length) {
-        // 该来源不含被删模型，保持原值不变
+        // This source does not contain the deleted model, keep its original value
         return source;
       }
 
@@ -1119,7 +1119,7 @@ function matchesModelKeyword(
   if (!normalizedKeyword) return true;
 
   const displayName = splitDisplayModelName(model.name);
-  // 搜索覆盖“可见模型名 + 原始名称 + 路径 + 来源 + 类型”，因为用户可能只记得模型片段，也可能按存储目录定位。
+  // Search covers "visible model name + original name + path + source + type", because the user may remember only a fragment of the model or locate it by its storage directory.
   return [
     displayName.title,
     model.name,
@@ -1149,13 +1149,13 @@ function getModelTypeStats(models: FlattenedModel[]): Array<{ type: string; coun
 
 function getModelChartType(model: AiModelItem): string {
   const categoryLabel = splitDisplayModelName(model.name).typeLabel;
-  // 概览图服务于空间结构理解：ComfyUI 等平台有明确模型类别时保留类别，否则用扩展名兜底。
+  // The overview chart serves space-structure understanding: keep categories when a platform like ComfyUI has clear model categories, otherwise fall back to file extension.
   return categoryLabel || getModelType(model);
 }
 
 function getModelType(model: AiModelItem): string {
   const extension = model.path.split('.').pop()?.trim().toLowerCase();
-  // 类型统一使用文件扩展名，避免 ComfyUI 子目录名和其他平台扩展名混用导致语义不一致。
+  // Types uniformly use the file extension, to avoid mixing ComfyUI subdirectory names with other platforms' extensions and causing inconsistent semantics.
   return extension ? `${extension}` : '__unknown__';
 }
 
@@ -1173,7 +1173,7 @@ function formatMiddleEllipsisPath(path: string): string {
   const fileName = normalizedPath.slice(separatorIndex + 1);
   const parentPath = normalizedPath.slice(0, separatorIndex);
   if (fileName.length >= 48) {
-    // 长模型文件名通常包含量化、精度和版本信息，保留结尾比单纯右截断更利于用户辨认。
+    // Long model file names usually contain quantization, precision, and version info; keeping the ending helps users identify them better than plain right-truncation.
     return `${parentPath.slice(0, 34)}...\\${fileName.slice(0, 24)}...${fileName.slice(-22)}`;
   }
 
@@ -1189,7 +1189,7 @@ function splitDisplayModelName(name: string): DisplayModelName {
 
   const typeLabel = name.slice(0, separatorIndex).trim();
   const title = name.slice(separatorIndex + separator.length).trim();
-  // ComfyUI Detector 会把模型类型拼进名称；展示时拆开，避免内部目录结构压过用户真正关心的文件名。
+  // ComfyUI Detector appends the model type into the name; split it for display so internal directory structure does not overshadow the file name users care about.
   return {
     title: title || name,
     typeLabel: typeLabel || null,
@@ -1206,7 +1206,7 @@ function formatDuration(durationMs: number): string {
 
 function loadDeepDiscovery(): boolean {
   try {
-    // 本地存储可能被用户或旧版本写入异常内容，读取时只接受明确的 true。
+    // Local storage may contain abnormal content written by the user or an old version; only accept an explicit true when reading.
     return JSON.parse(localStorage.getItem(DEEP_DISCOVERY_STORAGE_KEY) ?? 'false') === true;
   } catch {
     return false;

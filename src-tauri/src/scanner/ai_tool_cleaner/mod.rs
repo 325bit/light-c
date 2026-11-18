@@ -1,10 +1,10 @@
-//! AI 工具清理。
+//! AI tool cleanup.
 //!
-//! 目录结构与 `social_scanner` 保持一致：
-//! - `types`   纯数据结构（序列化给前端）
-//! - `tools`   工具清单，加一个工具只改这里
-//! - `core`    扫描、遍历、路径校验与删除
-//! - `tests`   白名单与边界用例
+//! The directory structure matches `social_scanner`:
+//! - `types`   pure data structures (serialized to the frontend)
+//! - `tools`   tool inventory; adding a tool only changes this file
+//! - `core`    scanning, traversal, path validation and deletion
+//! - `tests`   whitelist and edge cases
 
 mod core;
 #[cfg(test)]

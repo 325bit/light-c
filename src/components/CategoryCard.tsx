@@ -1,6 +1,6 @@
 // ============================================================================
-// 分类卡片组件 - 支持主题切换
-// 使用虚拟列表优化大量文件的渲染性能
+// Category card component - supports theme switching
+// Uses a virtual list to optimize rendering performance for large numbers of files
 // ============================================================================
 
 import { useState, useMemo, useCallback } from 'react';
@@ -19,19 +19,19 @@ import { formatSize } from '../utils/format';
 import { FileTreeList } from './FileTreeList';
 import { useTranslation } from 'react-i18next';
 
-// 微信风格风险等级样式配置
+// WeChat-style risk level style configuration
 const getRiskBadgeStyle = (level: number) => {
   switch (level) {
     case 1:
-      return 'bg-[var(--brand-green-10)] text-[var(--brand-green)] border-[var(--brand-green-20)]';  // 微信绿 - 安全
+      return 'bg-[var(--brand-green-10)] text-[var(--brand-green)] border-[var(--brand-green-20)]';  // WeChat green - safe
     case 2:
-      return 'bg-[var(--brand-green-10)] text-[var(--brand-green)] border-[var(--brand-green-20)]';  // 微信绿 - 低风险
+      return 'bg-[var(--brand-green-10)] text-[var(--brand-green)] border-[var(--brand-green-20)]';  // WeChat green - low risk
     case 3:
-      return 'bg-[var(--color-warning)]/10 text-[var(--color-warning)] border-[var(--color-warning)]/20';  // 柔和橙 - 中等
+      return 'bg-[var(--color-warning)]/10 text-[var(--color-warning)] border-[var(--color-warning)]/20';  // soft orange - medium
     case 4:
-      return 'bg-[var(--color-warning)]/10 text-[var(--color-warning)] border-[var(--color-warning)]/20';  // 柔和橙 - 较高
+      return 'bg-[var(--color-warning)]/10 text-[var(--color-warning)] border-[var(--color-warning)]/20';  // soft orange - fairly high
     default:
-      return 'bg-[var(--color-danger)]/10 text-[var(--color-danger)] border-[var(--color-danger)]/20';  // 柔和红 - 高风险
+      return 'bg-[var(--color-danger)]/10 text-[var(--color-danger)] border-[var(--color-danger)]/20';  // soft red - high risk
   }
 };
 
@@ -50,17 +50,17 @@ interface CategoryCardProps {
   selectedPaths: Set<string>;
   onToggleFile: (path: string) => void;
   onToggleCategory: (categoryName: string, files: FileInfo[], selected: boolean) => void;
-  /** 目录级批量勾选：一次提交一批路径（勾文件夹就靠它，不必逐条 toggle） */
+  /** Directory-level batch checking: submit a batch of paths at once (this is how checking a folder works, no per-row toggle) */
   onSetSelectionForPaths: (paths: string[], selected: boolean) => void;
   onSearchFile: (file: FileInfo) => void;
-  /** 深扫分类只取了第一页：给出「查看全部文件」入口，点开在弹窗里看完整目录树 */
+  /** Deep-scan categories only fetch the first page: provide a "View All Files" entry that opens the full directory tree in a modal */
   hasMore?: boolean;
   onViewAllFiles?: () => void;
   isLoadingAll?: boolean;
 }
 
 /**
- * 分类卡片组件 - 桌面应用风格
+ * Category card component - desktop app style
  */
 export function CategoryCard({
   category,
@@ -79,7 +79,7 @@ export function CategoryCard({
   const categoryDescription = t(`categories.${category.category}.description`, { defaultValue: category.description });
   const [expanded, setExpanded] = useState(false);
 
-  // 使用useMemo缓存计算结果，避免重复计算
+  // Use useMemo to cache computed results, avoiding repeated computation
   const { selectedCount, selectedSize, isAllSelected, isPartialSelected } = useMemo(() => {
     let count = 0;
     let size = 0;
@@ -97,13 +97,13 @@ export function CategoryCard({
     };
   }, [category.files, selectedPaths]);
 
-  // 由系统托管的分类（旧版 Windows 安装）：应用内删不掉，也不该由应用删 ——
-  // 删了用户就失去回退旧版本的能力。这里统一拦掉勾选，只保留
-  // 「看占用大小 + 引导到系统磁盘清理」两条路径。
+  // Categories managed by the system (old Windows installation): cannot be deleted inside the app, and should not be deleted by it —
+  // deleting them would take away the user's ability to roll back to the old version. Here we uniformly block checking, keeping only
+  // the two paths of "view occupied size + guide to system disk cleanup".
   const isSystemManaged = category.system_managed === true;
 
-  // 稳定引用：FileTreeList 内部按它判断"哪些文件可勾选"，
-  // 每次渲染换一个新函数会让整棵树的可勾选集合重算一遍。
+  // Stable reference: FileTreeList uses it internally to decide "which files are checkable",
+  // a fresh function on every render would make the whole tree's checkable set recompute.
   const isSelectable = useCallback(() => !isSystemManaged, [isSystemManaged]);
 
   const handleCategoryToggle = useCallback(() => {
@@ -116,10 +116,10 @@ export function CategoryCard({
   }, []);
 
   /**
-   * 目录树勾选。
+   * Directory tree checking.
    *
-   * 中文说明：勾中的是「整类全部文件」时必须走原来的分类选择逻辑 —— 深扫模式下
-   * 它还会记住"整类已选"，删除时连未加载的分页一起删；勾子目录只动对应那批路径。
+   * Explanation: when what is checked is "all files of the whole category", the original category-selection logic must be used — in deep scan mode
+   * it also remembers "whole category selected" so deletion includes unpaged files; checking a subdirectory only touches that batch of paths.
    */
   const handleSetSelection = useCallback((paths: string[], selected: boolean) => {
     if (paths.length === category.files.length) {
@@ -133,19 +133,19 @@ export function CategoryCard({
 
   return (
     <div className="bg-[var(--bg-card)] rounded-2xl overflow-hidden shadow-sm">
-      {/* 分类头部 - 增加内边距 */}
+      {/* Category header - increased padding */}
       <div
         className="px-5 py-4 cursor-pointer hover:bg-[var(--bg-hover)] transition-colors select-none"
         onClick={handleExpand}
       >
-        {/* 多语言分类名称长度不同，允许窄窗口换行，避免风险标签和统计信息互相挤压。 */}
+        {/* Category names have different lengths across languages; allow wrapping in narrow windows to avoid risk tags and statistics squeezing each other. */}
         <div className="flex flex-wrap items-center gap-3 sm:flex-nowrap sm:gap-4">
-          {/* 展开图标 */}
+          {/* Expand icon */}
           <div className="text-[var(--text-faint)] transition-transform duration-200" style={{ transform: expanded ? 'rotate(0deg)' : 'rotate(-90deg)' }}>
             <ChevronDown className="w-5 h-5" />
           </div>
 
-          {/* 复选框 - 微信绿；系统托管的分类不提供勾选，显示为禁用态 */}
+          {/* Checkbox - WeChat green; system-managed categories offer no checkbox and are shown as disabled */}
           <div onClick={(e) => { e.stopPropagation(); handleCategoryToggle(); }}>
             <div className={`w-5 h-5 rounded border-2 flex items-center justify-center transition-colors
               ${isSystemManaged
@@ -159,12 +159,12 @@ export function CategoryCard({
             </div>
           </div>
 
-          {/* 分类图标 - 微信绿 10% 透明度圆角容器 */}
+          {/* Category icon - WeChat green at 10% opacity in a rounded container */}
           <div className="w-10 h-10 rounded-xl bg-[var(--brand-green-10)] flex items-center justify-center text-[var(--brand-green)]">
             <Folder className="w-5 h-5" />
           </div>
 
-          {/* 分类信息 */}
+          {/* Category info */}
           <div className="min-w-[10.0rem] flex-1 sm:min-w-0">
             <div className="flex min-w-0 items-center gap-2">
               <span className="text-[1rem] font-bold text-[var(--text-primary)] truncate">
@@ -177,7 +177,7 @@ export function CategoryCard({
             <p className="text-[0.93rem] text-[var(--text-muted)] truncate mt-1">{categoryDescription}</p>
           </div>
 
-          {/* 统计信息 - tabular-nums 确保数字稳定 */}
+          {/* Statistics - tabular-nums keeps numbers stable */}
           <div className="ml-auto shrink-0 text-right">
             <p className="text-[1.07rem] font-bold text-[var(--text-primary)] tabular-nums">
               {formatSize(category.total_size)}
@@ -186,7 +186,7 @@ export function CategoryCard({
               {commonT('fileCount', { count: category.file_count.toLocaleString() })}
               {selectedCount > 0 && (
                 <span className="text-[var(--brand-green)] ml-1">
-                  {/* 深度分类分页时提示完整删除口径，避免把当前页大小误认为分类总量。 */}
+                  {/* During deep category pagination, hint at the full deletion scope, to avoid mistaking the current page size for the category total. */}
                   {hasMore && selectedCount === category.files.length
                     ? commonT('selectedPage', { count: selectedCount.toLocaleString() })
                     : commonT('selectedFiles', { count: selectedCount.toLocaleString(), size: formatSize(selectedSize) })}
@@ -197,7 +197,7 @@ export function CategoryCard({
         </div>
       </div>
 
-      {/* 文件列表 - 虚拟滚动。用高度动画包住列表，展开/折叠时不会再硬切。 */}
+      {/* File list - virtual scrolling. Wrapping the list in a height animation means expanding/collapsing no longer cuts abruptly. */}
       <AnimatePresence initial={false}>
         {expanded && (
           <motion.div
@@ -207,9 +207,9 @@ export function CategoryCard({
             exit={{ height: 0, opacity: 0 }}
             transition={{ duration: 0.26, ease: [0.22, 1, 0.36, 1] }}
           >
-            {/* 系统托管的分类：不给删除入口，改为引导系统磁盘清理。
-                这类目录应用内删不掉（权限/占用），而且删掉会让用户失去回退旧版本的能力，
-                所以规范做法是交给 Windows 自带的磁盘清理。 */}
+            {/* System-managed categories: no delete entry, instead guide to system disk cleanup.
+                Such directories cannot be deleted inside the app (permissions/locks), and deleting them would remove the user's ability to roll back,
+                so the proper approach is to hand them to Windows' built-in disk cleanup. */}
             {isSystemManaged ? (
               <div className="px-5 py-2.5 bg-[var(--color-warning)]/10 border-b border-[var(--color-warning)]/20 flex flex-wrap items-center gap-2 text-[0.93rem] text-[var(--color-warning)]">
                 <AlertTriangle className="w-4 h-4 shrink-0" />
@@ -228,9 +228,9 @@ export function CategoryCard({
               </div>
             )}
 
-            {/* 目录树：按路径折叠成文件管理器那样的层级，
-                勾目录 = 批量选中该目录下所有文件（逐个勾太麻烦）。
-                高度沿用原来的 256px，内部自带虚拟滚动。 */}
+            {/* Directory tree: collapsed by path into a file-manager-like hierarchy,
+                checking a directory = bulk-selecting all files under it (checking one by one is too tedious).
+                Height stays at the original 256px, with virtual scrolling built in. */}
             <FileTreeList
               files={category.files}
               selectedPaths={selectedPaths}
@@ -275,9 +275,9 @@ export function CategoryCard({
                 </div>
               )}
             />
-            {/* 不再让用户一页页点「加载更多」：统一成一个「查看全部文件」入口，
-                完整目录树放到弹窗里看 —— 卡片内这块 256px 的窗口本来就装不下
-                几千上万个文件，深扫的首屏 500 条也一样翻不动。 */}
+            {/* No longer make users click "Load More" page by page: unified into one "View All Files" entry,
+                with the full directory tree shown in a modal — this 256px window inside the card simply cannot hold
+                thousands or tens of thousands of files, and the first 500 rows of a deep scan are just as unscrollable. */}
             {onViewAllFiles && (hasMore || category.files.length > 50) && (
               <div className="border-t border-[var(--border-color)] px-5 py-2.5">
                 <button

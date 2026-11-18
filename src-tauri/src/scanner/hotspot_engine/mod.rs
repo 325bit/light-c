@@ -1,8 +1,8 @@
 // ============================================================================
-// 大目录扫描引擎集合
-// - mft_scanner:      管理员运行时使用 MFT 直读，秒级全盘扫描
-// - fallback_scanner: 非管理员降级方案，使用 jwalk 遍历文件系统
-// - engine_selector:  自动检测权限和文件系统类型，选择合适的引擎
+// Collection of large-directory scanning engines
+// - mft_scanner:      uses direct MFT reads when running as admin for second-level full-disk scans
+// - fallback_scanner: fallback for non-admin runs, using jwalk to traverse the filesystem
+// - engine_selector:  auto-detects privileges and filesystem type to choose the appropriate engine
 // ============================================================================
 
 pub mod engine_selector;

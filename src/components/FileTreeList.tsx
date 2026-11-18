@@ -1,10 +1,10 @@
 // ============================================================================
-// 文件目录树列表
-// 扫描结果按目录折叠展示，勾选目录即可批量选中整棵子树
+// File directory tree list
+// Scan results are displayed collapsed by directory; checking a directory selects the entire subtree in bulk
 //
-// 中文说明：原来是「一行一个文件」的平铺列表，想清掉某个缓存目录只能逐个勾选。
-// 这里做成文件管理器那样可以展开/折叠的树，目录行带三态复选框，
-// 勾一下就把该目录下所有文件一起选中。
+// Explanation: originally it was a flat "one file per row" list, so clearing a cache directory meant checking items one by one.
+// Here it is made into an expandable/collapsible tree like a file manager, with directory rows carrying a tri-state checkbox —
+// one check selects all files under that directory.
 // ============================================================================
 
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
@@ -26,32 +26,32 @@ import { FileSortControl, FILE_SORT_KEYS } from './FileSortControl';
 import { formatDate, formatSize } from '../utils/format';
 
 export interface FileTreeListProps<T extends TreeSourceFile> {
-  /** 当前这一组文件（一个分类，或筛选后的结果） */
+  /** The current group of files (one category, or a filtered result) */
   files: T[];
-  /** 已勾选的完整路径集合（模块级，可能包含其它分类的文件） */
+  /** Set of checked full paths (module-level, may include files from other categories) */
   selectedPaths: Set<string>;
-  /** 整批设置选中状态：目录勾选一次性提交，避免逐条 setState */
+  /** Set the checked state for the whole batch: directory checks are committed at once, avoiding per-row setState */
   onSetSelection: (paths: string[], selected: boolean) => void;
-  /** 单个文件勾选：保留模块自己的副作用（例如反向同步整类选择标记） */
+  /** Check a single file: preserve the module's own side effects (e.g. reverse-syncing the whole-category selection marker) */
   onToggleFile: (file: T) => void;
-  /** 该文件是否可勾选；不可勾选时显示为禁用态（社交清理的聊天记录就是这样） */
+  /** Whether this file can be checked; when not checkable it is shown as disabled (such as social cleanup chat records) */
   isSelectable?: (file: T) => boolean;
-  /** 行内附加信息：风险标签、来源应用等，渲染在文件名与大小之间 */
+  /** Extra inline info: risk tags, source app, etc., rendered between the file name and the size */
   renderFileMeta?: (file: T) => ReactNode;
-  /** 行尾操作按钮：打开所在文件夹、搜索建议等 */
+  /** Row-end action buttons: open the containing folder, search suggestions, etc. */
   renderFileActions?: (file: T) => ReactNode;
-  /** 文件行的显示名；默认取树的最后一段 */
+  /** Display name of the file row; by default the last segment of the tree */
   getFileTitle?: (file: T) => string;
-  /** 滚动区高度（px）。整块列表始终虚拟化，行数再多也不会卡 */
+  /** Scroll area height (px). The whole list is always virtualized, so no amount of rows causes lag */
   height?: number;
   rowHeight?: number;
-  /** 树头右侧的额外说明，例如「已加载 500 / 共有 3 万个」 */
+  /** Extra note on the right of the tree header, e.g. "loaded 500 / total 30,000" */
   toolbarExtra?: ReactNode;
-  /** 整片不可勾选（例如由系统托管的分类）：只剩浏览与展开，没有任何勾选入口 */
+  /** Entire group not checkable (e.g. a system-managed category): only browsing and expanding remain, no check entry at all */
   disabled?: boolean;
-  /** 显示排序控件（名称 / 大小 / 修改时间）。卡片内那块窄列表默认不显示 */
+  /** Show the sort control (name / size / modified time). The narrow list inside a card hides it by default */
   sortable?: boolean;
-  /** 排序控件的可用键；数据源没有修改时间时传 ['name','size']，免得摆一个点了没反应的按钮 */
+  /** Available keys for the sort control; if the data source has no modified time, pass ['name','size'] to avoid a button that does nothing */
   sortKeys?: TreeSortKey[];
   className?: string;
 }
@@ -79,17 +79,17 @@ export function FileTreeList<T extends TreeSourceFile>({
   const scrollRef = useRef<HTMLDivElement>(null);
 
   /*
-    展开策略：小列表直接全展开，大列表默认折叠。
+    Expansion strategy: expand small lists fully, collapse large lists by default.
 
-    中文说明：全部折叠时，只有三五个文件的分类反而要多点一次才看得到内容；
-    全部展开时，几百上千个文件又会把列表撑成一面墙、目录结构反而糊掉。
-    所以按文件数分流：≤ 30 个直接平铺开，更多的先只给目录层。
-    用户手动展开/折叠过的状态不会被覆盖（只在跨过阈值、换了整批数据时才重置）。
+    Explanation: when everything is collapsed, a category with only three or five files takes an extra click to see its contents;
+    when everything is expanded, hundreds or thousands of files turn the list into a wall and the directory structure becomes blurred.
+    So we branch by file count: ≤ 30 are laid out expanded, more show only the directory level first.
+    States the user manually expanded/collapsed are not overwritten (only reset when crossing the threshold or when the whole batch of data changes).
   */
   const [expandedKeys, setExpandedKeys] = useState<Set<string>>(new Set());
   const [sort, setSort] = useState<TreeSort>({ key: 'name', desc: false });
   const baseTree = useMemo(() => buildFileTree(files), [files]);
-  // 排序只重排各层子节点（不重建树），所以切换排序比换一批数据便宜得多
+  // Sorting only reorders child nodes at each level (does not rebuild the tree), so switching sort is much cheaper than swapping in a new batch of data
   const tree = useMemo(() => sortTree(baseTree, sort), [baseTree, sort]);
   const autoExpandMode = tree.fileCount <= 30 ? 'expand' : 'collapse';
   const autoExpandRef = useRef<string | null>(null);
@@ -100,7 +100,7 @@ export function FileTreeList<T extends TreeSourceFile>({
   }, [autoExpandMode, tree]);
 
   const rows = useMemo(() => {
-    // 没有真正的层级（所有文件都在同一层）时不摆树，避免多出一层无意义的包裹
+    // When there is no real hierarchy (all files on the same level), do not show a tree, avoiding a meaningless extra wrapper layer
     if (!tree.hasBranches) return tree.nodes;
     return flattenFileTree(tree.nodes, expandedKeys);
   }, [tree, expandedKeys]);
@@ -110,18 +110,18 @@ export function FileTreeList<T extends TreeSourceFile>({
     [tree, selectedPaths],
   );
 
-  // 只有可勾选的文件参与「全选 / 整目录勾选」。社交清理的聊天记录数据库
-  // 是不可删的，把它塞进选中集合会让删除流程去尝试动它。
+  // Only checkable files participate in "Select All / check whole directory". Social cleanup chat-record databases
+  // are not deletable, and putting them in the checked set would make the deletion flow try to touch them.
   //
-  // 中文说明：这里只保留一份「可勾选路径集合」+ 每个目录的可勾选数量，
-  // 不再给每个目录各存一份后代路径数组 —— 后者在几万文件时要复制几十万条引用，
-  // 而且只要父组件传进来的判断函数换了引用就会整体重算一遍。
+  // Explanation: keep only one "checkable path set" plus a checkable count per directory here,
+  // no longer storing an array of descendant paths for each directory — that would copy hundreds of thousands of references for tens of thousands of files,
+  // and would be fully recomputed whenever the parent's predicate function changes its reference.
   const selectableInfo = useMemo(() => {
     if (disabled) {
       return { set: new Set<string>(), counts: new Map<string, number>(), paths: [] as string[] };
     }
     if (!isSelectable) {
-      // 不传判断函数 = 全部可勾选，省掉整轮过滤
+      // No predicate passed = everything is checkable, skipping a whole filter round
       return {
         set: null as Set<string> | null,
         counts: null as Map<string, number> | null,
@@ -154,7 +154,7 @@ export function FileTreeList<T extends TreeSourceFile>({
     return { set, counts, paths };
   }, [files, tree, isSelectable, disabled]);
 
-  /** 某个目录下所有可勾选的路径。只有真正点复选框时才算，不在渲染期展开。 */
+  /** All checkable paths under a directory. Only counted when the checkbox is really clicked, not expanded during render. */
   const selectablePathsOf = useCallback(
     (node: FileTreeNode<T>): string[] => {
       if (node.isDir === false) return [];
@@ -164,7 +164,7 @@ export function FileTreeList<T extends TreeSourceFile>({
     [selectableInfo],
   );
 
-  // 整组可勾选的文件：树头复选框与「全选」用这一份，而不是全部文件
+  // The whole group of checkable files: the tree-header checkbox and "Select All" use this set, not all files
   const allPaths = selectableInfo.paths;
   const selectedTotal = useMemo(() => {
     let count = 0;
@@ -206,13 +206,13 @@ export function FileTreeList<T extends TreeSourceFile>({
   const renderRow = (node: FileTreeNode<T>) => {
     if (node.isDir) {
       const selectedInFolder = selectedCounts.get(node.key) ?? 0;
-      // 目录下没有任何可勾选文件时（例如整类都是聊天记录），复选框置灰
+      // When there are no checkable files under a directory (e.g. the whole category is chat records), gray out the checkbox
       const selectableCount = selectableInfo.counts
         ? (selectableInfo.counts.get(node.key) ?? 0)
         : node.fileCount;
       const blocked = disabled || selectableCount === 0;
-      // 与可勾选数量比较（而不是全部文件数）：目录里混着不可删的文件时，
-      // 用文件总数比永远凑不满，复选框会一直卡在"部分选中"的半选态。
+      // Compare against the checkable count (not the total file count): when a directory mixes in undeletable files,
+      // using the total count never fills up and the checkbox stays stuck in the "partially selected" half state.
       const folderAll = selectableCount > 0 && selectedInFolder >= selectableCount;
       const folderPartial = selectedInFolder > 0 && !folderAll;
       const expanded = expandedKeys.has(node.key);
@@ -241,8 +241,8 @@ export function FileTreeList<T extends TreeSourceFile>({
           <span className="min-w-0 flex-1 truncate text-[0.93rem] font-medium text-[var(--text-primary)]">
             {node.name}
           </span>
-          {/* 按时间排序时目录也要给出日期，否则整列只有文件有值，看不出排序依据。
-              目录取的是「内部最新的一个文件」，不是目录本身的修改时间。 */}
+          {/* When sorting by time, directories must also show a date, otherwise only files have values in the column and the sort basis is invisible.
+              A directory uses its "newest inner file", not the directory's own modified time. */}
           {sortable && sort.key === 'time' && (
             <span
               className="hidden shrink-0 text-[0.79rem] tabular-nums text-[var(--text-faint)] sm:inline"
@@ -273,7 +273,7 @@ export function FileTreeList<T extends TreeSourceFile>({
         onClick={() => { if (selectable) onToggleFile(node.file); }}
         title={node.path}
       >
-        {/* 目录行有折叠箭头占位，文件行也留同样的宽度，保证同层复选框对齐 */}
+        {/* Directory rows have a collapse-arrow placeholder, and file rows keep the same width, so checkboxes at the same level align */}
         <span className="h-3.5 w-3.5 shrink-0" />
         <TreeCheckbox
           checked={checked && selectable}
@@ -301,7 +301,7 @@ export function FileTreeList<T extends TreeSourceFile>({
 
   return (
     <div className={className}>
-      {/* 树头：公共父目录 + 总览 + 整组勾选 + 展开/折叠 */}
+      {/* Tree header: common parent directory + overview + whole-group check + expand/collapse */}
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-[var(--border-default)] bg-[var(--bg-hover)]/40 px-3 py-2">
         <TreeCheckbox
           checked={allSelected}
@@ -365,7 +365,7 @@ export function FileTreeList<T extends TreeSourceFile>({
   );
 }
 
-/** 三态复选框：全选 / 部分选中（横杠）/ 未选 / 禁用 */
+/** Tri-state checkbox: all / partially selected (dash) / none / disabled */
 function TreeCheckbox({
   checked,
   partial = false,

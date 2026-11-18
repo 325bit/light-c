@@ -27,8 +27,8 @@ where
         .filter(|drive_letter| mft_core::is_ntfs(*drive_letter))
         .collect();
 
-    // 各盘的 $MFT 互不依赖，串行时总时间等于三盘之和，并行后等于最慢那一盘。
-    // 每个盘自己的阶段耗时放进各自的 Vec，最后按 spawn 顺序合并，保证界面顺序稳定。
+    // The $MFT of each drive is independent; serially the total time is the sum of all drives, in parallel it equals the slowest drive.
+    // Each drive's stage timings go into its own Vec and are merged by spawn order at the end, keeping the UI order stable.
     let per_drive: Vec<(char, Result<Vec<(String, ModelItem)>, String>, Vec<AiModelPhaseDuration>)> =
         std::thread::scope(|scope| {
             let handles: Vec<_> = drives
@@ -114,8 +114,8 @@ where
         "mftEnumerate",
         &format!("正在读取 {} 盘 NTFS 主文件表", drive_letter),
     );
-    // 一遍顺序读：名字（用来筛扩展名）、父子关系、大小一起拿到。
-    // 原来先走 USN 枚举拿名字、再按 id 回读 $MFT —— 同一份数据过两遍，而 USN 枚举是慢的那一遍。
+    // One sequential pass: get the name (for filtering extensions), parent-child relationships, and size together.
+    // Originally it first enumerated names via USN, then read back $MFT by id — the same data passed through twice, and USN enumeration was the slow pass.
     let metadata_reader = mft_core::NtfsFileMetadataReader::open(drive_letter)?;
     let (entries, mft_stats) = metadata_reader.read_all_records(&|_| true)?;
     log::info!(
@@ -152,7 +152,7 @@ where
         .iter()
         .filter(|entry| !entry.is_dir)
         .filter_map(|entry| {
-            // MFT 兜底只关注少量大模型扩展名，先在文件名层面过滤，避免对全盘文件都读一遍大小
+            // The MFT fallback only cares about a few large-model extensions; filter at the file-name level first, avoiding reading the size of every file on the drive.
             model_extension_threshold(&entry.name).map(|min_size| (entry.mft_id, min_size))
         })
         .collect::<HashMap<_, _>>();
@@ -198,15 +198,15 @@ where
         "mftMetadata",
         &format!("正在校验 {} 盘候选文件大小", drive_letter),
     );
-    // 路径拿到之后记录就没用了：一路全盘的记录带着名字，占上百 MB，
-    // 多盘并行时会同时压着好几份，尽早释放
+    // Once paths are obtained the records are useless: full-drive records carry names and take hundreds of MB,
+    // and with multiple drives in parallel several copies pile up at once — release as early as possible.
     drop(entries);
 
-    // 先在内存里把候选缩到「路径 + 阈值」，再并行 stat：
-    // 候选通常只有几十上百个，但分散在整个盘上，串行 stat 实测能占到一秒以上
+    // First shrink candidates in memory to "path + threshold", then stat in parallel:
+    // candidates are usually only tens or hundreds but scattered across the whole drive; serial stat was measured at over a second.
     //
-    // 覆盖路径的规范化只做一次：原先每个候选都要对每个覆盖根 canonicalize 一遍
-    // （canonicalize 在 Windows 上要打开文件句柄），候选上千时是几十万次多余的文件系统调用。
+    // Normalize covered paths only once: originally every candidate canonicalized every coverage root again
+    // (canonicalize opens a file handle on Windows), which with thousands of candidates is hundreds of thousands of redundant system calls.
     let covered_keys = covered_root_keys(covered_roots);
 
     let resolved: Vec<(PathBuf, u64, String)> = candidate_min_sizes
@@ -229,8 +229,8 @@ where
     let models: Vec<(String, ModelItem)> = resolved
         .par_iter()
         .filter_map(|(path, min_size, path_key)| {
-            // MFT 负责快速定位候选，大小读取回到标准 metadata，
-            // 避免少量文件因 NTFS 记录解析差异在进入路径层前被误丢。
+            // MFT handles fast candidate location, size reading goes back to standard metadata,
+            // so a few files are not wrongly dropped before the path stage due to NTFS record parsing differences.
             let metadata = path.metadata().ok()?;
             if !metadata.is_file() || metadata.len() < *min_size {
                 return None;
@@ -278,7 +278,7 @@ fn emit_mft_progress<F>(
         message: message.to_string(),
         elapsed_ms: scan_started_at.elapsed().as_millis(),
         stage_elapsed_ms: phase_started_at.elapsed().as_millis(),
-        // 阶段文案里的盘符由前端做插值，这里把盘符一并带出去
+        // The drive letter in the stage text is interpolated by the frontend, so pass the drive letter out as well
         drive_label: Some(drive_letter.to_string()),
     });
 }
@@ -296,9 +296,9 @@ fn finish_mft_phase(
     });
 }
 
-/// 一条覆盖路径的规范化键：来源名 + 小写路径。
+/// Normalized key of a coverage path: source name + lowercase path.
 ///
-/// 提前算好一次，供本盘所有候选复用；逐个候选重新 canonicalize 是纯浪费。
+/// Precompute once for all candidates of this drive to reuse; re-canonicalizing per candidate is pure waste.
 struct CoveredRootKey<'a> {
     source_name: &'a str,
     key: String,
@@ -314,7 +314,7 @@ fn covered_root_keys(covered_roots: &[CoveredRoot]) -> Vec<CoveredRootKey<'_>> {
         .collect()
 }
 
-/// 候选落在哪个已覆盖的来源下；`None` 表示配置层没扫过这条路径，MFT 该补进来。
+/// Which covered source a candidate falls under; `None` means the config layer never scanned this path, so MFT should add it.
 fn covered_source_for_key<'a>(
     path_key: &str,
     covered_keys: &'a [CoveredRootKey<'_>],
@@ -326,7 +326,7 @@ fn covered_source_for_key<'a>(
 }
 
 fn path_key_starts_with(path_key: &str, root_key: &str) -> bool {
-    // 热路径：每个候选都会跟每条覆盖路径比一次，不要为此分配字符串
+    // Hot path: every candidate is compared against every coverage path, so do not allocate strings for this
     let root_key = root_key.trim_end_matches('\\');
     if path_key == root_key {
         return true;
@@ -335,12 +335,12 @@ fn path_key_starts_with(path_key: &str, root_key: &str) -> bool {
         return false;
     }
 
-    // 必须停在分隔符上，否则 `d:\models2` 会被当成 `d:\models` 的子孙
+    // Must stop at a separator, otherwise `d:\models2` would be treated as a descendant of `d:\models`
     path_key[root_key.len()..].starts_with('\\')
 }
 
 fn model_extension_threshold(file_name: &str) -> Option<u64> {
-    // MFT 先按文件名过滤，统一规则里已经按扩展名误判风险设置不同大小阈值。
+    // MFT filters by file name first; the unified rules already set different size thresholds for extension misjudgment risks.
     mft_model_min_size(file_name)
 }
 
@@ -402,13 +402,13 @@ fn should_skip_path(path: &Path) -> bool {
         || lower_path.contains("\\$recycle.bin\\")
         || lower_path.contains("\\system volume information\\")
         || is_game_or_benchmark_path(&lower_path)
-        // Chromium 系浏览器会把本地 AI/推理缓存放进用户数据目录，这些文件不是用户主动管理的模型资产，直接跳过更符合产品语义。
+        // Chromium-based browsers put local AI/inference caches in the user data directory; these are not model assets the user actively manages, so skipping them fits the product semantics better.
         || lower_path.contains("\\user data\\optguideondevicemodel\\")
         || lower_path.contains("\\user data\\provenancedata\\")
 }
 
 fn is_game_or_benchmark_path(lower_path: &str) -> bool {
-    // 游戏资源常用超大 .bin/.dlc 分块，深度发现里直接排除这些目录，避免把 Steam 游戏和 3DMark DLC 误报为模型资产。
+    // Game assets often use huge .bin/.dlc chunks; excluding these directories outright in deep discovery avoids misreporting Steam games and 3DMark DLC as model assets.
     lower_path.contains("\\steamapps\\")
         || lower_path.contains("\\steam library\\")
         || lower_path.contains("\\steamlibrary\\")
@@ -422,7 +422,7 @@ fn is_game_or_benchmark_path(lower_path: &str) -> bool {
 }
 
 fn is_plausible_mft_model_candidate(path: &Path) -> bool {
-    // .bin/.dlc 在全盘 MFT 中误判率最高，必须再结合文件名或目录语义确认；平台配置层扫描不受这个兜底规则影响。
+    // .bin/.dlc have the highest false-positive rate in a full-drive MFT scan, so they must be confirmed with file-name or directory semantics; the platform-config-layer scan is not affected by this fallback rule.
     if !requires_ai_context_for_mft(path) {
         return true;
     }
@@ -449,7 +449,7 @@ fn has_ai_model_context(path: &Path) -> bool {
         .unwrap_or_default()
         .to_ascii_lowercase();
 
-    // 目录语义比单个扩展名可靠：用户主动放在模型/推理框架目录下的 .bin/.dlc 才进入未归类结果。
+    // Directory semantics are more reliable than a single extension: only .bin/.dlc that users deliberately placed in model/inference-framework directories enter the uncategorized results.
     let path_hints = [
         "\\models\\",
         "\\model\\",
@@ -479,7 +479,7 @@ fn has_ai_model_context(path: &Path) -> bool {
         return true;
     }
 
-    // 文件名只接受较强模型命名特征，避免 model.bin 这类普通资源名再次放大误判。
+    // File names only accept strong model-naming characteristics, to avoid ordinary asset names like model.bin amplifying false positives again.
     [
         "pytorch_model",
         "tf_model",
@@ -537,7 +537,7 @@ mod tests {
 
     #[test]
     fn covered_root_match_requires_a_path_boundary() {
-        // 只看前缀会把 `D:\models2` 误当成 `D:\models` 的子孙，从而整块跳过
+        // Looking only at the prefix would wrongly treat `D:\models2` as a descendant of `D:\models`, skipping the whole block
         assert!(path_key_starts_with(r"d:\models\a.gguf", r"d:\models"));
         assert!(!path_key_starts_with(r"d:\models2\a.gguf", r"d:\models"));
         assert!(path_key_starts_with(r"d:\models", r"d:\models"));
@@ -550,7 +550,7 @@ mod tests {
             key: r"d:\comfyui\models".to_string(),
         }];
 
-        // 路径里带 `\checkpoints\` 本会推到 ComfyUI，但归属要以覆盖记录为准
+        // A path containing `\checkpoints\` would normally be pushed to ComfyUI, but ownership must follow the coverage record
         assert_eq!(
             covered_source_for_key(r"d:\comfyui\models\checkpoints\a.safetensors", &covered_keys),
             Some("ComfyUI")

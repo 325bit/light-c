@@ -1,6 +1,6 @@
 // ============================================================================
-// 扫描引擎 - 核心扫描逻辑实现
-// 使用并行扫描优化性能
+// Scan engine - core scanning logic implementation
+// Uses parallel scanning to optimize performance
 // ============================================================================
 
 use log::{debug, info};
@@ -15,16 +15,16 @@ use walkdir::WalkDir;
 use super::{CategoryScanResult, FileInfo, JunkCategory, ScanResult};
 use crate::cleaner::safety_constants::is_rebuildable_system_cache_path;
 
-/// 扫描引擎
+/// Scan engine
 pub struct ScanEngine {
-    /// 要扫描的分类列表
+    /// List of categories to scan
     categories: Vec<JunkCategory>,
-    /// 最大扫描深度
+    /// Maximum scan depth
     max_depth: usize,
 }
 
 impl ScanEngine {
-    /// 创建新的扫描引擎
+    /// Create a new scan engine
     pub fn new() -> Self {
         ScanEngine {
             categories: JunkCategory::all(),
@@ -32,19 +32,19 @@ impl ScanEngine {
         }
     }
 
-    /// 设置要扫描的分类
+    /// Set the categories to scan
     pub fn with_categories(mut self, categories: Vec<JunkCategory>) -> Self {
         self.categories = categories;
         self
     }
 
-    /// 设置最大扫描深度
+    /// Set the maximum scan depth
     pub fn with_max_depth(mut self, depth: usize) -> Self {
         self.max_depth = depth;
         self
     }
 
-    /// 执行完整扫描（并行扫描所有分类）
+    /// Run a full scan (all categories in parallel)
     pub fn scan(&self) -> ScanResult {
         let start_time = Instant::now();
         let categories = self.categories.clone();
@@ -52,7 +52,7 @@ impl ScanEngine {
 
         info!("开始并行扫描，共 {} 个分类", categories.len());
 
-        // 使用线程并行扫描所有分类
+        // Scan all categories in parallel using threads
         let results: Arc<Mutex<Vec<CategoryScanResult>>> = Arc::new(Mutex::new(Vec::new()));
         let mut handles = vec![];
 
@@ -78,12 +78,12 @@ impl ScanEngine {
             handles.push(handle);
         }
 
-        // 等待所有线程完成
+        // Wait for all threads to finish
         for handle in handles {
             let _ = handle.join();
         }
 
-        // 汇总结果
+        // Aggregate the results
         let mut result = ScanResult::new();
         let category_results = results.lock().unwrap();
         for category_result in category_results.iter() {
@@ -103,11 +103,11 @@ impl ScanEngine {
         result
     }
 
-    /// 扫描单个分类
+    /// Scan a single category
     pub fn scan_category(&self, category: &JunkCategory) -> CategoryScanResult {
         let mut result = CategoryScanResult::new(category.clone());
 
-        // 回收站的物理目录包含多用户 SID 和 Shell 元数据，必须使用专用扫描器保持与 Explorer 一致。
+        // The Recycle Bin's physical directory contains multi-user SIDs and Shell metadata; a dedicated scanner is required to stay consistent with Explorer.
         if matches!(category, JunkCategory::RecycleBin) {
             super::recycle_bin::scan_current_user(category, &mut result);
             result.sort_files_by_size_desc();
@@ -117,17 +117,17 @@ impl ScanEngine {
         let scan_paths = category.get_scan_paths();
         let patterns = category.get_file_patterns();
 
-        // 收集所有解析后的路径，去重后再扫描
-        // 例如 %TEMP% 和 %TMP% 可能指向同一个目录，避免重复扫描
+        // Collect all resolved paths, dedupe, then scan
+        // e.g. %TEMP% and %TMP% may point to the same directory, avoid scanning twice
         let mut unique_paths: HashSet<std::path::PathBuf> = HashSet::new();
         let mut resolved_list: Vec<std::path::PathBuf> = Vec::new();
 
         for scan_path in scan_paths {
             for resolved_path in scan_path.resolve_all() {
-                // 尝试规范化路径以消除符号链接、大小写等差异
+                // Try to canonicalize the path to eliminate differences from symlinks, casing, etc.
                 let canonical = match std::fs::canonicalize(&resolved_path) {
                     Ok(p) => p,
-                    Err(_) => resolved_path.clone(), // 规范化失败则使用原路径的克隆
+                    Err(_) => resolved_path.clone(), // if canonicalization fails, use a clone of the original path
                 };
                 if unique_paths.insert(canonical.clone()) {
                     resolved_list.push(canonical);
@@ -142,13 +142,13 @@ impl ScanEngine {
             self.scan_path(resolved_path, category, &patterns, &mut result);
         }
 
-        // 并行线程与目录遍历的完成顺序会随机化文件顺序，统一按大小倒序展示，
-        // 让用户先在每个分类里看到占用空间最大的文件。
+        // Parallel threads and directory traversal randomize file order; sort uniformly by size descending,
+        // so users see the biggest space hogs first within each category.
         result.sort_files_by_size_desc();
         result
     }
 
-    /// 扫描指定路径
+    /// Scan a specific path
     fn scan_path(
         &self,
         path: &Path,
@@ -156,13 +156,13 @@ impl ScanEngine {
         patterns: &[&str],
         result: &mut CategoryScanResult,
     ) {
-        // 检查路径是否存在
+        // Check whether the path exists
         if !path.exists() {
             debug!("路径不存在: {:?}", path);
             return;
         }
 
-        // 如果是文件，直接处理
+        // If it's a file, handle it directly
         if path.is_file() {
             if let Some(file_info) = self.get_file_info(path, category) {
                 result.add_file(file_info);
@@ -170,7 +170,7 @@ impl ScanEngine {
             return;
         }
 
-        // 遍历目录，只统计文件，跳过目录条目避免与文件重复计数
+        // Traverse the directory, counting files only; skip directory entries to avoid double counting with files
         let walker = WalkDir::new(path)
             .max_depth(self.max_depth)
             .follow_links(false)
@@ -183,34 +183,34 @@ impl ScanEngine {
         for entry in walker.filter_map(|e| e.ok()) {
             let entry_path = entry.path();
 
-            // 跳过根目录本身
+            // Skip the root directory itself
             if entry_path == path {
                 continue;
             }
 
-            // 只处理文件，跳过目录（避免 calculate_dir_size 与逐文件统计重复计数）
+            // Only process files, skip directories (avoids duplicate counting between calculate_dir_size and per-file stats)
             if !entry.file_type().is_file() {
                 continue;
             }
 
-            // 检查是否匹配模式
+            // Check whether it matches the patterns
             if !self.matches_patterns(entry_path, patterns) {
                 continue;
             }
 
-            // 二次防线：即便未来新增扫描根，也不要把 WebView/Chromium 的持久化 Profile 数据当垃圾。
+            // Second line of defense: even if new scan roots are added later, never treat WebView/Chromium persistent Profile data as junk.
             if self.is_persistent_app_profile_path(entry_path) {
                 continue;
             }
 
-            // 获取文件信息
+            // Get file information
             if let Some(file_info) = self.get_file_info(entry_path, category) {
                 result.add_file(file_info);
             }
         }
     }
 
-    /// 获取文件信息（仅处理文件，目录已在 scan_path 中跳过）
+    /// Get file information (files only; directories are already skipped in scan_path)
     fn get_file_info(&self, path: &Path, category: &JunkCategory) -> Option<FileInfo> {
         let metadata = match fs::metadata(path) {
             Ok(m) => m,
@@ -239,14 +239,14 @@ impl ScanEngine {
             name,
             size,
             modified_time,
-            false, // 始终为文件，目录不会传入此函数
+            false, // always a file, directories never reach this function
             category.clone(),
         ))
     }
 
-    /// 检查文件名是否匹配模式
+    /// Check whether a file name matches the patterns
     fn matches_patterns(&self, path: &Path, patterns: &[&str]) -> bool {
-        // 如果模式包含 "*"，匹配所有文件
+        // If the patterns contain "*", match all files
         if patterns.contains(&"*") {
             return true;
         }
@@ -265,9 +265,9 @@ impl ScanEngine {
         false
     }
 
-    /// 简单的glob模式匹配
+    /// Simple glob pattern matching
     fn matches_glob(&self, name: &str, pattern: &str) -> bool {
-        // Windows 文件名匹配不区分大小写，名称和模式必须使用同一规范化口径。
+        // Windows file-name matching is case-insensitive; name and pattern must use the same normalization.
         let name = name.to_lowercase();
         let pattern = pattern.to_lowercase();
 
@@ -275,7 +275,7 @@ impl ScanEngine {
             return true;
         }
 
-        // 将单个星号视为任意长度字符串，支持前缀、后缀和中间通配符组合。
+        // Treat a single asterisk as a string of any length, supporting combinations of prefix, suffix and middle wildcards.
         let starts_with_wildcard = pattern.starts_with('*');
         let ends_with_wildcard = pattern.ends_with('*');
         let parts: Vec<&str> = pattern.split('*').filter(|part| !part.is_empty()).collect();
@@ -309,11 +309,11 @@ impl ScanEngine {
         true
     }
 
-    /// 检查是否为系统保护路径（不应扫描）
+    /// Check whether a path is system-protected (should not be scanned)
     fn is_system_protected(&self, path: &Path) -> bool {
         let path_str = path.to_string_lossy().to_lowercase();
 
-        // 保护关键系统目录
+        // Protect critical system directories
         let protected_paths = [
             "system32",
             "syswow64",
@@ -329,17 +329,17 @@ impl ScanEngine {
         ];
 
         for protected in &protected_paths {
-            // Defender 和 System32 下只有清理向导明确标记的缓存子目录可扫描，父目录仍保持保护。
+            // Under Defender and System32, only cache subdirectories explicitly marked by the cleanup wizard are scannable; parent dirs stay protected.
             if path_str.contains(protected) && !is_rebuildable_system_cache_path(&path_str) {
                 return true;
             }
         }
 
-        // 保护系统关键文件扩展名
+        // Protect critical system file extensions
         if let Some(ext) = path.extension() {
             let ext_str = ext.to_string_lossy().to_lowercase();
             let protected_exts = ["sys", "dll", "exe", "msi", "cat", "mum", "manifest"];
-            // 只在Windows目录下保护这些扩展名
+            // Only protect these extensions under the Windows directory
             if path_str.contains("\\windows\\") && protected_exts.contains(&ext_str.as_str()) {
                 return true;
             }
@@ -348,12 +348,12 @@ impl ScanEngine {
         false
     }
 
-    /// 检查是否为 WebView/Chromium 应用的持久化 Profile 数据。
+    /// Check whether a path is persistent WebView/Chromium app Profile data.
     ///
-    /// 中文说明：
-    /// MSIX/Tauri/Electron/WebView2 应用常把用户状态放在 LocalCache 下，例如 Claude 的
-    /// EBWebView\Default。这里面的 IndexedDB、Local Storage、各种 SQLite/LevelDB 文件
-    /// 不是纯缓存，删除后会导致会话列表、应用偏好或索引丢失。
+    /// Note:
+    /// MSIX/Tauri/Electron/WebView2 apps often keep user state under LocalCache, e.g. Claude's
+    /// EBWebView\Default. The IndexedDB, Local Storage, and various SQLite/LevelDB files in there
+    /// are not pure caches; deleting them loses conversation lists, app preferences, or indexes.
     fn is_persistent_app_profile_path(&self, path: &Path) -> bool {
         let path_str = path.to_string_lossy().to_lowercase();
         if !path_str.contains("\\appdata\\local\\packages\\") && !path_str.contains("\\ebwebview\\")
@@ -384,7 +384,7 @@ impl ScanEngine {
     }
 }
 
-// 为并行扫描实现Send和Sync
+// Implement Send and Sync for parallel scanning
 unsafe impl Send for ScanEngine {}
 unsafe impl Sync for ScanEngine {}
 
@@ -427,7 +427,7 @@ mod tests {
     fn test_rebuildable_system_cache_exception_is_narrow() {
         let engine = ScanEngine::new();
 
-        // 例外只覆盖明确的缓存目录，不能把整个 System32 或 Defender 根目录放开。
+        // The exception only covers explicit cache directories; it must not open up all of System32 or the Defender root.
         assert!(!engine.is_system_protected(Path::new(r"C:\Windows\System32\d3d_cache\shader.bin")));
         assert!(!engine.is_system_protected(Path::new(
             r"C:\ProgramData\Microsoft\Windows Defender\Support\MPLog.log"
@@ -456,7 +456,7 @@ mod tests {
 
         let sizes = result.files.iter().map(|file| file.size).collect::<Vec<_>>();
         assert_eq!(sizes, vec![4096, 512, 10]);
-        // 排序只调整展示顺序，不能改变分类统计口径。
+        // Sorting only changes display order, not the category statistics.
         assert_eq!(result.file_count, 3);
         assert_eq!(result.total_size, 4618);
     }

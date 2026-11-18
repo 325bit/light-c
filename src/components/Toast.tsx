@@ -1,13 +1,13 @@
 // ============================================================================
-// Toast 轻提示组件 - 全局通知系统
-// 支持 success/error/warning/info 四种类型
+// Toast lightweight notification component - global notification system
+// Supports four types: success/error/warning/info
 // ============================================================================
 
 import { createContext, useContext, useState, useCallback, ReactNode } from 'react';
 import { CheckCircle, XCircle, AlertTriangle, Info, X } from 'lucide-react';
 
 // ============================================================================
-// 类型定义
+// Type definitions
 // ============================================================================
 
 export type ToastType = 'success' | 'error' | 'warning' | 'info';
@@ -57,7 +57,7 @@ export function ToastProvider({ children }: ToastProviderProps) {
     
     setToasts((prev) => [...prev, newToast]);
 
-    // 自动消失
+    // Auto-dismiss
     const duration = toast.duration ?? 4000;
     if (duration > 0) {
       setTimeout(() => {
@@ -79,7 +79,7 @@ export function ToastProvider({ children }: ToastProviderProps) {
 }
 
 // ============================================================================
-// Toast 容器
+// Toast container
 // ============================================================================
 
 interface ToastContainerProps {
@@ -100,7 +100,7 @@ function ToastContainer({ toasts, onClose }: ToastContainerProps) {
 }
 
 // ============================================================================
-// 单个 Toast
+// Single toast
 // ============================================================================
 
 interface ToastItemComponentProps {

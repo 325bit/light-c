@@ -1,5 +1,5 @@
 // ============================================================================
-// 组件导出索引
+// Component export index
 // ============================================================================
 
 export { DiskUsage } from './DiskUsage';
@@ -17,7 +17,7 @@ export { ModuleOperationToolbar } from './ModuleOperationToolbar';
 export { AiAssistant } from './ai/AiAssistant';
 export { AiAskButton } from './ai/AiAskButton';
 export { ConfirmDialog } from './ConfirmDialog';
-// BackButton 已废弃删除（全项目零引用，页面返回统一用顶栏的返回入口）
+// BackButton has been deprecated and removed (zero references project-wide; page back navigation uses the top bar's back entry)
 export { BackToTopButton } from './BackToTopButton';
 export { ToastProvider, useToast } from './Toast';
 export type { ToastType, ToastItem } from './Toast';

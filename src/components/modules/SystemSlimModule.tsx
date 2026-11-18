@@ -1,7 +1,7 @@
 import { useAiModuleBridge } from '../ai/useAiModuleBridge';
 // ============================================================================
-// 系统瘦身模块组件
-// 在仪表盘中展示系统瘦身功能
+// System slim module component
+// Display the system slim feature in the dashboard
 // ============================================================================
 
 import { useState, useCallback, useEffect, useRef } from 'react';
@@ -42,7 +42,7 @@ import { formatSize } from '../../utils/format';
 import type { ModuleRenderProps } from './moduleProps';
 
 // ============================================================================
-// 配置
+// Configuration
 // ============================================================================
 
 const itemIcons: Record<string, typeof Moon> = {
@@ -63,12 +63,12 @@ const itemColors: Record<string, { bg: string; text: string }> = {
 
 
 /**
- * 取按钮文案。
+ * Get the button label.
  *
- * 中文说明：按钮文案必须反映真实状态，而不是固定文案：
- *   - 休眠项：开启时"关闭休眠"，已关闭时"开启休眠"；
- *   - 后端 action_text 是中文（无需清理 / 深度清理 / 执行清理 / 重新检测），
- *     在其它语言下需要通过它反查对应的多语言键，避免英文/日文界面出现中文按钮。
+ * Note: the button label must reflect the real state rather than a fixed label:
+ *   - Hibernation: show "Disable hibernation" when enabled, "Enable hibernation" when disabled;
+ *   - The backend action_text is in Chinese (no cleanup needed / deep cleanup / run cleanup / rescan),
+ *     so in other languages it must be used to look up the matching i18n key, to avoid Chinese buttons appearing in the English/Japanese UI.
  */
 function getActionLabel(
   item: SlimItemStatus,
@@ -78,7 +78,7 @@ function getActionLabel(
     return translate(item.enabled ? 'systemSlim.items.hibernation.disable' : 'systemSlim.items.hibernation.enable');
   }
 
-  // action_text 与多语言键的对应关系；键顺序与后端文案一一对应。
+  // Mapping between action_text and i18n keys; key order corresponds one-to-one with backend labels.
   const actionTextToKey: Record<string, string> = {
     无需清理: 'noCleanup',
     开始清理: 'startCleanup',
@@ -92,15 +92,15 @@ function getActionLabel(
     return translate(`systemSlim.actions.${matchedKey}`);
   }
 
-  // 后端新增文案而前端还没补多语言键时，至少不要退回静态旧文案（会造成状态不一致）。
+  // When the backend adds a label but the frontend has not added the i18n key yet, at least do not fall back to the old static label (which would cause inconsistent state).
   return item.action_text || translate(`systemSlim.items.${item.id}.action`);
 }
 
 /**
- * 格式化已用时间。
+ * Format the elapsed time.
  *
- * 中文说明：DISM 清理的进度百分比长时间不动时，用户唯一能判断"还在跑"的依据就是已用时间，
- * 因此统一按「秒」或「分秒」显示，避免只显示毫秒造成困惑。
+ * Note: when the DISM cleanup progress percentage stays unchanged for a long time, the only evidence that it is "still running" is the elapsed time,
+ * so display it consistently in "seconds" or "minutes:seconds" to avoid confusion from showing only milliseconds.
  */
 function formatElapsed(elapsedMs: number): string {
   const totalSeconds = Math.max(0, Math.floor(elapsedMs / 1000));
@@ -110,7 +110,7 @@ function formatElapsed(elapsedMs: number): string {
 }
 
 // ============================================================================
-// 组件实现
+// Component implementation
 // ============================================================================
 
 export function SystemSlimModule({ isPageActive = true }: ModuleRenderProps) {
@@ -120,31 +120,31 @@ export function SystemSlimModule({ isPageActive = true }: ModuleRenderProps) {
   const { moduleState, updateModuleState, triggerHealthRefresh, oneClickScanTrigger } = useModuleDashboard('system');
   const { showToast } = useToast();
 
-  // 用于跟踪是否已处理过当前的一键扫描触发
+  // Track whether the current one-click scan trigger has been handled
   const lastScanTriggerRef = useRef(0);
 
-  // 本地状态
+  // Local state
   const [status, setStatus] = useState<SystemSlimStatus | null>(null);
-  // DISM 分析进度：只在 WinSxS 两项"分析中"时展示，避免几十秒里只有一个转圈
+  // DISM analysis progress: shown only while the two WinSxS items are "analyzing", to avoid a lone spinner for tens of seconds
   const [winsxsProgress, setWinsxsProgress] = useState<{ percent: number; elapsed_ms: number } | null>(null);
-  // 刚执行过组件清理时记下清理前的可回收量：分析结果回来才能说"到底有没有释放"，
-  // 命令返回那一刻是不知道的（DISM 要重新分析才知道）。
+  // When a component cleanup has just run, record the pre-cleanup reclaimable amount: only when the analysis result returns can we say whether space was actually freed,
+  // which is unknown at the moment the command returns (DISM must re-analyze to know).
   const pendingCleanupRef = useRef<{ before: number; resetBase: boolean } | null>(null);
-  // showToast 每次渲染都可能是新函数；丢进 ref，事件订阅就不用把它写进依赖数组
+  // showToast may be a new function on every render; put it in a ref so the event subscription does not need it in the dependency array
   const showToastRef = useRef(showToast);
   useEffect(() => {
     showToastRef.current = showToast;
   }, [showToast]);
-  // 后台事件到达时要读最新状态做合并，不能靠闭包抓渲染那一刻的快照
+  // When background events arrive, read the latest state to merge; cannot rely on a closure capturing the snapshot from render time
   const statusRef = useRef<SystemSlimStatus | null>(null);
   useEffect(() => {
     statusRef.current = status;
   }, [status]);
 
-  // 后台 DISM 分析还在跑时，界面会把"重新检测"禁用（点了也只会拿回同样"分析中"的结果）。
-  // 但后端的僵死自愈（超时后强制重启分析）只有收到新请求才会跑 —— 按钮锁死就永远等不到
-  // 那次请求，互相等死。所以分析持续超过兜底时间（后端 600 秒 + 余量）就放开按钮，
-  // 让用户能点一次把僵死的分析重新拉起来。
+  // While background DISM analysis is still running, the UI disables "rescan" (clicking would only return the same "analyzing" result).
+  // But the backend's stuck-state self-healing (force-restart analysis after timeout) only runs on a new request - a locked button would never wait for
+  // that request, leaving them deadlocked. So if analysis exceeds the fallback time (backend 600 seconds + margin), release the button
+  // so the user can click once to restart the stuck analysis.
   const isAnalyzingWinsxs = status?.items.some((item) => item.analyzing) ?? false;
   const [analyzeTimedOut, setAnalyzeTimedOut] = useState(false);
   useEffect(() => {
@@ -155,7 +155,7 @@ export function SystemSlimModule({ isPageActive = true }: ModuleRenderProps) {
     const timer = window.setTimeout(() => setAnalyzeTimedOut(true), 11 * 60 * 1000);
     return () => window.clearTimeout(timer);
   }, [isAnalyzingWinsxs]);
-  // 接入 AI 助手（只读）：只给摘要，不提供操作动作。
+  // Integrate with the AI assistant (read-only): provide a summary only, no actionable operations.
   useAiModuleBridge('system-slim', {
     summary: () => {
       if (!status) return null;
@@ -166,12 +166,12 @@ export function SystemSlimModule({ isPageActive = true }: ModuleRenderProps) {
           : '当前没有管理员权限，需要权限的项目只能给出说明、无法直接处理。',
       ].join('');
     },
-    // 只读读取：瘦身项列表（就是界面上那一列）。
-    // 每条带上后端给的 status_text 与"能不能处理"，模型才不可能凭名字猜。
+    // Read-only: the slim item list (the column shown in the UI).
+    // Include the backend's status_text and "whether it can be handled" for each item so the model cannot guess from names.
     readItems: (_targetId, offset, limit) => {
       const items = status?.items ?? [];
       if (items.length === 0) {
-        // 空结果的两种原因分开说：排查方向完全不同
+        // State the two reasons for an empty result separately: the troubleshooting directions are completely different
         return {
           total: 0,
           lines: [
@@ -189,7 +189,7 @@ export function SystemSlimModule({ isPageActive = true }: ModuleRenderProps) {
         }),
       };
     },
-    // 只读：单条详情。itemId 先用 items 里的 id，找不到再按名称兜一次。
+    // Read-only: single-item detail. For itemId, first use the id from items; if not found, fall back to the name.
     readItemDetail: (itemId) => {
       const wanted = itemId.trim();
       if (!wanted) return null;
@@ -202,7 +202,7 @@ export function SystemSlimModule({ isPageActive = true }: ModuleRenderProps) {
         `名称：${item.name}`,
         `说明：${item.description}`,
         `可释放：${item.size > 0 ? formatSize(item.size) : '未统计'}`,
-        // 构成明细要一起给：只报一个总数，模型也只能跟着含糊其辞
+        // Give the breakdown details too: reporting only a total would make the model vague as well
         item.breakdown
           ? `可回收构成：被取代的旧组件副本 ${formatSize(item.breakdown.backups)}、缓存与临时数据 ${formatSize(item.breakdown.cache)}`
           : '',
@@ -219,13 +219,13 @@ export function SystemSlimModule({ isPageActive = true }: ModuleRenderProps) {
 
   const [loading, setLoading] = useState(false);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
-  // 正在执行的瘦身操作进度：DISM 清理可能持续数分钟，必须有阶段与百分比反馈。
+  // Progress of the running slim operation: DISM cleanup may last several minutes, so phase and percentage feedback is required.
   const [operationProgress, setOperationProgress] = useState<SlimOperationProgress | null>(null);
   /*
-    已用时间不能只靠后端推。DISM 只在百分比前进时才发进度事件，而它经常在同一个
-    百分比上停留很久（真机实测「10%」停了几十秒），那段时间里一条事件都没有，
-    "已用 0s" 就跟着冻住 —— 用户看到的就是"卡死了"。这里用本地时钟自增兜底，
-    后端事件到达时取两者较大值，既不会倒退也不会停。
+    Elapsed time cannot rely only on backend pushes. DISM only emits progress events when the percentage advances, and it often stays at the same
+    percentage for a long time (on a real machine "10%" stalled for tens of seconds), with no events during that period,
+    so "elapsed 0s" would freeze along with it - what the user sees is "stuck". Use a local clock as a fallback here,
+    taking the larger of the two when backend events arrive, so it neither goes backwards nor stops.
   */
   const progressStartedAtRef = useRef(0);
   const [clockNow, setClockNow] = useState(0);
@@ -237,12 +237,12 @@ export function SystemSlimModule({ isPageActive = true }: ModuleRenderProps) {
     return () => window.clearInterval(timer);
   }, [progressRunning]);
   const [showAdminWarning, setShowAdminWarning] = useState(true);
-  // 基线压缩不可撤销，点击后先二次确认再执行。
+  // Baseline compaction is irreversible; require a second confirmation before executing.
   const [pendingConfirmItem, setPendingConfirmItem] = useState<SlimItemStatus | null>(null);
-  // 确认弹窗回调需要拿到最新的处理函数，用 ref 避免为了它重建所有按钮回调。
+  // The confirm dialog callback needs the latest handler; use a ref to avoid rebuilding all button callbacks for it.
   const handleActionRef = useRef<(item: SlimItemStatus) => void>(() => {});
 
-  // 订阅后端进度事件；操作结束后保留最终状态，由操作流程负责清理。
+  // Subscribe to backend progress events; after the operation ends, keep the final state and let the operation flow handle cleanup.
   useEffect(() => {
     let disposed = false;
     let unlisten: (() => void) | null = null;
@@ -255,7 +255,7 @@ export function SystemSlimModule({ isPageActive = true }: ModuleRenderProps) {
         else unlisten = dispose;
       })
       .catch((error) => {
-        // 订阅失败只影响进度展示，操作本身仍可执行，因此仅记录日志。
+        // Subscription failure only affects progress display; the operation itself can still run, so just log it.
         console.error('订阅系统瘦身进度失败:', error);
       });
 
@@ -266,11 +266,11 @@ export function SystemSlimModule({ isPageActive = true }: ModuleRenderProps) {
   }, []);
 
   /**
-   * WinSxS 的 DISM 分析在后台跑，结果通过事件补推。
+   * WinSxS's DISM analysis runs in the background and pushes results via events.
    *
-   * 中文说明：DISM 分析要几十秒到几分钟，以前整条检测接口都等它（30 秒超时才放行），
-   * 用户看到的就是"检查中"转半分钟。现在后端先返回其余四项并把这两项标成 analyzing，
-   * 分析结束后由这里替换掉。
+   * Note: DISM analysis takes tens of seconds to minutes; previously the whole detection API waited for it (released only after a 30-second timeout),
+   * so the user saw a "checking" spinner for half a minute. Now the backend first returns the other four items and marks these two as analyzing,
+   * and this code replaces them once analysis completes.
    */
   useEffect(() => {
     let disposed = false;
@@ -283,12 +283,12 @@ export function SystemSlimModule({ isPageActive = true }: ModuleRenderProps) {
           else disposers.push(dispose);
         })
         .catch((error) => {
-          // 订阅失败只影响这一项的自动更新，用户仍可手动重新检测
+          // Subscription failure only affects this item's auto-update; the user can still manually rescan
           console.error('订阅 WinSxS 分析事件失败:', error);
         });
     };
 
-    // DISM 分析的百分比：几十秒的等待里只有这个能让用户确认"在推进"
+    // DISM analysis percentage: during tens of seconds of waiting, this is the only thing that confirms progress to the user
     register(
       listen<{ percent: number; elapsed_ms: number }>('system-slim:winsxs-progress', (event) => {
         if (!disposed) setWinsxsProgress(event.payload ?? null);
@@ -320,8 +320,8 @@ export function SystemSlimModule({ isPageActive = true }: ModuleRenderProps) {
           totalSize: total,
         });
 
-        // 刚执行过组件清理：现在分析结果回来了，才有资格说"到底有没有释放空间"。
-        // 命令返回那一刻是不知道的 —— 以前在那一刻编了个数字，是假的。
+        // A component cleanup just ran: now that the analysis result is back can we say whether space was actually freed.
+        // That was unknown when the command returned - previously a number was made up at that moment, which was false.
         const pending = pendingCleanupRef.current;
         if (!pending) return;
 
@@ -334,8 +334,8 @@ export function SystemSlimModule({ isPageActive = true }: ModuleRenderProps) {
           : moduleT('systemSlim.componentCleanup');
 
         if (winsxsItem.size <= 0) {
-          // size 为 0 有两种可能：真的清空了，或者这次分析根本没读到结果。
-          // 后者（分析失败时 actionable 为 true）不能说成"清干净了"——那就是撒谎。
+          // size 0 has two possibilities: it was really emptied, or this analysis read no result at all.
+          // The latter (actionable is true when analysis fails) must not be described as "all cleaned up" - that would be a lie.
           showToastRef.current({
             title,
             description: winsxsItem.actionable
@@ -393,11 +393,11 @@ export function SystemSlimModule({ isPageActive = true }: ModuleRenderProps) {
   }, [updateModuleState]);
 
   /**
-   * 操作结束后立即重新读取后端状态。
+   * Re-read the backend state immediately after an operation ends.
    *
-   * 中文说明：状态必须以后端为准。此前操作完成只做本地"标记需重新检测"，导致按钮文案和
-   * 体积停留在操作前的快照（关掉休眠后仍显示"关闭休眠"、清理完仍显示旧的估算体积）。
-   * 这里不复用 loadStatus，因为它带有"忙碌时拦截"的保护，而本函数正是在操作收尾阶段调用。
+   * Note: the backend state is authoritative. Previously, completing an operation only did a local "mark needs rescan", causing the button label and
+   * size to stay at the pre-operation snapshot (still showing "Disable hibernation" after disabling it, and the old estimated size after cleanup).
+   * This does not reuse loadStatus because it has a "block while busy" guard, and this function is called during operation wrap-up.
    */
   const refreshStatusAfterAction = useCallback(async () => {
     try {
@@ -409,18 +409,18 @@ export function SystemSlimModule({ isPageActive = true }: ModuleRenderProps) {
         totalSize: result.total_reclaimable,
       });
     } catch (error) {
-      // 刷新失败不影响操作结果本身，退化为提示用户手动重新检测。
+      // A refresh failure does not affect the operation result itself; degrade to prompting the user to rescan manually.
       console.warn('操作后刷新系统瘦身状态失败:', error);
       markItemsNeedRescan(['hibernation', 'winsxs', 'winsxs_resetbase']);
     }
   }, [markItemsNeedRescan, updateModuleState]);
 
-  // 加载系统瘦身状态
+  // Load the system slim state
   //
-  // forceRefresh：用户点"重新检测"时传 true —— 组件存储分析的结论有 10 分钟缓存，
-  // 不强制刷新的话点了之后接口秒回旧数据，界面像"刷新了一下"而不是真的重测。
+  // forceRefresh: pass true when the user clicks "rescan" - component storage analysis results are cached for 10 minutes,
+  // without a forced refresh the API returns stale data instantly, making the UI look "refreshed" rather than actually re-tested.
   const loadStatus = useCallback(async (forceRefresh = false) => {
-    // 系统操作执行期间禁止重新检测：DISM 分析与清理并发会互相干扰，也会让状态显示错乱。
+    // Rescanning is blocked while a system operation runs: concurrent DISM analysis and cleanup interfere with each other and scramble the state display.
     if (actionLoading) {
       showToast({ title: moduleT('systemSlim.busyTitle'), description: moduleT('systemSlim.busyDesc'), type: 'info' });
       return;
@@ -446,7 +446,7 @@ export function SystemSlimModule({ isPageActive = true }: ModuleRenderProps) {
     }
   }, [actionLoading, moduleT, showToast, updateModuleState]);
 
-  // 监听一键扫描触发器
+  // Listen for the one-click scan trigger
   useEffect(() => {
     if (oneClickScanTrigger > 0 && oneClickScanTrigger !== lastScanTriggerRef.current) {
       lastScanTriggerRef.current = oneClickScanTrigger;
@@ -454,26 +454,26 @@ export function SystemSlimModule({ isPageActive = true }: ModuleRenderProps) {
     }
   }, [oneClickScanTrigger, loadStatus]);
 
-  // 执行瘦身操作
+  // Execute a slim operation
   const runAction = useCallback(async (item: SlimItemStatus) => {
     if (!status?.is_admin) {
       showToast({ title: moduleT('systemSlim.adminRequired'), description: moduleT('systemSlim.adminHint'), type: 'error' });
       return;
     }
 
-    // 同一时间只允许一个系统级操作：DISM 与 powercfg 并发会互相干扰且更难排查。
+    // Only one system-level operation at a time: concurrent DISM and powercfg interfere and are harder to troubleshoot.
     if (actionLoading) {
       showToast({ title: moduleT('systemSlim.busyTitle'), description: moduleT('systemSlim.busyDesc'), type: 'info' });
       return;
     }
 
     setActionLoading(item.id);
-    // 记下起点：本地时钟从这一刻算起，DISM 安静几十秒也不会让"已用"停住。
+    // Record the starting point: the local clock counts from this moment, so tens of quiet DISM seconds will not freeze "elapsed".
     progressStartedAtRef.current = Date.now();
     setClockNow(Date.now());
-    // 记录操作前的体积，操作完成后用真实差值告诉用户"实际释放了多少"，而不是只报估算值。
+    // Record the pre-operation size; after completion, tell the user the real difference ("how much was actually freed") instead of only the estimate.
     const sizeBefore = status?.items.find((current) => current.id === item.id)?.size ?? 0;
-    // 先用本地状态兜底，避免后端首条进度到达前出现"点了没反应"的空窗。
+    // Use local state as a fallback first to avoid a "clicked but nothing happened" gap before the first backend progress event.
     setOperationProgress({
       item_id: item.id,
       phase: 'preparing',
@@ -496,8 +496,8 @@ export function SystemSlimModule({ isPageActive = true }: ModuleRenderProps) {
           break;
         case 'winsxs':
           await cleanupWinsxs();
-          // 命令成功 ≠ 真的释放了空间。DISM 要重新分析（约 1 分钟）才知道结果，
-          // 所以这里只说"命令完成、正在重新分析"，等分析结果推回来再报实际数字。
+          // A successful command does not mean space was really freed. DISM must re-analyze (about 1 minute) to know the result,
+          // so here only say "command completed, re-analyzing" and report the actual number when the analysis result is pushed back.
           pendingCleanupRef.current = { before: sizeBefore, resetBase: false };
           showToast({ title: moduleT('systemSlim.componentCleanup'), description: moduleT('systemSlim.cleanupStartedReprobe'), type: 'success' });
           break;
@@ -516,8 +516,8 @@ export function SystemSlimModule({ isPageActive = true }: ModuleRenderProps) {
           break;
       }
 
-      // 操作完成后重新读取真实状态：休眠是否关闭、组件是否还有可回收内容都必须以后端为准，
-      // 否则按钮文案会停留在操作前的状态（例如关掉休眠后仍显示"关闭休眠"）。
+      // After the operation completes, re-read the real state: whether hibernation is off and whether components still have reclaimable content must come from the backend,
+      // otherwise the button label stays at the pre-operation state (e.g., still showing "Disable hibernation" after disabling it).
       if (item.id !== 'pagefile' && item.id !== 'search_index') {
         await refreshStatusAfterAction();
       }
@@ -529,19 +529,19 @@ export function SystemSlimModule({ isPageActive = true }: ModuleRenderProps) {
       showToast({ title: moduleT('systemSlim.operationFailed'), description: String(error), type: 'error' });
     } finally {
       setActionLoading(null);
-      // 操作结束即撤下进度视图：成功由 toast 反馈，失败由错误 toast 反馈。
+      // Remove the progress view as soon as the operation ends: success is reported by a toast, failure by an error toast.
       setOperationProgress(null);
     }
   }, [actionLoading, moduleT, refreshStatusAfterAction, showToast, status, triggerHealthRefresh, markItemsNeedRescan]);
 
-  // 让确认弹窗始终调用到最新的处理函数。
+  // Ensure the confirm dialog always calls the latest handler.
   useEffect(() => {
     handleActionRef.current = runAction;
   }, [runAction]);
 
   /**
-   * 按钮入口：基线压缩会移除更新回滚基线、不可撤销，因此先弹二次确认；
-   * 其余操作可逆，直接执行。
+   * Button entry: baseline compaction removes the update rollback baseline and is irreversible, so show a second confirmation first;
+   * other operations are reversible and run directly.
    */
   const handleAction = useCallback((item: SlimItemStatus) => {
     if (item.id === 'winsxs_resetbase') {
@@ -550,13 +550,13 @@ export function SystemSlimModule({ isPageActive = true }: ModuleRenderProps) {
     }
     void runAction(item);
   }, [runAction]);
-  // 任一系统操作执行中即视为忙碌：所有操作入口（按钮、重新检测）统一用它拦截。
+  // Any running system operation counts as busy: all operation entry points (buttons, rescan) use this uniformly to block.
   const isActionBusy = actionLoading !== null;
-  // 分析刚开始 -> 禁用；分析已经拖过兜底时间 -> 放开，避免按钮和僵死进程互相等死。
+  // Analysis just started -> disable; analysis has passed the fallback time -> release, to avoid button and stuck process deadlocking.
   const isAnalyzingLocked = isAnalyzingWinsxs && !analyzeTimedOut;
 
-  // 展示用的已用时间：后端报的和本地时钟哪个大用哪个
-  // （后端在收尾阶段会精确一次，本地时钟负责两帧之间的连续性）。
+  // Elapsed time for display: use whichever is larger, the backend's or the local clock's
+  // (the backend corrects it once at wrap-up, the local clock handles continuity between frames).
   const elapsedMs = Math.max(
     operationProgress?.elapsed_ms ?? 0,
     progressStartedAtRef.current > 0 && clockNow > 0
@@ -570,7 +570,7 @@ export function SystemSlimModule({ isPageActive = true }: ModuleRenderProps) {
 
   return (
     <>
-      {/* 基线压缩不可撤销，必须二次确认后才执行 */}
+      {/* Baseline compaction is irreversible; execute only after a second confirmation */}
       <ConfirmDialog
         isOpen={pendingConfirmItem !== null}
         title={moduleT('systemSlim.confirmResetBaseTitle')}
@@ -597,8 +597,8 @@ export function SystemSlimModule({ isPageActive = true }: ModuleRenderProps) {
       totalSize={moduleState.totalSize}
       onScan={() => loadStatus(true)}
       scanButtonText={loading ? moduleT('systemSlim.checking') : status ? moduleT('systemSlim.rescan') : moduleT('systemSlim.check')}
-      // 检测中 / 后台分析中 / 系统操作执行中都不允许重新检测：
-      // 前两者点了也拿不到新结论，后者与 DISM 并发会互相干扰。
+      // Rescanning is not allowed while checking / background analysis / system operation is running:
+      // the first two would not return a new conclusion, and the last would interfere with concurrent DISM.
       scanDisabled={loading || isAnalyzingLocked || isActionBusy}
       error={moduleState.error}
       headerExtra={
@@ -619,11 +619,11 @@ export function SystemSlimModule({ isPageActive = true }: ModuleRenderProps) {
         )
       }
     >
-      {/* 展开内容 */}
+      {/* Expanded content */}
       <div className="p-4 space-y-3">
-        {/* 管理员权限警告：是否已提权由公共组件自己判断，本模块只管"要不要显示"。
-            ⚠️ 不要加 `status &&` —— 那要等扫描返回，用户在扫描前完全看不到这条提示，
-            而这恰恰是他最该知道"我现在没有权限"的时候。 */}
+        {/* Admin privilege warning: whether elevation is active is determined by the shared component; this module only decides "whether to show".
+            ⚠️ Do not add `status &&` - that would wait for the scan to return, so the user would not see this hint at all before scanning,
+            which is exactly when they most need to know "I have no permission". */}
         {showAdminWarning && (
           <AdminRequiredHint
             description={moduleT('systemSlim.adminHint')}
@@ -632,7 +632,7 @@ export function SystemSlimModule({ isPageActive = true }: ModuleRenderProps) {
           />
         )}
 
-        {/* 加载状态 */}
+        {/* Loading state */}
         {loading && !status && (
           <ModuleScanProgress
             title={`${moduleT('systemSlim.checking')}...`}
@@ -640,7 +640,7 @@ export function SystemSlimModule({ isPageActive = true }: ModuleRenderProps) {
           />
         )}
 
-        {/* 空状态 */}
+        {/* Empty state */}
         {moduleState.status === 'idle' && !status && (
           <EmptyState
             icon={Rocket}
@@ -649,14 +649,14 @@ export function SystemSlimModule({ isPageActive = true }: ModuleRenderProps) {
           />
         )}
 
-        {/* 瘦身项列表 */}
+        {/* Slim item list */}
         {status && (
           <div className="space-y-2">
             {status.items.map((item) => {
               const Icon = itemIcons[item.id] || Package;
               const colors = itemColors[item.id] || itemColors.winsxs;
               const isLoading = actionLoading === item.id;
-              // 禁用条件与按钮样式共用同一个判定，避免"看着能点、点了没反应"。
+              // The disable condition and the button style share the same decision to avoid "looks clickable but nothing happens".
               const isItemButtonDisabled = !item.actionable || !status.is_admin || isActionBusy;
 
               return (
@@ -672,20 +672,20 @@ export function SystemSlimModule({ isPageActive = true }: ModuleRenderProps) {
                 >
                   <div className="p-4">
                     <div className="flex items-start gap-3">
-                      {/* 图标 */}
+                      {/* Icon */}
                       <div className={`w-10 h-10 rounded-lg ${colors.bg} flex items-center justify-center shrink-0`}>
                         <Icon className={`w-5 h-5 ${colors.text}`} />
                       </div>
 
-                      {/* 内容 */}
+                      {/* Content */}
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2">
                           <h4 className="text-sm font-semibold text-[var(--fg-primary)]">
                             {moduleT(`systemSlim.items.${item.id}.name`, { defaultValue: item.name })}
-                            {/* 搜索索引重建依赖本机 SearchAPI.dll，尚未在真实环境充分验证，临时标注 Beta */}
+                            {/* Search index rebuild depends on the local SearchAPI.dll and has not been fully verified in real environments, so it is temporarily marked Beta */}
                             {item.id === 'search_index' && <span className="ml-1">（Beta）</span>}
                           </h4>
-                          {/* 后台还在分析这一项：不是"不可用"，是"结论还没回来"，所以不打灰 */}
+                          {/* This item is still being analyzed: it is not "unavailable", the "conclusion has not returned", so do not gray it out */}
                           {item.analyzing && (
                             <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-[var(--brand-green)]" />
                           )}
@@ -704,8 +704,8 @@ export function SystemSlimModule({ isPageActive = true }: ModuleRenderProps) {
                         {item.status_text && (
                           <p className="text-[0.79rem] text-[var(--fg-muted)] mt-1">
                             {item.id === 'search_index' ? (
-                              // 搜索索引的 itemStatus 键是固定文案；可操作时展示动态状态（服务 + 数据库大小），
-                              // 不可操作时直接展示后端细分的置灰原因（服务停止/已禁用/未安装）
+                              // The search index itemStatus key is fixed text; when actionable, show the dynamic state (service + database size),
+                              // when not actionable, show the backend's specific gray-out reason (service stopped / disabled / not installed)
                               item.actionable ? (
                                 <>
                                   {moduleT('systemSlim.searchIndexServiceRunning')}
@@ -717,18 +717,18 @@ export function SystemSlimModule({ isPageActive = true }: ModuleRenderProps) {
                                 item.status_text
                               )
                             ) : (
-                              // 直接用后端文案。这里曾经套了一层带 defaultValue 的翻译调用，
-                              // 但那个键真实存在，defaultValue 永远不生效 —— 于是五项全被替换成
-                              // 同一句"操作已完成，请重新检测刷新当前状态"，后端给出的
-                              // "DISM 未发现可回收组件"这类真实结论一律看不到。
+                              // Use the backend text directly. This used to be wrapped in a translation call with defaultValue,
+                              // but that key really exists, so defaultValue never took effect - all five items were replaced with
+                              // the same sentence "operation completed, please rescan to refresh the current state", and the backend's
+                              // real conclusions such as "DISM found no reclaimable components" were never visible.
                               item.status_text
                             )}
                           </p>
                         )}
 
-                        {/* 清理范围明细：只写一句"清理已被替代的组件版本"，用户扫出 6.9 GB
-                            也不知道到底要删什么、会不会删到正在用的东西。这里把范围、
-                            不碰的东西、以及 DISM 给出的构成分开列出来。 */}
+                        {/* Cleanup scope details: writing only "clean up superseded component versions" leaves the user who sees 6.9 GB
+                            unsure of what will actually be deleted or whether in-use items are affected. Here the scope,
+                            untouched items, and the breakdown from DISM are listed separately. */}
                         {(item.id === 'winsxs' || item.id === 'winsxs_resetbase') && (
                           <div className="mt-2 rounded-lg border border-[var(--border-default)] bg-[var(--bg-hover)]/40 px-2.5 py-2">
                             <p className="text-[0.71rem] font-medium text-[var(--fg-secondary)]">
@@ -748,7 +748,7 @@ export function SystemSlimModule({ isPageActive = true }: ModuleRenderProps) {
                               ))}
                             </ul>
 
-                            {/* DISM 分析给出的构成：把总数拆成「旧组件副本」与「缓存临时数据」 */}
+                            {/* Breakdown from DISM analysis: split the total into "old component copies" and "cache and temporary data" */}
                             {item.id === 'winsxs' &&
                               item.breakdown &&
                               (item.breakdown.backups > 0 || item.breakdown.cache > 0) && (
@@ -783,14 +783,14 @@ export function SystemSlimModule({ isPageActive = true }: ModuleRenderProps) {
                           </div>
                         )}
 
-                        {/* 风险提示 */}
+                        {/* Risk warning */}
                         <div className="mt-2 flex items-start gap-1.5 bg-amber-500/5 rounded-lg px-2 py-1.5">
                           <AlertTriangle className="w-3 h-3 text-amber-500 shrink-0 mt-0.5" />
                           <p className="text-[0.71rem] text-amber-600 leading-relaxed">{moduleT(`systemSlim.items.${item.id}.warning`, { defaultValue: item.warning })}</p>
                         </div>
 
-                        {/* 分析进度：DISM 正在跑、还没有结论时，用百分比证明它在推进。
-                            只挂在 winsxs 那一项上 —— 两项共用同一个分析结果，重复画两遍反而吵。 */}
+                        {/* Analysis progress: while DISM is running with no conclusion yet, the percentage proves it is advancing.
+                            Attach it only to the winsxs item - both items share the same analysis result, and drawing it twice is noisy. */}
                         {item.id === 'winsxs' && item.analyzing && winsxsProgress && (
                           <div className="mt-2 rounded-lg bg-[var(--brand-green-10)] px-3 py-2">
                             <div className="flex items-center justify-between gap-2 text-[0.79rem] text-[var(--brand-green)]">
@@ -804,14 +804,14 @@ export function SystemSlimModule({ isPageActive = true }: ModuleRenderProps) {
                             <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-[var(--bg-hover)]">
                               <div
                                 className="h-full rounded-full bg-[var(--brand-green)] transition-all duration-500"
-                                // DISM 一开始只报 0%，给一条很短的起始段，否则进度条看着是空的
+                                // DISM reports 0% at first; give a short initial segment, otherwise the progress bar looks empty
                                 style={{ width: `${Math.max(winsxsProgress.percent, 2)}%` }}
                               />
                             </div>
                           </div>
                         )}
 
-                        {/* 执行进度：让用户看到阶段、百分比和已用时间 */}
+                        {/* Execution progress: let the user see the phase, percentage, and elapsed time */}
                         {isLoading && operationProgress && operationProgress.item_id === item.id && (
                           <div className="mt-2 rounded-lg bg-emerald-500/10 px-3 py-2">
                             <div className="flex items-center justify-between gap-2 text-[0.79rem] text-emerald-700 dark:text-emerald-400">
@@ -834,13 +834,13 @@ export function SystemSlimModule({ isPageActive = true }: ModuleRenderProps) {
                         )}
                       </div>
 
-                      {/* 操作按钮 */}
+                      {/* Action buttons */}
                       <div className="shrink-0">
                         <button
                           onClick={() => handleAction(item)}
                           /*
-                            只要有任何操作在跑就禁用全部按钮：DISM 与 powercfg 并发会互相干扰。
-                            禁用条件必须和下方样式使用同一个判定，否则会出现"看得出能点、点了没反应"。
+                            Disable all buttons whenever any operation is running: concurrent DISM and powercfg interfere with each other.
+                            The disable condition must use the same decision as the style below, otherwise "looks clickable but nothing happens" occurs.
                           */
                           disabled={isItemButtonDisabled}
                           title={isActionBusy ? moduleT('systemSlim.waitForCurrent') : undefined}
@@ -849,8 +849,8 @@ export function SystemSlimModule({ isPageActive = true }: ModuleRenderProps) {
                             ${isItemButtonDisabled
                               ? 'cursor-not-allowed bg-[var(--bg-hover)] text-[var(--fg-muted)]'
                               : item.id === 'winsxs_resetbase'
-                                // 基线压缩不可撤销、且会让已装更新无法卸载 —— 用危险色而不是品牌绿，
-                                // 让"这一项和别的项不是同一个风险级别"在按下去之前就看得出来。
+                                // Baseline compaction is irreversible and makes installed updates impossible to uninstall - use the danger color instead of brand green,
+                                // so that "this item is not the same risk level as the others" is visible before clicking.
                                 ? 'bg-[var(--color-danger)] text-white hover:bg-[var(--color-danger)]/90 active:scale-95'
                                 : 'bg-emerald-500 text-white hover:bg-emerald-600 active:scale-95'
                             }
@@ -865,9 +865,9 @@ export function SystemSlimModule({ isPageActive = true }: ModuleRenderProps) {
                             <>
                               <span>
                                 {/*
-                                  按钮文案必须随真实状态变化，因此按状态取多语言文案：
-                                  休眠开启时显示"关闭休眠"，已关闭时显示"开启休眠"（此前一直静态显示"关闭休眠"）。
-                                  其余按后端 action_text 反查对应多语言键，查不到才退化为后端原文。
+                                  The button label must follow the real state, so pick the i18n text by state:
+                                  show "Disable hibernation" when hibernation is on and "Enable hibernation" when off (previously it always statically showed "Disable hibernation").
+                                  For the rest, look up the i18n key from the backend action_text; only fall back to the backend's raw text if no key is found.
                                 */}
                                 {getActionLabel(item, moduleT)}
                               </span>
@@ -884,7 +884,7 @@ export function SystemSlimModule({ isPageActive = true }: ModuleRenderProps) {
           </div>
         )}
 
-        {/* 底部说明 */}
+        {/* Footer note */}
         {status && (
           <div className="glass-block bg-[var(--bg-elevated)] rounded-lg px-3 py-2 text-[0.71rem] text-[var(--fg-muted)] leading-relaxed">
             <strong className="text-[var(--fg-secondary)]">{moduleT('systemSlim.tip')}</strong>

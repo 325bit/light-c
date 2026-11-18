@@ -1,11 +1,11 @@
 // ============================================================================
-// 扫描耗时明细浮层
+// Scan timing details popover
 //
-// 阶段耗时、$MFT 分段/读盘/解析这类数字是排查和继续优化的依据，
-// 但对普通用户是噪音 —— 发版后统一收进这个「小秒表」按钮，点开才看。
+// Numbers like phase durations and $MFT segments / disk reads / parsing are the basis for troubleshooting and further optimization,
+// but they are noise for ordinary users - after release, tuck them all into this "little stopwatch" button, visible only when clicked.
 //
-// 为什么用点击而不是悬停：悬停浮层一按截图快捷键就消失（原生 title 也一样的毛病），
-// 而这类数据恰恰是要截图反馈的。点开之后鼠标可以移开、可以随便截。
+// Why click instead of hover: a hover popover disappears as soon as you press a screenshot shortcut (native title has the same problem),
+// and this is exactly the data people want to screenshot for feedback. Once clicked open, the mouse can move away and you can screenshot freely.
 // ============================================================================
 
 import { useEffect, useRef, useState } from 'react';
@@ -19,16 +19,16 @@ export interface TimingRow {
 }
 
 export interface TimingGroup {
-  /** 分组标题（如「C: 盘」）；传空串则不渲染标题行 */
+  /** Group title (e.g., "C: drive"); pass an empty string to omit the title row */
   title: string;
   rows: TimingRow[];
-  /** 分组备注，适合放「MFT 分段 11 · 读盘 2.4s、解析 1.1s」这种一行长文案 */
+  /** Group note, suited for a one-line long text such as "MFT segments 11 · read 2.4s, parse 1.1s" */
   note?: string;
 }
 
 interface ScanTimingPopoverProps {
   groups: TimingGroup[];
-  /** 浮层贴左侧还是右侧，靠近页面右边缘时用 right 免得溢出 */
+  /** Whether the popover hugs the left or right side; use right near the page's right edge to avoid overflow */
   align?: 'left' | 'right';
 }
 
@@ -37,7 +37,7 @@ export function ScanTimingPopover({ groups, align = 'right' }: ScanTimingPopover
   const [open, setOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
 
-  // 点空白处 / 按 Esc 关闭：浮层不是模态，不应该逼用户找关闭按钮
+  // Close on blank click / Esc: the popover is not modal, so do not force the user to hunt for a close button
   useEffect(() => {
     if (!open) return;
 
@@ -60,7 +60,7 @@ export function ScanTimingPopover({ groups, align = 'right' }: ScanTimingPopover
     };
   }, [open]);
 
-  // 没有任何可展示的数字时干脆不出现，避免留下一个点不出东西的按钮
+  // Do not show at all when there are no numbers to display, to avoid leaving a button that shows nothing when clicked
   const hasContent = groups.some((group) => group.rows.length > 0 || Boolean(group.note));
   if (!hasContent) return null;
 

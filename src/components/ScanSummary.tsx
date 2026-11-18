@@ -1,6 +1,6 @@
 // ============================================================================
-// 扫描结果摘要组件 - 支持主题切换
-// 支持增强删除结果显示（物理大小、跳过原因、重启待删除）
+// Scan-result summary component - supports theme switching
+// Supports displaying enhanced deletion results (physical size, skip reasons, pending reboot deletion)
 // ============================================================================
 
 import { useState, useRef, type ReactNode } from 'react';
@@ -21,11 +21,11 @@ interface ScanSummaryProps {
   deleteResult: EnhancedDeleteResult | null;
   selectedCount: number;
   selectedSize: number;
-  /** 「扫描耗时」卡右上角的附加入口（耗时明细浮层），不传则不渲染 */
+  /** Additional entry at the top-right of the "Scan Duration" card (timing-details popover); not rendered if not passed */
   timingDetail?: ReactNode;
 }
 
-// 失败明细弹窗组件
+// Failure-details modal component
 function FailedFilesModal({ 
   isOpen, 
   onClose, 
@@ -55,19 +55,19 @@ function FailedFilesModal({
           exit={{ opacity: 0 }}
           transition={{ duration: 0.16, ease: 'easeOut' }}
         >
-          {/* 遮罩层 */}
+          {/* Overlay layer */}
           <motion.div 
             className="absolute inset-0 bg-black/50 backdrop-blur-sm glass-backdrop"
             onClick={onClose}
             {...MODAL_BACKDROP_MOTION}
           />
           
-          {/* 弹窗 */}
+          {/* Modal */}
           <motion.div
             className="relative bg-[var(--bg-elevated)] rounded-xl glass-dialog shadow-2xl border border-[var(--border-default)] w-[42.86rem] max-w-[90vw] max-h-[80vh] flex flex-col overflow-hidden"
             {...MODAL_CARD_MOTION}
           >
-            {/* 头部 */}
+            {/* Header */}
             <div className="flex items-center justify-between px-5 py-4 border-b border-[var(--border-default)] shrink-0">
               <div className="flex items-center gap-3">
                 <div className="w-10 h-10 rounded-full bg-amber-500/15 flex items-center justify-center">
@@ -90,13 +90,13 @@ function FailedFilesModal({
               </button>
             </div>
 
-            {/* 列表头部 */}
+            {/* List header */}
             <div className="glass-bar flex items-center px-5 py-2 border-b border-[var(--border-default)] bg-[var(--bg-card)] text-xs font-medium text-[var(--fg-muted)] shrink-0">
               <span className="flex-1">{t('filePath')}</span>
               <span className="w-32 text-right">{t('processingResult')}</span>
             </div>
 
-            {/* 虚拟滚动列表 */}
+            {/* Virtual scrolling list */}
             <div 
               ref={parentRef}
               className="overflow-auto"
@@ -142,7 +142,7 @@ function FailedFilesModal({
               </div>
             </div>
 
-            {/* 底部 */}
+            {/* Footer */}
             <div className="glass-bar flex items-center justify-end px-5 py-3 border-t border-[var(--border-default)] bg-[var(--bg-card)] shrink-0">
               <button
                 onClick={onClose}
@@ -169,22 +169,22 @@ export function ScanSummary({
   const { t } = useTranslation('common');
   const [showFailedModal, setShowFailedModal] = useState(false);
   
-  // 待重启条目也是本次删除尝试的结果，必须保留在明细中供用户核对。
+  // Pending-reboot entries are also results of this deletion attempt and must be kept in the details for user verification.
   const failedFiles = deleteResult?.file_results.filter(f => !f.success) || [];
 
-  // 清理完成后 scanResult 会被清空；此时若仍有删除结果，单独展示结果卡，
-  // 扫描统计（发现/可清理/已选/耗时）仅在存在扫描数据时渲染。
+  // After cleanup finishes, scanResult is cleared; if deletion results still exist at that point, show a separate result card,
+  // and render the scan statistics (found / cleanable / selected / duration) only when scan data exists.
   if (!scanResult && !deleteResult) return null;
 
   return (
-    // 没有扫描数据时这一层只剩结果面板，必须自己撑满并把空间传下去：
-    // `.module-card__body > :has(.module-scan-progress-area)` 只能让上一层变 flex，
-    // 中间再夹一个普通 div，`flex-1` 就断了 —— 面板会退化成 220px 高、贴在正文顶部。
+    // With no scan data, this layer is left with only the result panel and must fill the space itself and pass it down:
+    // `.module-card__body > :has(.module-scan-progress-area)` only makes the parent a flex container,
+    // with an ordinary div sandwiched in between, `flex-1` breaks — the panel degrades to 220px tall, stuck at the top of the body.
     <div className={scanResult ? 'space-y-3' : 'flex flex-1 flex-col'}>
-      {/* 统计卡片（仅扫描数据存在时显示） */}
+      {/* Statistics cards (only shown when scan data exists) */}
       {scanResult && (
         <div className="grid grid-cols-4 gap-3">
-        {/* 发现文件 */}
+        {/* Files found */}
         <div className="glass-block bg-[var(--bg-card)] rounded-lg border border-[var(--border-default)] p-3">
           <div className="flex items-center gap-2 mb-1">
             <FileSearch className="w-4 h-4 text-emerald-500" />
@@ -195,7 +195,7 @@ export function ScanSummary({
           </p>
         </div>
 
-        {/* 可清理 */}
+        {/* Cleanable */}
         <div className="glass-block bg-[var(--bg-card)] rounded-lg border border-[var(--border-default)] p-3">
           <div className="flex items-center gap-2 mb-1">
             <Trash2 className="w-4 h-4 text-orange-500" />
@@ -206,7 +206,7 @@ export function ScanSummary({
           </p>
         </div>
 
-        {/* 已选中 */}
+        {/* Selected */}
         <div className="glass-block bg-[var(--bg-card)] rounded-lg border border-[var(--border-default)] p-3">
           <div className="flex items-center gap-2 mb-1">
             <CheckCircle2 className="w-4 h-4 text-emerald-500" />
@@ -218,7 +218,7 @@ export function ScanSummary({
           </p>
         </div>
 
-        {/* 扫描耗时 */}
+        {/* Scan duration */}
         <div className="glass-block bg-[var(--bg-card)] rounded-lg border border-[var(--border-default)] p-3">
           <div className="flex items-center gap-2 mb-1">
             <Clock className="w-4 h-4 text-teal-500" />
@@ -232,10 +232,10 @@ export function ScanSummary({
       </div>
       )}
 
-      {/* 清理结果：与「删除中」共用 StatePanel（块居中、字靠左）。
-          这两个是同一件事的前后两步，几何必须一模一样，只换图标与文案。
-          曾经是 emerald 底 + 65vh 的整块色带（同一屏两种绿打架、底部提示悬在色块内外不定），
-          也试过公共 EmptyState —— 它的文字是居中的，三四行长句每行都要重新找中轴，读起来费劲。 */}
+      {/* Cleanup result: shares StatePanel with "Deleting" (block centered, text left).
+          These two are successive steps of the same thing, geometry must be identical — only icon and wording change.
+          It used to be an emerald background + a 65vh full color band (two greens clashing on one screen, bottom hint sitting unpredictably inside/outside the band),
+          and we also tried the common EmptyState — its text is centered, so long 3-4 line sentences have to find their axis again, tiring to read. */}
       {deleteResult && (
         <StatePanel>
           <div className="flex items-start gap-4">
@@ -261,7 +261,7 @@ export function ScanSummary({
 
           {(deleteResult.needs_reboot || failedFiles.length > 0) && (
             <div className="mt-6 space-y-2 border-t border-[var(--border-muted)] pt-4">
-              {/* 待重启是"已经安排好了"，用弱化色；删不掉才是需要用户看一眼的，用警告色 */}
+              {/* Pending reboot means "already arranged", use a muted color; undeletable is what needs the user's attention, use a warning color */}
               {deleteResult.needs_reboot && (
                 <p className="flex items-center gap-1.5 text-xs text-[var(--fg-muted)]">
                   <RefreshCw className="h-3.5 w-3.5 shrink-0" />
@@ -282,7 +282,7 @@ export function ScanSummary({
         </StatePanel>
       )}
 
-      {/* 失败明细弹窗 */}
+      {/* Failure details modal */}
       {failedFiles.length > 0 && (
         <FailedFilesModal
           isOpen={showFailedModal}

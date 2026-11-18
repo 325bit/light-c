@@ -1,56 +1,56 @@
 /**
- * 开发空间（工具链缓存 + 多版本残留）的数据结构。
+ * Data structures for the dev space (toolchain caches + multi-version leftovers).
  *
- * 字段与后端 `scanner/dev_cache/types.rs` 的 Serialize 输出一一对应（camelCase）。
- * 前端 `src/types/devCache.ts` 与那份 Rust 文件是同一套契约，改一边就要同步另一边。
+ * Fields correspond one-to-one with the Serialize output of the backend `scanner/dev_cache/types.rs` (camelCase).
+ * The frontend `src/types/devCache.ts` and that Rust file are the same contract; change one and you must sync the other.
  */
 
 /**
- * 单项风险等级。
+ * Risk level of a single item.
  *
- * - `cache`：纯缓存，删了下次运行会重新生成，无感 → 默认允许勾选
- * - `confirm`：会丢配置/数据（模拟器镜像、工作区状态、本地模型）→ 允许勾选但要显式提醒
- * - `readonly`：只展示，**永远不给勾选框**（安装缓存、系统组件之类，删了要重装或修系统）
+ * - `cache`: pure cache, regenerated on next run with no noticeable effect -> allowed to be checked by default
+ * - `confirm`: would lose config/data (emulator images, workspace state, local models) -> allowed to be checked but with an explicit warning
+ * - `readonly`: display only, **never given a checkbox** (installation caches, system components, etc. whose deletion requires reinstalling or repairing the system)
  */
 export type DevRisk = 'cache' | 'confirm' | 'readonly';
 
 /**
- * 链接类型。对应后端 `scanner/reparse.rs` 的 `LinkKind`。
+ * Link type. Corresponds to `LinkKind` in the backend `scanner/reparse.rs`.
  *
- * `junction` = `mklink /J` 目录联接（FolderMove 这类搬迁工具默认用它），
- * `symlink`  = `mklink /D` 目录符号链接。
+ * `junction` = a `mklink /J` directory junction (the default used by relocation tools like FolderMove),
+ * `symlink`  = a `mklink /D` directory symbolic link.
  */
 export type LinkKind = 'symlink' | 'junction';
 
-/** 一条路径上的链接关系：哪一层是链接、指向哪、最终落在哪 */
+/** A link relationship along a path: which level is a link, where it points, and where it finally lands */
 export interface LinkInfo {
   kind: LinkKind;
-  /** 路径里哪一层是链接（通常不是被扫的那一项本身） */
+  /** Which level in the path is a link (usually not the scanned item itself) */
   linkPath: string;
-  /** 链接记录的目标 */
+  /** The target recorded by the link */
   target: string;
-  /** 跟随所有链接后的真实落点，也就是空间真正被占用的地方 */
+  /** The real landing point after following all links, i.e. where the space is actually occupied */
   resolved: string;
 }
 
-/** 一个可清理项（一个具体目录） */
+/** A cleanable item (a specific directory) */
 export interface DevCacheEntry {
-  /** 稳定 id，界面上做 key 用 */
+  /** Stable id, used as a key in the UI */
   id: string;
   name: string;
   path: string;
   size: number;
   fileCount: number;
   risk: DevRisk;
-  /** 一句话说明「删掉之后会怎样」 */
+  /** A one-line explanation of "what happens after deletion" */
   note: string;
-  /** 目录当前是否存在；不存在通常意味着这个工具没装，不算失败 */
+  /** Whether the directory currently exists; if not, it usually means the tool is not installed, not a failure */
   exists: boolean;
-  /** 路径经过 junction / symlink 时才有值 */
+  /** Only has a value when the path goes through a junction / symlink */
   link?: LinkInfo;
 }
 
-/** 一个分组（按工具链归类），界面上一层折叠卡片 */
+/** A group (classified by toolchain), shown as a collapsible card in the UI */
 export interface DevCacheGroup {
   groupId: string;
   groupName: string;
@@ -59,48 +59,48 @@ export interface DevCacheGroup {
   entries: DevCacheEntry[];
 }
 
-/** 多版本目录里的一个版本 */
+/** One version among multi-version directories */
 export interface VersionEntry {
   path: string;
-  /** 从目录名解析出的版本号，解析不出来就是目录名本身 */
+  /** Version number parsed from the directory name; if it cannot be parsed, the directory name itself */
   version: string;
   size: number;
   fileCount: number;
-  /** 正在被使用的那一版：界面上标出来并禁止勾选 */
+  /** The version currently in use: marked in the UI and cannot be checked */
   isCurrent: boolean;
-  /** 当前版本是靠什么判定的（注册表版本号 / 最新版本号），展示出来避免把推测当事实 */
+  /** How the current version was determined (registry version / latest version number), shown to avoid presenting a guess as fact */
   currentReason: string;
 }
 
-/** 一组同款多版本目录（如 Edge 的 EdgeCore 下有 5 个版本目录） */
+/** A set of same-product multi-version directories (e.g. 5 version directories under Edge's EdgeCore) */
 export interface VersionGroup {
   id: string;
   name: string;
   basePath: string;
   totalSize: number;
-  /** 除当前版本外可删的合计 */
+  /** Total that can be deleted excluding the current version */
   reclaimableSize: number;
   entries: VersionEntry[];
 }
 
 export interface DevCacheScanResult {
   groups: DevCacheGroup[];
-  /** 工具缓存 + 多版本目录的合计：界面上「总计占用」与两个页签之和要对得上 */
+  /** Total of tool caches + multi-version directories: the UI's "total usage" must match the sum of the two tabs */
   totalSize: number;
   totalFiles: number;
-  /** 风险为 cache、可直接清理的合计（不含 confirm / readonly，也不含旧版本目录） */
+  /** Total of items with risk cache that can be cleaned directly (excluding confirm / readonly, and excluding old version directories) */
   safeSize: number;
   versionGroups: VersionGroup[];
   versionReclaimableSize: number;
   elapsedMs: number;
-  /** 扫描时因权限/占用跳过的路径数，用于解释"为什么比预期小" */
+  /** Number of paths skipped during scanning due to permissions/locks, used to explain "why it is smaller than expected" */
   skipped: number;
 }
 
-/** 单个删除失败项 */
+/** A single deletion failure item */
 export interface DevCacheDeleteFailure {
   path: string;
-  /** 失败原因（系统错误原文），仅用于排查 */
+  /** Failure reason (raw system error text), for troubleshooting only */
   reason: string;
 }
 

@@ -1,190 +1,190 @@
 /* ============================================================================
-   液态玻璃外观（可选，默认关闭）
-   设计约束：
-   1. 玻璃必须「背后有东西可折射」。--bg-main 设为透明并在 body 铺一层渐变，
-      否则半透明 + backdrop-filter 叠在纯色背景上和不做玻璃毫无区别。
-   2. 变量层负责让**所有**表面自动变半透明，所以各模块组件零改动即可全局生效；
-      backdrop-filter 只加在 .glass-chrome / .glass-surface 这两个顶层语义类上。
-   3. 列表行、标签、hover 态一律不加模糊：虚拟列表滚动时会逐帧重建行，
-      对这些元素做背景重采样是最坏情况的开销。
-   4. 关闭时 --glass-blur 为 none，语义类照常保留但不产生任何合成开销，
-      因此组件里的类名不需要跟着开关切换，避免 JS 里再做条件分支。
+   Liquid glass appearance (optional, disabled by default)
+   Design constraints:
+   1. Glass must have "something behind it to refract". Set --bg-main to transparent and lay a gradient on the body,
+      otherwise semi-transparency + backdrop-filter over a solid-color background is no different from no glass at all.
+   2. The variable layer makes **all** surfaces automatically semi-transparent, so it takes effect globally with zero changes to module components;
+      backdrop-filter is only applied to the two top-level semantic classes .glass-chrome / .glass-surface.
+   3. Never add blur to list rows, tags, or hover states: virtual lists rebuild rows frame by frame while scrolling,
+      resampling the background for these elements is the worst-case overhead.
+   4. When disabled, --glass-blur is none; the semantic classes remain as usual but produce no compositing overhead,
+      so class names in components do not need to toggle with the switch, avoiding extra conditional branches in JS.
    ============================================================================ */
 
 :root {
-  /* 关闭态：语义类读到的就是 none，等价于完全没有玻璃 */
+  /* Off state: the semantic classes read none, equivalent to having no glass at all */
   --glass-blur: none;
 }
 
-/* 浅色玻璃：半透明白表面。悬停态比卡片略暗，保持与关闭态一致的反馈方向 */
+/* Light glass: semi-transparent white surface. Hover state is slightly darker than the card, keeping the feedback direction consistent with the off state */
 html.glass:not(.dark) {
-  /* blur 20→30、saturate 180%→210%：这两项是 iOS 玻璃最容易被忽略的部分 ——
-     玻璃不只是"模糊背景"，它还会**放大背景的饱和度**，透出来的颜色因此比外面更鲜活。
-     只做模糊不做饱和提升，面板会读作"蒙了层雾的玻璃"；补上之后才有"折射"的味道。
-     开销可接受：backdrop-filter 只挂在 .glass-chrome / .glass-surface 两个语义类上。 */
+  /* blur 20→30, saturate 180%→210%: these two are the most easily overlooked parts of iOS glass —
+     glass is not just "blurring the background", it also **amplifies the background's saturation**, so the colors showing through are more vivid than outside.
+     With blur only and no saturation boost, the panel reads as "glass covered with a layer of fog"; adding it gives the "refraction" feel.
+     The overhead is acceptable: backdrop-filter is only attached to the two semantic classes .glass-chrome / .glass-surface. */
   --glass-blur: blur(30px) saturate(210%);
 
   --bg-main: transparent;
-  /* 透明度配比是这套外观最容易踩的地方：
-     弹窗内部的栏用 --bg-card，弹窗外壳多用 --bg-elevated，也有直接用 --bg-card 的。
-     两者都偏透时，栏会变成「比母体更薄的破洞」，把弹窗背后的应用模糊着透出来。
-     所以 card 要能看出背景色雾、elevated 要足够实以承载弹窗内容。 */
-  /* 这一档是给「弹窗外壳」用的：弹窗背后压着 bg-black/50 遮罩，
-     底色太透会变成一片中灰，次级文字直接掉到 AA 以下。
-     模块卡不走这里 —— 它由 .glass-surface 用 --glass-surface-bg 单独接管（更透），
-     所以调这里不会牺牲卡片的通透感。
-     0.45 是「通透」与「文字对比度」的折中点：0.58 在亮色下偏乳白（看不出玻璃），
-     0.34 又会让次级文字掉到 AA 以下；文字色已按半透明底加深，所以能取到 0.45。 */
+  /* The opacity ratio is the easiest place to get this look wrong:
+     Bars inside dialogs use --bg-card, dialog shells mostly use --bg-elevated, and some use --bg-card directly.
+     When both are too transparent, the bar becomes a "hole thinner than its parent", blurring the app behind the dialog into view.
+     So card should show a haze of the background color, while elevated must be solid enough to carry the dialog content. */
+  /* This level is for the "dialog shell": a bg-black/50 backdrop sits behind the dialog,
+     if the base color is too transparent it turns into a medium gray, and secondary text falls below AA.
+     Module cards do not use this — they are handled separately by .glass-surface via --glass-surface-bg (more transparent),
+     so adjusting this does not sacrifice the card's translucency.
+     0.45 is the compromise between "translucency" and "text contrast": 0.58 looks milky white in light mode (no glass visible),
+     0.34 would drop secondary text below AA; text colors have already been darkened for the semi-transparent base, so 0.45 is achievable. */
   --bg-card: rgba(255, 255, 255, 0.45);
   --bg-elevated: rgba(255, 255, 255, 0.45);
-  /* 吸顶/悬浮操作栏专用底色。
-     这类元素**下面会滚过内容**，所以要比普通玻璃面更实 —— 但也不能全不透明，
-     那就不是液态玻璃了。做法是「高不透明度 + 强模糊」：底色调到 84%，
-     配合 20px 模糊，下面的文字会糊成一片色块 —— 既挡得住内容，又保留玻璃质感。
-     ⚠️ 不要写成 color-mix(var(--bg-elevated) 96%)：那是对一个已经只有 45% 的颜色
-     再取 96%，结果仍是 ~43%，等于没改（2026-10-13 就是这么改错的）。 */
+  /* Dedicated base color for sticky/floating toolbars.
+     Content **scrolls underneath these elements**, so they must be more solid than ordinary glass — but not fully opaque either,
+     otherwise it would not be liquid glass. The approach is "high opacity + strong blur": base set to 84%,
+     with 20px blur, the text underneath blurs into color blocks — blocking the content while keeping the glass texture.
+     ⚠️ Do not write color-mix(var(--bg-elevated) 96%): that takes a color that is already only 45%
+     and takes 96% of it, resulting in ~43%, which is no change at all (this was exactly the mistake on 2026-10-13). */
   --glass-toolbar-bg: rgba(255, 255, 255, 0.78);
-  /* 玻璃的"白色反光边" —— 不是灰色分割线。成对定义，明暗各一份。 */
+  /* The glass "white reflective edge" — not a gray divider. Defined in pairs, one for light and one for dark. */
   --glass-toolbar-border: rgba(255, 255, 255, 0.78);
-  /* 列表项卡片（驱动包卡片等）的反光边。比操作栏稍弱一点，避免整屏卡片边都发亮。 */
+  /* Reflective edge for list item cards (driver package cards, etc.). Slightly weaker than toolbars, to avoid every card edge on screen glowing. */
   --glass-item-border: rgba(255, 255, 255, 0.72);
   --bg-hover: rgba(255, 255, 255, 0.6);
   --bg-active: rgba(255, 255, 255, 0.72);
   --bg-input: rgba(255, 255, 255, 0.55);
 
-  /* 半透明表面上的次级文字要相应加深。原来的 #757575 / #A1A1AA 是按纯白底选的，
-     叠加半透明表面后对比度掉到 3.0 / 1.7，描述文字和路径就"看不清"。
-     底色压到 0.45 后实测：辅助 #424b58 → 5.03:1、最淡 #48515f → 4.63:1，都过 AA
-     （最淡色不能再浅，否则在 0.45 的底上会掉到 AA 以下）。 */
+  /* Secondary text on semi-transparent surfaces must be darkened accordingly. The original #757575 / #A1A1AA were chosen for a pure white background,
+     and after overlaying a semi-transparent surface contrast falls to 3.0 / 1.7, making descriptions and paths "hard to read".
+     Measured after darkening the base to 0.45: secondary #424b58 → 5.03:1, lightest #48515f → 4.63:1, both pass AA
+     (the lightest color cannot be lighter still, or it would fall below AA on a 0.45 base). */
   --text-muted: #424b58;
   --text-faint: #48515f;
 
-  /* 面板内部的分隔线：**中性黑 + 半透明**。
-     · 必须中性：之前用 rgba(15,23,42,…)（偏蓝黑），压在绿色极光上会显出一层青绿，
-       同一条线在卡片上下两段颜色不一样（Evan 反馈过）。
-     · 必须半透明：它要同时压在近白面板（设置页 ~195）和浅卡片（~245）上 ——
-       不透明的固定灰在浅面板上会几乎同色（也会变成"几乎看不见的分隔线"）。
-     0.12 这个量级对齐实测认可的卡片行分隔线（245 上约 Δ28）。
-     暗色那套本来就是 14% 白，深底上对比天然更明显，所以不动。 */
+  /* Dividers inside panels: **neutral black + semi-transparent**.
+     · Must be neutral: previously rgba(15,23,42,…) (bluish black) was used; over the green aurora it showed a cyan-green tint,
+       making the same line look different above and below the card (Evan reported this).
+     · Must be semi-transparent: it sits over both near-white panels (settings page ~195) and light cards (~245) —
+       an opaque fixed gray would nearly match the light panel (becoming an "almost invisible divider").
+     The 0.12 level matches the tested and approved card row divider (about Δ28 on 245).
+     The dark variant is already 14% white, which naturally has more contrast on a dark base, so it is unchanged. */
   --border-color: rgba(0, 0, 0, 0.12);
   --border-muted: rgba(0, 0, 0, 0.06);
   --glass-edge: rgba(255, 255, 255, 0.78);
 
-  /* 浮层专用表面：弹窗卡 / 下拉面板 / 气泡。它们悬在任意内容之上，
-     必须比基础表面实得多，否则背后的列表文字会透出来、盖不住。
-     浅色用高不透明度的白；深色**不能靠"多叠白"**（那会变成白板），要用实色深底。 */
+  /* Dedicated surface for floating layers: dialog cards / dropdown panels / popovers. They hover above arbitrary content,
+     so they must be much more solid than the base surface, otherwise list text behind them shows through.
+     Light mode uses high-opacity white; dark mode **cannot rely on "more white layers"** (that becomes a whiteboard) and must use a solid dark base. */
   --glass-overlay-bg: rgba(255, 255, 255, 0.93);
 
-  /* 滚动条：极细 + 轨道全透明 + 滑块半透明，融进玻璃里 */
+  /* Scrollbar: extremely thin + fully transparent track + semi-transparent thumb, blending into the glass */
   --glass-scrollbar-thumb: rgba(15, 23, 42, 0.18);
   --glass-scrollbar-thumb-hover: rgba(15, 23, 42, 0.32);
 
-  /* 表面配方：顶部内高光 + 大扩散柔和投影。
-     只做半透明、不做这两样，面板只会像"发白的盒子"，不像玻璃。 */
+  /* Surface recipe: top inner highlight + large diffused soft shadow.
+     With only semi-transparency and neither of these, the panel just looks like a "whitish box", not glass. */
   --glass-inner: inset 0 1px 0 rgba(255, 255, 255, 0.9);
-  /* 左右内高光 + 底部内暗边：iOS 液态玻璃的"厚度"就靠这三条边。
-     只有顶部一条高光时，面板读作"贴在背景上的一层膜"；
-     补上左右渐弱的高光和底部一道暗边，才有"一块有釉面的玻璃板"的立体感。
-     ⚠️ 暗边必须比高光淡得多 —— 两边等强会变成一圈描边，像套了个边框。 */
+  /* Left/right inner highlights + bottom inner dark edge: the "thickness" of iOS liquid glass comes from these three edges.
+     With only a single top highlight, the panel reads as "a film stuck on the background";
+     adding tapering left/right highlights and a dark bottom edge gives the three-dimensional feel of "a glazed glass plate".
+     ⚠️ The dark edge must be much fainter than the highlights — equal strength on both turns into an outline, like a border. */
   --glass-inner-side: rgba(255, 255, 255, 0.45);
   --glass-inner-bottom: rgba(15, 23, 42, 0.06);
-  /* 卡片轮廓外侧的一圈柔光：模拟光在玻璃棱边上的散射。
-     iOS 那层玻璃最抓眼的就是"边缘在发光"，而 1px 白描边在浅底上几乎看不见 ——
-     一圈大半径的低透明度白光才读得出"这是一块有釉面的板"。
-     ⚠️ 半径必须够大（20px 以上）：小了会变成"发光描边"，像贴了个发光贴纸。 */
+  /* A soft glow around the outside of the card outline: simulating the scattering of light at glass edges.
+     The most striking thing about iOS glass is "glowing edges", while a 1px white stroke is nearly invisible on a light base —
+     only a wide-radius, low-opacity white glow reads as "this is a glazed plate".
+     ⚠️ The radius must be large enough (20px+): too small turns into a "glowing stroke", like a glowing sticker. */
   --glass-glow: rgba(255, 255, 255, 0.6);
-  /* 投影做成两层：① 1-6px 的接触影把卡片和背景切开；② 大半径柔影表达高度。
-     只给大柔影时，卡片边缘会"化"进背景里（Evan 说"看不清阴影，太白"就是这个）；
-     只给接触影又像贴了张纸。两者配合才有"浮起的一块玻璃"。 */
+  /* Shadows in two layers: ① a 1-6px contact shadow separates the card from the background; ② a large-radius soft shadow conveys elevation.
+     With only the large soft shadow, the card edges "melt" into the background (this is what Evan meant by "can't see the shadow, too white");
+     with only the contact shadow it looks like a pasted sheet. Together they give "a floating piece of glass". */
   --glass-shadow: 0 2px 6px rgba(30, 41, 59, 0.06), 0 18px 48px rgba(30, 41, 59, 0.14);
 
-  /* 表面底色单独抽成变量：侧边栏面板要用伪元素绘制，只能读变量，读不到元素上的 background-color。
-     模块卡与顶栏也走这里，避免同一组颜色散落在多处。
-     0.30 → 0.20 → 0.34 → 0.42 → 0.58：中间几次都在"让光影透上来"，
-     但实测下来这条路走不通 —— 背景一旦有可见色相，降低不透明度就等于给卡片染色
-     （第三版发灰、第四版发蓝都是这么来的）。0.58 让卡片是**干净的乳白玻璃板**：
-     它比背景明显亮，边界靠"亮度差 + 投影"立住，而不是靠"透"。
-     iOS 的浅色玻璃本身就很实（0.7 上下），"通"是 blur 给的，不是靠低透明度。
-     ⚠️ 别再用透明度换通透感 —— 那是拿可读性和颜色准确性做交换。 */
+  /* Surface base color extracted into its own variable: the sidebar panel is drawn with a pseudo-element, which can only read variables, not the element's background-color.
+     Module cards and the top bar also use this, to avoid the same set of colors scattered in multiple places.
+     0.30 → 0.20 → 0.34 → 0.42 → 0.58: the middle attempts were all about "letting the light and shadow show through",
+     but testing showed this path does not work — once the background has a visible hue, lowering opacity just tints the card
+     (that is how v3 turned gray and v4 turned blue). 0.58 makes the card a **clean milky-white glass plate**:
+     it is noticeably brighter than the background, and its boundary stands via "brightness difference + shadow", not via "transparency".
+     iOS light glass is itself quite solid (around 0.7); the "see-through" comes from blur, not low opacity.
+     ⚠️ Do not trade opacity for translucency again — that trades away readability and color accuracy. */
   --glass-surface-bg: rgba(255, 255, 255, 0.72);
-  /* 顶栏 / 标题栏的不透明度。
-     ⚠️ 0.5 → 0.32：0.5 时它是一块"白板"，背后什么都透不出来，读起来像实心条而不是玻璃。
-     液态玻璃的"薄"就来自这个透过量 —— 面板越薄，背后的明暗越明显。
-     顶栏背后是背景的上半部分（亮区），0.32 时能隐约看到主光的方向，
-     再配合下面那条底部亮线和顶部内高光，才有"一片薄玻璃压在背景上"的读感。
-     ⚠️ 注意这里**没有 backdrop-filter**（见下方注释），所以透过量要自己给足。 */
+  /* Opacity of the top bar / title bar.
+     ⚠️ 0.5 → 0.32: at 0.5 it is a "whiteboard", nothing shows through, reading as a solid bar rather than glass.
+     The "thinness" of liquid glass comes from this amount of see-through — the thinner the panel, the more the light/dark behind shows.
+     Behind the top bar is the upper part of the background (the bright area); at 0.32 you can faintly see the direction of the main light,
+     and together with the bottom bright line and top inner highlight below, it reads as "a thin sheet of glass laid over the background".
+     ⚠️ Note there is **no backdrop-filter** here (see the comment below), so the see-through amount must be sufficient on its own. */
   --glass-chrome-bg: rgba(255, 255, 255, 0.32);
-  /* 侧栏面板单独一档：它比卡片需要更"透"（卡片是内容载体要白，侧栏是导航层要透），
-     但又不能直接用 --glass-chrome-bg（顶栏 0.4 太白，侧栏面积大会抢注意力）。 */
+  /* A separate level for the sidebar panel: it needs to be more "transparent" than cards (cards carry content and should be white, the sidebar is a navigation layer and should be see-through),
+     but it cannot use --glass-chrome-bg directly either (the top bar's 0.4 is too white, and a large sidebar would draw attention). */
   --glass-sidebar-bg: rgba(255, 255, 255, 0.5);
-  /* 满宽顶栏的顶部内高光。**不能给到 0.9** ——
-     在带边距的卡片上 0.9 读作"边缘反光"，在横贯全屏的顶栏上就是一条刺眼的白线
-     （Evan 之前反馈过"DashboardHeader 顶部非常明显的白色"）。0.5 是"
-     看得出有一道反光，但不抢注意力"的量级。 */
+  /* Top inner highlight of the full-width top bar. **Must not go up to 0.9** —
+     on a card with margins, 0.9 reads as "edge reflection", but on a full-screen top bar it becomes a glaring white line
+     (Evan previously reported "a very obvious white at the top of DashboardHeader"). 0.5 is the level of
+     "you can see a reflection, but it does not draw attention". */
   --glass-header-highlight: rgba(255, 255, 255, 0.5);
-  /* 表面高光渐变：半透明色块 + 1px 描边只会读成"染了壁纸的膜"，
-     叠一层方向性高光才有玻璃的折射感。
-     · 顶栏用**横向**渐变：TitleBar / DashboardHeader 是两个 DOM 拼的，
-       斜向或纵向渐变会在接缝处颜色错位，横向则左右一致、看不出缝。
-     · 侧栏是独立面板，可以用斜向渐变模拟"光从左上打来"。 */
+  /* Surface highlight gradient: a semi-transparent color block + 1px stroke only reads as "a film tinted with the wallpaper",
+     adding a directional highlight gives the refractive feel of glass.
+     · The top bar uses a **horizontal** gradient: TitleBar / DashboardHeader are two DOMs joined together,
+       diagonal or vertical gradients would misalign colors at the seam, while horizontal stays consistent left-to-right with no visible seam.
+     · The sidebar is a standalone panel and can use a diagonal gradient to simulate "light coming from the upper left". */
   --glass-chrome-sheen: linear-gradient(90deg,
     rgba(255, 255, 255, 0.42) 0%,
     rgba(255, 255, 255, 0.02) 30%,
     rgba(15, 23, 42, 0.055) 62%,
     rgba(255, 255, 255, 0.32) 100%);
-  /* 侧栏高光只留在边缘：整面渐变会把 0.5 的底色刷成一块实心板，
-     等于给侧栏多加了一层底色（Evan 反馈过）。中间必须完全透明，
-     让面板的透明度由 --glass-sidebar-bg 单独决定。 */
+  /* Sidebar highlight only at the edges: a full-surface gradient would paint the 0.5 base into a solid plate,
+     effectively adding another base layer to the sidebar (Evan reported this). The middle must be fully transparent,
+     letting the panel's opacity be determined solely by --glass-sidebar-bg. */
   --glass-sidebar-sheen: linear-gradient(142deg,
     rgba(255, 255, 255, 0.5) 0%,
     rgba(255, 255, 255, 0.1) 4%,
     rgba(255, 255, 255, 0) 10%,
     rgba(255, 255, 255, 0) 88%,
     rgba(255, 255, 255, 0.2) 100%);
-  /* AI 面板是**悬浮在内容之上**的，比顶栏/侧栏需要更多遮蔽、比吸顶操作栏可以更透。
-     用 --glass-toolbar-bg（0.78）会白得像一块板子，用 --glass-chrome-bg（0.4）
-     又太透 —— 所以单独给一档，配合 blur 才是"液态玻璃"该有的样子。 */
+  /* The AI panel **floats above the content**, needing more coverage than the top bar/sidebar, and can be more transparent than the sticky toolbar.
+     Using --glass-toolbar-bg (0.78) makes it as white as a board, while --glass-chrome-bg (0.4)
+     is too transparent — so a separate level is given; combined with blur, it has the proper "liquid glass" look. */
   --glass-panel-bg: rgba(255, 255, 255, 0.88);
-  /* 弹窗遮罩的统一浓度。
-     ⚠️ 遮罩**不在这里做模糊**，模糊交给弹窗自己（.glass-dialog 的 backdrop-filter）：
-     只有一层模糊时，磨砂的边界是清楚的（透过弹窗能看到被弹窗模糊的界面）；
-     遮罩再糊一层，弹窗透出来就是"一片均匀的糊墙"，反而看不出磨砂。
-     顺带避开两个 backdrop-filter 叠加的合成风险。
-     改之前各组件写的是 bg-black/30、/40、/50、/70 配 backdrop-blur-sm/md ——
-     同一个应用里遮罩深浅不一，是这次统一的直接动因。 */
+  /* Unified opacity of dialog backdrops.
+     ⚠️ The backdrop **does not apply blur here**; blur is left to the dialog itself (.glass-dialog's backdrop-filter):
+     with only one blur layer, the frosted boundary is clear (you can see through the dialog the interface blurred by the dialog);
+     blurring the backdrop as well makes the dialog show "a uniformly blurred wall", and the frosted effect is lost.
+     This also avoids the compositing risk of two stacked backdrop-filters.
+     Before the change, components each wrote bg-black/30, /40, /50, /70 with backdrop-blur-sm/md —
+     backdrops varying in depth within one app was the direct motivation for this unification. */
   --glass-backdrop-bg: rgba(0, 0, 0, 0.32);
-  /* 磨砂感改由**静态的**模糊层承担：不再给弹窗自己加 backdrop-filter。
-     ⚠️ 弹窗带 backdrop-filter 时，内部任何 hover 都会触发重绘、
-        让浏览器重新采样背后的遮罩 —— 表现为"鼠标一移上去整块弹窗闪暗一下"
-        （Evan："几乎所有的 modal 弹出，hover 之后都会出现一层暗一点的透明色背景"，
-         而且换颜色值怎么改都还在，因为根本不是颜色的问题）。
-        弹窗是"悬停在上面操作"的界面，稳定性比那点磨砂重要。
-     透明感由 --glass-modal-bg 的不透明度控制，边缘高光负责"玻璃"的读感。 */
+  /* The frosted feel is now carried by a **static** blur layer: dialogs no longer add backdrop-filter themselves.
+     ⚠️ When a dialog has backdrop-filter, any internal hover triggers a repaint,
+        making the browser resample the backdrop behind — showing as "the whole dialog flashes darker when the mouse moves over it"
+        (Evan: "almost every modal, after hovering, shows a darker translucent background",
+         and it persists no matter how the color values are changed, because it is not a color problem at all).
+        A dialog is an interface you "operate on while hovering over it"; stability matters more than that bit of frosting.
+     Transparency is controlled by --glass-modal-bg's opacity, and edge highlights provide the "glass" reading. */
   --glass-modal-bg: rgba(255, 255, 255, 0.86);
   --glass-panel-border: rgba(255, 255, 255, 0.72);
 }
 
-/* 深色玻璃：透明度要低于浅色，否则背景提亮后文字对比度不足。
-   配比原则同浅色：elevated 必须明显实于 card，避免弹窗内的栏变成破洞 */
+/* Dark glass: opacity must be lower than light glass, otherwise text contrast is insufficient after the background brightens.
+   The ratio principle is the same as light: elevated must be noticeably more solid than card, to avoid bars inside dialogs becoming holes */
 html.dark.glass {
-  /* 暗色同样提高模糊与饱和，但 saturation 收一档：
-     深底上饱和度放大更明显，2.1 会让青色块变成一块"绿玻璃"（Evan 明确讨厌绿）。 */
+  /* Dark mode also raises blur and saturation, but dials saturation back one notch:
+     on a dark base saturation amplification is more obvious; 2.1 turns cyan blocks into "green glass" (Evan clearly dislikes green). */
   --glass-blur: blur(30px) saturate(175%);
 
-  /* 深色玻璃下必须单独提亮次级文字。
-     深色基础值 #888 / #666 是按**不透明深底**选的，压在上半屏那片白色主光晕
-     （左上 26% 白）上时对比度掉到 2~3:1，顶栏统计数字和模块描述基本看不清
-     （用户反馈"深色模式部分字体看不清"）。
-     浅色玻璃是往下加深（#424b58），深色这侧对称地往上提亮。 */
+  /* Under dark glass, secondary text must be brightened separately.
+     The dark base values #888 / #666 were chosen for an **opaque dark base**; over the white main glow in the upper half of the screen
+     (26% white at the upper left), contrast falls to 2~3:1, making top bar statistics and module descriptions basically unreadable
+     (user feedback: "some text is unreadable in dark mode").
+     Light glass darkens downward (#424b58); dark glass symmetrically brightens upward. */
   --text-muted: #a8a8a8;
   --text-faint: #9a9a9a;
 
   --bg-main: transparent;
-  /* 深色沿用与浅色相同的做法：表面是「在背景上叠一层白」，
-     而不是盖一块不透明的深色板 —— 后者会把背景整个遮死，玻璃感随之消失。 */
+  /* Dark mode follows the same approach as light: the surface is "a layer of white over the background",
+     not an opaque dark plate — the latter would completely cover the background and the glass feel would disappear. */
   --bg-card: rgba(255, 255, 255, 0.07);
   --bg-elevated: rgba(255, 255, 255, 0.1);
-  /* 深色玻璃下同样：高不透明 + 强模糊，保住液态玻璃质感 */
+  /* Same under dark glass: high opacity + strong blur, to preserve the liquid glass texture */
   --glass-toolbar-bg: rgba(38, 38, 38, 0.78);
   --glass-toolbar-border: rgba(255, 255, 255, 0.18);
   --glass-item-border: rgba(255, 255, 255, 0.16);
@@ -194,42 +194,42 @@ html.dark.glass {
 
   --border-color: rgba(255, 255, 255, 0.14);
   --border-muted: rgba(255, 255, 255, 0.07);
-  /* 深色下分隔线用亮线是对的（深底需要亮线），外沿反光同量级即可。
-     0.14 → 0.18：暗底上投影几乎看不见，"卡片边界"全靠这圈反光，
-     0.14 时卡片和背景糊成一片（Evan 说"不像玻璃"时，这条也有份）。 */
+  /* Under dark mode, using bright lines for dividers is correct (dark bases need bright lines); the outer reflection can be the same level.
+     0.14 → 0.18: shadows are nearly invisible on a dark base, so "card boundaries" rely entirely on this ring of reflection,
+     at 0.14 the card and background blur together (this is partly what Evan meant by "doesn't look like glass"). */
   --glass-edge: rgba(255, 255, 255, 0.18);
 
   --glass-scrollbar-thumb: rgba(255, 255, 255, 0.2);
   --glass-scrollbar-thumb-hover: rgba(255, 255, 255, 0.34);
 
-  /* 深色浮层：用实色深底，而不是继续叠白 —— 叠白会把它变成白板 */
+  /* Dark floating layers: use a solid dark base rather than continuing to layer white — layering white becomes a whiteboard */
   --glass-overlay-bg: rgba(38, 38, 38, 0.93);
 
   --glass-inner: inset 0 1px 0 rgba(255, 255, 255, 0.2);
-  /* 暗色下"厚度"的价值比浅色更大：面板本身只有 7% 白，全靠这几条边才看得出是一块板。
-     底部暗边可以给到 0.45 —— 深底上这道暗边读作"玻璃的下沿"，不会像描边。 */
+  /* In dark mode, "thickness" matters more than in light: the panel itself is only 7% white, and only these edges reveal it as a plate.
+     The bottom dark edge can go up to 0.45 — on a dark base this reads as "the lower edge of the glass", not like a stroke. */
   --glass-inner-side: rgba(255, 255, 255, 0.08);
   --glass-inner-bottom: rgba(0, 0, 0, 0.45);
-  /* 深色下这道外发光只能给到 0.06：深底上白色光晕非常显眼，
-     0.1 就已经像"卡片后面放了个灯"。 */
+  /* Under dark mode this outer glow can only go up to 0.06: a white glow is very conspicuous on a dark base,
+     0.1 already looks like "a light placed behind the card". */
   --glass-glow: rgba(255, 255, 255, 0.06);
   --glass-shadow: 0 2px 8px rgba(0, 0, 0, 0.5), 0 18px 50px rgba(0, 0, 0, 0.55);
 
-  /* 深色下表面是"在背景上叠一层白"。
-     0.07 → 0.055 → 0.075 → 0.085：卡片越透，背景色相越容易透上来把卡片染色，
-     深色里 1% 的差别都很明显。宁可让卡片实一点，通透感交给 blur 和背景明度。 */
+  /* Under dark mode the surface is "a layer of white over the background".
+     0.07 → 0.055 → 0.075 → 0.085: the more transparent the card, the more the background hue shows through and tints it,
+     in dark mode even a 1% difference is obvious. Better to keep the card a bit more solid and leave translucency to blur and background brightness. */
   --glass-surface-bg: rgba(255, 255, 255, 0.12);
-  /* 顶栏在深色下用**半透明黑**，不再叠白。
-     原来 0.1 白会让顶栏比背景还亮，再叠上左上的白色主光，
-     统计数字（40/40、10/30）就彻底没底了 —— 深色玻璃的顶栏本来就该是暗的。
-     0.32 黑压在光晕上约 #343434，配合上面提亮的次级文字刚好够 AA。 */
+  /* In dark mode the top bar uses **semi-transparent black**, no more layering white.
+     The original 0.1 white made the top bar brighter than the background, and with the white main light at the upper left,
+     the statistics (40/40, 10/30) had no backing at all — a dark glass top bar should be dark in the first place.
+     0.32 black over the glow is about #343434, which with the brightened secondary text above just meets AA. */
   --glass-chrome-bg: rgba(0, 0, 0, 0.32);
-  /* 深色侧栏比顶栏略实：深底上 0.07 的侧栏会和背景糊成一片，导航项就没有依托了 */
+  /* Dark sidebar is slightly more solid than the top bar: at 0.07 on a dark base the sidebar blends into the background and nav items lose their backing */
   --glass-sidebar-bg: rgba(255, 255, 255, 0.09);
-  /* 深色下顶栏的顶部高光只能给 0.1：深底上白色反光非常显眼 */
+  /* Under dark mode the top bar's top highlight can only be 0.1: white reflections are very conspicuous on a dark base */
   --glass-header-highlight: rgba(255, 255, 255, 0.1);
-  /* 深色高光必须比浅色收敛得多：深底上 0.2 的白已经是一条亮带。
-     方向、接缝理由与浅色那份相同。 */
+  /* Dark highlights must be much more restrained than light: 0.2 white on a dark base is already a bright band.
+     The reasons for direction and seams are the same as the light variant. */
   --glass-chrome-sheen: linear-gradient(90deg,
     rgba(255, 255, 255, 0.2) 0%,
     rgba(255, 255, 255, 0.02) 32%,
@@ -241,28 +241,28 @@ html.dark.glass {
     rgba(255, 255, 255, 0) 10%,
     rgba(255, 255, 255, 0) 88%,
     rgba(255, 255, 255, 0.1) 100%);
-  /* 深色浮层用实色深底（与 --glass-overlay-bg 同一思路），叠白会变成白板。
-     色值从 rgba(30,36,34) 改成中性偏冷的 rgba(32,37,42)：原来那组 G > B，
-     压在背景上会让弹窗透出一层极淡的墨绿，和整体色调不搭。
-     ⚠️ 0.8 → 0.55：暗色下 0.8 的深底叠在黑色遮罩上就是一块实心深灰，
-        背后的模糊一点也透不出来 —— 这就是"弹窗没有磨砂质感"的直接原因。
-        0.55 既让背后的模糊透上来，又足够压住彩色内容、保证浅色正文可读。 */
+  /* Dark floating layers use a solid dark base (same idea as --glass-overlay-bg); layering white becomes a whiteboard.
+     The color changed from rgba(30,36,34) to a neutral-cool rgba(32,37,42): the original had G > B,
+     which over the background made the dialog show a faint dark green, clashing with the overall palette.
+     ⚠️ 0.8 → 0.55: in dark mode, a 0.8 dark base over a black backdrop is a solid dark gray,
+        letting none of the blur behind show through — this is the direct cause of "dialogs having no frosted texture".
+        0.55 both lets the blur behind show through and is solid enough to suppress colorful content and keep light body text readable. */
   --glass-panel-bg: rgba(38, 38, 38, 0.85);
-  /* 暗色同理：0.72 → 0.86。同样是因为弹窗不再自带 backdrop-filter，
-     透过量要由这个值兜底，否则背景会直接透上来。 */
+  /* Same for dark: 0.72 → 0.86. Also because dialogs no longer carry their own backdrop-filter,
+     this value must carry the see-through amount, otherwise the background would show straight through. */
   --glass-modal-bg: rgba(32, 32, 32, 0.8);
-  /* 暗色下遮罩要更浓一点：背景本来就暗，遮罩太淡会让弹窗和背景糊成一片。
-     但因为弹窗自己有模糊层，这里仍不需要 backdrop-filter。 */
+  /* In dark mode the backdrop should be a bit denser: the background is already dark, and too light a backdrop makes dialogs blend into it.
+     But since dialogs have their own blur layer, backdrop-filter is still unnecessary here. */
   --glass-backdrop-bg: rgba(0, 0, 0, 0.42);
-  /* ⚠️ 深色下描边不能用 --glass-toolbar-border（rgba(255,255,255,0.18)）——
-      深底上那圈白会在面板边缘形成明显的亮边，看着像一圈浅色阴影。
-      取与 --glass-edge 同量级的值。 */
+  /* ⚠️ In dark mode the stroke cannot use --glass-toolbar-border (rgba(255,255,255,0.18)) —
+      that white ring on a dark base forms an obvious bright edge on the panel, looking like a light-colored shadow.
+      Use a value on the same level as --glass-edge. */
   --glass-panel-border: rgba(255, 255, 255, 0.14);
 }
 
-/* ===== 背景层：纯明度分层（不带任何彩色） =====
-   整层完全静态、只栅格化一次，不产生持续的合成开销。
-   具体配方与"为什么这么配色"写在下面 body::before 的注释里。 */
+/* ===== Background layer: pure brightness layering (no color at all) =====
+   The whole layer is completely static, rasterized only once, with no ongoing compositing overhead.
+   The exact recipe and "why these colors" are written in the comment on body::before below. */
 html.glass body {
   background-color: transparent;
 }
@@ -273,28 +273,28 @@ html.glass body::before {
   inset: 0;
   z-index: -1;
   pointer-events: none;
-  /* ⚠️ 2026-11-01 第五次重做。前四版依次踩过的坑，按顺序记在这里，别再走回头路：
-       ① 绿极光      → Evan："太绿了"（UI 本身全是品牌绿，背景再铺绿就没有层次）
-       ② 中性灰      → Evan："不好看"（一片浓度均匀的灰，没有画眼、没有明暗）
-       ③ 灰调影调    → Evan："太灰，渐变走向蓝色"（灰蓝 rgba(136,149,164) 透到卡片上就是蓝）
-       ④ 明亮青雾    → Evan 实测："怎么变蓝了""看不清阴影，太白"
-                        —— 青 rgba(150,214,216) 在浅底上仍然读作蓝；
-                           纯白主光把左上刷成一片白，侧栏叠上去也是白，整块分不出边界。
+  /* ⚠️ 2026-11-01 fifth rework. The pitfalls of the first four versions, recorded in order here — do not go back:
+       ① Green aurora      → Evan: "too green" (the UI itself is all brand green, so a green background has no layering)
+       ② Neutral gray      → Evan: "not good looking" (a uniformly dense gray, no focal point, no light/dark)
+       ③ Gray tonality    → Evan: "too gray, the gradient goes blue" (gray-blue rgba(136,149,164) shows through cards as blue)
+       ④ Bright cyan mist → Evan's test: "why did it turn blue" "can't see the shadow, too white"
+                        — cyan rgba(150,214,216) still reads as blue on a light base;
+                           the pure white main light painted the upper left white, and the sidebar over it was white too, so no boundary was visible.
 
-     结论：**这套背景不能带任何彩色**。他对色相极其敏感，而"看着中性"的灰
-     铺满全屏之后都会显出色偏（青灰 = 淡蓝，绿灰 = 淡绿）。所以这一版只用明度：
-     层次由"亮 → 暗"承担，颜色全部让给 UI 自己的品牌绿。
+     Conclusion: **this background must not carry any color**. He is extremely sensitive to hue, and gray that "looks neutral"
+     shows a color cast once it fills the whole screen (cyan-gray = light blue, green-gray = light green). So this version uses brightness only:
+     layering is carried by "bright → dark", and all color is left to the UI's own brand green.
 
-     两条硬约束：
-     ① 主光**不能到纯白、更不能压在左上角**：之前 #ffffff 铺在 (14% 4%)，
-        而顶栏和侧栏正好叠在那里 —— 玻璃面也变成纯白，整块分不出边界
-        （这就是"太白、看不清阴影"）。现在 0.62 起步、中心移到 (34% 14%)，
-        给左上角留出可分辨的底色。
-     ② 亮区中心要落在画面内，否则卡片内部是纯底色，隔着玻璃看不到变化。
+     Two hard constraints:
+     ① The main light **must not reach pure white, let alone sit in the upper-left corner**: previously #ffffff was at (14% 4%),
+        and the top bar and sidebar happened to overlap there — the glass surfaces turned pure white too, with no visible boundary
+        (this is the "too white, can't see the shadow" problem). Now it starts at 0.62 and the center moves to (34% 14%),
+        leaving a distinguishable base color in the upper-left corner.
+     ② The bright area's center must fall within the frame, otherwise the card interior is pure base color and no change is visible through the glass.
 
-     底色 #eef0f0 → #ced2d2，纯中性灰（R = G = B）。**不能再亮了**：
-     背景一旦接近纯白，叠在上面的半透明玻璃面（顶栏 0.4 / 侧栏 0.42 / 卡片 0.58）
-     也全是白的，玻璃就没法"浮"起来 —— 玻璃是相对背景才成立的。 */
+     Base color #eef0f0 → #ced2d2, pure neutral gray (R = G = B). **It cannot be any brighter**:
+     once the background approaches pure white, the semi-transparent glass surfaces on top (top bar 0.4 / sidebar 0.42 / card 0.58)
+     are all white too, and the glass cannot "float" — glass only exists relative to a background. */
   background:
     radial-gradient(ellipse 70vw 60vh at 34% 14%, rgba(255, 255, 255, 0.62) 0%, rgba(255, 255, 255, 0.28) 45%, rgba(255, 255, 255, 0) 74%),
     radial-gradient(ellipse 65vw 60vh at 62% 46%, rgba(255, 255, 255, 0.4) 0%, rgba(255, 255, 255, 0) 70%),
@@ -302,26 +302,26 @@ html.glass body::before {
     linear-gradient(150deg, #e4e7e7 0%, #ccd0d0 100%);
 }
 
-/* 深色同理：**只用明暗，不用色相**。前一版那块蓝 rgba(58,122,170) 在深底上会读作青绿。
-   底色 #262a2b → #0c0f10：冷中性深灰（B 只比 G 高 1），不偏青也不偏蓝。 */
+/* Same for dark: **use only light/dark, not hue**. The blue rgba(58,122,170) in the previous version read as cyan-green on a dark base.
+   Base color #262a2b → #0c0f10: cool neutral dark gray (B only 1 higher than G), neither cyan nor blue. */
 html.dark.glass body::before {
   background:
-    /* 主光从 0.26 降到 0.18：它正好压在顶栏和每个模块的头部，太亮时
-       那些位置变成一片浅灰，次级文字（统计数字、模块描述）直接糊掉。
-       仍然保留这道光——完全没有明暗的深色背景会读成"一块死黑"。 */
+    /* Main light reduced from 0.26 to 0.18: it sits right over the top bar and each module's header; when too bright
+       those areas turn into a light gray, and secondary text (statistics, module descriptions) becomes unreadable.
+       This light is still kept — a dark background with no light/dark at all reads as "a dead black block". */
     radial-gradient(ellipse 62vw 52vh at 34% 12%, rgba(255, 255, 255, 0.18) 0%, rgba(255, 255, 255, 0) 70%),
     radial-gradient(ellipse 65vw 60vh at 62% 46%, rgba(255, 255, 255, 0.06) 0%, rgba(255, 255, 255, 0) 70%),
     radial-gradient(ellipse 80vw 80vh at 104% 104%, rgba(0, 0, 0, 0.72) 0%, rgba(0, 0, 0, 0) 64%),
     linear-gradient(150deg, #262626 0%, #0d0d0d 100%);
 }
 
-/* ===== 颗粒质感层 =====
-   原来是 26px 的规则点阵。规则点阵在浅色下读作"纱窗"、深色下读作"网格"，
-   是整套背景显得廉价的主要来源之一（Evan 说"不好看"时，这一层的锅不小）。
-   换成 SVG feTurbulence 生成的**不规则细颗粒**：
-   · overlay 混合：只影响明暗、不整体发灰，明暗两套主题共用一套纹理；
-   · 不做遮罩渐变 —— 颗粒要铺满才有"整块表面是同一张纸"的连续感；
-   · 整层静态，只栅格化一次，不产生持续合成开销。 */
+/* ===== Grain texture layer =====
+   Originally a regular 26px dot grid. A regular dot grid reads as "a screen door" in light mode and "a mesh" in dark mode,
+   one of the main reasons the whole background looks cheap (this layer is largely to blame when Evan says "not good looking").
+   Replaced with **irregular fine grain** generated by SVG feTurbulence:
+   · overlay blending: affects only light/dark, not overall graying, so both themes share one texture;
+   · no mask gradient — the grain must cover everything to give the continuity of "the whole surface is one sheet of paper";
+   · the whole layer is static, rasterized once, with no ongoing compositing overhead. */
 html.glass body::after {
   content: '';
   position: fixed;
@@ -334,53 +334,53 @@ html.glass body::after {
   mix-blend-mode: overlay;
 }
 
-/* 深色下同样的颗粒要更淡：深底上 overlay 的对比被放大，0.32 会变成噪斑 */
+/* In dark mode the same grain must be fainter: overlay contrast is amplified on a dark base, and 0.32 becomes noise speckles */
 html.dark.glass body::after {
   opacity: 0.2;
 }
 
-/* 顶层结构表面：全应用只有这两类元素付 backdrop-filter 的合成代价。
-   注意前缀顺序必须「-webkit- 在前、标准属性在后」：
-   两者写在一起时压缩器会把它们当同一属性组只保留最后一个，
-   若标准属性被丢掉，getComputedStyle().backdropFilter 会读成 none，
-   非 WebKit 内核也会完全失效。 */
+/* Top-level structural surfaces: only these two kinds of elements in the whole app pay the compositing cost of backdrop-filter.
+   Note the prefix order must be "-webkit- first, standard property after":
+   when written together, the minifier treats them as one property group and keeps only the last,
+   and if the standard property is dropped, getComputedStyle().backdropFilter reads as none,
+   and non-WebKit engines fail entirely. */
 .glass-chrome,
 .glass-surface {
   -webkit-backdrop-filter: var(--glass-blur);
   backdrop-filter: var(--glass-blur);
 }
 
-/* 玻璃表面配方：大扩散柔和投影 + 顶部内高光，变量在 .glass 块里按明暗各给一套。
-   规则整体挂在 html.glass 下，关闭玻璃时选择器不匹配、完全不影响原有阴影，
-   所以不需要在组件里做任何开关判断。 */
-/* ===== 顶栏（TitleBar + DashboardHeader）=====
-   ⚠️ 2026-11-02 这里原来写的是 `border-color: transparent; box-shadow: none;`，
-   理由是"满宽元素的上下沿加效果会出现横贯全屏的白条/暗带"。
-   结果 TitleBar / DashboardHeader 被压成了和背景一样的平面 ——
-   Evan 直接指出"顶部的 header、磁盘信息这些都要有效果"。
+/* Glass surface recipe: large diffused soft shadow + top inner highlight, with variables given per theme in the .glass block.
+   The rules are all under html.glass; when glass is off the selector does not match and original shadows are untouched,
+   so no toggle logic is needed in components. */
+/* ===== Top bar (TitleBar + DashboardHeader) =====
+   ⚠️ 2026-11-02 this used to be `border-color: transparent; box-shadow: none;`,
+   on the grounds that "adding effects to the top/bottom edges of full-width elements creates white bands/dark bands across the whole screen".
+   The result was that TitleBar / DashboardHeader were flattened into the same plane as the background —
+   Evan pointed out directly that "the top header, disk info, etc. all need effects".
 
-   但顶栏是**两个组件拼出来的**（TitleBar + DashboardHeader），
-   如果各自画底边线，中间就会裂开一道缝（Evan 第二次反馈："header 下方这条线/阴影不要，
-   视觉上要一体"）。所以边界只画在整块的最下面一条：
+   But the top bar is **made of two components** (TitleBar + DashboardHeader),
+   and if each draws its own bottom line, a seam cracks open in the middle (Evan's second feedback: "no line/shadow below the header,
+   it should look visually one piece"). So the boundary is drawn only at the very bottom of the whole block:
 
-     · .glass-header-top    —— 只给上沿内高光（贴着窗口顶部的那道反光）；
-                               不要底边、不要阴影，否则中间多出一条线；
-     · .glass-header-bottom —— 只给下沿 1px 亮线 + 短距投影；
-                               不要顶部高光，否则在接缝处又是一条线。
+     · .glass-header-top    — only a top inner highlight (the reflection hugging the top of the window);
+                               no bottom edge, no shadow, otherwise an extra line appears in the middle;
+     · .glass-header-bottom — only a 1px bottom bright line + short-range shadow;
+                               no top highlight, otherwise another line appears at the seam.
 
-   ⚠️ 投影必须短距（16px 以内）。半径拉到 30px 以上时，满宽横条的下沿会积成一道暗带，
-      实测出现过 1px、Δ≈76 的硬跳变 —— 看起来就是一条粗线。 */
+   ⚠️ The shadow must be short-range (within 16px). When the radius goes above 30px, the lower edge of the full-width bar accumulates into a dark band,
+      and a 1px hard jump with Δ≈76 was observed in testing — it looks like a thick line. */
 html.glass .glass-chrome:not(.sidebar-nav) {
   border-color: transparent;
 }
 
-/* ⚠️ 顶栏关掉 backdrop-filter。
-   原因不是性能，是**接缝**：TitleBar 和 DashboardHeader 是两个独立的 DOM，
-   各自带一层 backdrop-filter 就会各自独立采样背景，交界处出现 1px 的色差线 ——
-   表现为"header 下方那条线"，而且内容一滚动、背景一变它就更明显
-   （Evan 连着两次反馈这条线）。
-   而顶栏背后是固定的背景渐变、没有内容在它下面滚动（内容在 main 的独立滚动容器里），
-   模糊一层渐变不产生任何视觉变化 —— 关掉它观感不变，接缝直接消失。 */
+/* ⚠️ Turn off backdrop-filter for the top bar.
+   The reason is not performance but **seams**: TitleBar and DashboardHeader are two independent DOMs,
+   each with its own backdrop-filter samples the background independently, producing a 1px color-difference line at the junction —
+   showing as "that line below the header", and it becomes more obvious as content scrolls and the background changes
+   (Evan reported this line twice in a row).
+   Behind the top bar is a fixed background gradient with no content scrolling beneath it (content is in main's own scroll container),
+   blurring a gradient produces no visual change — turning it off changes nothing visually and the seam disappears. */
 html.glass .glass-header-top,
 html.glass .glass-header-bottom {
   -webkit-backdrop-filter: none;
@@ -398,38 +398,38 @@ html.glass .glass-header-bottom {
     0 8px 16px -10px rgba(30, 41, 59, 0.12);
 }
 
-/* 深色顶栏：浅色那套 rgba(30,41,59,…) 压在深底上等于没有，换成黑影 */
+/* Dark top bar: the light variant rgba(30,41,59,…) is invisible on a dark base, replaced with a black shadow */
 html.dark.glass .glass-header-bottom {
   box-shadow:
     0 1px 2px rgba(0, 0, 0, 0.35),
     0 8px 16px -10px rgba(0, 0, 0, 0.5);
 }
 
-/* 模块卡与顶栏的透明度**单独调**，不复用 --bg-card。
-   原因：--bg-card 同时是 WelcomeModal / UpdateModal / ClearLocalDataDialog /
-   PortableUpdateDialog 的外壳底色，压低它会把这几个弹窗变成"薄膜"（之前踩过）。
-   而模块卡铺满整个内容区，是全应用最需要"透"的表面，必须能独立调。
+/* Module card and top bar opacity are **adjusted separately**, not reusing --bg-card.
+   Reason: --bg-card is also the shell base color for WelcomeModal / UpdateModal / ClearLocalDataDialog /
+   PortableUpdateDialog, and lowering it would turn these dialogs into "thin films" (this was a past mistake).
+   Meanwhile module cards fill the entire content area and are the surface that most needs "transparency" in the app, so they must be adjustable independently.
 
-   浅色为什么要压到 0.4：暗色卡片是 rgba(255,255,255,0.07)，93% 的背景透出来，
-   所以通透；浅色原来 0.58 只有 42% 可见，在浅底上就"看不出玻璃"。
-   两侧对齐到同一量级才有同样的观感。 */
+   Why light mode goes down to 0.4: dark cards are rgba(255,255,255,0.07), letting 93% of the background through,
+   hence transparent; light mode's original 0.58 only let 42% show, so on a light base "no glass was visible".
+   Both sides must align to the same level to give the same visual feel. */
 html.glass .glass-surface {
   background-color: var(--glass-surface-bg);
 }
 
 html.glass .glass-chrome {
   background-color: var(--glass-chrome-bg);
-  /* 高光叠在底色上（不是替换）：横向渐变左右一致，两个顶栏 DOM 拼接处不会错位。 */
+  /* Highlights overlay the base color (not replace it): the horizontal gradient is consistent left-to-right, so the two top bar DOMs' seam does not misalign. */
   background-image: var(--glass-chrome-sheen);
 }
 
 html.glass .glass-surface {
-  /* 页面模式的模块卡自带 ring-1（Tailwind 用 box-shadow 实现），
-     直接赋值会把它覆盖掉，所以把描边一并写进阴影里，避免卡片丢轮廓。
-     这里用 --glass-edge（白色反光）而不是 --border-color（内部分隔线色）。
+  /* Module cards in page mode have their own ring-1 (Tailwind implements it with box-shadow),
+     assigning directly would overwrite it, so the stroke is written into the shadow as well to avoid losing the card outline.
+     Here --glass-edge (white reflection) is used rather than --border-color (internal divider color).
 
-     左右高光 + 底部暗边 = iOS 液态玻璃那种"有厚度的玻璃板"。
-     缺了它们，卡片只是一层"发白的膜"，边缘完全读不出材质。 */
+     Left/right highlights + bottom dark edge = the "thick glass plate" of iOS liquid glass.
+     Without them, the card is just a "whitish film" and its edges convey no material at all. */
   box-shadow:
     0 0 0 1px var(--glass-edge),
     0 0 22px var(--glass-glow),
@@ -440,17 +440,17 @@ html.glass .glass-surface {
     inset 0 -1px 0 var(--glass-inner-bottom);
 }
 
-/* ===== 模块内部的玻璃化重排 =====
-   原则与 Evan 个人站点一致：去边框、去底色，靠留白和字重分层，
-   而不是把每块内容都套一个盒子（现在的写法是卡片里再套 border 盒子、盒子里再套色块图标）。
-   这些规则全部挂在 html.glass 下 —— 关掉玻璃时选择器不匹配，原样式 100% 保留，
-   所以这次改造是**可逆**的，组件里也没有任何开关判断。
-   新增一类内部块时，只要在 JSX 里加一个语义类，样式统一写在这里。 */
+/* ===== Glass-style reflow inside modules =====
+   The principle matches Evan's personal site: remove borders and base colors, layer with whitespace and font weight,
+   rather than wrapping every piece of content in a box (the current approach is a border box inside a card, then a color-block icon inside that).
+   All these rules are under html.glass — when glass is off the selector does not match and original styles are 100% preserved,
+   so this change is **reversible** and there is no toggle logic in components.
+   When adding a new kind of internal block, just add a semantic class in JSX; styles are written here uniformly. */
 html.glass .glass-metrics {
   gap: 0;
 }
 
-/* 指标块：去掉边框与底色，左右内边距归零，让三组指标靠留白分开 */
+/* Metric blocks: remove borders and base color, zero out left/right padding, letting the three metric groups separate via whitespace */
 html.glass .glass-metric {
   border-color: transparent;
   background: transparent;
@@ -458,7 +458,7 @@ html.glass .glass-metric {
   padding-right: 0;
 }
 
-/* 宽屏三列时用一道极淡的竖线分组；窄屏会折成单列，竖线会错位，所以只在 md 以上生效 */
+/* On wide screens, use a very faint vertical line to group the three columns; narrow screens fold to a single column where the line would misalign, so it only applies from md up */
 @media (min-width: 768px) {
   html.glass .glass-metric + .glass-metric {
     border-left: 1px solid var(--border-muted);
@@ -466,60 +466,60 @@ html.glass .glass-metric {
   }
 }
 
-/* 图标保留品牌绿，但去掉外面那层淡绿方块 */
+/* Keep the icon's brand green, but remove the pale green square around it */
 html.glass .glass-metric-icon {
   background: transparent;
 }
 
-/* 弹窗内部的顶栏 / 底栏：玻璃态下去掉自己的底色，与对话框连成一片，
-   只留 border-t / border-b 当分隔线。否则它们在对话框里是一块独立的"板子"，
-   和"去盒子、靠留白分层"的语言不一致。
-   同时去掉这些栏自带的 backdrop-blur —— 母体已经是玻璃层，
-   栏再模糊一次只会把弹窗背后的应用内容采样进来，产生一圈多余的模糊带。 */
+/* Top/bottom bars inside dialogs: in glass mode remove their own base color, merging with the dialog,
+   keeping only border-t / border-b as dividers. Otherwise they are a separate "plate" inside the dialog,
+   inconsistent with the "remove boxes, layer with whitespace" language.
+   Also remove these bars' own backdrop-blur — the parent is already a glass layer,
+   blurring again only samples the app content behind the dialog, producing an extra ring of blur. */
 html.glass .glass-bar {
   background-color: transparent;
   -webkit-backdrop-filter: none;
   backdrop-filter: none;
 }
 
-/* 卡片内嵌的次级区块（筛选行、搜索行、分区等）：去边框去底色，交给留白分层。
-   只去掉"盒子"本身，**保留内边距** —— 这样批量套用到几十处也不会破坏任何布局。 */
+/* Secondary blocks embedded in cards (filter rows, search rows, sections, etc.): remove borders and base color, let whitespace handle layering.
+   Only remove the "box" itself, **keep the padding** — so applying it in bulk to dozens of places breaks no layout. */
 html.glass .glass-block {
   border-color: transparent;
   background-color: transparent;
 }
 
-/* 列表容器：只去掉最外圈边框。
-   **内部的行分隔线必须保留** —— 长列表没有行线会完全读不下去，那是功能性分隔，不是装饰。 */
+/* List container: only remove the outermost border.
+   **Internal row dividers must be kept** — a long list without row lines is unreadable; that is functional separation, not decoration. */
 html.glass .glass-list {
   border-color: transparent;
 }
 
-/* 浮层表面（弹窗卡 / 下拉面板 / 气泡）：换成更实的专用底色。
-   基础表面在暗色下只有 7% 白、浅色下 0.58，对"铺在背景上的卡片"够用，
-   但浮层悬在任意内容之上时盖不住 —— 实测暗色清理弹窗里能看清背后列表的文字。 */
-/* ⚠️ 关键：这条规则必须放进 `@layer utilities`。
-   Tailwind v4 把工具类都放进了级联层，而 App.css 其余规则是**无层**的 ——
-   CSS 规范里「无层样式胜过任何层」，层序的判定**优先于选择器优先级**。
-   所以光把权重降到 (0,1,0) 没用：无层规则照样压住 hover:bg-*（(0,2,0)），
-   表现为"悬停改了字色、底色不变"——回到顶部按钮在亮色玻璃下成了白底白箭头。
-   放进 utilities 层之后，同层内按优先级比：hover 类 (0,2,0) 赢过这条 (0,1,0) ✓
-   而下面这条 (0,1,0) 又靠"源顺序更靠后"赢过组件自己的普通 bg 工具类，
-   于是默认玻璃底色照常生效、没有 hover 背景的控件也不会变透明。 */
+/* Floating surfaces (dialog cards / dropdown panels / popovers): switch to a more solid dedicated base color.
+   The base surface is only 7% white in dark mode and 0.58 in light mode, enough for "cards laid on the background",
+   but cannot cover content when floating above arbitrary content — in testing, list text behind the dark cleanup dialog was legible. */
+/* ⚠️ Key: this rule must be placed inside `@layer utilities`.
+   Tailwind v4 puts utility classes into cascade layers, while the rest of App.css is **unlayered** —
+   in the CSS spec "unlayered styles beat any layer", and layer order is determined **before selector specificity**.
+   So merely lowering specificity to (0,1,0) is useless: an unlayered rule still beats hover:bg-* ((0,2,0)),
+   showing as "hover changes text color but not background" — the back-to-top button became a white arrow on white under light glass.
+   After moving into the utilities layer, specificity decides within the layer: the hover class (0,2,0) beats this (0,1,0) ✓
+   and the (0,1,0) rule below wins over the component's own plain bg utility via "later source order",
+   so the default glass base still applies and controls without a hover background do not turn transparent. */
 @layer utilities {
   :where(html.glass) .glass-overlay {
     background-color: var(--glass-overlay-bg);
   }
 }
 
-/* ===== 浮层与弹窗：统一的液态玻璃配方 =====
-   规范依据（WWDC25 Liquid Glass）：玻璃是**独立浮起的一层**，由「半透明底 + 折射后方内容
-   + 边缘镜面高光 + 更深的阴影」四件事共同表达；形状越大（弹窗 > 气泡），
-   阴影越深、漫射越柔。只有半透明底色的，读起来是"半透明色块"，不是玻璃。
+/* ===== Floating layers and dialogs: unified liquid glass recipe =====
+   Spec basis (WWDC25 Liquid Glass): glass is **an independently floating layer**, expressed by four things: "semi-transparent base + refracted content behind
+   + specular edge highlights + deeper shadow"; the larger the shape (dialog > popover),
+   the deeper the shadow and the softer the diffusion. A semi-transparent base alone reads as "a translucent color block", not glass.
 
-   ⚠️ 不加 backdrop-filter：这些浮层背后已经有一层带模糊的遮罩，
-      两层 backdrop-filter 叠在一起时 WebView2 会画错（踩过，表现为幽灵残影）。
-      模糊由遮罩提供，这里只负责"厚度"。 */
+   ⚠️ Do not add backdrop-filter: these floating layers already have a blurred backdrop behind them,
+      and WebView2 renders incorrectly when two backdrop-filters stack (encountered before, showing as ghost artifacts).
+      Blur is provided by the backdrop; this layer only handles "thickness". */
 html.glass .glass-overlay {
   border-color: var(--glass-item-border);
   box-shadow:
@@ -537,67 +537,67 @@ html.dark.glass .glass-overlay {
     0 14px 32px -12px rgba(0, 0, 0, 0.55);
 }
 
-/* ===== 弹窗遮罩（全应用统一）=====
-   所有 modal 的遮罩都挂 `.glass-backdrop` 这一个类，浓度只在变量里改一次。
-   改之前是 18 处各写各的（bg-black/30、/40、/50、/70 配 backdrop-blur-sm/md），
-   同一个应用里遮罩深浅不一，而且每加一个弹窗都要重新决定一次浓度。
+/* ===== Dialog backdrop (unified across the app) =====
+   All modal backdrops use the single class `.glass-backdrop`, with opacity changed in one variable only.
+   Before the change, 18 places each wrote their own (bg-black/30, /40, /50, /70 with backdrop-blur-sm/md),
+   backdrops varying within one app, and every new dialog required deciding the opacity again.
 
-   ⚠️ 规则必须**无层**：组件上仍保留原来的 bg-black/50 backdrop-blur-sm，
-      那是非玻璃主题下的正常样式。无层样式胜过任何 @layer，所以玻璃态能稳定接管。
-   ⚠️ 这里把 backdrop-filter 置 none：模糊交给弹窗自己（.glass-dialog），
-      只有一层模糊时磨砂边界才清楚，也避开两层 backdrop-filter 叠加的合成风险。 */
+   ⚠️ The rule must be **unlayered**: components still keep the original bg-black/50 backdrop-blur-sm,
+      which is the normal style under the non-glass theme. Unlayered styles beat any @layer, so glass mode can reliably take over.
+   ⚠️ Here backdrop-filter is set to none: blur is left to the dialog itself (.glass-dialog),
+      the frosted boundary is clear only with one blur layer, and the compositing risk of two stacked backdrop-filters is avoided. */
 html.glass .glass-backdrop {
   background-color: var(--glass-backdrop-bg);
   -webkit-backdrop-filter: none;
   backdrop-filter: none;
 
-  /* ===== 弹窗内部的表面变量一律实色 =====
-     定义在**遮罩**上而不是弹窗卡片上：遮罩是所有弹窗的父级，
-     变量会在整棵子树里继承 —— 这样不管卡片挂没挂 .glass-dialog、以后新加什么弹窗，
-     内部的半透明表面全部自动变成实色，不需要逐个组件处理。
-     （.glass-dialog 上也留了一份相同的值，用于没有遮罩的内嵌浮层。）
+  /* ===== Surface variables inside dialogs are all solid colors =====
+     Defined on the **backdrop** rather than the dialog card: the backdrop is the parent of all dialogs,
+     so variables inherit through the whole subtree — regardless of whether the card has .glass-dialog or what dialogs are added later,
+     internal semi-transparent surfaces all automatically become solid, with no per-component handling needed.
+     (The same values are also kept on .glass-dialog for embedded floating layers without a backdrop.)
 
-     为什么必须实色：
-       · --bg-card / --bg-elevated 在玻璃态是半透明的，那套值是给"铺在应用背景上的卡片"
-         用的；出现在弹窗内部就是"半透明叠半透明"，表格行会透出背后的界面；
-       · --bg-hover 尤其危险：半透明黑会在 hover 时自己透出弹窗底，
-         看起来像"蒙了一层暗色玻璃"（Evan 反馈过两次）。
-         实色灰不透明、不叠色、不脏。 */
+     Why solid colors are required:
+       · --bg-card / --bg-elevated are semi-transparent in glass mode; those values are for "cards laid on the app background"
+         and appearing inside a dialog means "semi-transparent over semi-transparent", so table rows show the interface behind;
+       · --bg-hover is especially dangerous: semi-transparent black shows the dialog base through it on hover,
+         looking like "covered with a layer of dark glass" (Evan reported this twice).
+         Solid gray is opaque, does not blend colors, and does not look dirty. */
   --bg-card: #f6f8f8;
   --bg-elevated: #fbfcfc;
   --bg-input: #ffffff;
   --bg-hover: #ebeeee;
   --bg-active: #e2e6e7;
-  /* 设置页里的"段块"（主题模式 / 语言 / 字体大小…）走的是另外两个变量：
-     --glass-surface-bg 是底色、--glass-item-border 是描边。
-     ⚠️ 这两个之前**漏了**：它们在弹窗里还是玻璃态全局值（26% 白 + 白 0.72 描边），
-        叠在 0.9 白的弹窗上就等于隐形 —— 一屏设置项糊成一片白，
-        完全没有分段（Evan："亮色的情况下层次感不明显，里面主要内容"）。
-     段块底色要比弹窗底**暗一档**、描边要能看见，层次才立得住。 */
+  /* "Section blocks" in the settings page (theme mode / language / font size…) use two other variables:
+     --glass-surface-bg is the base color, --glass-item-border is the stroke.
+     ⚠️ These two were **missed before**: inside dialogs they still had the global glass values (26% white + white 0.72 stroke),
+        over a 0.9 white dialog they were effectively invisible — a screen of settings blurred into one white field,
+        with no segmentation at all (Evan: "in light mode the layering is not obvious, the main content inside").
+     The section block base must be **one notch darker** than the dialog base, with a visible stroke, for the layering to hold. */
   --glass-surface-bg: #eff1f1;
   --glass-item-border: rgba(15, 23, 42, 0.07);
 }
 
 html.dark.glass .glass-backdrop {
-  /* ⚠️ 全部 R = G = B。之前用的 #272e34 / #2c3339 蓝分量比红高 13 个点，
-     大面积铺开就是一层深蓝（Evan："暗色怎么有种深蓝色的感觉了"）。
-     深灰一旦带色偏，在暗底上会被放大 —— 这是这块第二次栽在"看着中性"上。 */
+  /* ⚠️ All have R = G = B. The previously used #272e34 / #2c3339 had blue 13 points higher than red,
+     and over a large area became a layer of dark blue (Evan: "why does dark mode feel dark blue").
+     Once a dark gray has a color cast, it is amplified on a dark base — this is the second time this area fell for "looking neutral". */
   --bg-card: #2c2c2c;
   --bg-elevated: #313131;
   --bg-input: #262626;
   --bg-hover: #383838;
   --bg-active: #3f3f3f;
-  /* 同浅色：段块要比弹窗底亮一档、描边要可见 */
+  /* Same as light mode: section blocks are one notch brighter than the dialog base, with a visible stroke */
   --glass-surface-bg: #383838;
   --glass-item-border: rgba(255, 255, 255, 0.09);
 }
 
-/* ===== 设置弹窗左侧导航 =====
-   玻璃态下 `--bg-main` 是 transparent（这是为了 body 能透出背景），
-   于是左导航直接透出弹窗的磨砂底和背后的应用界面 ——
-   而右边的内容区是实色块，一眼看过去左边"脏"且偏暗，
-   读起来像一道阴影（Evan："设置的弹窗怎么还有个阴影"）。
-   给一档比内容区略深的实色，把左右分成两块。 */
+/* ===== Settings dialog left navigation =====
+   In glass mode `--bg-main` is transparent (so the body can show the background through),
+   so the left nav directly shows the dialog's frosted base and the app interface behind —
+   while the content area on the right is a solid block; at a glance the left looks "dirty" and darker,
+   reading like a shadow (Evan: "why does the settings dialog have a shadow").
+   Give it a solid color slightly deeper than the content area, splitting left and right into two blocks. */
 html.glass .glass-nav-pane {
   background-color: rgba(15, 23, 42, 0.035);
 }
@@ -606,51 +606,51 @@ html.dark.glass .glass-nav-pane {
   background-color: rgba(255, 255, 255, 0.04);
 }
 
-/* 大尺寸弹窗（设置 / 赞助 / 各模块的明细弹窗）：用浮层底色 + 双层投影 + 顶部高光。
-   1px 描边用 box-shadow 画，不用 border —— border 会挤掉 2px 内容宽度，弹窗内是表格/列表，
-   宽度一变就会换行。 */
+/* Large dialogs (settings / support / each module's detail dialogs): use floating base color + double shadow + top highlight.
+   Draw the 1px stroke with box-shadow, not border — border eats 2px of content width, and dialogs contain tables/lists,
+   so a width change causes line wrapping. */
 html.glass .glass-dialog {
   background-color: var(--glass-modal-bg);
-  /* ⚠️ 弹窗**内部**的内容表面必须回到实色。
-     玻璃态下 --bg-card / --bg-elevated 是半透明的（0.42 / 0.5），
-     那套值是给"铺在应用背景上的卡片"用的；一旦它们出现在弹窗内部，
-     就是"半透明底上再叠半透明"，层层透出背后的应用界面 ——
-     表格行、表头全变成能看到背后内容的薄片（Evan："内容太透"）。
-     iOS 也是这个分工：玻璃只做 sheet 的外壳，内容区是实色。
+  /* ⚠️ Content surfaces **inside** dialogs must return to solid colors.
+     In glass mode --bg-card / --bg-elevated are semi-transparent (0.42 / 0.5),
+     those values are for "cards laid on the app background"; once they appear inside a dialog,
+     it is "semi-transparent over semi-transparent", with the app interface showing through layer by layer —
+     table rows and headers all become thin slices revealing the content behind (Evan: "content too transparent").
+     iOS has the same division: glass only forms the sheet's shell, the content area is solid.
 
-     变量在 .glass-dialog 作用域内重定义，组件一行不用改。 */
-  /* ⚠️ 用"比纯白略灰"的实色，不是 #ffffff：
-     纯白的表头压在磨砂弹窗底上会形成一块刺眼的亮片（Evan："表头白色很抢眼"）。
-     内部表面统一落在 #f6f8f8 / #fbfcfc，和弹窗底的明度差控制在 6 级以内。 */
+     Variables are redefined in the .glass-dialog scope, so components need no changes. */
+  /* ⚠️ Use a solid color "slightly grayer than pure white", not #ffffff:
+     a pure white header over the frosted dialog base forms a glaring bright patch (Evan: "the white header is very eye-catching").
+     Internal surfaces uniformly land at #f6f8f8 / #fbfcfc, keeping the brightness difference from the dialog base within 6 levels. */
   --bg-card: #f6f8f8;
   --bg-elevated: #fbfcfc;
   --bg-input: #ffffff;
-  /* ⚠️ 悬停/选中底色必须是**实色**，不能是半透明。
-     玻璃态全局的 --bg-hover 是 rgba(255,255,255,.6)（在玻璃面上"再提亮"），
-     压在弹窗内的实色底上等于没有反馈；
-     而写成 rgba(15,23,42,.05) 这种半透明黑更糟 —— 它自己还会透出背后的弹窗底，
-     hover 时那一行像蒙了一层灰玻璃（Evan："hover 之后出现一层暗一点的透明色背景"）。
-     实色灰才对：不透明、不叠色、不脏。 */
+  /* ⚠️ Hover/selected base colors must be **solid**, not semi-transparent.
+     The glass-mode global --bg-hover is rgba(255,255,255,.6) ("brightening again" on glass surfaces),
+     and over a solid dialog base it gives no feedback;
+     and a semi-transparent black like rgba(15,23,42,.05) is worse — it also shows the dialog base through itself,
+     so on hover that row looks covered with gray glass (Evan: "after hover a darker translucent background appears").
+     Solid gray is correct: opaque, no color blending, not dirty. */
   --bg-hover: #ebeeee;
   --bg-active: #e2e6e7;
-  /* ⚠️ 弹窗**不带** backdrop-filter。
-     带它的时候，内部任何 hover 都会触发重绘，浏览器重新采样背后的遮罩 ——
-     表现为"鼠标一移上去，整块弹窗闪暗一下"，而且换颜色值怎么改都还在，
-     因为根因不是颜色（Evan 连着两轮反馈，上一轮我按颜色猜是错的）。
-     弹窗是"悬停在上面操作"的界面，稳定性 > 那点磨砂。
-     透明感由 --glass-modal-bg 的不透明度控制，玻璃读感由边缘高光和描边负责。 */
+  /* ⚠️ Dialogs **do not have** backdrop-filter.
+     When they do, any internal hover triggers a repaint and the browser resamples the backdrop behind —
+     showing as "the whole dialog flashes darker when the mouse moves over it", and it persists no matter how color values are changed,
+     because the root cause is not color (Evan reported it two rounds in a row; last round I guessed wrong by focusing on color).
+     A dialog is an interface "operated on while hovering over it"; stability > that bit of frosting.
+     Transparency is controlled by --glass-modal-bg's opacity; the glass reading is handled by edge highlights and strokes. */
   box-shadow:
     0 0 0 1px var(--glass-panel-border),
-    /* 上沿反光比顶栏更明确：弹窗是浮在遮罩上的玻璃板，边缘是唯一能表达"厚度"的地方。
-       再加一道下沿暗边，上下都有交代，读起来才不是一张白纸。 */
+    /* The top reflection is more pronounced than on the top bar: a dialog is a glass plate floating on the backdrop, and the edges are the only place that can express "thickness".
+       Adding a bottom dark edge as well gives both top and bottom definition, so it doesn't read as a blank sheet. */
     inset 0 1px 0 rgba(255, 255, 255, 0.85),
     inset 0 -1px 0 rgba(15, 23, 42, 0.06),
     0 10px 30px -14px rgba(30, 41, 59, 0.25);
 }
 
 html.dark.glass .glass-dialog {
-  /* 暗色同理：内部回到实色，只留弹窗外壳是磨砂。
-     深色下"半透明叠半透明"比浅色更糟 —— 背后的亮色内容会直接透进行里。 */
+  /* Same for dark mode: the interior returns to solid colors, leaving only the dialog shell frosted.
+     In dark mode "semi-transparent over semi-transparent" is worse than in light — bright content behind shows straight through into rows. */
   --bg-card: #2c2c2c;
   --bg-elevated: #313131;
   --bg-input: #262626;
@@ -663,12 +663,12 @@ html.dark.glass .glass-dialog {
     0 10px 30px -14px rgba(0, 0, 0, 0.5);
 }
 
-/* 列表项卡片（驱动包卡片等）：玻璃态下把灰色分割线换成**白色反光边**，
-   再补上顶部内高光与浮起柔投影 —— 这两味是玻璃质感的来源。
-   底色不动：组件自己的 --bg-card 在玻璃态下本来就是半透明的 ✓
-   ⚠️ 列表行**不加 blur** —— 行数多，逐行重采样背景是最坏情况（项目既有约定）。
-   ⚠️ border-color 必须放进 @layer utilities：无层规则会压过 hover:border-*，
-      会让"悬停边框变绿"失效（这个坑今天已经踩过一次）。 */
+/* List item cards (driver package cards, etc.): in glass mode replace gray dividers with **white reflective edges**,
+   then add a top inner highlight and a floating soft shadow — these two are the sources of the glass texture.
+   Base color unchanged: the component's own --bg-card is already semi-transparent in glass mode ✓
+   ⚠️ List rows **do not add blur** — there are many rows and resampling the background per row is the worst case (an existing project rule).
+   ⚠️ border-color must be placed in @layer utilities: an unlayered rule would override hover:border-*,
+      making "border turns green on hover" fail (this pitfall was hit once already today). */
 html.glass .glass-item {
   box-shadow: var(--glass-shadow), var(--glass-inner);
 }
@@ -679,35 +679,35 @@ html.glass .glass-item {
   }
 }
 
-/* ===== 侧边栏选中态（液态玻璃专用）=====
-   非玻璃态保持原来的"淡绿底 + 绿字"，完全不动；
-   玻璃态下做成**有厚度的玻璃胶囊**（参考稿那种白瓷片），而不是"底色 + 投影"。
+/* ===== Sidebar selected state (liquid glass only) =====
+   Non-glass mode keeps the original "pale green base + green text", completely unchanged;
+   glass mode makes it a **glass capsule with thickness** (like the white porcelain chip in the reference), not "base color + shadow".
 
-   让它"像玻璃"的是这四件事，缺一件就会退化成色块：
-   ① **上下渐变**：纯色 = 卡片，渐变 = 有受光的曲面；
-   ② **顶部内高光**（inset 上沿白）：光从上面来的高光；
-   ③ **底部内暗边**（inset 下沿暗）：玻璃有厚度，下沿会收一圈暗 ——
-      这一条最容易被忽略，但没有它，无论怎么加阴影都还是"贴纸"；
-   ④ **贴边柔光**：参考稿的投影是贴着边缘的一圈，不是大扩散；
-      所以这里**不复用 --glass-shadow**（30px 模糊，画在 2.65em 高的行上只会糊成灰）。
+   What makes it "look like glass" is these four things; missing any one degrades it to a color block:
+   ① **Top-to-bottom gradient**: solid color = card, gradient = a lit curved surface;
+   ② **Top inner highlight** (inset white on the top edge): the highlight of light coming from above;
+   ③ **Bottom inner dark edge** (inset dark on the bottom edge): glass has thickness, so the lower edge gathers a dark ring —
+      this is the most easily overlooked, but without it, no amount of shadow makes it more than a "sticker";
+   ④ **Edge-hugging glow**: the reference's shadow is a ring hugging the edge, not a large diffusion;
+      so **--glass-shadow is not reused here** (30px blur on a 2.65em-tall row just blurs into gray).
 
-   ⚠️ 规则整体挂在 html.glass 下 —— 关掉玻璃时选择器不匹配、原样式 100% 保留，天然可逆。 */
-/* 玻璃态下：**所有**导航项都是胶囊形（不管有没有选中）。
-   原因是悬停底色必须和选中胶囊同形 —— 否则鼠标划过时会在"圆角矩形"和"胶囊"之间跳一下，
-   两种形状并存看着就是没对齐（Evan 截图指出过）。
-   静止时没有底色，所以这条只影响 hover/active 的形状，不影响常态观感。
-   非玻璃态不动：那边选中态和 hover 都是圆角矩形，本来就是一致的。 */
+   ⚠️ The whole rule sits under html.glass — when glass is off the selector does not match and original styles are 100% preserved, inherently reversible. */
+/* In glass mode: **all** nav items are capsule-shaped (whether selected or not).
+   because the hover base must have the same shape as the selected capsule — otherwise the mouse passing over makes it jump between "rounded rectangle" and "capsule",
+   and having two shapes coexisting looks misaligned (Evan pointed this out with a screenshot).
+   At rest there is no base color, so this only affects the shape on hover/active, not the normal appearance.
+   Non-glass mode unchanged: there both selected and hover are rounded rectangles, already consistent. */
 html.glass .sidebar-nav__item,
 html.glass .settings-tab {
   border-radius: 999px;
 }
 
-/* 侧栏未选中项的悬停：同样做成"玻璃片"，而不是一块平白的底。
-   组件上写的是 hover:bg-[var(--bg-hover)]（玻璃态下是 60% 白），
-   叠在侧栏面板上就是一块比周围亮一档的矩形，和选中项的"上亮下暗有厚度"对不上
-   （Evan 圈出来要和设置弹窗统一）。
-   这里补渐变 + 顶部内高光 + 底部内暗边，和选中项共用同一套材质语言，
-   只是强度低一档（悬停不该比选中更显眼）。 */
+/* Hover on unselected sidebar items: also make it a "glass chip", not a flat white base.
+   The component writes hover:bg-[var(--bg-hover)] (60% white in glass mode),
+   which over the sidebar panel is a rectangle one notch brighter than its surroundings, not matching the selected item's "bright top, dark bottom, with thickness"
+   (Evan circled this and asked for consistency with the settings dialog).
+   Here add gradient + top inner highlight + bottom inner dark edge, sharing the same material language as the selected item,
+   just one notch lower in intensity (hover should not be more conspicuous than selected). */
 html.glass .sidebar-nav__item:not(.sidebar-nav__item--active):hover {
   background: linear-gradient(to bottom, rgba(255, 255, 255, 0.7), rgba(255, 255, 255, 0.48));
   box-shadow:
@@ -724,30 +724,30 @@ html.dark.glass .sidebar-nav__item:not(.sidebar-nav__item--active):hover {
 
 html.glass .sidebar-nav__item--active,
 html.glass .settings-tab--active {
-  /* 胶囊形：参考稿的选中片是**圆形胶囊**，不是圆角矩形 —— 这一条本身就决定了"小片"的观感 */
+  /* Capsule shape: the selected chip in the reference is a **round capsule**, not a rounded rectangle — this alone determines the look of the "small chip" */
   background: linear-gradient(
     to bottom,
     rgba(255, 255, 255, 0.95),
     rgba(255, 255, 255, 0.72)
   );
-  /* 只有选中这一个元素加模糊，不是列表行 —— 开销可接受，换来真的"透" */
+  /* Only the selected element gets blur, not list rows — acceptable cost in exchange for real "see-through" */
   backdrop-filter: blur(12px) saturate(150%);
   color: var(--text-primary);
   box-shadow:
-    /* 灰色细边：白片压在浅底上，靠它勾出轮廓（用白边会完全看不见） */
+    /* Fine gray edge: the white chip over a light base relies on it to outline the shape (a white edge would be invisible) */
     0 0 0 1px rgba(15, 23, 42, 0.05),
-    /* 贴边柔光：1px 的接触阴影 + 一层扩散，合起来才是"浮起"而不是"贴纸" */
+    /* Edge-hugging glow: a 1px contact shadow + a diffusion layer; together they read as "floating" rather than "sticker" */
     0 1px 2px rgba(15, 23, 42, 0.06),
     0 6px 14px rgba(15, 23, 42, 0.07),
-    /* 顶高光 + 底暗边 = 厚度（见上面 ②③） */
+    /* Top highlight + bottom dark edge = thickness (see ②③ above) */
     inset 0 1px 0 rgba(255, 255, 255, 0.95),
     inset 0 -2px 3px rgba(15, 23, 42, 0.07);
 }
 
-/* 深色玻璃：白片换成"提亮片"。
-   实测结论（用真实 CSS 截了样张对比）：0.18→0.07 的渐变在深底上读起来还是**灰卡** ✗
-   —— 必须提到 0.26→0.10 才有"比背景明显更亮"的玻璃感；
-   同时顶部高光要加强到 0.30、底部暗边加到 0.35，厚度才出得来。 */
+/* Dark glass: the white chip becomes a "brightened chip".
+   Test conclusion (comparing screenshots with real CSS): the 0.18→0.07 gradient still reads as a **gray card** on a dark base ✗
+   — it must go up to 0.26→0.10 to give the glass feel of "noticeably brighter than the background";
+   at the same time the top highlight must be raised to 0.30 and the bottom dark edge to 0.35 for the thickness to show. */
 html.dark.glass .sidebar-nav__item--active,
 html.dark.glass .settings-tab--active {
   background: linear-gradient(
@@ -763,7 +763,7 @@ html.dark.glass .settings-tab--active {
     inset 0 -2px 3px rgba(0, 0, 0, 0.35);
 }
 
-/* 悬停在选中项上时不要把胶囊"点亮"成 hover 色（0.6 白比胶囊底色更暗，会看到明显闪一下） */
+/* When hovering over a selected item, do not "light it up" into the hover color (0.6 white is darker than the capsule base, causing an obvious flash) */
 html.glass .sidebar-nav__item--active:hover,
 html.glass .settings-tab--active:hover {
   background: linear-gradient(
@@ -782,30 +782,30 @@ html.dark.glass .settings-tab--active:hover {
   );
 }
 
-/* 胶囊里的图标与右侧小圆点仍用品牌绿：正文转深色后，绿色退到"点缀"这一层。
-   圆点原来是 currentColor，不显式给色会跟着变深。 */
+/* The icon and the small dot on the right inside the capsule keep brand green: once the body text turns dark, green steps back to an "accent" role.
+   The dot was originally currentColor; without an explicit color it darkens along with the text. */
 html.glass .sidebar-nav__item--active .sidebar-nav__item-icon {
   color: var(--brand-green);
 }
 
-/* ===== 选中项（侧栏 / 设置弹窗共用）：实色模拟的"玻璃片" =====
-   上面那套「半透明白渐变 + blur + 内高光」是给**侧边栏**的 —— 侧栏压在应用背景上，
-   那层半透明是它"浮起"的来源。
-   设置弹窗内部是实色体系（.glass-dialog / .glass-backdrop 重定义了 --bg-*），
-   半透明白渐变叠上去会读成"一块浮起的亮片"，暗色下尤其像 hover 残留的亮色。
+/* ===== Selected item (shared by sidebar / settings dialog): a solid-color simulated "glass chip" =====
+   The above "semi-transparent white gradient + blur + inner highlight" is for the **sidebar** — the sidebar sits over the app background,
+   and that semi-transparency is the source of its "floating" look.
+   The settings dialog interior is a solid-color system (.glass-dialog / .glass-backdrop redefine --bg-*),
+   so a semi-transparent white gradient over it reads as "a floating bright patch", especially in dark mode like a leftover hover highlight.
 
-   但**不能因此就退化成平涂色块** —— 液态玻璃的选中项本质是"一块有厚度的小玻璃片"：
-     ① 上下渐变：纯色读作色块，渐变才读作"受光的曲面"；
-     ② 顶部内高光：光从上面来的反光；
-     ③ 底部内暗边：玻璃的厚度，缺了它怎么加阴影都像贴纸；
-     ④ 贴边柔影：贴边的一圈，不是大扩散。
-   所以这里用**实色渐变**（不半透明）模拟同样的四件事，和侧栏的观感对齐，
-   又不会把背后的东西透上来。 */
-/* 侧栏和设置弹窗**共用同一套**选中值。
-   ⚠️ 之前侧栏走「半透明白渐变叠在玻璃面板上」、设置走实色渐变，两边最终明度不同：
-   侧栏底本身是 0.09 白（≈#363636）、弹窗底是 0.88 实色（≈#2a2a2a），
-   同一个叠色值上去，呈现出来的深度差一截（Evan："侧边栏和设置的激活样式深度还是不一致"）。
-   既然弹窗内部已经统一成实色体系，侧栏也跟同一组值，两边绝对亮度才一致。 */
+   But it **must not degrade into a flat color block** — a liquid glass selected item is essentially "a small glass chip with thickness":
+     ① Top-to-bottom gradient: a solid color reads as a color block; a gradient reads as "a lit curved surface";
+     ② Top inner highlight: the reflection of light from above;
+     ③ Bottom inner dark edge: the glass's thickness; without it, any shadow still looks like a sticker;
+     ④ Edge-hugging soft shadow: a ring hugging the edge, not a large diffusion.
+   So here a **solid-color gradient** (not semi-transparent) simulates the same four things, aligning with the sidebar's look,
+   without letting the content behind show through. */
+/* The sidebar and settings dialog **share the same set** of selected values.
+   ⚠️ Previously the sidebar used "semi-transparent white gradient over the glass panel" and settings used a solid gradient, so final brightness differed:
+   the sidebar base itself is 0.09 white (≈#363636), the dialog base is 0.88 solid (≈#2a2a2a),
+   and the same overlay value produces noticeably different depth (Evan: "the active styles of the sidebar and settings still differ in depth").
+   Since the dialog interior is already unified into a solid system, the sidebar follows the same set of values so both sides have identical absolute brightness. */
 html.glass .sidebar-nav__item--active,
 html.glass .sidebar-nav__item--active:hover,
 html.glass .settings-tab--active,
@@ -834,89 +834,89 @@ html.dark.glass .settings-tab--active:hover {
     inset 0 -1px 0 rgba(0, 0, 0, 0.35);
 }
 
-/* 设置弹窗左侧导航的图标同理：正文转深色后，图标用品牌绿做点缀
-   （那里的图标是 lucide 的 svg，直接给 color 即可 —— 它是 stroke=currentColor） */
+/* Same for the icons in the settings dialog's left nav: once the body text turns dark, icons use brand green as an accent
+   (those icons are lucide SVGs; just set color — they are stroke=currentColor) */
 html.glass .settings-tab--active svg {
   color: var(--brand-green);
 }
 
-/* 驱动模块自带的吸顶操作栏（它**不使用** ModuleOperationToolbar，是自己的一套）。
-   玻璃主题下 --bg-elevated 只有 45% 不透明，而它是 sticky 的、列表内容会从下面滚过去，
-   半透明就会把下面的文字透上来和按钮叠在一起 —— 这里换成不透明底色。
-   这条规则是无层的，按级联层规则会稳定压过组件上的 bg-[var(--bg-elevated)] 工具类。 */
+/* The sticky toolbar that comes with the driver module (it **does not use** ModuleOperationToolbar, it has its own set).
+   Under the glass theme --bg-elevated is only 45% opaque, and since it is sticky, list content scrolls beneath it,
+   so semi-transparency lets text below show through and overlap the buttons — here it is replaced with an opaque base.
+   This rule is unlayered, so by cascade-layer rules it reliably overrides the component's bg-[var(--bg-elevated)] utility class. */
 html.glass .driver-toolbar {
   background-color: var(--glass-toolbar-bg);
-  /* 按项目自己的玻璃配方补齐三味：白边 + 顶部内高光 + 浮起柔投影。
-     只做半透明会变成"发白的盒子"，不像玻璃 —— 这三味不能少。
-     直接用主题里已有的变量，明暗两套自动跟随，不写死颜色。 */
+  /* Complete the three ingredients per the project's own glass recipe: white edge + top inner highlight + floating soft shadow.
+     Semi-transparency alone becomes a "whitish box", not glass — these three ingredients are essential.
+     Use the theme's existing variables directly, so both themes follow automatically and colors are not hard-coded. */
   border-color: var(--glass-toolbar-border);
   box-shadow: var(--glass-shadow), var(--glass-inner);
-  /* ⚠️ 前缀必须写在标准属性**前面**：两者连写时 Lightning CSS 视为同一属性组、
-     只保留最后一个；「标准在前」会让产物里只剩 -webkit- 版本，非 WebKit 内核实效。
-     模糊是这个方案的关键：78% 的底色 + 20px 模糊 = 内容糊成色块，挡得住又玻璃。 */
+  /* ⚠️ The prefix must be written **before** the standard property: when written together, Lightning CSS treats them as one property group
+     and keeps only the last; "standard first" leaves only the -webkit- version in the output, which fails on non-WebKit engines.
+     Blur is key to this approach: 78% base + 20px blur = content blurred into color blocks, blocking content while still looking glassy. */
   -webkit-backdrop-filter: blur(20px) saturate(160%);
   backdrop-filter: blur(20px) saturate(160%);
 }
 
-/* AI 对话面板：它是浮在模块内容之上的浮层，必须真的挡得住内容 ——
-   所以沿用操作栏那套「高不透明 + 白边 + 顶部内高光 + 浮起柔投影」，
-   而不是用普通卡片表面（玻璃态下只有 0.45 不透明，正文会透上来）。
+/* AI chat panel: it is a floating layer above module content and must genuinely block the content —
+   so it follows the toolbar's recipe of "high opacity + white edge + top inner highlight + floating soft shadow",
+   rather than a normal card surface (only 0.45 opaque in glass mode, so body text shows through).
 
-   ⚠️ **刻意不加 backdrop-filter**（这里原来有 20px 模糊）：
-   面板背后就是带 backdrop-filter 的模块卡 —— 两个 backdrop-filter 叠在一起时，
-   WebView2 的合成会出错，把模块卡的像素画到面板上，表现为面板上出现一块"幽灵残影"。
-   面板本身已经 0.62/0.66 不透明，去掉模糊几乎看不出差别；模块卡那层磨砂才是有观感的。 */
+   ⚠️ **Deliberately no backdrop-filter** (there used to be 20px blur here):
+   behind the panel is a module card with backdrop-filter — when two backdrop-filters stack,
+   WebView2's compositing fails and paints the module card's pixels onto the panel, showing as a "ghost artifact" on the panel.
+   The panel itself is already 0.62/0.66 opaque, so removing the blur makes almost no visible difference; the module card's frosting is what matters visually. */
 html.glass .ai-panel {
   background-color: var(--glass-panel-bg, var(--bg-elevated));
   border-color: var(--glass-panel-border, var(--border-color));
-  /* ⚠️ 这里单独用一套投影，不沿用 --glass-shadow。
-     --glass-shadow 是 30px 的大柔影，压在浅绿背景上等于没有边界 —— 面板会读成
-     "一块更浅的区域"而不是"浮在上面的窗口"。改成两层：
-       ① 1px 贴地影（把面板和背景切开）
-       ② 大范围低透明度柔影（表达高度）
-     再配合 border-color 的一圈实边，边界才立得住。 */
+  /* ⚠️ A separate shadow set is used here, not reusing --glass-shadow.
+     --glass-shadow is a large 30px soft shadow, which over a pale green background gives no boundary — the panel reads as
+     "a lighter area" rather than "a window floating above". Changed to two layers:
+       ① a 1px contact shadow (separating the panel from the background)
+       ② a wide, low-opacity soft shadow (conveying elevation)
+     Together with a solid edge from border-color, the boundary holds. */
   box-shadow:
     0 1px 2px rgba(15, 23, 42, 0.08),
     0 16px 40px -12px rgba(15, 23, 42, 0.22),
     var(--glass-inner);
 }
 
-/* ===== 侧边栏：液态玻璃下做成浮起的圆角面板 =====
-   两个硬约束：① 布局占位不变、收缩照常；② **视觉上只能有一个容器**。
-   内缩用 padding（border-box 下不影响外部宽度，且它定义了面板范围）；
-   面板本身用 ::before 绘制 —— 背景、圆角、投影必须落在同一个盒子上。
+/* ===== Sidebar: under liquid glass, made into a floating rounded panel =====
+   Two hard constraints: ① layout footprint unchanged, collapsing works as usual; ② **visually there must be only one container**.
+   Inset uses padding (under border-box it does not affect outer width, and it defines the panel's extent);
+   the panel itself is drawn with ::before — background, rounded corners, and shadow must land on the same box.
 
-   这里**不能用**"透明边框 + background-clip: padding-box"：
-   那样背景在 padding-box、而 box-shadow 参照的是 border-box，
-   结果外圈一道投影轮廓、内圈一块面板，看起来就是两个容器（已经踩过）。 */
+   **Do not use** "transparent border + background-clip: padding-box" here:
+   that puts the background in the padding-box while box-shadow references the border-box,
+   resulting in a shadow outline outside and a panel inside, looking like two containers (already encountered). */
 html.glass .sidebar-nav {
-  /* 内缩量只在这里定义一次，padding（管内容）和 ::before 的 inset（管面板）共用，
-     否则两边各写一份，改一处忘一处就会内容跑出面板 */
+  /* The inset amount is defined only here, shared by padding (for content) and ::before's inset (for the panel),
+     otherwise writing it in both places means changing one and forgetting the other, making content spill out of the panel */
   --sidebar-panel-inset-y: 1.5em;
   --sidebar-panel-inset-x: 0.75em;
 
   padding: var(--sidebar-panel-inset-y) var(--sidebar-panel-inset-x);
   background-color: transparent;
-  /* ⚠️ 必须同时清掉 background-image：侧栏也带 .glass-chrome，
-     顶栏那条横向高光会铺在**整个外框矩形**上，在圆角面板背后形成一层浅色底
-     （Evan 反馈"侧边栏背后这一层还是有"）。面板自己的高光在 ::before 上。 */
+  /* ⚠️ background-image must be cleared as well: the sidebar also has .glass-chrome,
+     so the top bar's horizontal highlight would spread over the **entire outer rectangle**, forming a light base behind the rounded panel
+     (Evan reported "this layer behind the sidebar is still there"). The panel's own highlight is on ::before. */
   background-image: none;
   border-right-color: transparent;
-  /* 抵消 .glass-chrome 加在外框上的效果 —— 这两条是关键：
-     · box-shadow 会沿外框画一圈投影轮廓；
-     · backdrop-filter 更隐蔽：它会把**整个外框范围**的背景都模糊一遍，
-       于是外框变成一个"模糊矩形"，里面再叠一块更亮的面板，看起来就是两层。
-     外框必须是完全什么都看不见的，模糊只留在 ::before 的面板上。 */
+  /* Cancel the effects .glass-chrome adds to the outer frame — these two are key:
+     · box-shadow draws a shadow outline along the outer frame;
+     · backdrop-filter is more subtle: it blurs the background across the **entire outer frame area**,
+       turning the frame into a "blurred rectangle" with a brighter panel layered inside, looking like two layers.
+     The outer frame must be completely invisible, with blur only on the ::before panel. */
   box-shadow: none;
   -webkit-backdrop-filter: none;
   backdrop-filter: none;
-  /* 建立局部层叠上下文，让 ::before 的 z-index: -1 只作用在这个子树内 */
+  /* Establish a local stacking context so ::before's z-index: -1 only applies within this subtree */
   isolation: isolate;
-  /* 高度跟着内容走，不撑满整列 —— 撑满会变成"一块背景板"，不像浮起的卡片。
-     align-self 覆盖 flex 默认的 stretch；菜单很长时由 max-height 兜住，
-     列表自身的 overflow-y: auto 负责滚动，不会溢出。 */
-  /* 高度：始终占满主内容区。面板自身在底部有 1.5em 内缩，视觉上就是"留一条缝、不顶满"；
-     内容少也不会塌成一小条，窗口拉伸时百分比跟着变。 */
+  /* Height follows the content, not filling the whole column — filling would become "a backdrop board", not a floating card.
+     align-self overrides flex's default stretch; a very long menu is caught by max-height,
+     and the list's own overflow-y: auto handles scrolling without overflowing. */
+  /* Height: always fills the main content area. The panel itself has a 1.5em inset at the bottom, visually "leaving a gap, not filling to the top";
+     with little content it still does not collapse into a thin strip, and the percentage follows window resizing. */
   align-self: flex-start;
   height: 100%;
   max-height: 100%;
@@ -924,30 +924,30 @@ html.glass .sidebar-nav {
 
 html.glass .sidebar-nav::before {
   content: '';
-  /* 注意：绝对定位的包含块是 **padding box**，它是"包含 padding 区域"的，
-     所以 inset:0 等于整个外框、一点内缩都没有 —— 面板会直接贴边。
-     必须显式写上内缩量，和上面的 padding 保持一致。 */
+  /* Note: the containing block for absolute positioning is the **padding box**, which "includes the padding area",
+     so inset:0 means the entire outer frame with no inset at all — the panel would stick to the edges.
+     The inset must be written explicitly, consistent with the padding above. */
   position: absolute;
   inset: var(--sidebar-panel-inset-y) var(--sidebar-panel-inset-x);
   z-index: -1;
   pointer-events: none;
   border-radius: 1.1em;
-  /* 材质用 --glass-sidebar-bg（比顶栏略实、比卡片略透）。
-     iOS 的侧栏是"悬浮在内容旁边的独立导航层"，它要比主内容区更透，
-     这样背景的光影能从它下面透上来；用和卡片一样的厚度会读成"另一张卡片"。 */
+  /* The material uses --glass-sidebar-bg (slightly more solid than the top bar, slightly more transparent than cards).
+     iOS's sidebar is "an independent navigation layer floating beside the content" and should be more transparent than the main content area,
+     so the background's light and shadow can show through from beneath; using the same thickness as cards would read as "another card". */
   background-color: var(--glass-sidebar-bg);
-  /* 斜向高光叠在底色上：面板是独立的圆角块，不需要担心跨 DOM 接缝。 */
+  /* The diagonal highlight overlays the base color: the panel is an independent rounded block, so there is no cross-DOM seam to worry about. */
   background-image: var(--glass-sidebar-sheen);
   -webkit-backdrop-filter: var(--glass-blur);
   backdrop-filter: var(--glass-blur);
-  /* 投影收紧：留白带只有 10.5px 宽，--glass-shadow 的 30px 模糊会整条盖住它，
-     在面板外面形成一圈"晕"，看起来就像多了一层。
-     ⚠️ 这里也**不加 --glass-glow**：22px 的柔光同样会吃掉那 10px 留白，
-     侧栏与内容区之间会出现一条发白的缝。厚度只靠三条内边表达。
+  /* Shadow tightened: the whitespace band is only 10.5px wide, and --glass-shadow's 30px blur would cover it entirely,
+     forming a "halo" around the panel, looking like an extra layer.
+     ⚠️ **Do not add --glass-glow here either**: its 22px soft glow would likewise eat that 10px whitespace,
+     producing a whitish gap between the sidebar and content area. Thickness is expressed only by the three inner edges.
 
-     但**必须有可见的投影**：Evan 实测反馈"看不清阴影，太白"，
-     指的就是左上这块 —— 侧栏和背景同色、影子又只有 0.06，面板等于消失了。
-     所以给一套"接触影 + 中等柔影"，模糊半径压在 16px 以内，不越过留白带。 */
+     But there **must be a visible shadow**: Evan's testing feedback was "can't see the shadow, too white",
+     referring precisely to this upper-left area — sidebar the same color as the background and only a 0.06 shadow means the panel effectively disappears.
+     So use a "contact shadow + medium soft shadow" set, keeping the blur radius within 16px so it does not cross the whitespace band. */
   box-shadow:
     0 1px 3px rgba(30, 41, 59, 0.06),
     0 8px 16px rgba(30, 41, 59, 0.08),
@@ -957,9 +957,9 @@ html.glass .sidebar-nav::before {
     inset 0 -1px 0 var(--glass-inner-bottom);
 }
 
-/* 深色侧栏：投影必须换成黑色系。
-   浅色那套 rgba(30,41,59,…) 压在深底上等于没有，侧栏会和背景糊成一片 ——
-   深色下"浮起"只能靠黑影 + 那圈白色反光边，两者缺一都看不出来。 */
+/* Dark sidebar: the shadow must switch to black tones.
+   The light variant rgba(30,41,59,…) is invisible on a dark base, and the sidebar blends into the background —
+   in dark mode "floating" relies only on a black shadow + that ring of white reflective edge; missing either makes it invisible. */
 html.dark.glass .sidebar-nav::before {
   box-shadow:
     0 1px 3px rgba(0, 0, 0, 0.45),
@@ -970,7 +970,7 @@ html.dark.glass .sidebar-nav::before {
     inset 0 -1px 0 var(--glass-inner-bottom);
 }
 
-/* 收缩态只有 4.25em 宽，内缩必须收小，否则面板装不下图标 */
+/* The collapsed state is only 4.25em wide, so the inset must shrink, otherwise the panel cannot fit the icons */
 html.glass .sidebar-nav--collapsed {
   --sidebar-panel-inset-x: 0.5em;
 }
@@ -979,17 +979,17 @@ html.glass .sidebar-nav--collapsed::before {
   border-radius: 0.9em;
 }
 
-/* header 底下的分隔线：**留一条极淡的**。
-   去掉之后标题就是一段悬空的粗体字（Evan 说的"纯文字"），
-   和下面的列表没有依托关系。用文字色 8% 的混色，深浅主题都成立，也不像边框。 */
+/* The divider below the header: **keep a very faint one**.
+   Removing it leaves the title as a floating piece of bold text (what Evan called "plain text"),
+   with no anchoring relationship to the list below. Use an 8% mix of the text color, which works in both themes and does not look like a border. */
 html.glass .sidebar-nav__header {
   border-bottom-color: color-mix(in srgb, var(--fg-primary) 8%, transparent);
 }
 
-/* ===== 液态玻璃下的全局滚动条 =====
-   注意：项目里已有 `* { scrollbar-color: ... }`，而 Chromium 121+ 一旦设置了标准属性
-   scrollbar-color / scrollbar-width，就会**忽略 ::-webkit-scrollbar 系列规则**。
-   所以这里两条都写：标准属性负责实际生效，伪元素留给不支持的旧内核。 */
+/* ===== Global scrollbar under liquid glass =====
+   Note: the project already has `* { scrollbar-color: ... }`, and in Chromium 121+ setting the standard properties
+   scrollbar-color / scrollbar-width causes the **::-webkit-scrollbar rules to be ignored**.
+   So both are written here: the standard properties do the actual work, and the pseudo-elements are for older engines without support. */
 html.glass * {
   scrollbar-width: thin;
   scrollbar-color: var(--glass-scrollbar-thumb) transparent;
@@ -1017,31 +1017,31 @@ html.glass ::-webkit-scrollbar-corner {
   background: transparent;
 }
 
-/* ===== 标题栏窗口控制按钮（设置 / 最小化 / 最大化 / 关闭）=====
-   非玻璃态是**满高的方块** hover（Windows 标题栏的惯例），一律不动；
-   玻璃态下换成和侧边栏、设置导航一致的**胶囊** —— 上下内缩一点，浮在标题栏里，
-   而不是从顶长到底的一块白。
-   ⚠️ 高度用 calc(100% - …) 覆盖 Tailwind 的 h-full：属性选择器 + html.glass (0,2,0) 压过单类 (0,1,0)。
-   ⚠️ 关闭键的红色 hover 保留 —— 换成胶囊后仍然是"悬停变红"，只是形状跟着统一。 */
+/* ===== Title bar window control buttons (settings / minimize / maximize / close) =====
+   Non-glass mode uses **full-height square** hover (the Windows title bar convention), left entirely unchanged;
+   glass mode switches to **capsules** consistent with the sidebar and settings nav — inset slightly top and bottom, floating within the title bar,
+   rather than a white block running from top to bottom.
+   ⚠️ Use calc(100% - …) for height to override Tailwind's h-full: the attribute selector + html.glass (0,2,0) beats a single class (0,1,0).
+   ⚠️ Keep the close button's red hover — even as a capsule it still "turns red on hover", only the shape is unified. */
 html.glass [data-titlebar-control] {
   height: calc(100% - 0.5em);
   margin-block: 0.25em;
   margin-inline: 0.1em;
-  /* 0.45em ≈ 6-7px 的圆角，不是胶囊。
-     ⚠️ 之前是 999px（胶囊）：在 40px 高的标题栏里，一个 40px 宽的方块被削成胶囊后
-        变成一颗"药丸"，hover 起来像悬浮按钮而不是窗口控件（Evan 反馈"圆角太圆了"）。
-        窗口控件是贴着标题栏的方块，圆角只负责收边，不该改变形状语言。 */
+  /* A 0.45em ≈ 6-7px corner radius, not a capsule.
+     ⚠️ It used to be 999px (capsule): in a 40px-tall title bar, a 40px-wide square shaved into a capsule
+        becomes a "pill", and on hover looks like a floating button rather than a window control (Evan reported "corners too round").
+        Window controls are squares hugging the title bar; the radius only softens edges and should not change the shape language. */
   border-radius: 0.45em;
 }
 
-/* ===== 设置页里的"段"与"操作控件"（液态玻璃）=====
-   两个问题（Evan 直接指出）：
-   ① **段没了**：页面里的块用的是 `bg-[var(--bg-main)]`，而玻璃主题下 --bg-main 是 transparent，
-      于是整页糊成一整片，"一块块的段落感"消失；
-   ② **操作控件**（按钮 / 输入框 / 下拉）还是"灰边 + 实底"的普通窗口样子。
+/* ===== "Sections" and "controls" in the settings page (liquid glass) =====
+   Two problems (pointed out directly by Evan):
+   ① **Sections disappeared**: blocks on the page use `bg-[var(--bg-main)]`, and under the glass theme --bg-main is transparent,
+      so the whole page blurs into one sheet and the "sense of distinct sections" disappears;
+   ② **Controls** (buttons / inputs / dropdowns) still look like ordinary windows with "gray borders + solid bases".
 
-   处理原则：**只补一层很轻的玻璃面、把灰边换成白反光边** ——
-   不改组件结构、不动任何分隔线、不碰弹窗外壳（外壳继续保持原来的半透明）。
+   Handling principle: **only add a very light glass surface and replace gray borders with white reflective edges** —
+   do not change component structure, do not touch any dividers, and do not touch dialog shells (shells keep their original semi-transparency).
 */
 html.glass .settings-content .glass-block {
   background-color: var(--glass-surface-bg);
@@ -1050,26 +1050,26 @@ html.glass .settings-content .glass-block {
     var(--glass-inner);
 }
 
-/* ⚠️ 这条只改「控件自己的边框颜色」：
-   - 图标按钮本来没有边框 → 天然不受影响；
-   - 行的分隔线挂在 div/span 的 border-t/b 上，不在 button/input 上 → 不会被误伤（上次的教训）。 */
+/* ⚠️ This rule only changes "the control's own border color":
+   - Icon buttons have no border to begin with → naturally unaffected;
+   - Row dividers sit on div/span's border-t/b, not on button/input → no collateral damage (lesson from last time). */
 html.glass .settings-content :is(button, input, select, textarea) {
   border-color: var(--glass-item-border);
 }
 
 
 
-/* ===== 模块舞台的图层隔离 + 面板层提升（修"幽灵残影"）=====
-   现象：AI 助手面板浮在模块上时，模块的头部/左侧栏会以**半透明残影**叠到面板上；
-   hover 时高频出现，只有玻璃主题、且模块里是大面积浅色卡片时才看得出来。
+/* ===== Module stage layer isolation + panel layer promotion (fixing "ghost artifacts") =====
+   Symptom: when the AI assistant panel floats over a module, the module's header/left sidebar overlays the panel as a **semi-transparent ghost**;
+   it occurs frequently on hover, and is only visible in the glass theme with large light cards in the module.
 
-   机制（两次都没修对之后重新判断）：这是**合成层穿插**，不是配色问题 ——
-   模块里有 transform / backdrop-filter 的元素各自成了合成层，和上层面板在合成阶段串了。
-   所以这次不再调颜色，改从图层下手：
-   ① 模块舞台 `isolation: isolate` —— 只建堆叠上下文、**不裁剪**
-      （不用 contain: paint：那会把溢出模块的提示气泡切掉）；
-   ② 面板 `translateZ(0)` —— 强制它成为独立合成层，稳定压在模块之上。
-   ⚠️ 面板的磨砂去掉了：它没解决问题，反而让面板的采样跟着模块重绘走（更容易闪）。 */
+   Mechanism (reassessed after two failed fixes): this is **compositing layer interleaving**, not a color issue —
+   elements with transform / backdrop-filter in the module each become their own compositing layer and interleave with the upper panel during compositing.
+   So this time, instead of adjusting colors, we tackle the layers:
+   ① Module stage `isolation: isolate` — only creates a stacking context, **no clipping**
+      (do not use contain: paint: that would clip tooltip bubbles overflowing the module);
+   ② Panel `translateZ(0)` — forces it to become an independent compositing layer, reliably above the module.
+   ⚠️ The panel's frosting was removed: it did not solve the problem and instead made the panel's sampling follow the module's repaints (more prone to flicker). */
 html.glass .module-stage {
   isolation: isolate;
 }
@@ -1079,10 +1079,10 @@ html.glass .ai-panel {
 }
 
 
-/* 设置页里**可点击的段块**（如「更新日志」那个整行链接）：
-   玻璃态下背景被上面那条 .settings-content .glass-block 规则接管了，
-   Tailwind 的 hover:bg-* 优先级不够，hover 会完全没反馈 ——
-   这里补一个"抬起"的反馈（边框变亮 + 投影加重），而不是换底色，和胶囊/卡片的语言一致。 */
+/* Clickable section blocks in the settings page (such as the full-row "Changelog" link):
+   in glass mode the background is taken over by the .settings-content .glass-block rule above,
+   Tailwind's hover:bg-* has insufficient specificity, so hover gives no feedback at all —
+   here add a "lift" feedback (brighter border + heavier shadow) rather than changing the base color, consistent with the capsule/card language. */
 html.glass .settings-content a.glass-block:hover {
   box-shadow:
     0 0 0 1px var(--glass-edge),
@@ -1090,11 +1090,11 @@ html.glass .settings-content a.glass-block:hover {
     var(--glass-inner);
 }
 
-/* ===== 侧边栏列表的滚动条：比全局更细、更淡 =====
-   ⚠️ Chromium 121+ 里，只要 `scrollbar-width` **或** `scrollbar-color` 有一个不是
-   `auto`，`::-webkit-scrollbar` 系列就**整组失效**，退回系统滚动条。
-   全局那条 `html.glass *` 两个属性都设了（thin + 颜色），所以这里**两条都必须重置**
-   —— 只重置 width 的话，拿到的是系统**带箭头按钮的粗滚动条**，比原来更难看。 */
+/* ===== Sidebar list scrollbar: thinner and fainter than the global one =====
+   ⚠️ In Chromium 121+, as long as either `scrollbar-width` **or** `scrollbar-color` is not
+   `auto`, the `::-webkit-scrollbar` family **stops working entirely** and falls back to the system scrollbar.
+   The global `html.glass *` sets both properties (thin + color), so **both must be reset here**
+   — resetting only width gives the system's **thick scrollbar with arrow buttons**, which looks worse than before. */
 html.glass .sidebar-nav__list {
   scrollbar-width: auto;
   scrollbar-color: auto;
@@ -1117,17 +1117,17 @@ html.glass .sidebar-nav__list::-webkit-scrollbar-thumb:hover {
   background-color: color-mix(in srgb, var(--fg-primary) 26%, transparent);
 }
 
-/* ===== 空状态（液态玻璃）=====
-   默认态是「虚线边框 + 绿色渐变底 + 装饰光斑」—— 那是"占位区/拖放区"的语言，
-   放进实心玻璃卡片里就像贴上去的一个框，和周围的材质不是一套（Evan 反馈）。
-   玻璃下改成一块**内凹的浅槽**：不要边框、去掉渐变，只靠内阴影和极淡底色区分层级。
-   ⚠️ 只覆盖 border-color 不动 border-style/width，避免盒模型尺寸变化导致布局跳动。 */
+/* ===== Empty state (liquid glass) =====
+   The default state is "dashed border + green gradient base + decorative light spot" — that is the language of a "placeholder / drop zone",
+   and inside a solid glass card it looks like a pasted-on frame, inconsistent with the surrounding material (Evan reported this).
+   Under glass, change it to an **inset shallow groove**: no border, no gradient, relying only on inner shadow and a very faint base to distinguish levels.
+   ⚠️ Only override border-color, do not change border-style/width, to avoid layout shifts from box-model size changes. */
 html.glass .empty-state,
 html.glass .empty-state-inline {
   border-color: transparent;
   background-image: none;
-  /* 用**比卡片略深**的一点点底（不是白）—— 白叠白等于没有，
-     要的是"凹进去一点"的感觉，所以取 2.5% 的前景色。 */
+  /* Use a base **slightly darker than the card** (not white) — white on white is no different,
+     what is wanted is a "slightly recessed" feel, so 2.5% of the foreground color is used. */
   background-color: rgba(15, 23, 42, 0.025);
   box-shadow: inset 0 1px 2px rgba(15, 23, 42, 0.04);
 }
@@ -1138,7 +1138,7 @@ html.dark.glass .empty-state-inline {
   box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.2);
 }
 
-/* 社交专清明细 / 二次确认 / AI 缓存明细这三个弹窗，
-   原来各有一套「背景 + 双层投影」的专属规则（第 966-1015 行）。
-   它们已经统一挂上 .glass-dialog（内部实色变量 + 统一投影），这里只留说明，
-   避免同一个弹窗被两套样式各改一半。 */
+/* The three dialogs: social cleanup details / secondary confirmation / AI cache details,
+   originally each had its own "background + double shadow" rules (lines 966-1015).
+   They now all use .glass-dialog (solid internal variables + unified shadow), so only an explanation remains here,
+   to avoid the same dialog being half-modified by two sets of styles. */

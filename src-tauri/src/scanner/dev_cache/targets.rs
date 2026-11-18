@@ -1,20 +1,20 @@
-//! 目标表：哪些目录算「开发空间」，以及删掉之后的代价。
+//! Target table: which directories count as "dev space", and the cost of deleting them.
 //!
-//! **所有路径都在运行时由环境变量拼出来**，源码里不出现任何用户目录字面量 ——
-//! 这是能安全 push 到远端的前提。想加新目标，在这里加一段即可，
-//! 扫描、界面、删除校验都不用改。
+//! **All paths are built at runtime from environment variables**, and no user-directory literals appear in the source —
+//! this is the prerequisite for being safe to push to a remote. To add a new target, just add a block here;
+//! scanning, UI, and delete validation need no changes.
 //!
-//! i18n：界面文案按 `id` 取（`devCache.items.<id>.name/.note`），
-//! 本文件里的 `name` / `note` 只是中文兜底与日志可读性。
+//! i18n: UI text is looked up by `id` (`devCache.items.<id>.name/.note`);
+//! the `name` / `note` in this file are only Chinese fallbacks and for readable logs.
 
 use std::path::PathBuf;
 
 use super::types::DevRisk;
 
-/// 一个具体目录目标。
+/// A concrete directory target.
 pub struct TargetSpec {
     pub id: &'static str,
-    /// 分组 id，决定卡片归到哪一块
+    /// Group id, determines which section the card belongs to
     pub group: &'static str,
     pub name: &'static str,
     pub note: &'static str,
@@ -22,29 +22,29 @@ pub struct TargetSpec {
     pub path: PathBuf,
 }
 
-/// 版本目录名怎么认。不同软件的命名不一样，交给一个函数判断，不写死正则。
+/// How to recognize a version directory. Different software names them differently, so a function decides instead of a hard-coded regex.
 #[derive(Clone, Copy)]
 pub enum VersionPattern {
-    /// `1.2.3.4` 四段数字（Edge / WebView / Copilot）
+    /// `1.2.3.4` four-part numbers (Edge / WebView / Copilot)
     FourPart,
     /// `app-1.2.3`（GitHub Desktop）
     AppPrefix,
 }
 
-/// 一组「同一软件的多套版本目录」。
+/// A set of "multiple version directories of the same software".
 ///
-/// 父目录本身**永远不删**，删除粒度只到版本子目录 ——
-/// 这是 `Edge\Application` 这种目录必须遵守的边界。
+/// The parent directory itself is **never deleted**; deletion granularity stops at version subdirectories —
+/// this is the boundary that directories like `Edge\Application` must respect.
 pub struct VersionSpec {
     pub id: &'static str,
     pub name: &'static str,
     pub base: PathBuf,
     pub pattern: VersionPattern,
-    /// 注册表探测当前版本用的键（拿不到就退回「版本号最高者为当前」）
+    /// Registry key for detecting the current version (falls back to "highest version number is current" if unavailable)
     pub current_probe: Option<RegProbe>,
 }
 
-/// 注册表探测：读某个键的字符串值当作当前版本。
+/// Registry probe: read a key's string value as the current version.
 pub struct RegProbe {
     pub hive: ProbeHive,
     pub key: &'static str,
@@ -55,8 +55,8 @@ pub enum ProbeHive {
     Hklm,
 }
 
-/// 环境变量解析结果。缺变量时给一个不可能命中的占位，
-/// 让后续 `exists()` 直接为假，而不是让整次扫描失败。
+/// Environment variable resolution result. When a variable is missing, give an impossible-to-match placeholder,
+/// so subsequent `exists()` is simply false instead of failing the whole scan.
 pub struct Env {
     pub user_profile: PathBuf,
     pub local_appdata: PathBuf,
@@ -97,7 +97,7 @@ fn var(key: &str) -> Option<PathBuf> {
         .filter(|path| !path.as_os_str().is_empty())
 }
 
-/// 全部可清理目标。
+/// All cleanable targets.
 pub fn targets(env: &Env) -> Vec<TargetSpec> {
     let home = &env.user_profile;
     let local = &env.local_appdata;
@@ -120,7 +120,7 @@ pub fn targets(env: &Env) -> Vec<TargetSpec> {
         });
     };
 
-    // ---------------- 包管理器缓存：删了下次构建重新下载 ----------------
+    // ---------------- Package manager caches: re-downloaded on next build ----------------
     add(
         "nuget",
         "pkg",
@@ -186,7 +186,7 @@ pub fn targets(env: &Env) -> Vec<TargetSpec> {
         local.join("pip").join("cache"),
     );
 
-    // ---------------- 构建缓存：删了下次编译变慢 ----------------
+    // ---------------- Build caches: next compile becomes slower ----------------
     add(
         "go-build",
         "build",
@@ -220,7 +220,7 @@ pub fn targets(env: &Env) -> Vec<TargetSpec> {
         roaming.join("Code").join("Cache"),
     );
 
-    // ---------------- 日志与追踪 ----------------
+    // ---------------- Logs and traces ----------------
     add(
         "wb-logs",
         "logs",
@@ -246,7 +246,7 @@ pub fn targets(env: &Env) -> Vec<TargetSpec> {
         home.join(".workbuddy").join("file-tree-manifests"),
     );
 
-    // ---------------- 需确认：删了会丢数据 ----------------
+    // ---------------- Require confirmation: data will be lost ----------------
     add(
         "android-avd",
         "confirm",
@@ -272,7 +272,7 @@ pub fn targets(env: &Env) -> Vec<TargetSpec> {
         local.join("Programs").join("Ollama"),
     );
 
-    // ---------------- 只展示：禁止删除 ----------------
+    // ---------------- Display only: deletion forbidden ----------------
     add(
         "rustup",
         "readonly",
@@ -322,11 +322,11 @@ pub fn targets(env: &Env) -> Vec<TargetSpec> {
         local.join("Packages"),
     );
 
-    // ---------------- 其它软件缓存：LightC 原有模块没覆盖的部分 ----------------
+    // ---------------- Other software caches: parts not covered by LightC's existing modules ----------------
     //
-    // 这一段是「并集」的补充项：cscan 能扫到、而 LightC 的垃圾清理（18 类
-    // Windows/浏览器缓存）和驱动清理（只扫 System32\drivers）都不管的目录。
-    // 社交专清（微信/QQ）已覆盖的这里不再重复列。
+    // This section supplements the "union": directories cscan can find but neither LightC's junk cleanup (18 types of
+    // Windows/browser caches) nor driver cleanup (only scans System32\drivers) takes care of.
+    // Social app cleanup (WeChat/QQ) already covers these, so they are not listed again here.
     add(
         "nvidia-downloader",
         "other",
@@ -463,7 +463,7 @@ pub fn targets(env: &Env) -> Vec<TargetSpec> {
     list
 }
 
-/// 多版本目录。
+/// Multi-version directories.
 pub fn version_specs(env: &Env) -> Vec<VersionSpec> {
     let local = &env.local_appdata;
     let pf86 = &env.program_files_x86;
@@ -475,8 +475,8 @@ pub fn version_specs(env: &Env) -> Vec<VersionSpec> {
             name: "Microsoft Edge（EdgeCore）",
             base: ms.join("EdgeCore"),
             pattern: VersionPattern::FourPart,
-            // Stable 渠道的 EdgeUpdate 客户端 GUID
-            //（EdgeCore 与主程序同版本发布，共用同一客户端登记）
+            // EdgeUpdate client GUID of the Stable channel
+            // (EdgeCore is released at the same version as the main app and shares the same client registration)
             current_probe: Some(RegProbe {
                 hive: ProbeHive::Hklm,
                 key: r"SOFTWARE\Microsoft\EdgeUpdate\Clients\{56EB18F8-B008-4CBD-B6D2-8C97FE7E9062}",

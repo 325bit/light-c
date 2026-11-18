@@ -1,6 +1,6 @@
 /* ============================================================================
-   单窗口启动屏
-   只动画 transform、opacity 和 background-position，避免启动阶段持续重排。
+   Single-window splash screen
+   Animate only transform, opacity and background-position, avoiding continuous reflow during startup.
    ============================================================================ */
 .splash-screen {
   --splash-base: #f4faf6;
@@ -62,7 +62,7 @@
   display: flex;
   flex-direction: column;
   align-items: center;
-  /* 收紧启动屏信息层级，避免 Logo、标语和平台信息之间出现过大空白。 */
+  /* Tighten the splash-screen information hierarchy, avoiding excessive gaps between the Logo, tagline and platform info. */
   gap: 14px;
   transform: translateZ(0);
 }
@@ -76,7 +76,7 @@
 }
 
 .splash-screen__slogan {
-  /* 显式清除段落默认外边距，确保静态首屏与 React 接管后的布局一致。 */
+  /* Explicitly clear the paragraph's default margins, ensuring the static first screen matches the layout after React takes over. */
   margin: 0;
   color: var(--text-primary);
   font-size: 15px;
@@ -107,20 +107,20 @@
   letter-spacing: 0.03em;
 }
 
-/* 批量操作条：固定在视口底部居中。
-   为什么在底部而不是右侧悬浮 —— 右侧会压住列表里的数字和行内图标，
-   用户必须先折叠操作区才能看清内容；底部横排是「对选中项批量做事」的常规位置，
-   而且横向排布不占用任何数据列。
-   为什么不做折叠 —— 折叠态只剩一个图标，多数用户认不出那里是操作区，
-   这比「挡住内容」更糟。
-   视觉上仍是一块悬浮面板（半透明 + 模糊），和右侧悬浮的区别只有位置。
+/* Batch action bar: fixed at the bottom center of the viewport.
+   Why at the bottom rather than floating on the right — the right side covers numbers and inline icons in the list,
+   users must collapse the action area first to see content; a horizontal bottom row is the conventional place for "batch actions on selected items",
+   and a horizontal layout takes up no data columns.
+   Why not collapsible — the collapsed state leaves only an icon, and most users would not recognize it as the action area,
+   which is worse than "covering content".
+   Visually it is still a floating panel (semi-transparent + blur); the only difference from the right-side float is position.
 
-   ⚠️ 出现时机由调用方控制：模块扫到数据、且有可操作项时才渲染，不要改成常驻。 */
+   ⚠️ Appearance timing is controlled by the caller: render only when a module has scan data and actionable items; do not make it always present. */
 .module-operation-toolbar {
   position: fixed;
   bottom: 20px;
-  /* 水平居中用盒模型（left/right 都为 0 + auto margin + fit-content），
-     不用 translateX(-50%) —— transform 会和动画抢同一个属性，见《项目UI约定》 */
+  /* Center horizontally with the box model (left/right both 0 + auto margin + fit-content),
+     not translateX(-50%) — transform would compete with the animation for the same property, see "Project UI Conventions" */
   left: 0;
   right: 0;
   margin: 0 auto;
@@ -129,22 +129,22 @@
   align-items: center;
   gap: 0.5em;
   width: fit-content;
-  /* 左右各留 24px，窄窗口下按钮换行而不是溢出屏幕 */
+  /* Leave 24px on each side; in narrow windows buttons wrap instead of overflowing the screen */
   max-width: calc(100vw - 48px);
   padding: 0.45em 0.55em;
   border: 1px solid color-mix(in srgb, var(--border-default) 82%, transparent);
   border-radius: 0.9em;
-  /* 不透明度这块踩过两次坑，记录清楚：
-     ① 原来写死 78% —— 太透，内容透上来和按钮叠在一起。
-     ② 改成 color-mix(var(--bg-elevated) 96%) 仍然没用 ✗ ——
-        玻璃主题下 --bg-elevated 本身就是 rgba(255,255,255,0.45)，
-        对一个 45% 的颜色再取 96%，结果还是 ~43%，等于没改。
-     现在用 --glass-toolbar-bg：玻璃态是 78% + 强模糊，非玻璃态回落到 --bg-elevated。
-     底部条下面会滚过内容，靠「高不透明 + 强模糊」挡住，同时保住液态玻璃质感。 */
+  /* Have hit two pitfalls with opacity, record them clearly:
+     ① Originally hard-coded 78% — too transparent, content showed through and overlapped the buttons.
+     ② Changed to color-mix(var(--bg-elevated) 96%) and still no good ✗ —
+        under the glass theme --bg-elevated is itself rgba(255,255,255,0.45),
+        taking 96% of a 45% color still gives ~43%, i.e. no change.
+     Now use --glass-toolbar-bg: 78% + strong blur in glass mode, falling back to --bg-elevated otherwise.
+     Content scrolls beneath the bottom bar; block it with "high opacity + strong blur" while keeping the liquid-glass feel. */
   background: var(--glass-toolbar-bg, var(--bg-elevated));
-  /* 底部悬浮要更"离地"：投影比原来重一档，否则贴在列表末尾时像内容的一部分 */
+  /* The bottom float should feel more "elevated": one notch heavier shadow than before, otherwise when stuck at the end of a list it looks like part of the content */
   box-shadow: 0 12px 32px rgba(15, 23, 42, 0.16);
-  /* 前缀写在标准属性前面（原因见 .driver-toolbar 的注释） */
+  /* Prefix written before standard properties (reason see comment in .driver-toolbar) */
   -webkit-backdrop-filter: blur(20px) saturate(160%);
   backdrop-filter: blur(20px) saturate(160%);
 }
@@ -170,7 +170,7 @@
   transition: background-color 150ms ease, color 150ms ease, opacity 150ms ease;
 }
 
-/* 操作按钮中的功能图标也跟随按钮字号，避免自定义大字号时图标显得过小。 */
+/* Function icons in action buttons also follow the button's font size, avoiding icons looking too small at large custom font sizes. */
 .module-operation-toolbar__button > svg {
   width: 1em;
   height: 1em;
@@ -194,9 +194,9 @@
   background: color-mix(in srgb, var(--color-danger) 16%, transparent);
 }
 
-/* 警告级操作：删除残留这类「不可恢复、但比强制删除轻一档」的按钮用橙色。
-   卸载残留同时有两个删除按钮（普通删除 / 深度清理），若都用红色，
-   用户没法一眼分出哪个更重，所以保留一档橙色来表达层级。 */
+/* Warning-level actions: buttons for things like deleting leftovers that are "irreversible but one notch lighter than force delete" use orange.
+   Uninstall leftovers has two delete buttons (normal delete / deep cleanup); if both were red,
+   users could not tell at a glance which is heavier, so keep one tier of orange to express hierarchy. */
 .module-operation-toolbar__button--warning {
   color: var(--color-warning);
   background: color-mix(in srgb, var(--color-warning) 12%, transparent);

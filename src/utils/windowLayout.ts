@@ -1,11 +1,11 @@
-// 启动时的窗口尺寸协调
-// 侧边栏需要稳定的内容宽度，因此在恢复窗口前先完成最小尺寸约束和必要的扩展。
+// Window size coordination at startup
+// The sidebar needs a stable content width, so complete the minimum-size constraints and necessary expansion before restoring the window.
 
 import { currentMonitor, getCurrentWindow, LogicalSize, PhysicalPosition } from '@tauri-apps/api/window';
 
-// 侧边栏包含完整功能菜单和页面内容，720px 高度可减少底部菜单被截断的情况。
+// The sidebar contains the full function menu and page content; a 720px height reduces bottom-menu truncation.
 export const WINDOW_MIN_SIZE = { width: 1080, height: 720 } as const;
-// 预留少量工作区边距，避免窗口贴边时被任务栏或系统缩放误判为超出屏幕。
+// Reserve a small workspace margin, so a window snapped to the edge is not misjudged as off-screen due to taskbar or system scaling.
 export const WINDOW_WORK_AREA_MARGIN = 24;
 
 interface WindowLayoutSize {
@@ -30,7 +30,7 @@ export function getMaximumLogicalWindowSize(
 ): WindowLayoutSize | null {
   if (!Number.isFinite(scaleFactor) || scaleFactor <= 0) return null;
 
-  // 工作区尺寸来自物理像素，边距也先按物理像素扣除，保证不同 DPI 下规则一致。
+  // Workspace dimensions come from physical pixels, and the margin is also deducted in physical pixels first, keeping rules consistent across DPIs.
   return {
     width: Math.max(1, Math.floor((workArea.width - WINDOW_WORK_AREA_MARGIN) / scaleFactor)),
     height: Math.max(1, Math.floor((workArea.height - WINDOW_WORK_AREA_MARGIN) / scaleFactor)),
@@ -40,7 +40,7 @@ export function getMaximumLogicalWindowSize(
 export function getEffectiveWindowMinimumSize(maximumSize: WindowLayoutSize | null): WindowLayoutSize {
   if (!maximumSize) return WINDOW_MIN_SIZE;
 
-  // 小分辨率设备无法达到设计目标时服从工作区，避免最小尺寸大于屏幕可用空间。
+  // On low-resolution devices that cannot reach the design target, obey the workspace, avoiding a minimum size larger than the available screen.
   return {
     width: Math.max(1, Math.min(WINDOW_MIN_SIZE.width, maximumSize.width)),
     height: Math.max(1, Math.min(WINDOW_MIN_SIZE.height, maximumSize.height)),
@@ -94,7 +94,7 @@ async function expandWindowForSidebar(bounds: WindowBounds, minimumSize: WindowL
   const nextHeight = Math.max(bounds.currentSize.height, minimumSize.height);
   if (nextWidth === bounds.currentSize.width && nextHeight === bounds.currentSize.height) return;
 
-  // 当前窗口如果已经大于工作区，不因布局准备而强制缩小，避免覆盖用户主动设置的尺寸。
+  // If the current window is already larger than the workspace, do not force-shrink it for layout preparation, avoiding overriding a user-set size.
   const safeWidth = bounds.maximumSize
     ? Math.max(bounds.currentSize.width, Math.min(nextWidth, bounds.maximumSize.width))
     : nextWidth;
@@ -107,7 +107,7 @@ async function expandWindowForSidebar(bounds: WindowBounds, minimumSize: WindowL
   const monitor = await currentMonitor();
   if (!monitor) return;
 
-  // 扩展时尽量保持窗口中心不变，并把结果限制在当前显示器工作区内，避免窗口边缘跑出屏幕。
+  // When expanding, keep the window center as unchanged as possible and clamp the result within the current monitor's workspace, avoiding window edges going off-screen.
   const nextOuterWidth = bounds.outerSize.width + (safeWidth - bounds.currentSize.width) * scaleFactor;
   const nextOuterHeight = bounds.outerSize.height + (safeHeight - bounds.currentSize.height) * scaleFactor;
   const centeredX = bounds.outerPosition.x - (nextOuterWidth - bounds.outerSize.width) / 2;
@@ -116,7 +116,7 @@ async function expandWindowForSidebar(bounds: WindowBounds, minimumSize: WindowL
   const workAreaTop = monitor.workArea.position.y;
   const workAreaRight = workAreaLeft + monitor.workArea.size.width;
   const workAreaBottom = workAreaTop + monitor.workArea.size.height;
-  // 极端情况下旧窗口本来就大于工作区，此时保留原位置，不制造反向跳动。
+  // In extreme cases where the old window was already larger than the workspace, keep the original position and do not create a reverse jump.
   const nextX = nextOuterWidth <= monitor.workArea.size.width
     ? clamp(centeredX, workAreaLeft, workAreaRight - nextOuterWidth)
     : bounds.outerPosition.x;
@@ -132,7 +132,7 @@ export async function prepareWindowForSavedLayout(): Promise<void> {
   const bounds = await readWindowBounds();
   const minimumSize = getEffectiveWindowMinimumSize(bounds.maximumSize);
 
-  // 先更新最小尺寸，再扩展当前窗口，保证用户不能立即把窗口拖回不适合的宽度。
+  // Update the minimum size first, then expand the current window, so users cannot immediately drag it back to an unsuitable width.
   await setWindowMinimumSize(bounds.maximumSize);
   await expandWindowForSidebar(bounds, minimumSize);
 }

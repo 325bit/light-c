@@ -17,7 +17,7 @@ impl ModelDetector for LmStudioDetector {
 
         if let Some(home_dir) = user_home_dir() {
             candidate_roots.push(home_dir.join(".lmstudio").join("models"));
-            // 0.2.x 及更早版本的默认模型目录，升级后旧目录里的模型仍然占着空间。
+            // Default model directory for 0.2.x and earlier; after upgrading, models in the old directory still occupy space.
             candidate_roots.push(
                 home_dir
                     .join(".cache")

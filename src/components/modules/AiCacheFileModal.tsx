@@ -1,11 +1,11 @@
 /**
- * 缓存目录的明细弹窗。
+ * Detail modal for a cache directory.
  *
- * 为什么单独做一个而不是复用社交专清那个：两者的数据形状不同（那边是带风险等级的
- * 社交文件，这边只是一个路径 + 大小），硬塞进去要给它加一堆可选字段。
+ * Why build a separate one instead of reusing the social cleanup's: the data shapes differ (there, files carry risk levels
+ * for social files; here it is just a path + size), so forcing it in would require adding many optional fields.
  *
- * 为什么用虚拟滚动：单个缓存目录可能有上万个文件（WorkBuddy 的 logs 就上千），
- * 一次性渲染会让弹窗卡死。这里按行虚拟化，只渲染视口内的十几行。
+ * Why virtual scrolling: a single cache directory may contain tens of thousands of files (WorkBuddy's logs alone have over a thousand),
+ * rendering them all at once would freeze the modal. Virtualize by row, rendering only the dozen or so rows in the viewport.
  */
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
@@ -22,7 +22,7 @@ import { formatDate, formatSize } from '../../utils/format';
 
 interface AiCacheFileModalProps {
   isOpen: boolean;
-  /** 要展开的缓存目录，null 表示关闭 */
+  /** Cache directory to expand; null means closed */
   dirPath: string | null;
   dirName: string;
   onClose: () => void;
@@ -30,8 +30,8 @@ interface AiCacheFileModalProps {
 
 export function AiCacheFileModal({ isOpen, dirPath, dirName, onClose }: AiCacheFileModalProps) {
   const { t } = useTranslation('modules');
-  // 后端可能因为目录过大而截断（`truncated`），截断时必须告诉用户，
-  // 否则"文件数 × 大小"和目录实际占用对不上，会被当成统计错误。
+  // The backend may truncate (`truncated`) when a directory is too large; when truncated, the user must be told,
+  // otherwise "file count x size" would not match the directory's actual usage and would be mistaken for a statistics error.
   const [listing, setListing] = useState<AiCacheFileList>({ files: [], truncated: false });
   const files = listing.files;
   const [loading, setLoading] = useState(false);
@@ -40,14 +40,14 @@ export function AiCacheFileModal({ isOpen, dirPath, dirName, onClose }: AiCacheF
   const scrollRef = useRef<HTMLDivElement>(null);
 
   /*
-    排序口径与「查看全部文件」目录树弹窗完全一致：名称自然序、大小按字节、
-    时间按 Unix 秒；没有时间戳的条目无论升降序都垫底，不会冒充"最新"。
-    这里没有目录层级，所以直接排数组，不用建树。
+    Sorting criteria are exactly the same as the "view all files" directory tree modal: natural order for names, bytes for sizes,
+    Unix seconds for time; entries without a timestamp stay at the bottom in both ascending and descending order, never posing as "newest".
+    There is no directory hierarchy here, so sort the array directly without building a tree.
   */
   const sortedFiles = useMemo(
     () => sortFileList(files, sort, {
-      // 按名称排的是文件名，不是整条路径：同一目录下文件名的前缀都一样，
-      // 拿全路径去比等于没排。取最后一段。
+      // Sorting by name uses the filename, not the full path: within one directory all filenames share the same prefix,
+      // comparing full paths would be no sort at all. Take the last segment.
       getName: (file) => {
         const separator = Math.max(file.path.lastIndexOf('\\'), file.path.lastIndexOf('/'));
         return separator >= 0 ? file.path.slice(separator + 1) : file.path;
@@ -76,7 +76,7 @@ export function AiCacheFileModal({ isOpen, dirPath, dirName, onClose }: AiCacheF
       .finally(() => {
         if (!cancelled) setLoading(false);
       });
-    // 弹窗关闭或换目录时丢弃在途结果，避免旧数据覆盖新目录
+    // Discard in-flight results when the modal closes or the directory changes, to avoid stale data overwriting the new directory
     return () => {
       cancelled = true;
     };
@@ -90,24 +90,24 @@ export function AiCacheFileModal({ isOpen, dirPath, dirName, onClose }: AiCacheF
   });
 
   /**
-   * 数据到位后强制重测一次。
+   * Force a re-measure once data is in place.
    *
-   * 弹窗刚挂载时面板还在做入场缩放，滚动容器测出来的高度是 0，
-   * virtualizer 按 0 高度算可见区间 → 第一帧一条都不渲染，表现为"打开是空的、
-   * 滚一下才出来"。等文件列表变了重新测量即可。
+   * When the modal first mounts, the panel is still doing its entrance scale, so the scroll container measures 0 height,
+   * and the virtualizer computes the visible range from 0 height -> rendering no rows on the first frame, appearing as "opens empty,
+   * shows content only after scrolling". Just re-measure when the file list changes.
    */
   useEffect(() => {
     virtualizer.measure();
-    // 只依赖排序后的列表：virtualizer 每次渲染都是新对象，放进依赖会无限重渲染
+    // Depend only on the sorted list: the virtualizer is a new object each render, including it would cause infinite re-renders
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sortedFiles]);
 
   const totalSize = files.reduce((sum, file) => sum + file.size, 0);
 
   /**
-   * ⚠️ 必须 portal 到 body。
-   * 模块容器带 `transform`（入场动画），`position: fixed` 会退化成 `absolute` ——
-   * 后果是遮罩只盖住模块区域、弹窗也不在视口中心。社交专清的明细弹窗同样这么做。
+   * ⚠️ Must portal to body.
+   * The module container has a `transform` (entrance animation), so `position: fixed` degrades to `absolute` -
+   * the overlay would cover only the module area and the modal would not be centered. The social cleanup detail modal does the same.
    */
   return createPortal(
     <AnimatePresence>
@@ -143,8 +143,8 @@ export function AiCacheFileModal({ isOpen, dirPath, dirName, onClose }: AiCacheF
             </p>
           </div>
           <div className="flex shrink-0 items-center gap-2">
-            {/* 排序控件与其他「查看全部文件」弹窗同一套：名称 / 大小 / 修改时间，
-                再点同一个键切换升降序。列头不单独做可点击排序，避免两处口径打架 */}
+            {/* The sort control is the same set as other "view all files" modals: name / size / modified time,
+                clicking the same key again toggles ascending/descending. Column headers are not separately sortable, to avoid two conflicting sort mechanisms */}
             <FileSortControl sort={sort} onSortChange={setSort} />
             <button
               type="button"
@@ -157,16 +157,16 @@ export function AiCacheFileModal({ isOpen, dirPath, dirName, onClose }: AiCacheF
           </div>
         </div>
 
-        {/* 表头行：列宽与数据行对齐，序号列居中 */}
+        {/* Header row: column widths align with data rows, the index column is centered */}
         <div className="flex shrink-0 items-center gap-4 border-b border-[var(--border-color)] bg-[var(--bg-hover)] px-6 py-2 text-xs font-medium text-[var(--text-muted)]">
           <span className="w-10 shrink-0 text-center">#</span>
           <span className="flex-1">{t('aiTools.columnPath')}</span>
-          {/* 按时间排序时才出现时间列：平时不占宽度，排序时才有依据可看 */}
+          {/* The time column appears only when sorting by time: normally it takes no width, and provides a basis when sorting */}
           {sort.key === 'time' && (
             <span className="w-24 shrink-0 text-right">{t('aiTools.columnTime')}</span>
           )}
           <span className="w-24 shrink-0 text-right">{t('aiTools.columnSize')}</span>
-          {/* 占位：与数据行的「打开文件夹」按钮对齐 */}
+          {/* Spacer: aligns with the "open folder" button in data rows */}
           <span className="w-5 shrink-0" />
         </div>
 
@@ -228,7 +228,7 @@ export function AiCacheFileModal({ isOpen, dirPath, dirName, onClose }: AiCacheF
           )}
         </div>
 
-        {/* 底部信息条：左侧总数，右侧收口按钮 */}
+        {/* Bottom info bar: total count on the left, close button on the right */}
         <div className="flex shrink-0 items-center justify-between border-t border-[var(--border-color)] px-6 py-3 text-xs text-[var(--text-muted)]">
           <span>
             {t('aiTools.fileSummary', {

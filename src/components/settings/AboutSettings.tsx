@@ -1,5 +1,5 @@
 // ============================================================================
-// 关于页面
+// About page
 // ============================================================================
 
 import { useEffect, useState } from 'react';
@@ -20,17 +20,17 @@ export function AboutSettings() {
   const [loadingSystemInfo, setLoadingSystemInfo] = useState(true);
   const [distributionChannel, setDistributionChannel] = useState<DistributionChannel>('installer');
 
-  // 获取应用版本号和系统信息
+  // Get the app version and system information
   useEffect(() => {
     getVersion().then(setAppVersion).catch(() => setAppVersion(i18n.t('unknown', { ns: 'common' })));
 
-    // 获取系统信息
+    // Get system information
     getSystemInfo()
       .then(setSystemInfo)
       .catch(err => console.error('获取系统信息失败:', err))
       .finally(() => setLoadingSystemInfo(false));
 
-    // 便携版使用 zip 覆盖更新，关于页需要把入口文案改成作者渠道下载，避免误导用户走安装器更新。
+    // The portable build updates by overwriting with a zip, so the About page must change the entry text to downloading from the author's channel, to avoid misleading users into the installer update path.
     getDistributionChannel()
       .then(setDistributionChannel)
       .catch(err => console.error('获取发行渠道失败:', err));
@@ -45,9 +45,9 @@ export function AboutSettings() {
         </h4>
         <div className="glass-block bg-[var(--bg-main)] rounded-2xl p-5">
           <div className="flex items-center gap-4">
-            {/* 和标题栏、欢迎弹窗统一用项目 logo：之前这里是绿底 + C: 文字，
-                rounded-2xl 的圆角（16/64 = 25%）比 logo 自身的 18.75% 更圆。
-                logo 自带底色与圆角，容器只控制尺寸。 */}
+            {/* Use the project logo consistently with the title bar and welcome modal: before, this was a green background + "C:" text,
+                and rounded-2xl's radius (16/64 = 25%) was rounder than the logo's own 18.75%.
+                The logo already has its own background and rounded corners, so the container only controls size. */}
             <img src="/logo.svg" alt="" aria-hidden="true" className="h-16 w-16 shrink-0 object-contain" />
             <div>
               <h3 className="text-lg font-semibold text-[var(--text-primary)]">LightC</h3>
@@ -57,7 +57,7 @@ export function AboutSettings() {
               </p>
             </div>
           </div>
-          {/* 官网独立成轻量入口，既位于应用信息之后，又不会抢占应用版本和更新提示的视觉焦点。 */}
+          {/* The official website is its own lightweight entry, placed after the app info without stealing the visual focus from the app version and update notice. */}
           <div className="mt-4 border-t border-[var(--border-color)] pt-3">
             <a
               href={LIGHTC_OFFICIAL_WEBSITE_URL}
@@ -75,16 +75,16 @@ export function AboutSettings() {
               </span>
             </a>
           </div>
-          {/* 检查更新按钮。
-              与「安全与校验」里的「校验文件完整性」保持一致：整宽单行动作按钮用实心品牌绿。
-              原来是淡绿底 + 绿字，同一个设置页里两个同级别操作长得不一样，
-              看起来像一个是主操作、一个是未启用的次要操作。 */}
+          {/* Check for updates button.
+              Consistent with "Verify File Integrity" in Security & Validation: a full-width single-line action button uses solid brand green.
+              Before, it was a pale green background + green text, so two same-level actions in one settings page looked different,
+              making one look like the primary action and the other like a disabled secondary action. */}
           <button
             onClick={() => window.dispatchEvent(new CustomEvent('lightc:check-update'))}
             className="mt-3 w-full flex items-center justify-center gap-2 px-4 py-2.5 text-sm font-medium text-white bg-[var(--brand-green)] rounded-xl hover:opacity-90 transition-colors"
           >
             <RefreshCw className="w-4 h-4" />
-            {/* 两个发行版共用同一个入口文案：点下去都是"看有没有新版本"，只是便携版走手动替换引导。 */}
+            {/* Both distributions share the same entry text: clicking means "see if there is a new version", only the portable build goes through manual-replacement guidance. */}
             {t('about.checkUpdates')}
           </button>
           <p className="text-xs text-[var(--text-faint)] mt-3">
@@ -95,7 +95,7 @@ export function AboutSettings() {
         </div>
       </div>
 
-      {/* 系统信息 */}
+      {/* System information */}
       <div className="space-y-3">
         <h4 className="text-xs font-medium text-[var(--text-muted)] uppercase tracking-wider flex items-center gap-2">
           <MonitorIcon className="w-3.5 h-3.5" />
@@ -198,7 +198,7 @@ export function AboutSettings() {
         <div className="glass-block bg-[var(--bg-main)] rounded-2xl p-5 space-y-3">
           <div className="flex items-center justify-between">
             <span className="text-sm text-[var(--text-secondary)]">{t('about.author')}</span>
-            {/* 作者个人主页，样式和下面的 GitHub / Source Available 保持一致 */}
+            {/* Author's personal homepage, styled consistently with the GitHub / Source Available links below */}
             <a
               href="https://www.evan666.cc/"
               target="_blank"
@@ -248,7 +248,7 @@ export function AboutSettings() {
         </div>
       </div>
 
-      {/* 更新日志 */}
+      {/* Changelog */}
       <div className="space-y-3">
         <h4 className="text-xs font-medium text-[var(--text-muted)] uppercase tracking-wider flex items-center gap-2">
           <ClipboardList className="w-3.5 h-3.5" />
@@ -284,7 +284,7 @@ export function AboutSettings() {
   );
 }
 
-// 更多工具推荐放在关于页底部，用轻量入口承接同作者的其他实用工具，不打断主设置流程。
+// More tool recommendations are placed at the bottom of the About page, using lightweight entries to carry other useful tools by the same author without interrupting the main settings flow.
 function MoreToolsSection() {
   const { t } = useTranslation('ui');
   const tools = [
@@ -293,7 +293,7 @@ function MoreToolsSection() {
       icon: viapIcon,
       description: t('toolViapDesc'),
       downloadUrl: 'https://pan.quark.cn/s/4761ee4ba698',
-      // 官网详情页：介绍比弹窗里这一句话完整得多
+      // Official website detail page: the introduction is far more complete than the one-liner in the modal
       detailUrl: 'https://viap.evan666.cc/',
     },
     {
@@ -320,14 +320,14 @@ function MoreToolsSection() {
           >
             <div className="flex items-center mb-3">
               <div className="w-8 h-8 rounded-lg flex items-center justify-center">
-                {/* 使用项目原始图标，避免推荐卡片和 LightC 自身功能图标混淆。 */}
+                {/* Use the project's original icon, to avoid confusion between the recommendation card and LightC's own feature icons. */}
                 <img src={icon} alt={`${name} ${t('toolIcon')}`} className="w-5 h-5 object-contain border border-[var(--border-color)]" />
               </div>
               <h5 className="text-sm font-semibold text-[var(--text-primary)]">{name}</h5>
             </div>
             <p className="text-sm text-[var(--text-secondary)] leading-relaxed">{description}</p>
             <div className="mt-4 flex flex-wrap gap-2">
-              {/* 详情放在下载前面：先了解、再下载，读起来是自然顺序 */}
+              {/* Put details before download: learn first, then download reads as a natural order */}
               <a
                 href={detailUrl}
                 target="_blank"

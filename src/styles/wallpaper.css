@@ -1,26 +1,26 @@
 /* ============================================================================
-   背景壁纸
-   壁纸铺在 body::before（z-index:-1），遮罩与图片叠成两层背景：
-   第一层是主题遮罩（保文字对比度），第二层才是图片。
-   ⚠️ 必须排在 glass.css 之后：玻璃态也用 body::before 铺渐变，
-   这里靠同名选择器的级联顺序覆盖它，而不是靠 !important。
+   Background wallpaper
+   The wallpaper is laid on body::before (z-index:-1), with the mask and image layered into two background layers:
+   the first is the theme mask (preserving text contrast), the second is the image.
+   ⚠️ Must be placed after glass.css: glass mode also uses body::before for its gradient,
+   here we override it via cascade order of the same selector, not via !important.
    ============================================================================ */
 
-/* 有壁纸时主体容器透明，否则非玻璃态的纯色底色会把壁纸整块盖住。
-   只作用于 app 根和 main，模块内部自己的局部底色不动。 */
+/* When a wallpaper is present the main container is transparent, otherwise the non-glass solid base color would cover the whole wallpaper.
+   Only applies to the app root and main, module-internal local base colors are untouched. */
 html.has-wallpaper [data-wallpaper-surface] {
   background-color: transparent;
 }
 
-/* contain 模式露出的留白要跟主题走。index.html 的启动屏给 body 写了内联背景色，
-   只在壁纸激活时用 !important 覆盖——这是唯一能盖过内联样式的办法。 */
+/* Whitespace exposed in contain mode should follow the theme. index.html's splash screen writes an inline background color on body,
+   override it with !important only while the wallpaper is active — this is the only way to beat an inline style. */
 html.has-wallpaper body {
   background-color: var(--bg-base) !important;
 }
 
-/* 遮罩：深浅各读自己的强度。注入的是完整 linear-gradient（image 类型），
-   ⚠️ 不能注入裸 rgba()：实测 background-image 用 var() 展开 rgba 会让整条声明失效，
-   遮罩和图片一起消失、只剩纯色背景。2026-11-17 踩过，别改回去。 */
+/* Mask: light and dark each read their own strength. A complete linear-gradient (image type) is injected,
+   ⚠️ do not inject a bare rgba(): in testing, using var() to expand rgba in background-image invalidates the whole declaration,
+   making the mask and image disappear together, leaving only a solid background. Hit on 2026-11-17, do not revert. */
 :root {
   --wallpaper-scrim: var(--wallpaper-scrim-light, linear-gradient(rgba(255, 255, 255, 0.55), rgba(255, 255, 255, 0.55)));
 }
@@ -28,9 +28,9 @@ html.has-wallpaper body {
   --wallpaper-scrim: var(--wallpaper-scrim-dark, linear-gradient(rgba(0, 0, 0, 0.5), rgba(0, 0, 0, 0.5)));
 }
 
-/* 壁纸层：遮罩在上、图片在下。contain 模式下露出的空白由 body 底色兜住。
-   ⚠️ glass.css 里 `html.dark.glass body::before` 特异性更高，必须再写一条带 .glass 的
-   版本压过去，否则深色玻璃态下仍显示原来的灰渐变、看不到壁纸。 */
+/* Wallpaper layer: mask on top, image below. In contain mode the exposed whitespace is backed by the body base color.
+   ⚠️ In glass.css `html.dark.glass body::before` has higher specificity, so an additional
+   version with .glass must be written to override it, otherwise dark glass mode still shows the old gray gradient and no wallpaper. */
 html.has-wallpaper body::before,
 html.glass.has-wallpaper body::before,
 html.dark.glass.has-wallpaper body::before {

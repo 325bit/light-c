@@ -1,11 +1,11 @@
 // ============================================================================
-// 引擎选择器 — 根据运行环境和文件系统类型自动选择最佳扫描引擎
+// Engine selector — automatically picks the best scanning engine based on runtime environment and filesystem type
 //
-// 决策树：
-//   is_elevated() && is_ntfs(drive) → MFT 直读（秒级全盘）
-//   否则                            → jwalk 降级（传统遍历）
+// Decision tree:
+//   is_elevated() && is_ntfs(drive) → direct MFT read (full disk in seconds)
+//   otherwise                       → jwalk fallback (traditional traversal)
 //
-// MFT 失败时自动回退到 jwalk，确保功能始终可用
+// Automatically falls back to jwalk when MFT fails, so the feature always works
 // ============================================================================
 
 use std::collections::HashMap;
@@ -18,17 +18,17 @@ use crate::scanner::hotspot::FolderStats;
 
 use super::mft_scanner::MftScanProgress;
 
-/// 扫描后端类型（用于前端展示当前使用的引擎）
+/// Scan backend type (used by the frontend to show the engine currently in use)
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum HotspotBackend {
-    /// MFT 直读（管理员 + NTFS）
+    /// Direct MFT read (admin + NTFS)
     Mft,
-    /// jwalk 遍历（兜底方案）
+    /// jwalk traversal (fallback)
     Walkdir,
 }
 
 impl HotspotBackend {
-    /// 前端展示用标签
+    /// Label for frontend display
     pub fn label(&self) -> &'static str {
         match self {
             HotspotBackend::Mft => "MFT 直读",
@@ -37,7 +37,7 @@ impl HotspotBackend {
     }
 }
 
-/// 检测当前环境应使用的后端
+/// Detect the backend to use in the current environment
 pub fn detect_backend(drive_letter: char) -> HotspotBackend {
     #[cfg(windows)]
     {
@@ -60,13 +60,13 @@ pub fn detect_backend(drive_letter: char) -> HotspotBackend {
     HotspotBackend::Walkdir
 }
 
-/// 扫描指定驱动器，自动选择引擎
+/// Scan the given drive, automatically selecting the engine
 ///
-/// MFT 失败时自动降级到 jwalk，确保功能可用。
+/// On MFT failure, automatically degrades to jwalk to keep the feature working.
 ///
-/// # 返回
-/// - `HashMap<PathBuf, FolderStats>` — 目录全路径 → 聚合统计
-/// - `HotspotBackend` — 实际使用的引擎类型
+/// # Returns
+/// - `HashMap<PathBuf, FolderStats>` — full directory path → aggregated stats
+/// - `HotspotBackend` — the engine actually used
 pub fn scan_full_drive(
     drive_letter: char,
     root: &Path,
@@ -92,7 +92,7 @@ pub fn scan_full_drive(
                         max_depth,
                         track_modified,
                         cancel_flag,
-                        true, // 降级时忽略系统目录以保持性能
+                        true, // ignore system directories when falling back, to keep performance
                     );
                     (map, HotspotBackend::Walkdir)
                 }

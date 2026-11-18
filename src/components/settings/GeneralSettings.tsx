@@ -1,5 +1,5 @@
 // ============================================================================
-// 通用设置页面
+// General settings page
 // ============================================================================
 
 import { useEffect, useState } from 'react';
@@ -25,7 +25,7 @@ const LANGUAGE_OPTIONS: { value: Language; labelKey: string }[] = [
 
 export function GeneralSettings({ mode, setMode }: { mode: ThemeMode; setMode: (mode: ThemeMode) => void }) {
   const { t } = useTranslation('settings');
-  // 玻璃开关直接从上下文取，避免再往 SettingsModal 传一层 props
+  // Get the glass toggle directly from context to avoid passing another level of props into SettingsModal
   const { glass, setGlass, theme: appliedTheme } = useTheme();
   const wallpaper = useWallpaper();
   const { t: commonT } = useTranslation('common');
@@ -35,7 +35,7 @@ export function GeneralSettings({ mode, setMode }: { mode: ThemeMode; setMode: (
   const [dataDir, setDataDir] = useState('');
   const [storageInfo, setStorageInfo] = useState<StorageLocationInfo | null>(null);
   const [writeDiagnostic, setWriteDiagnostic] = useState<StorageWriteDiagnostic | null>(null);
-  /** 界面数据目录：只有便携版有值；提前取成字符串，避免可选链在回调里丢掉窄化。 */
+  /** UI data directory: only set for the portable build; extract to a string up front so optional chaining does not lose narrowing in callbacks. */
   const webviewDataDir = storageInfo?.webview_data_directory ?? '';
   const [isChangingDir, setIsChangingDir] = useState(false);
   const [isMigratingLegacyData, setIsMigratingLegacyData] = useState(false);
@@ -45,7 +45,7 @@ export function GeneralSettings({ mode, setMode }: { mode: ThemeMode; setMode: (
   const [selectedClearItemIds, setSelectedClearItemIds] = useState<string[]>([]);
   const [customFontSizeDraft, setCustomFontSizeDraft] = useState(String(customFontSize));
 
-  /** 壁纸操作统一在这里给反馈：选图、安装、清除都会失败（取消选图除外）。 */
+  /** All wallpaper operations give feedback here: choosing, installing, and removing can all fail (except canceling the picker). */
   const handleChooseWallpaper = async () => {
     try {
       await wallpaper.choose();
@@ -63,9 +63,9 @@ export function GeneralSettings({ mode, setMode }: { mode: ThemeMode; setMode: (
   };
 
   /**
-   * 界面上暴露「壁纸透明度」：数值越大图片越清晰，符合直觉。
-   * 内部存的是遮罩浓度（越大越糊），两者互补，所以读写时都要 100 - x 换算。
-   * 存储格式不动，老配置照常兼容。
+   * Expose "wallpaper opacity" in the UI: a higher value makes the image clearer, which matches intuition.
+   * Internally it stores dim intensity (higher is blurrier); the two are complementary, so both read and write need a 100 - x conversion.
+   * The storage format is unchanged, so old configs remain compatible.
    */
   const activeDim = appliedTheme === 'dark' ? wallpaper.dimDark : wallpaper.dimLight;
   const wallpaperOpacity = 100 - activeDim;
@@ -79,7 +79,7 @@ export function GeneralSettings({ mode, setMode }: { mode: ThemeMode; setMode: (
     setCustomFontSizeDraft(String(customFontSize));
   }, [customFontSize]);
 
-  // 后端统一返回发行模式和路径，避免前端重复推断便携版目录。
+  // The backend returns the distribution mode and paths uniformly, avoiding frontend re-inference of portable directories.
   useEffect(() => {
     getStorageLocationInfo()
       .then((info) => {
@@ -88,8 +88,8 @@ export function GeneralSettings({ mode, setMode }: { mode: ThemeMode; setMode: (
       })
       .catch(() => setDataDir(commonT('unknown')));
 
-    // 便携包被解压到不可写目录时，需要明确告诉用户数据临时落在 AppData，
-    // 否则用户会以为便携版又去写 C 盘了。
+    // When the portable package is extracted into a non-writable directory, tell the user explicitly that data temporarily goes to AppData,
+    // otherwise the user would think the portable build is writing to the C: drive again.
     getStorageWriteDiagnostic()
       .then(setWriteDiagnostic)
       .catch((error) => console.error('读取便携目录写入诊断失败:', error));
@@ -115,7 +115,7 @@ export function GeneralSettings({ mode, setMode }: { mode: ThemeMode; setMode: (
     }
   };
 
-  // 更改数据目录
+  // Change the data directory
   const handleChangeDataDir = async () => {
     try {
       setIsChangingDir(true);
@@ -127,7 +127,7 @@ export function GeneralSettings({ mode, setMode }: { mode: ThemeMode; setMode: (
         setStorageInfo(info);
         setDataDir(info.current_data_directory);
       } catch {
-        // 设置命令已经成功时，状态刷新失败不能误报为迁移失败。
+        // When the set command has already succeeded, a state-refresh failure must not be misreported as a migration failure.
         setDataDir(folder);
       }
       showToast({
@@ -169,13 +169,13 @@ export function GeneralSettings({ mode, setMode }: { mode: ThemeMode; setMode: (
     }
   };
 
-  // 清空本地数据
+  // Clear local data
   const handleClearData = async () => {
     try {
       setIsClearing(true);
       const items = await listClearableDataItems();
       setClearableItems(items);
-      // 驱动备份文件通常较大且承担误删后的手动恢复作用，必须由用户单独确认清理。
+      // Driver backup files are usually large and serve manual recovery after accidental deletion; cleaning them requires separate user confirmation.
       setSelectedClearItemIds(items
         .filter(item => item.id !== 'driver_backups' && item.exists && item.file_count > 0)
         .map(item => item.id));
@@ -202,8 +202,8 @@ export function GeneralSettings({ mode, setMode }: { mode: ThemeMode; setMode: (
       const result = await clearSelectedLocalData(selectedClearItemIds);
       setClearDialogOpen(false);
 
-      // 单项失败不再中断整批，所以结果要分三种情况说清楚：
-      // 全成功只报释放量；部分失败补上「哪项没删掉、为什么」；全失败直接报错。
+      // A single-item failure no longer aborts the whole batch, so report the result in three cases:
+      // all success: report only the freed amount; partial failure: add "which item was not deleted and why"; total failure: report an error directly.
       const failedCount = result.failed_items.length;
       const firstFailureReason = result.failed_items[0]?.reason ?? '';
 
@@ -250,20 +250,20 @@ export function GeneralSettings({ mode, setMode }: { mode: ThemeMode; setMode: (
 
   return (
     <div className="space-y-6">
-      {/* 常规设置 */}
+      {/* General settings */}
       <div className="space-y-3">
         <h4 className="text-xs font-medium text-[var(--text-muted)] uppercase tracking-wider flex items-center gap-2">
           <MonitorCog className="w-3.5 h-3.5" />
           {t('sections.general')}
         </h4>
         <div className="glass-block bg-[var(--bg-main)] rounded-2xl p-5 space-y-5">
-          {/* 主题模式 */}
+          {/* Theme mode */}
           <div className="flex items-center justify-between">
             <div>
               <p className="text-sm font-medium text-[var(--text-primary)]">{t('theme.label')}</p>
               <p className="text-xs text-[var(--text-muted)] mt-1">{t('theme.desc')}</p>
             </div>
-            {/* 分段控制器 - 仅显示图标 */}
+            {/* Segmented control - icons only */}
             <div className="flex items-center gap-1 p-1 bg-[var(--bg-card)] rounded-xl border border-[var(--border-color)]">
               {THEME_OPTIONS.map(({ mode: m, label, icon: Icon }) => (
                 <button
@@ -281,12 +281,12 @@ export function GeneralSettings({ mode, setMode }: { mode: ThemeMode; setMode: (
             </div>
           </div>
 
-          {/* 液态玻璃：默认关闭。开启后顶层表面会持续占用 GPU 合成资源，
-              所以把代价直接写在界面上，而不是等用户发现卡顿 */}
+          {/* Liquid glass: off by default. When enabled, the top surface continuously consumes GPU compositing resources,
+              so state the cost directly in the UI rather than waiting for the user to notice lag */}
           <div className="flex items-center justify-between gap-4 border-t border-[var(--border-color)] pt-4">
             <div className="min-w-0">
-              {/* Beta 标记用 ASCII 括号：这是唯一一处硬编码后缀，
-                  用全角「（）」在西文界面里会显得是中文标点混入 */}
+              {/* Use ASCII parentheses for the Beta marker: this is the only hardcoded suffix,
+                  using fullwidth brackets would look like Chinese punctuation mixed into the Western UI */}
               <p className="text-sm font-medium text-[var(--text-primary)]">{t('theme.glassLabel')} (Beta)</p>
               <p className="mt-1 text-xs text-[var(--text-muted)]">{t('theme.glassDesc')}</p>
               <p className="mt-1 text-xs text-[var(--color-warning)]">{t('theme.glassWarning')}</p>
@@ -298,7 +298,7 @@ export function GeneralSettings({ mode, setMode }: { mode: ThemeMode; setMode: (
             />
           </div>
 
-          {/* 背景壁纸：图片存数据目录，这里只放开关和适配选项。 */}
+          {/* Background wallpaper: the image is stored in the data directory; only the toggle and fit options live here. */}
           <div className="border-t border-[var(--border-color)] pt-4 space-y-3">
             <div className="flex items-center justify-between gap-3">
               <div className="min-w-0">
@@ -326,7 +326,7 @@ export function GeneralSettings({ mode, setMode }: { mode: ThemeMode; setMode: (
               </div>
             </div>
 
-            {/* 没有壁纸时隐藏细项，避免一屏出现一堆用不上的控件。 */}
+            {/* Hide the detailed options when no wallpaper is set, to avoid a screen full of unusable controls. */}
             {wallpaper.active && (
               <div className="space-y-3 pl-5 border-l-2 border-[var(--border-muted)]">
                 <div className="flex items-center justify-between gap-3">
@@ -343,7 +343,7 @@ export function GeneralSettings({ mode, setMode }: { mode: ThemeMode; setMode: (
                   />
                 </div>
 
-                {/* 透明度只显示当前主题那一档，深浅各存各的，切换主题不用重调。 */}
+                {/* Show only the opacity for the current theme; light and dark are stored separately so switching themes needs no re-adjustment. */}
                 <div className="flex items-center justify-between gap-4">
                   <p className="text-xs text-[var(--text-secondary)]">{t('wallpaper.opacityLabel')}</p>
                   <div className="flex items-center gap-2">
@@ -365,7 +365,7 @@ export function GeneralSettings({ mode, setMode }: { mode: ThemeMode; setMode: (
             )}
           </div>
 
-          {/* 使用通用下拉选择器，语言名称长度变化时不会撑开设置页布局。 */}
+          {/* Use the common dropdown so varying language-name lengths do not stretch the settings page layout. */}
           <div className="flex items-center justify-between border-t border-[var(--border-color)] pt-4">
             <div>
               <p className="text-sm font-medium text-[var(--text-primary)]">{t('language.label')}</p>
@@ -382,7 +382,7 @@ export function GeneralSettings({ mode, setMode }: { mode: ThemeMode; setMode: (
             />
           </div>
 
-          {/* 字体大小 */}
+          {/* Font size */}
           <div className="pt-4 border-t border-[var(--border-color)]">
             <div className="flex flex-wrap items-center gap-3">
             <div className="min-w-[10.0rem] flex-1">
@@ -392,7 +392,7 @@ export function GeneralSettings({ mode, setMode }: { mode: ThemeMode; setMode: (
               </p>
               <p className="text-xs text-[var(--text-muted)] mt-1">{t('fontSize.desc')}</p>
             </div>
-            {/* 字号分段控制器 */}
+            {/* Font size segmented control */}
             <div className="flex max-w-full shrink-0 flex-wrap items-center gap-1 p-1 bg-[var(--bg-card)] rounded-xl border border-[var(--border-color)]">
               {FONT_SIZE_OPTIONS.map(({ level, label }) => (
                 <button
@@ -412,7 +412,7 @@ export function GeneralSettings({ mode, setMode }: { mode: ThemeMode; setMode: (
             </div>
             </div>
 
-            {/* 自定义字号单独展开，避免未选择时占用通用设置空间。 */}
+            {/* Expand custom font size separately so it does not take up space when unselected. */}
             <AnimatePresence initial={false}>
               {fontSizeLevel === 'custom' && (
                 <motion.div
@@ -456,7 +456,7 @@ export function GeneralSettings({ mode, setMode }: { mode: ThemeMode; setMode: (
 
           <SearchEngineSettings />
 
-          {/* 清理日志保留 */}
+          {/* Cleanup log retention */}
           <div className="flex items-center justify-between pt-4 border-t border-[var(--border-color)]">
             <div>
               <p className="text-sm font-medium text-[var(--text-primary)] flex items-center gap-1.5">
@@ -485,14 +485,14 @@ export function GeneralSettings({ mode, setMode }: { mode: ThemeMode; setMode: (
         </div>
       </div>
 
-      {/* 数据管理 */}
+      {/* Data management */}
       <div className="space-y-3 pt-2 border-t border-[var(--border-color)]">
         <h4 className="text-xs font-medium text-[var(--text-muted)] uppercase tracking-wider flex items-center gap-2">
           <History className="w-3.5 h-3.5" />
           {t('sections.dataManagement')}
         </h4>
         <div className="glass-block bg-[var(--bg-main)] rounded-2xl divide-y divide-[var(--border-color)]">
-          {/* 当前存储位置 */}
+          {/* Current storage location */}
           <div className="space-y-3 p-4">
             <div className="flex items-center justify-between gap-3">
               <span className="shrink-0 text-xs text-[var(--text-muted)]">{t('dataDir.configLocation')}</span>
@@ -512,8 +512,8 @@ export function GeneralSettings({ mode, setMode }: { mode: ThemeMode; setMode: (
             {webviewDataDir && (
               <div className="flex items-center justify-between gap-3">
                 <span className="shrink-0 text-xs text-[var(--text-muted)]">{t('dataDir.webviewData')}</span>
-                {/* 与「配置位置」「数据位置」保持一致：可截断的路径 + 前往按钮。
-                    这行只有便携版会出现（安装版用系统默认目录），但能打开就该能点。 */}
+                {/* Consistent with "config location" and "data location": a truncatable path + a Go button.
+                    This row appears only for the portable build (the installed build uses the system default directory), but if it can be opened it should be clickable. */}
                 <div className="flex min-w-0 items-center gap-2">
                   <span
                     className="max-w-[16.43rem] truncate text-right text-[0.71rem] text-[var(--text-faint)]"
@@ -545,7 +545,7 @@ export function GeneralSettings({ mode, setMode }: { mode: ThemeMode; setMode: (
               </div>
             </div>
             {writeDiagnostic?.portable_root && writeDiagnostic.preferred_writable === false && (
-              // 便携目录不可写：数据只能临时存放在 AppData，必须明确告知并给出解决办法。
+              // The portable directory is not writable: data can only be temporarily stored in AppData; tell the user clearly and provide a solution.
               <div className="space-y-1 rounded-xl bg-[var(--color-warning)]/10 px-3 py-2">
                 <p className="flex items-start gap-1.5 text-[0.79rem] text-[var(--color-warning)]">
                   <Info className="mt-0.5 h-3.5 w-3.5 shrink-0" />
@@ -581,7 +581,7 @@ export function GeneralSettings({ mode, setMode }: { mode: ThemeMode; setMode: (
               </button>
             )}
           </div>
-          {/* 更改数据目录 */}
+          {/* Change data directory */}
           <button
             onClick={handleChangeDataDir}
             disabled={isChangingDir}
@@ -602,7 +602,7 @@ export function GeneralSettings({ mode, setMode }: { mode: ThemeMode; setMode: (
             </div>
             <ChevronRight className="w-4 h-4 text-[var(--text-muted)] group-hover:text-[var(--text-secondary)] transition-colors" />
           </button>
-          {/* 打开日志文件夹 */}
+          {/* Open logs folder */}
           <button
             onClick={handleOpenLogsFolder}
             className="w-full flex items-center justify-between p-4 hover:bg-[var(--bg-hover)] transition-colors group"
@@ -618,7 +618,7 @@ export function GeneralSettings({ mode, setMode }: { mode: ThemeMode; setMode: (
             </div>
             <ChevronRight className="w-4 h-4 text-[var(--text-muted)] group-hover:text-[var(--text-secondary)] transition-colors" />
           </button>
-          {/* 清空本地数据 */}
+          {/* Clear local data */}
           <button
             onClick={handleClearData}
             disabled={isClearing}
@@ -652,14 +652,14 @@ export function GeneralSettings({ mode, setMode }: { mode: ThemeMode; setMode: (
         onConfirm={executeClearData}
       />
 
-      {/* 系统快捷工具 */}
+      {/* System quick tools */}
       <div className="space-y-3 pt-2 border-t border-[var(--border-color)]">
         <h4 className="text-xs font-medium text-[var(--text-muted)] uppercase tracking-wider flex items-center gap-2">
           <Rocket className="w-3.5 h-3.5" />
           {t('sections.systemTools')}
         </h4>
         <div className="glass-block bg-[var(--bg-main)] rounded-2xl divide-y divide-[var(--border-color)]">
-          {/* 开机启动管理 */}
+          {/* Startup management */}
           <button
             onClick={() => openStartupManager().catch(console.error)}
             className="w-full flex items-center justify-between p-4 hover:bg-[var(--bg-hover)] first:rounded-t-2xl transition-colors group"
@@ -675,7 +675,7 @@ export function GeneralSettings({ mode, setMode }: { mode: ThemeMode; setMode: (
             </div>
             <ChevronRight className="w-4 h-4 text-[var(--text-muted)] group-hover:text-[var(--text-secondary)] transition-colors" />
           </button>
-          {/* 存储感知 */}
+          {/* Storage sense */}
           <button
             onClick={() => openStorageSettings().catch(console.error)}
             className="w-full flex items-center justify-between p-4 hover:bg-[var(--bg-hover)] last:rounded-b-2xl transition-colors group"
@@ -697,7 +697,7 @@ export function GeneralSettings({ mode, setMode }: { mode: ThemeMode; setMode: (
   );
 }
 
-// 中间省略可以同时保留盘符、目录层级和配置文件名，用户仍可通过 title 查看完整路径。
+// Middle elision preserves the drive letter, directory levels, and config filename; the user can still see the full path via the title.
 function shortenPathMiddle(path: string, maxLength = 54): string {
   if (path.length <= maxLength) {
     return path;

@@ -1,52 +1,52 @@
 // ============================================================================
-// 卸载残留扫描模块 — 置信度评分检测引擎
+// Uninstall leftover scanner module - confidence scoring detection engine
 // ============================================================================
 //
-// 【架构说明】
-// 本模块采用加权评分模型替代原有的布尔判断逻辑：
-//   1. InstalledAppMap   — 从注册表构建已安装应用→路径的映射，推断 AppData 所有权
-//   2. ScoringEngine     — 对每个目录计算置信度分数（0.0~1.0），综合多维信号
-//   3. WhitelistRule     — 结构化白名单（Exact / Prefix / Pattern），禁止全局 contains
-//   4. FileSystemProbe   — 有限深度文件探测（.exe / .dll / uninstall*.exe）
+// [Architecture]
+// This module uses a weighted scoring model instead of the original boolean judgment logic:
+//   1. InstalledAppMap   - Builds an installed-app to path map from the registry to infer AppData ownership
+//   2. ScoringEngine     - Computes a confidence score (0.0~1.0) for each directory from multiple signals
+//   3. WhitelistRule     - Structured whitelist (Exact / Prefix / Pattern); global contains is forbidden
+//   4. FileSystemProbe   - Limited-depth file probe (.exe / .dll / uninstall*.exe)
 //
-// 【评分信号】（基线 0.0，正向识别 + 保护性降权）
-//   正向（累加）：
-//     +0.35  文件夹内发现 uninstall*.exe / uninst*.exe
-//     +0.25  文件夹名匹配 InstallLocation 末级目录（且应用已不在注册表中）
-//     +0.20  包含 .exe 或 .dll 文件
-//     +0.10  超过 min_days_old 天未修改
-//     +0.10  匹配已知模拟器特征
-//   负向（扣分）：
-//     -0.45  文件夹名精确匹配当前已安装应用 DisplayName（规范化后）
-//     -0.60  文件夹名精确匹配已安装应用 InstallLocation 末级目录
-//     -0.40  通用目录名（cache, logs, temp, data）
-//     -0.30  位于 ProgramData
-//     -0.20  7 天内有修改记录
-//     -0.15  包名格式目录（com.xxx.yyy）
-//     -0.15  纯版本号目录（1.2.3.4 / v2.0）
-//     -0.50  已知共享厂商目录（Adobe, Microsoft 等）
+// [Scoring signals] (baseline 0.0, positive identification + protective penalties)
+//   Positive (added):
+//     +0.35  Found uninstall*.exe / uninst*.exe in the folder
+//     +0.25  Folder name matches the last segment of InstallLocation (and app is no longer in the registry)
+//     +0.20  Contains .exe or .dll files
+//     +0.10  Not modified for more than min_days_old days
+//     +0.10  Matches a known emulator signature
+//   Negative (subtracted):
+//     -0.45  Folder name exactly matches a currently installed app's DisplayName (normalized)
+//     -0.60  Folder name exactly matches an installed app's InstallLocation last segment
+//     -0.40  Generic folder name (cache, logs, temp, data)
+//     -0.30  Located under ProgramData
+//     -0.20  Modified within 7 days
+//     -0.15  Package-name format folder (com.xxx.yyy)
+//     -0.15  Pure version-number folder (1.2.3.4 / v2.0)
+//     -0.50  Known shared vendor folder (Adobe, Microsoft, etc.)
 //
-// 【分类阈值】
-//   score >= 0.75 → HighConfidenceLeftover（前端默认勾选）
-//   0.30 <= score < 0.75 → Suspicious（前端不勾选，仅展示）
-//   score < 0.30 → 不输出
-//   两个阈值都定义成常量（HIGH_CONFIDENCE_SCORE / SUSPICIOUS_SCORE），分档和过滤共用同一份。
+// [Classification thresholds]
+//   score >= 0.75 -> HighConfidenceLeftover (checked by default in the frontend)
+//   0.30 <= score < 0.75 -> Suspicious (not checked in the frontend, display only)
+//   score < 0.30 -> not output
+//   Both thresholds are defined as constants (HIGH_CONFIDENCE_SCORE / SUSPICIOUS_SCORE); bucketing and filtering share the same source.
 //
-// 【扫描路径】
-// - %LOCALAPPDATA%      (C:\Users\<用户>\AppData\Local)
-// - %APPDATA%           (C:\Users\<用户>\AppData\Roaming)
-// - %LOCALAPPDATA%Low   (C:\Users\<用户>\AppData\LocalLow)
+// [Scan paths]
+// - %LOCALAPPDATA%      (C:\Users\<user>\AppData\Local)
+// - %APPDATA%           (C:\Users\<user>\AppData\Roaming)
+// - %LOCALAPPDATA%Low   (C:\Users\<user>\AppData\LocalLow)
 // - C:\ProgramData
 //
-// 【深度扫描模式】
-// - 扫描模拟器残留（雷电、蓝叠、夜神、MuMu、MEmu、MSI App Player）
-// - 扫描孤立虚拟磁盘文件（.vmdk, .vdi, .vhd）
+// [Deep scan mode]
+// - Scan emulator leftovers (LDPlayer, BlueStacks, Nox, MuMu, MEmu, MSI App Player)
+// - Scan orphaned virtual disk files (.vmdk, .vdi, .vhd)
 //
-// 【安全机制】
-// 1. 结构化白名单保护：系统关键文件夹永不扫描
-// 2. 置信度分级：只有高置信度条目默认勾选
-// 3. ProgramData 降权：不直接标记为残留，仅降低分数
-// 4. 大小阈值：忽略小于 1MB 的文件夹
+// [Safety mechanisms]
+// 1. Structured whitelist protection: critical system folders are never scanned
+// 2. Confidence tiers: only high-confidence entries are checked by default
+// 3. ProgramData penalty: not marked as leftover directly, only the score is lowered
+// 4. Size threshold: ignore folders smaller than 1MB
 // ============================================================================
 
 use once_cell::sync::Lazy;
@@ -63,14 +63,14 @@ use winreg::RegKey;
 use super::leftover_whitelist;
 
 // ============================================================================
-// 安装历史持久化（用于检测"曾经安装但现已卸载"的残留文件夹）
-// 使用统一数据目录管理模块 (crate::data_dir) 获取存储路径
+// Install history persistence (for detecting leftover folders that were "installed before but now uninstalled")
+// Use the unified data directory module (crate::data_dir) to get the storage path
 // ============================================================================
 
-/// 安装历史缓存文件名
+/// Install-history cache file name
 const INSTALL_HISTORY_FILE: &str = "install_history.json";
 
-/// 从持久化缓存加载历史安装文件夹名集合
+/// Load the set of historical install folder names from the persistent cache
 fn load_install_history() -> HashSet<String> {
     let path = crate::data_dir::get_data_dir().join(INSTALL_HISTORY_FILE);
     match fs::read_to_string(&path) {
@@ -79,7 +79,7 @@ fn load_install_history() -> HashSet<String> {
     }
 }
 
-/// 将当前已知安装文件夹名持久化保存（与历史合并）
+/// Persist the currently known install folder names (merged with history)
 fn save_install_history(folders: &HashSet<String>) {
     let dir = crate::data_dir::get_data_dir();
     if let Err(e) = fs::create_dir_all(&dir) {
@@ -93,117 +93,117 @@ fn save_install_history(folders: &HashSet<String>) {
     }
 }
 
-/// 根据统一数据目录构造路径（兼容程序内部其他模块使用）
+/// Build a path from the unified data directory (for use by other internal modules)
 #[allow(dead_code)]
 fn get_data_sub_path(relative: &str) -> PathBuf {
     crate::data_dir::get_data_dir().join(relative)
 }
 
 // ============================================================================
-// 预编译正则（包名格式 / 版本号格式）
+// Precompiled regexes (package-name format / version-number format)
 // ============================================================================
 
-/// 包名格式：com.example.app、org.apache.commons 等
+/// Package-name format: com.example.app, org.apache.commons, etc.
 static RE_PACKAGE_NAME: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"^[a-z][a-z0-9]*(\.[a-z][a-z0-9]*){2,}$").unwrap());
 
-/// 纯版本号格式：1.2.3.4、v2.0 等
+/// Pure version-number format: 1.2.3.4, v2.0, etc.
 static RE_VERSION_FOLDER: Lazy<Regex> = Lazy::new(|| Regex::new(r"^v?\d+(\.\d+){1,3}$").unwrap());
 
-/// 更新器目录：名字里带 updater / update，或直接以 Updater 结尾。
+/// Updater directories: names containing updater / update, or ending directly with Updater.
 ///
-/// 命中 `kimi-desktop-updater`、`comfyui-desktop-2-updater`、`QuarkCloudDriveUpdater`、
-/// `@genie\workbuddy-desktop-updater` 这些形态。
+/// Matches `kimi-desktop-updater`, `comfyui-desktop-2-updater`, `QuarkCloudDriveUpdater`,
+/// `@genie\workbuddy-desktop-updater` and similar forms.
 ///
-/// 这类目录装的是"下载/解包好的新版本"，程序更新完就不再需要。删掉最坏的结果是
-/// 下次更新重新下载一遍 —— 这是本模块里唯一能对用户明确说"后果是什么"的一类，
-/// 所以值得单独标出来（`DetectionCategory::UpdaterCache`），而不是混进"高置信度"。
+/// These folders hold "downloaded/unpacked new versions" and are no longer needed after the program updates. Worst case if deleted:
+/// the next update simply downloads them again - this is the only category here where we can tell the user exactly "what the consequence is",
+/// so it is worth marking separately (`DetectionCategory::UpdaterCache`) instead of lumping it into "high confidence".
 static RE_UPDATER_DIR: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r"(^|[-_. ])(updater|update)([-_. ]|$)|updater$").unwrap()
 });
 
-/// 应用自己的缓存/日志目录。
+/// The app's own cache/log directories.
 ///
-/// 命中 `AviraWebView2Cache`、`SquirrelTemp`、`TSVNCache`、`PLogs`、`xxxCrashRpt` 这类。
+/// Matches `AviraWebView2Cache`, `SquirrelTemp`, `TSVNCache`, `PLogs`, `xxxCrashRpt` and similar.
 ///
-/// ⚠️ 纯粹的 `Cache` / `Temp` / `CrashDumps` 不会走到这里 —— 它们在 `build_whitelist_rules()`
-/// 里已经被排除了，那是垃圾清理模块的地盘，两边都报会让用户以为"删了没删掉"。
-/// 这条规则只负责"名字里带缓存特征的应用目录"。
+/// ⚠️ Plain `Cache` / `Temp` / `CrashDumps` do not reach here - they are already excluded in `build_whitelist_rules()`;
+/// that is the junk-cleanup module's territory, and reporting on both sides would make users think "it wasn't deleted".
+/// This rule only covers "app directories whose names carry cache characteristics".
 static RE_CACHE_DIR: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r"cache|caches|crashpad|crashrpt|crashdumps|crashreports|logs?$|temp$|tmp$").unwrap()
 });
 
 // ============================================================================
-// 数据模型
+// Data model
 // ============================================================================
 
-/// 卸载残留扫描结果
+/// Uninstall leftover scan result
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LeftoverScanResult {
-    /// 发现的残留文件夹列表
+    /// List of leftover folders found
     pub leftovers: Vec<LeftoverEntry>,
-    /// 总大小（字节）
+    /// Total size (bytes)
     pub total_size: u64,
-    /// 扫描耗时（毫秒）
+    /// Scan duration (milliseconds)
     pub scan_duration_ms: u64,
-    /// 实际检查过的一级目录数（含被白名单 / 体积阈值挡掉的）
+    /// Number of top-level directories actually checked (including those blocked by whitelist / size threshold)
     ///
-    /// 结果为空时给用户一个「模块确实在跑」的证据：否则永远返回 0 条，
-    /// 用户没法区分「真的没有残留」和「扫描坏了」。
+    /// When the result is empty, give the user evidence that "the module really ran"; otherwise it always returns 0 entries,
+    /// and the user cannot tell "there really are no leftovers" from "the scan is broken".
     pub scanned_directories: usize,
-    /// 进入评分、但因低于阈值被丢弃的条数
+    /// Number of entries that entered scoring but were dropped for being below the threshold
     pub below_threshold: usize,
-    /// 所有参与评分的目录里的最高置信度（0.0~1.0）
+    /// Highest confidence among all scored directories (0.0~1.0)
     pub highest_confidence: f32,
-    /// 当前使用的判定门槛（0.0~1.0），前端展示时和数据同源，避免两处各写一个 0.40
+    /// Current decision threshold (0.0~1.0); the frontend reads the same source as the data to avoid hardcoding 0.40 in two places
     pub confidence_threshold: f32,
 }
 
-/// 单个残留条目（前端兼容 + 新增置信度字段）
+/// A single leftover entry (frontend-compatible + new confidence fields)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LeftoverEntry {
-    /// 文件夹路径
+    /// Folder path
     pub path: String,
-    /// 文件夹大小（字节）
+    /// Folder size (bytes)
     pub size: u64,
-    /// 可能的软件名称（从文件夹名推断）
+    /// Possible software name (inferred from the folder name)
     pub app_name: String,
-    /// 来源类型
+    /// Source type
     pub source: LeftoverSource,
-    /// 最后修改时间（Unix时间戳）
+    /// Last modified time (Unix timestamp)
     pub last_modified: i64,
-    /// 包含的文件数量
+    /// Number of files contained
     pub file_count: u32,
-    /// 是否为模拟器残留
+    /// Whether it is an emulator leftover
     pub is_emulator: bool,
-    /// 是否为虚拟磁盘文件
+    /// Whether it is a virtual disk file
     pub is_virtual_disk: bool,
-    /// 残留类型描述（用于 UI 显示）
+    /// Leftover type description (for UI display)
     pub leftover_type: LeftoverType,
-    /// 置信度分数 (0.0 ~ 1.0)，越高越可能是残留
+    /// Confidence score (0.0 ~ 1.0); higher means more likely a leftover
     pub confidence: f32,
-    /// 检测分类
+    /// Detection category
     pub detection_category: DetectionCategory,
-    /// 评分理由列表（中文，供 UI 悬浮提示）
+    /// List of scoring reasons (Chinese, for UI hover tooltips)
     pub reasons: Vec<String>,
 }
 
-/// 残留类型
+/// Leftover type
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum LeftoverType {
-    /// 普通应用残留
+    /// Normal app leftover
     Normal,
-    /// 模拟器残留（雷电、蓝叠、夜神等）
+    /// Emulator leftover (LDPlayer, BlueStacks, Nox, etc.)
     Emulator,
-    /// 虚拟磁盘文件（.vmdk, .vdi, .vhd）
+    /// Virtual disk file (.vmdk, .vdi, .vhd)
     VirtualDisk,
-    /// 注册表关联残留
+    /// Registry-orphan leftover
     RegistryOrphan,
-    /// 直接躺在 AppData / ProgramData 根目录下的孤立可执行文件
+    /// Orphaned executable sitting directly in the AppData / ProgramData root
     LooseFile,
 }
 
-/// 残留来源类型
+/// Leftover source type
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum LeftoverSource {
     /// AppData\Local
@@ -214,7 +214,7 @@ pub enum LeftoverSource {
     LocalLowAppData,
     /// ProgramData
     ProgramData,
-    /// 虚拟磁盘文件（独立文件）
+    /// Virtual disk file (standalone file)
     VirtualDiskFile,
 }
 
@@ -231,55 +231,55 @@ impl LeftoverSource {
     }
 }
 
-/// 检测分类（置信度分级）
+/// Detection category (confidence tiers)
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum DetectionCategory {
-    /// 高置信度残留（score >= 0.75）
+    /// High-confidence leftover (score >= 0.75)
     HighConfidenceLeftover,
-    /// 可疑（0.30 <= score < 0.75）
+    /// Suspicious (0.30 <= score < 0.75)
     Suspicious,
-    /// 可能是正在使用的应用数据
+    /// Possibly app data still in use
     LikelyAppData,
-    /// 系统共享目录
+    /// System shared directory
     SystemShared,
-    /// 更新器下载/解包的旧版本目录。
+    /// Old version directory downloaded/unpacked by an updater.
     ///
-    /// 单独一类而不是并进"高置信度"：这两件事的可信度不是一回事。
-    /// 高置信度是"大概率是残留，但我不敢打包票"；这一类是**后果明确**——
-    /// 删掉之后更新器下次会重新下载，不会影响已经装好的程序。
-    /// 用户看到这个标签时可以不用逐个猜。
+    /// A separate category instead of merging into "high confidence": the two are not equally trustworthy.
+    /// High confidence means "probably a leftover, but I can't guarantee it"; this category has **clear consequences** -
+    /// after deletion the updater will just re-download next time, with no effect on already installed programs.
+    /// Users seeing this label do not have to guess item by item.
     UpdaterCache,
-    /// 应用自己的缓存/日志目录（`AviraWebView2Cache`、`SquirrelTemp`、`PLogs`）。
+    /// The app's own cache/log directories (`AviraWebView2Cache`, `SquirrelTemp`, `PLogs`).
     ///
-    /// 和 `UpdaterCache` 的差别是代价：那是"下次更新重新下载几百 MB"，
-    /// 这是"程序下次运行重新生成"，通常无感。所以两者分开标，
-    /// 用户按"我愿不愿意等它重建"来选。
+    /// The difference from `UpdaterCache` is the cost: that one means "re-download hundreds of MB on next update",
+    /// this one means "regenerated on next program run", usually unnoticeable. So they are labeled separately,
+    /// letting users choose based on "whether I'm willing to wait for it to rebuild".
     CacheDir,
 }
 
 // ============================================================================
-// 结构化白名单系统
-// 禁止全局 contains 匹配，只允许精确/前缀/通配符模式
+// Structured whitelist system
+// Global contains matching is forbidden; only exact/prefix/wildcard patterns are allowed
 // ============================================================================
 
-/// 白名单规则类型
+/// Whitelist rule type
 enum WhitelistRule {
-    /// 精确匹配（不区分大小写）
+    /// Exact match (case-insensitive)
     Exact(String),
-    /// 前缀匹配（不区分大小写）
+    /// Prefix match (case-insensitive)
     Prefix(String),
-    /// 通配符模式匹配（简化版：仅支持 * 前后缀）
+    /// Wildcard pattern match (simplified: only * prefix/suffix supported)
     Pattern(String),
 }
 
 impl WhitelistRule {
-    /// 检查文件夹名是否命中规则
+    /// Check whether a folder name matches the rule
     fn matches(&self, folder_name_lower: &str) -> bool {
         match self {
             WhitelistRule::Exact(s) => folder_name_lower == s,
             WhitelistRule::Prefix(s) => folder_name_lower.starts_with(s),
             WhitelistRule::Pattern(p) => {
-                // 简化通配符：仅支持 "prefix*" 和 "*suffix" 两种模式
+                // Simplified wildcard: only "prefix*" and "*suffix" patterns are supported
                 if let Some(prefix) = p.strip_suffix('*') {
                     folder_name_lower.starts_with(prefix)
                 } else if let Some(suffix) = p.strip_prefix('*') {
@@ -292,10 +292,10 @@ impl WhitelistRule {
     }
 }
 
-/// 构建结构化白名单规则列表
+/// Build the list of structured whitelist rules
 fn build_whitelist_rules() -> Vec<WhitelistRule> {
     vec![
-        // ==================== Windows 系统核心（精确匹配） ====================
+        // ==================== Windows system core (exact match) ====================
         WhitelistRule::Exact("microsoft".into()),
         WhitelistRule::Exact("windows".into()),
         WhitelistRule::Exact("packages".into()),
@@ -307,7 +307,7 @@ fn build_whitelist_rules() -> Vec<WhitelistRule> {
         WhitelistRule::Exact("publishers".into()),
         WhitelistRule::Exact("temp".into()),
         WhitelistRule::Exact("temporary internet files".into()),
-        // ==================== 硬件驱动相关（精确 + 前缀） ====================
+        // ==================== Hardware drivers (exact + prefix) ====================
         WhitelistRule::Exact("nvidia".into()),
         WhitelistRule::Exact("nvidia corporation".into()),
         WhitelistRule::Exact("amd".into()),
@@ -320,7 +320,7 @@ fn build_whitelist_rules() -> Vec<WhitelistRule> {
         WhitelistRule::Exact("razer".into()),
         WhitelistRule::Exact("corsair".into()),
         WhitelistRule::Exact("steelseries".into()),
-        // ==================== 运行时和框架（精确匹配） ====================
+        // ==================== Runtimes and frameworks (exact match) ====================
         WhitelistRule::Exact(".net".into()),
         WhitelistRule::Exact("dotnet".into()),
         WhitelistRule::Exact("java".into()),
@@ -334,7 +334,7 @@ fn build_whitelist_rules() -> Vec<WhitelistRule> {
         WhitelistRule::Exact("cargo".into()),
         WhitelistRule::Exact("go".into()),
         WhitelistRule::Exact("golang".into()),
-        // ==================== 开发工具（精确 + 前缀） ====================
+        // ==================== Dev tools (exact + prefix) ====================
         WhitelistRule::Exact("vscode".into()),
         WhitelistRule::Exact("visual studio".into()),
         WhitelistRule::Prefix("visual studio".into()),
@@ -358,7 +358,7 @@ fn build_whitelist_rules() -> Vec<WhitelistRule> {
         WhitelistRule::Exact("pnpm".into()),
         WhitelistRule::Exact("bun".into()),
         WhitelistRule::Exact("deno".into()),
-        // ==================== 系统服务（精确匹配） ====================
+        // ==================== System services (exact match) ====================
         WhitelistRule::Exact("application data".into()),
         WhitelistRule::Exact("local settings".into()),
         WhitelistRule::Exact("history".into()),
@@ -368,14 +368,14 @@ fn build_whitelist_rules() -> Vec<WhitelistRule> {
         WhitelistRule::Exact("logs".into()),
         WhitelistRule::Exact("crash reports".into()),
         WhitelistRule::Exact("crashdumps".into()),
-        // 包管理器缓存归「垃圾清理」。
+        // Package manager caches belong to "junk cleanup".
         //
-        // 这两个目录属于"系统级/工具级可重建数据"，不是某个应用自己的缓存：
-        // 垃圾清理按路径段精确匹配它们（`deep_junk::cache_names`），扫得比这里更全。
-        // 两边都报的后果是用户在 A 删完、去 B 还看到同一条，以为没删掉。
+        // These two directories are "system/tool-level rebuildable data", not an individual app's own cache:
+        // junk cleanup matches them exactly by path segment (`deep_junk::cache_names`) and scans more thoroughly than here.
+        // Reporting on both sides means the user deletes in A, still sees the same entry in B, and thinks it wasn't deleted.
         WhitelistRule::Exact("npm-cache".into()),
         WhitelistRule::Exact("pnpm-cache".into()),
-        // ==================== 常见应用（精确匹配） ====================
+        // ==================== Common apps (exact match) ====================
         WhitelistRule::Exact("google".into()),
         WhitelistRule::Exact("chrome".into()),
         WhitelistRule::Exact("edge".into()),
@@ -416,16 +416,16 @@ fn build_whitelist_rules() -> Vec<WhitelistRule> {
         WhitelistRule::Exact("7-zip".into()),
         WhitelistRule::Exact("winrar".into()),
         WhitelistRule::Exact("bandizip".into()),
-        // ==================== 视频编辑软件（精确匹配） ====================
+        // ==================== Video editing software (exact match) ====================
         WhitelistRule::Exact("jianyingpro".into()),
         WhitelistRule::Prefix("jianyingpro".into()),
         WhitelistRule::Exact("jianying".into()),
         WhitelistRule::Prefix("jianying".into()),
         WhitelistRule::Exact("capcut".into()),
         WhitelistRule::Prefix("capcut".into()),
-        // ==================== 隐藏文件夹（通配符） ====================
+        // ==================== Hidden folders (wildcard) ====================
         WhitelistRule::Pattern(".*".into()),
-        // 视频/创意工具
+        // Video / creative tools
         WhitelistRule::Exact("davinci resolve".into()),
         WhitelistRule::Exact("blackmagic design".into()),
         WhitelistRule::Exact("obs-studio".into()),
@@ -436,12 +436,12 @@ fn build_whitelist_rules() -> Vec<WhitelistRule> {
 }
 
 // ============================================================================
-// 已知共享厂商目录（负向信号）
-// 这些目录高概率是多应用共享的，不应标记为残留
+// Known shared vendor directories (negative signal)
+// These directories are likely shared by multiple apps and should not be marked as leftovers
 // ============================================================================
 
-/// 已知共享厂商/系统目录名（精确匹配，小写）
-/// 命中时扣分 -0.5
+/// Known shared vendor/system directory names (exact match, lowercase)
+/// Deduct -0.5 when matched
 const KNOWN_SHARED_VENDORS: &[&str] = &[
     "adobe",
     "microsoft",
@@ -467,9 +467,9 @@ const KNOWN_SHARED_VENDORS: &[&str] = &[
     "mozilla",
 ];
 
-/// 通用目录名（负向信号，小写）
-/// 这些名称太通用，不太可能是某个特定已卸载应用的残留
-/// 命中时扣分 -0.4
+/// Generic directory names (negative signal, lowercase)
+/// These names are too generic to be leftovers of a specific uninstalled app
+/// Deduct -0.4 when matched
 const GENERIC_FOLDER_NAMES: &[&str] = &[
     "cache",
     "caches",
@@ -495,47 +495,47 @@ const GENERIC_FOLDER_NAMES: &[&str] = &[
 ];
 
 // ============================================================================
-// 模拟器特征库
+// Emulator signature library
 // ============================================================================
 
-/// 模拟器特征信息
+/// Emulator signature info
 struct EmulatorSignature {
-    /// 模拟器名称
+    /// Emulator name
     name: &'static str,
-    /// 文件夹名称关键字（精确或前缀匹配，小写）
+    /// Folder-name keywords (exact or prefix match, lowercase)
     folder_keywords: &'static [&'static str],
-    /// 注册表厂商名关键字
+    /// Registry vendor-name keywords
     #[allow(dead_code)]
     registry_keywords: &'static [&'static str],
 }
 
-/// 已知模拟器特征库
+/// Known emulator signature library
 const EMULATOR_SIGNATURES: &[EmulatorSignature] = &[
-    // 雷电模拟器 (LDPlayer)
+    // LDPlayer emulator (LDPlayer)
     EmulatorSignature {
         name: "雷电模拟器",
         folder_keywords: &["ldplayer", "leidian", "dnplayer", "changzhi"],
         registry_keywords: &["ldplayer", "changzhi", "xuanzhi"],
     },
-    // 蓝叠模拟器 (BlueStacks)
+    // BlueStacks emulator (BlueStacks)
     EmulatorSignature {
         name: "蓝叠模拟器",
         folder_keywords: &["bluestacks", "bluestacks_nxt", "bstk"],
         registry_keywords: &["bluestacks", "bluestack systems"],
     },
-    // 夜神模拟器 (Nox)
+    // Nox emulator (Nox)
     EmulatorSignature {
         name: "夜神模拟器",
         folder_keywords: &["nox", "noxplayer", "bignox", "yeshen"],
         registry_keywords: &["nox", "bignox", "duodian"],
     },
-    // MuMu模拟器 (网易)
+    // MuMu emulator (NetEase)
     EmulatorSignature {
         name: "MuMu模拟器",
         folder_keywords: &["mumu", "nemu", "mumuemulator", "nemubox"],
         registry_keywords: &["mumu", "netease", "nemu"],
     },
-    // MEmu模拟器 (逍遥)
+    // MEmu emulator (Xiaoyao)
     EmulatorSignature {
         name: "MEmu模拟器",
         folder_keywords: &["memu", "microvirt", "xyaz"],
@@ -547,7 +547,7 @@ const EMULATOR_SIGNATURES: &[EmulatorSignature] = &[
         folder_keywords: &["msi app player", "msiappplayer"],
         registry_keywords: &["msi app player"],
     },
-    // 腾讯手游助手
+    // Tencent Game Assistant
     EmulatorSignature {
         name: "腾讯手游助手",
         folder_keywords: &["txgameassistant", "gameloop", "tgp", "androidemulator"],
@@ -555,26 +555,26 @@ const EMULATOR_SIGNATURES: &[EmulatorSignature] = &[
     },
 ];
 
-/// 虚拟磁盘文件扩展名
+/// Virtual disk file extensions
 const VIRTUAL_DISK_EXTENSIONS: &[&str] = &[".vmdk", ".vdi", ".vhd", ".vhdx"];
 
-/// 文件系统探测的最大递归深度
+/// Maximum recursion depth for filesystem probing
 const FS_PROBE_MAX_DEPTH: usize = 4;
 
-/// 可执行文件扩展名（用于文件系统探测正向信号）
+/// Executable file extensions (positive signal for filesystem probing)
 const EXECUTABLE_EXTENSIONS: &[&str] = &["exe", "dll", "sys", "msi"];
 
-/// 根目录孤立文件的最小体积。
+/// Minimum size for orphaned root files.
 ///
-/// 低于这个数的可执行文件基本都是占位标记（安装器的 stub），
-/// 删掉既省不了空间，也可能影响某个仍在用的工具自检。
+/// Executables below this size are almost always placeholders (installer stubs);
+/// deleting them saves no space and may break some still-used tool's self-check.
 const LOOSE_FILE_MIN_SIZE: u64 = 64 * 1024;
 
-/// 找虚拟磁盘时整枝跳过的目录名。
+/// Directory names to skip entirely when looking for virtual disks.
 ///
-/// 虚拟磁盘只出现在 WSL / Docker / 模拟器这类位置的 `LocalState`、`wsl` 子目录里，
-/// 而 `node_modules`、`Temp`、各种 `*Cache` 底下不可能有 —— 它们的目录数量却是全树的大头。
-/// 改前实测：遍历 AppData 三个根一次要 5.9 秒、命中 0 条，绝大部分时间都花在这批目录上。
+/// Virtual disks only appear in `LocalState` / `wsl` subdirectories under WSL / Docker / emulator locations,
+/// while `node_modules`, `Temp`, and various `*Cache` cannot contain them - yet they make up most of the tree's directory count.
+/// Measured before the change: one pass over the three AppData roots took 5.9 s with 0 hits, almost all of it spent in these directories.
 const DISK_SCAN_SKIP_DIRS: &[&str] = &[
     "node_modules",
     "temp",
@@ -595,16 +595,16 @@ const DISK_SCAN_SKIP_DIRS: &[&str] = &[
     "dist",
     "build",
     "obj",
-    // ⚠️ 不要加 `packages`：`Local\Packages\<发行版>\LocalState\ext4.vhdx` 正是 WSL 磁盘的位置，
-    // 跳过它等于让这个功能对 WSL 用户彻底失效。
+    // ⚠️ Do NOT add `packages`: `Local\Packages\<distribution>\LocalState\ext4.vhdx` is exactly where WSL disks live;
+    // skipping it would make this feature completely useless for WSL users.
 ];
 
-/// 虚拟磁盘**可能**所在的目录名。第三层及以下只进这些目录。
+/// Directory names where virtual disks **may** live. From the third level down, only these are entered.
 ///
-/// 前两层是应用名（`Docker`、`Packages\<发行版>`），从第三层开始就不再是"谁"，
-/// 而是"放在哪个子目录里"——这一层只有少数几种叫法。不在名单里的目录
-/// （UWP 包下的 `AC\Temp`、各种 `Settings`、`LocalCache`）不可能有磁盘，
-/// 但它们贡献了绝大多数目录数。
+/// The first two levels are app names (`Docker`, `Packages\<distribution>`); from the third level on it is no longer "who",
+/// but "which subdirectory" - only a few names occur at that level. Directories not on the list
+/// (`AC\Temp` under UWP packages, various `Settings`, `LocalCache`) cannot contain disks,
+/// but they contribute the vast majority of the directory count.
 const DISK_SCAN_DIR_HINTS: &[&str] = &[
     "localstate",
     "wsl",
@@ -621,74 +621,74 @@ const DISK_SCAN_DIR_HINTS: &[&str] = &[
     "docker",
 ];
 
-/// 高置信度门槛：到这个分数才算"很可能是残留"。
+/// High-confidence threshold: only at this score does it count as "very likely a leftover".
 const HIGH_CONFIDENCE_SCORE: f32 = 0.75;
 
-/// 最低输出门槛，同时也是"可疑"这一档的下限。
+/// Minimum output threshold, also the lower bound of the "Suspicious" tier.
 ///
-/// ⚠️ **这两个数必须相等**，改一个就要改另一个：
-/// - 门槛 > 分档下限 → 分档到了（Suspicious）却被过滤掉，白算；
-/// - 门槛 < 分档下限 → 进了结果，标签却写"可能是正在使用的应用数据"，自相矛盾。
+/// ⚠️ **These two numbers must be equal**; change one and you must change the other:
+/// - threshold > bucket lower bound -> reaches the bucket (Suspicious) but is filtered out, wasted work;
+/// - threshold < bucket lower bound -> enters results but the label says "possibly app data still in use", self-contradictory.
 ///
-/// 定在 0.30 而不是 0.40，是因为常见组合 `+0.20 有可执行文件` + `+0.10 很久没改`
-/// 正好等于 0.30：卸载残留里带 exe 的目录（updater、便携软件）大多只能凑到这一档。
-/// 0.40 会让这类条目全部消失，而它们恰恰是用户看得懂、也敢删的那批。
+/// Set to 0.30 rather than 0.40 because the common combination `+0.20 has executable` + `+0.10 long unchanged`
+/// equals exactly 0.30: leftover directories with an exe (updaters, portable apps) mostly only reach this tier.
+/// 0.40 would make all such entries disappear, and they are exactly the ones users understand and dare to delete.
 const SUSPICIOUS_SCORE: f32 = 0.30;
 
-/// ProgramData 下低于这个分数的条目归为"系统共享"，而不是"可疑"。
+/// Entries under ProgramData below this score are classed as "system shared" rather than "suspicious".
 ///
-/// 系统目录里一点风吹草动不足以当残留；这个分支在门槛 0.40 时是不可达的，
-/// 门槛降到 0.30 之后 `[0.30, 0.40)` 这一段才会落到这里 —— 属于预期行为。
+/// A little activity in a system directory is not enough to call it a leftover; this branch was unreachable at threshold 0.40,
+/// and only after lowering to 0.30 does the `[0.30, 0.40)` range land here - expected behavior.
 const SYSTEM_SHARED_SCORE_LIMIT: f32 = 0.40;
 
 // ============================================================================
-// 已安装应用映射（路径所有权推断）
+// Installed-app map (path ownership inference)
 // ============================================================================
 
-/// 单个已安装应用的信息
+/// Info about a single installed app
 #[derive(Debug, Clone)]
 struct InstalledAppInfo {
-    /// 注册表中的显示名称（原始大小写）
+    /// Display name in the registry (original case)
     display_name: String,
-    /// 安装路径（如有）
+    /// Install path (if any)
     install_location: Option<String>,
-    /// 从安装路径推断的文件夹名（小写）
+    /// Folder names inferred from the install path (lowercase)
     inferred_folder_names: Vec<String>,
 }
 
-/// 已安装应用映射表
+/// Installed-app map
 struct InstalledAppMap {
-    /// 所有已安装应用信息
+    /// All installed app info
     apps: Vec<InstalledAppInfo>,
-    /// 快速查找集合：所有已知的文件夹名（小写）→ 对应应用索引列表
+    /// Fast lookup set: all known folder names (lowercase) -> list of corresponding app indices
     folder_to_app: HashMap<String, Vec<usize>>,
-    /// 精确文件夹名集合（仅来源于 InstallLocation 的末级/倒数第二级目录）
+    /// Exact folder-name set (only from the last/second-to-last directory of InstallLocation)
     known_folders: HashSet<String>,
-    /// 规范化后的 DisplayName 集合（小写，去除版本号和特殊字符）
+    /// Normalized DisplayName set (lowercase, version numbers and special characters removed)
     display_names: HashSet<String>,
-    /// 疑似残留候选：历史 InstallLocation 中出现过但当前注册表中找不到的文件夹名
+    /// Suspected leftover candidates: folder names seen in historical InstallLocation but not found in the current registry
     leftover_candidates: HashSet<String>,
-    /// 已安装应用名的词元 → 应用索引。
+    /// Tokens of installed app names -> app indices.
     ///
-    /// 为什么需要它：目录名和 DisplayName 很少逐字相同。
-    /// 装了 Playwright 的用户，目录叫 `ms-playwright`；装了 VS Code 的，目录叫 `Code`。
-    /// 精确匹配全部落空，结果就是"还在用的工具"和"真的卸载了"混在同一档里，
-    /// 用户没有任何依据判断该删哪个（0.30 一档 20 多条全是同一个分数）。
-    /// 拆成词元后 `ms-playwright` 能对上 `playwright`。
+    /// Why needed: directory names and DisplayNames are rarely character-for-character identical.
+    /// A user with Playwright installed has a `ms-playwright` directory; one with VS Code has `Code`.
+    /// Exact matching all fails, so "tools still in use" and "really uninstalled" land in the same tier,
+    /// leaving users no basis to decide which to delete (20+ entries at the 0.30 tier all with the same score).
+    /// After splitting into tokens, `ms-playwright` can match `playwright`.
     token_to_app: HashMap<String, Vec<usize>>,
-    /// 已卸载应用的词元 → 历史里出现过的原始名字。
+    /// Tokens of uninstalled apps -> original names seen in history.
     ///
-    /// 反向证据：目录词元能对上"曾经装过、现在注册表里没有"的应用，
-    /// 这才是"卸载残留"的定义，比"有 exe + 很久没改"两个弱信号可靠得多。
+    /// Reverse evidence: a directory token matching an app that "was installed before but is no longer in the registry"
+    /// is the very definition of "uninstall leftover", far more reliable than the two weak signals "has exe + long unchanged".
     uninstalled_tokens: HashMap<String, String>,
 }
 
-/// 规范化 DisplayName：转小写，去除版本号、括号内容、多余空格
+/// Normalize DisplayName: lowercase, remove version numbers, parenthetical content, and extra spaces
 fn normalize_display_name(name: &str) -> String {
     let lower = name.to_lowercase();
-    // 去除括号内容（如 "Foo App (x64)"  → "foo app"）
+    // Remove parenthetical content (e.g. "Foo App (x64)" -> "foo app")
     let no_parens = lower.replace(|c: char| c == '(' || c == ')', " ");
-    // 去除版本号模式（如 "v1.2.3"、"1.0.0"）
+    // Remove version-number patterns (e.g. "v1.2.3", "1.0.0")
     let cleaned: String = no_parens
         .split_whitespace()
         .filter(|tok| !RE_VERSION_FOLDER.is_match(tok))
@@ -697,7 +697,7 @@ fn normalize_display_name(name: &str) -> String {
     cleaned.trim().to_string()
 }
 
-/// InstalledAppMap 中不允许作为 parent 目录名的公共父目录
+/// Common parent directories not allowed as parent names in InstalledAppMap
 const EXCLUDED_PARENT_DIRS: &[&str] = &[
     "program files",
     "program files (x86)",
@@ -705,11 +705,11 @@ const EXCLUDED_PARENT_DIRS: &[&str] = &[
     "users",
 ];
 
-/// 目录名拆词后不参与匹配的词元。
+/// Tokens excluded from matching after splitting directory names.
 ///
-/// 这些词出现在几乎所有软件的目录名里（`xxx-desktop`、`xxx-updater`），
-/// 拿它们去比对"这是哪个软件的目录"只会制造噪音：
-/// 只要装了任意一个 Electron 应用，所有带 `desktop` 的目录都会被当成它的数据。
+/// These words appear in almost every software's directory name (`xxx-desktop`, `xxx-updater`);
+/// using them to decide "which app's directory this is" only creates noise:
+/// if any Electron app is installed, every directory containing `desktop` is treated as its data.
 const TOKEN_STOPWORDS: &[&str] = &[
     "app",
     "apps",
@@ -770,14 +770,14 @@ const TOKEN_STOPWORDS: &[&str] = &[
     "nightly",
 ];
 
-/// 把目录名拆成可用于比较的词元。
+/// Split a directory name into tokens usable for comparison.
 ///
-/// `ms-playwright` → [`playwright`]（`ms` 太短）
-/// `kimi-desktop-updater` → [`kimi`]（后两个是停用词）
+/// `ms-playwright` -> [`playwright`] (`ms` is too short)
+/// `kimi-desktop-updater` -> [`kimi`] (the last two are stopwords)
 /// `ollama app` → [`ollama`]
 ///
-/// 只保留长度 ≥ 4、不是停用词、不是纯数字的词元。
-/// 阈值定在 4 是因为 `ms`、`ai`、`vr` 这类两三个字母的词元几乎必然误撞。
+/// Keep only tokens of length >= 4 that are not stopwords and not purely numeric.
+/// The threshold is 4 because two- or three-letter tokens like `ms`, `ai`, `vr` almost inevitably collide.
 fn name_tokens(name_lower: &str) -> impl Iterator<Item = &str> {
     name_lower
         .split(|c: char| !c.is_alphanumeric())
@@ -786,9 +786,9 @@ fn name_tokens(name_lower: &str) -> impl Iterator<Item = &str> {
         .filter(|token| !token.chars().all(|c| c.is_ascii_digit()))
 }
 
-/// 从已安装应用列表构建「词元 → 应用索引」索引。
+/// Build the "token -> app index" index from the installed app list.
 ///
-/// 单独抽出来是为了让测试能自己指定"装了哪些应用"，不必依赖这台机器的注册表。
+/// Extracted separately so tests can specify "which apps are installed" themselves, without depending on this machine's registry.
 fn build_token_index(apps: &[InstalledAppInfo]) -> HashMap<String, Vec<usize>> {
     let mut token_to_app: HashMap<String, Vec<usize>> = HashMap::new();
     for (idx, app) in apps.iter().enumerate() {
@@ -800,15 +800,15 @@ fn build_token_index(apps: &[InstalledAppInfo]) -> HashMap<String, Vec<usize>> {
     token_to_app
 }
 
-/// 虚拟磁盘搜索时，是否要进入这个目录。
+/// Whether to descend into this directory during virtual disk search.
 ///
-/// 单独抽成函数是为了能单测：`WalkDir::filter_entry` 的闭包拿不到可构造的 `DirEntry`，
-/// 而这条规则一旦写错，WSL 用户的 `ext4.vhdx` 就再也扫不出来了 —— 必须钉住。
+/// Extracted as a function so it can be unit-tested: the `WalkDir::filter_entry` closure cannot get a constructible `DirEntry`,
+/// and if this rule is wrong, WSL users' `ext4.vhdx` will never be found again - must be pinned down.
 ///
-/// 规则：
-/// - 命中 `DISK_SCAN_SKIP_DIRS` 的直接不进；
-/// - 前两层（应用名）全进；
-/// - 第三层起只进 `DISK_SCAN_DIR_HINTS`（`LocalState` / `wsl\data` 这类）。
+/// Rules:
+/// - matches `DISK_SCAN_SKIP_DIRS` -> never enter;
+/// - first two levels (app names) -> always enter;
+/// - from the third level -> only enter `DISK_SCAN_DIR_HINTS` (like `LocalState` / `wsl\data`).
 fn should_descend_for_disks(name_lower: &str, depth: usize) -> bool {
     if DISK_SCAN_SKIP_DIRS.contains(&name_lower) {
         return false;
@@ -820,19 +820,19 @@ fn should_descend_for_disks(name_lower: &str, depth: usize) -> bool {
 }
 
 impl InstalledAppMap {
-    /// 从注册表构建已安装应用映射
+    /// Build the installed-app map from the registry
     ///
-    /// known_folders 只保留两类来源：
-    ///   a. InstallLocation 路径的最后一级目录名（小写）
-    ///   b. InstallLocation 路径的倒数第二级目录名，排除公共父目录
-    /// 不再拆分 DisplayName token，避免短 token 碰撞导致误判
+    /// known_folders keeps only two sources:
+    ///   a. the last directory name of the InstallLocation path (lowercase)
+    ///   b. the second-to-last directory name, excluding common parent directories
+    /// DisplayName tokens are no longer split, avoiding misjudgments from short-token collisions
     fn build() -> Self {
         let mut apps = Vec::new();
         let mut folder_to_app: HashMap<String, Vec<usize>> = HashMap::new();
         let mut known_folders = HashSet::new();
         let mut display_names = HashSet::new();
 
-        // 【安全说明】只读取注册表，不进行任何写入操作
+        // [Safety note] Only reads the registry; no write operations are performed
         let reg_paths = [
             (
                 HKEY_LOCAL_MACHINE,
@@ -863,25 +863,25 @@ impl InstalledAppMap {
                             .ok()
                             .filter(|s| !s.is_empty());
 
-                        // 规范化 DisplayName 并加入集合
+                        // Normalize DisplayName and add to the set
                         let normalized = normalize_display_name(&display_name);
                         if !normalized.is_empty() {
                             display_names.insert(normalized);
                         }
 
-                        // 仅从 InstallLocation 推断文件夹名，不拆分 DisplayName token
+                        // Infer folder names only from InstallLocation, do not split DisplayName tokens
                         let mut inferred = Vec::new();
 
                         if let Some(ref loc) = install_location {
                             let loc_path = Path::new(loc);
-                            // a. 末级目录名
+                            // a. last-level directory name
                             if let Some(folder) = loc_path.file_name() {
                                 let name = folder.to_string_lossy().to_lowercase();
                                 if !name.is_empty() {
                                     inferred.push(name);
                                 }
                             }
-                            // b. 倒数第二级目录名（排除公共父目录）
+                            // b. second-to-last directory name (excluding common parent directories)
                             if let Some(parent) = loc_path.parent() {
                                 if let Some(vendor) = parent.file_name() {
                                     let v = vendor.to_string_lossy().to_lowercase();
@@ -893,7 +893,7 @@ impl InstalledAppMap {
                             }
                         }
 
-                        // 去重
+                        // Deduplicate
                         inferred.sort();
                         inferred.dedup();
 
@@ -913,18 +913,18 @@ impl InstalledAppMap {
             }
         }
 
-        // 加载历史安装文件夹并计算疑似残留候选
-        // leftover_candidates = 曾经在 InstallLocation 中出现过但当前注册表中已找不到的文件夹
+        // Load historical install folders and compute suspected leftover candidates
+        // leftover_candidates = folders that appeared in InstallLocation before but are no longer in the current registry
         let mut historical = load_install_history();
         let leftover_candidates: HashSet<String> =
             historical.difference(&known_folders).cloned().collect();
 
-        // 当前装着的应用：DisplayName 拆词 → 应用索引
+        // Currently installed apps: DisplayName tokens -> app indices
         let token_to_app = build_token_index(&apps);
 
-        // 已卸载的应用：历史名的词元 → 原始历史名。
-        // 名字里带泛指词（豆包的 InstallLocation 曾被记成 `application`）时，
-        // 拆出来的词元全是停用词，自然进不了这张表 —— 不会因为一条垃圾历史误判一片目录。
+        // Uninstalled apps: tokens of historical names -> original historical names.
+        // When a name contains a generic word (Doubao's InstallLocation was once recorded as `application`),
+        // all split tokens are stopwords and naturally cannot enter this map - one piece of junk history won't misjudge a whole set of directories.
         let mut uninstalled_tokens: HashMap<String, String> = HashMap::new();
         for candidate in &leftover_candidates {
             for token in name_tokens(candidate) {
@@ -934,7 +934,7 @@ impl InstalledAppMap {
             }
         }
 
-        // 将当前已知文件夹合并到历史记录中并持久化
+        // Merge currently known folders into history and persist
         historical.extend(known_folders.iter().cloned());
         save_install_history(&historical);
 
@@ -958,12 +958,12 @@ impl InstalledAppMap {
         }
     }
 
-    /// 检查文件夹名是否精确匹配某个已安装应用的 InstallLocation 末级目录
+    /// Check whether a folder name exactly matches an installed app's InstallLocation last directory
     fn has_exact_owner(&self, folder_name_lower: &str) -> bool {
         self.known_folders.contains(folder_name_lower)
     }
 
-    /// 查找文件夹名对应的已安装应用（精确匹配 InstallLocation，返回应用名）
+    /// Find the installed app corresponding to a folder name (exact InstallLocation match, returns app name)
     fn find_owner(&self, folder_name_lower: &str) -> Option<&str> {
         if let Some(indices) = self.folder_to_app.get(folder_name_lower) {
             if let Some(&idx) = indices.first() {
@@ -973,16 +973,16 @@ impl InstalledAppMap {
         None
     }
 
-    /// 检查文件夹名是否匹配某个已知应用的规范化 DisplayName
+    /// Check whether a folder name matches a known app's normalized DisplayName
     fn matches_display_name(&self, folder_name_lower: &str) -> bool {
         self.display_names.contains(folder_name_lower)
     }
 
-    /// 目录名是否属于某个**仍安装着**的应用（词元匹配 + 子串兜底）。
+    /// Whether a directory name belongs to an app **still installed** (token match + substring fallback).
     ///
-    /// 与 `matches_display_name` 的区别是"宽松"：那边要求整个名字逐字相同，
-    /// 这边只要有一个词元对上就算。目录 `ms-playwright` 对 `Playwright` 这种
-    /// 命名差异只能靠词元识别 —— 否则"还在用的工具"会被当成残留推荐给用户删。
+    /// The difference from `matches_display_name` is "looseness": that one requires the whole name to match character-for-character,
+    /// here a single matching token is enough. Directory `ms-playwright` vs `Playwright` is the kind of
+    /// naming difference only token recognition can catch - otherwise "tools still in use" would be recommended to users as leftovers to delete.
     fn installed_app_for_name(&self, folder_name_lower: &str) -> Option<&str> {
         if let Some(owner) = name_tokens(folder_name_lower).find_map(|token| {
             self.token_to_app
@@ -993,10 +993,10 @@ impl InstalledAppMap {
             return Some(owner);
         }
 
-        // 子串兜底：真实目录名经常把两个词拼在一起，拆不出来
+        // Substring fallback: real directory names often concatenate two words and cannot be split
         // （`@genieworkbuddy-desktop-updater` → `genieworkbuddy`），
-        // 或者应用名只是目录名的一部分（`Comfy` vs `comfyui-desktop-2-updater`）。
-        // 长度门槛 5：`uv`、`code` 这种短名字的子串几乎必然撞上别的东西。
+        // or the app name is only part of the directory name (`Comfy` vs `comfyui-desktop-2-updater`).
+        // Length threshold 5: substrings of short names like `uv` or `code` almost inevitably hit something else.
         self.token_to_app
             .iter()
             .filter(|(token, _)| token.len() >= 5 && folder_name_lower.contains(token.as_str()))
@@ -1005,9 +1005,9 @@ impl InstalledAppMap {
             .map(|&idx| self.apps[idx].display_name.as_str())
     }
 
-    /// 目录名是否对应一个**已经卸载**的应用（词元匹配 + 子串兜底，返回历史里出现过的名字）。
+    /// Whether a directory name corresponds to an **already uninstalled** app (token match + substring fallback, returns the name seen in history).
     ///
-    /// 这是"卸载残留"最直接的证据：这个应用曾经装过，现在注册表里已经没有它了。
+    /// This is the most direct evidence of an "uninstall leftover": the app was once installed and is now gone from the registry.
     fn uninstalled_app_for_name(&self, folder_name_lower: &str) -> Option<&str> {
         if let Some(name) = name_tokens(folder_name_lower).find_map(|token| {
             self.uninstalled_tokens
@@ -1024,22 +1024,22 @@ impl InstalledAppMap {
             .map(|(_, name)| name.as_str())
     }
 
-    /// 结构化路径所有权推断：检查文件夹名是否映射到某个已安装应用的 InstallLocation
+    /// Structured path ownership inference: check whether a folder name maps to an installed app's InstallLocation
     fn has_inferred_ownership(&self, folder_name_lower: &str) -> bool {
         self.has_exact_owner(folder_name_lower)
     }
 
-    /// 检查文件夹名是否为历史残留候选（曾经在 InstallLocation 中但当前注册表找不到）
+    /// Check whether a folder name is a historical leftover candidate (was in InstallLocation but not in the current registry)
     fn is_leftover_candidate(&self, folder_name_lower: &str) -> bool {
         self.leftover_candidates.contains(folder_name_lower)
     }
 }
 
 // ============================================================================
-// 评分引擎
+// Scoring engine
 // ============================================================================
 
-/// 评分上下文（单个目录的评分中间结果）
+/// Scoring context (intermediate results for scoring a single directory)
 struct ScoringContext {
     score: f32,
     reasons: Vec<String>,
@@ -1047,7 +1047,7 @@ struct ScoringContext {
 
 impl ScoringContext {
     fn new() -> Self {
-        // 基线分 0.0，所有分数由正向信号驱动
+        // Baseline 0.0; all scores are driven by positive signals
         Self {
             score: 0.0,
             reasons: Vec::new(),
@@ -1059,12 +1059,12 @@ impl ScoringContext {
         self.reasons.push(reason);
     }
 
-    /// 将分数限制在 [0.0, 1.0]
+    /// Clamp the score to [0.0, 1.0]
     fn finalize(&mut self) {
         self.score = self.score.clamp(0.0, 1.0);
     }
 
-    /// 根据最终分数确定检测分类
+    /// Determine the detection category from the final score
     fn category(&self) -> DetectionCategory {
         if self.score >= HIGH_CONFIDENCE_SCORE {
             DetectionCategory::HighConfidenceLeftover
@@ -1077,22 +1077,22 @@ impl ScoringContext {
 }
 
 // ============================================================================
-// 文件系统探测
+// Filesystem probing
 // ============================================================================
 
-/// 文件系统探测结果
+/// Filesystem probe result
 struct FsProbeResult {
-    /// 发现的可执行文件数量
+    /// Number of executable files found
     executable_count: u32,
-    /// 发现 uninstall*.exe
+    /// Whether uninstall*.exe was found
     has_uninstaller: bool,
-    /// 总文件数（在探测深度内）
+    /// Total file count (within the probe depth)
     file_count: u32,
-    /// 总大小（字节）
+    /// Total size (bytes)
     total_size: u64,
 }
 
-/// 对目录执行有限深度文件系统探测
+/// Perform a limited-depth filesystem probe on a directory
 fn probe_directory(path: &Path, max_depth: usize) -> FsProbeResult {
     let mut result = FsProbeResult {
         executable_count: 0,
@@ -1117,7 +1117,7 @@ fn probe_directory(path: &Path, max_depth: usize) -> FsProbeResult {
 
         let file_name = entry.file_name().to_string_lossy().to_lowercase();
 
-        // 检查可执行文件
+        // Check executable files
         if let Some(ext) = entry.path().extension() {
             let ext_lower = ext.to_string_lossy().to_lowercase();
             if EXECUTABLE_EXTENSIONS.contains(&ext_lower.as_str()) {
@@ -1125,7 +1125,7 @@ fn probe_directory(path: &Path, max_depth: usize) -> FsProbeResult {
             }
         }
 
-        // 检查卸载程序
+        // Check for uninstallers
         if file_name.starts_with("uninstall") || file_name.starts_with("uninst") {
             if file_name.ends_with(".exe") {
                 result.has_uninstaller = true;
@@ -1137,27 +1137,27 @@ fn probe_directory(path: &Path, max_depth: usize) -> FsProbeResult {
 }
 
 // ============================================================================
-// 卸载残留扫描器
+// Uninstall leftover scanner
 // ============================================================================
 
-/// 卸载残留扫描器（置信度评分引擎）
+/// Uninstall leftover scanner (confidence scoring engine)
 pub struct LeftoverScanner {
-    /// 已安装应用映射表
+    /// Installed-app map
     app_map: InstalledAppMap,
-    /// 结构化白名单规则
+    /// Structured whitelist rules
     whitelist: Vec<WhitelistRule>,
-    /// 最小文件夹大小阈值（字节）
+    /// Minimum folder size threshold (bytes)
     min_size_threshold: u64,
-    /// 最小未修改天数（用于正向加分）
+    /// Minimum days unmodified (for positive scoring)
     min_days_old: u64,
-    /// 是否启用深度扫描模式
+    /// Whether deep scan mode is enabled
     deep_scan: bool,
-    /// 最低输出置信度阈值（低于此分数的条目不输出）
+    /// Minimum output confidence threshold (entries below this score are not output)
     min_confidence_threshold: f32,
 }
 
 impl LeftoverScanner {
-    /// 创建新的扫描器实例（默认启用完整扫描，包括模拟器残留和虚拟磁盘检测）
+    /// Create a new scanner instance (full scan enabled by default, including emulator leftovers and virtual disk detection)
     pub fn new() -> Self {
         let app_map = InstalledAppMap::build();
         let whitelist = build_whitelist_rules();
@@ -1173,20 +1173,20 @@ impl LeftoverScanner {
             min_size_threshold: 1024 * 1024, // 1MB
             min_days_old: 7,
             deep_scan: true,
-            // 只输出 score >= SUSPICIOUS_SCORE（0.30）的条目：常见组合
-            // 「有可执行文件 +0.20」+「很久没改 +0.10」正好卡在这一档线
+            // Only output entries with score >= SUSPICIOUS_SCORE (0.30): the common combination
+            // "has executable +0.20" + "long unchanged +0.10" lands right on this line
             min_confidence_threshold: SUSPICIOUS_SCORE,
         }
     }
 
-    /// 兼容旧接口，参数已忽略，始终启用完整扫描
+    /// Compatible with the old interface; arguments ignored, full scan always enabled
     pub fn with_deep_scan(_deep_scan: bool) -> Self {
         Self::new()
     }
 
-    /// 执行卸载残留扫描
+    /// Run the uninstall leftover scan
     pub fn scan(&self) -> LeftoverScanResult {
-        // 白名单在一次扫描开始时只读取一次，避免目录枚举时产生重复磁盘 IO。
+        // The user whitelist is read once at the start of a scan to avoid repeated disk IO during directory enumeration.
         let user_whitelist = leftover_whitelist::list_entries().unwrap_or_else(|error| {
             log::warn!(
                 "读取卸载残留用户白名单失败，将按空白名单继续扫描: {}",
@@ -1197,7 +1197,7 @@ impl LeftoverScanner {
         self.scan_with_paths(self.get_scan_paths(), &user_whitelist)
     }
 
-    /// 使用给定根目录扫描，测试可通过临时目录验证规则而不触及真实用户数据。
+    /// Scan with given root paths; tests can verify rules with temp directories without touching real user data.
     fn scan_with_paths(
         &self,
         scan_paths: Vec<(PathBuf, LeftoverSource)>,
@@ -1206,7 +1206,7 @@ impl LeftoverScanner {
         let start_time = std::time::Instant::now();
         let mut leftovers = Vec::new();
         let mut total_size = 0u64;
-        // 空结果时用的诊断计数：让用户知道扫过多少目录、最高分差多少
+        // Diagnostic counters for empty results: let users know how many directories were scanned and how far the top score was off
         let mut scanned_directories = 0usize;
         let mut below_threshold = 0usize;
         let mut highest_confidence = 0f32;
@@ -1218,26 +1218,26 @@ impl LeftoverScanner {
 
             log::info!("扫描残留目录: {:?}", base_path);
 
-            // 只扫描一级子目录
+            // Only scan first-level subdirectories
             if let Ok(entries) = fs::read_dir(base_path) {
                 for entry in entries.filter_map(|e| e.ok()) {
                     let path = entry.path();
 
-                    // 只处理目录
+                    // Only process directories
                     if !path.is_dir() {
                         continue;
                     }
 
                     scanned_directories += 1;
 
-                    // 获取文件夹名称
+                    // Get the folder name
                     let folder_name = match path.file_name() {
                         Some(name) => name.to_string_lossy().to_string(),
                         None => continue,
                     };
 
-                    // 白名单检查（硬性排除）
-                    // 用户白名单优先于评分逻辑，确保误报路径不会继续出现在结果中。
+                    // Whitelist check (hard exclusion)
+                    // The user whitelist takes priority over scoring logic, ensuring false-positive paths never reappear in results.
                     if leftover_whitelist::contains_path(user_whitelist, &path)
                         || self.is_whitelisted(&folder_name)
                     {
@@ -1246,29 +1246,29 @@ impl LeftoverScanner {
 
                     let folder_lower = folder_name.to_lowercase();
 
-                    // 预过滤：包名格式目录（com.xxx.yyy）→ 直接跳过
+                    // Pre-filter: package-name format folder (com.xxx.yyy) -> skip directly
                     if RE_PACKAGE_NAME.is_match(&folder_lower) {
                         continue;
                     }
-                    // 预过滤：纯版本号目录（1.2.3.4、v2.0）→ 直接跳过
+                    // Pre-filter: pure version-number folder (1.2.3.4, v2.0) -> skip directly
                     if RE_VERSION_FOLDER.is_match(&folder_lower) {
                         continue;
                     }
 
-                    // 模拟器检测（高置信度短路）
+                    // Emulator detection (high-confidence short circuit)
                     let emulator_match = self.detect_emulator(&folder_name);
 
-                    // 文件系统探测（有限深度）
+                    // Filesystem probing (limited depth)
                     let probe = probe_directory(&path, FS_PROBE_MAX_DEPTH);
 
-                    // 空壳目录：一个文件都没有。
-                    // 真实的卸载残留经常正是这个形态 —— 卸载程序清掉了内容、只剩目录，
-                    // 但它永远过不了 1MB 的体积门槛，所以先认出来，交给历史证据定分。
+                    // Empty shell directory: not a single file.
+                    // Real uninstall leftovers often look exactly like this - the uninstaller cleared the contents, leaving only the directory,
+                    // but it never passes the 1MB size gate, so recognize it first and let historical evidence decide the score.
                     let is_empty_shell = probe.file_count == 0;
 
-                    // 大小阈值过滤（空壳不参与：它是不是残留由历史证据决定，不由体积决定）
+                    // Size threshold filtering (empty shells excluded: whether they are leftovers is decided by history, not size)
                     let threshold = if emulator_match.is_some() {
-                        100 * 1024 // 模拟器残留降低阈值到 100KB
+                        100 * 1024 // Lower the threshold to 100KB for emulator leftovers
                     } else {
                         self.min_size_threshold
                     };
@@ -1276,31 +1276,31 @@ impl LeftoverScanner {
                         continue;
                     }
 
-                    // 获取最后修改时间
+                    // Get last modified time
                     let last_modified = Self::get_last_modified(&path);
 
-                    // 更新器目录 / 缓存目录：名字就能说明它是什么，与装没装、改没改无关
+                    // Updater / cache directories: the name alone tells what they are, regardless of install or modification state
                     let is_updater_dir = RE_UPDATER_DIR.is_match(&folder_lower);
                     let is_cache_dir = !is_updater_dir && RE_CACHE_DIR.is_match(&folder_lower);
 
-                    // ============ 评分（基线 0.0） ============
+                    // ============ Scoring (baseline 0.0) ============
                     let mut ctx = ScoringContext::new();
 
                     if let Some(emu_name) = &emulator_match {
-                        // 【5】模拟器命中 → 直接 0.90，跳过其他信号
+                        // [5] Emulator hit -> straight 0.90, skip other signals
                         ctx.score = 0.90;
                         ctx.reasons.push(format!("匹配已知模拟器: {}", emu_name));
                     } else {
-                        // ---- 正向信号 ----
+                        // ---- Positive signals ----
 
-                        // +0.35 文件夹内发现 uninstall*.exe / uninst*.exe
+                        // +0.35 Found uninstall*.exe / uninst*.exe in the folder
                         if probe.has_uninstaller {
                             ctx.add(0.35, "包含卸载程序残留 (uninstall*.exe)".into());
                         }
 
-                        // +0.45 更新器目录。
-                        // 这一条是给"后果"打的分，不是给"可能性"打分：程序更新完，
-                        // 这些解包出来的旧版本就没用了，删掉只是让更新器下次重新下载。
+                        // +0.45 Updater directory.
+                        // This scores the "consequence", not the "likelihood": after the program updates,
+                        // these unpacked old versions are useless; deleting them only makes the updater re-download next time.
                         if is_updater_dir {
                             ctx.add(
                                 0.45,
@@ -1309,7 +1309,7 @@ impl LeftoverScanner {
                             );
                         }
 
-                        // +0.35 应用自己的缓存/日志目录：删掉程序下次运行会重新生成
+                        // +0.35 App's own cache/log directory: deleting it is regenerated on next program run
                         if is_cache_dir {
                             ctx.add(
                                 0.35,
@@ -1317,9 +1317,9 @@ impl LeftoverScanner {
                             );
                         }
 
-                        // +0.25 文件夹名匹配历史 InstallLocation 且应用已不在注册表
-                        // （历史缓存中记录了过去所有 InstallLocation 文件夹，
-                        //   若某文件夹曾在历史中出现但当前注册表中找不到，说明已卸载）
+                        // +0.25 Folder name matches a historical InstallLocation and the app is no longer in the registry
+                        // (the history cache records all past InstallLocation folders;
+                        //   if a folder appeared in history but is not in the current registry, the app is uninstalled)
                         if self.app_map.is_leftover_candidate(&folder_lower) {
                             ctx.add(
                                 0.25,
@@ -1329,21 +1329,21 @@ impl LeftoverScanner {
                             .app_map
                             .uninstalled_app_for_name(&folder_lower)
                         {
-                            // 词元级的历史命中：目录名和安装记录不会逐字相同
+                            // Token-level historical hit: directory names and install records are rarely character-for-character identical
                             // （`Comfy Desktop` vs `comfyui-desktop-2-updater`），
-                            // 逐字匹配基本失效，这条才是历史证据真正生效的路径。
+                            // Exact matching basically fails; this is the path where historical evidence really takes effect.
                             ctx.add(
                                 0.20,
                                 format!("目录名与该应用的历史安装记录吻合（已卸载）: {}", uninstalled),
                             );
                         }
 
-                        // +0.10 空壳目录：配合上面的历史命中，才构成"卸载后留下的空目录"
+                        // +0.10 Empty shell directory: only together with the history hit above does it form "an empty directory left after uninstall"
                         if is_empty_shell {
                             ctx.add(0.10, "目录已空（只剩目录本身）".into());
                         }
 
-                        // +0.20 包含 .exe 或 .dll 文件
+                        // +0.20 Contains .exe or .dll files
                         if probe.executable_count > 0 {
                             ctx.add(
                                 0.20,
@@ -1351,18 +1351,18 @@ impl LeftoverScanner {
                             );
                         }
 
-                        // 修改时间（只计算一次）
+                        // Modification time (computed once)
                         let days_old = Self::get_days_since_modified(&path);
 
-                        // +0.10 超过 min_days_old 天未修改
+                        // +0.10 Not modified for more than min_days_old days
                         if days_old > self.min_days_old {
                             ctx.add(0.10, format!("已 {} 天未修改", days_old));
                         }
 
-                        // ---- 负向信号 ----
+                        // ---- Negative signals ----
 
-                        // -0.45 文件夹名精确匹配当前已安装应用 DisplayName。
-                        // DisplayName 来源于当前注册表，代表软件仍有安装记录；把它作为保护信号能降低误伤正在使用软件数据的概率。
+                        // -0.45 Folder name exactly matches a currently installed app's DisplayName.
+                        // DisplayName comes from the current registry and means the software still has an install record; using it as a protective signal reduces the chance of harming data of software in use.
                         if self.app_map.matches_display_name(&folder_lower) {
                             ctx.add(
                                 -0.45,
@@ -1370,46 +1370,46 @@ impl LeftoverScanner {
                             );
                         } else if let Some(owner) = self.app_map.installed_app_for_name(&folder_lower)
                         {
-                            // -0.35 词元匹配到仍安装着的应用。
-                            // 精确匹配漏掉的正是最常见的形态：`ms-playwright` / `Code` /
-                            // `comfyui-desktop-2-updater` —— 它们和 DisplayName 从来不一致，
-                            // 不扣分就会以 0.30 的身份出现在结果里，被用户当成"可以删"。
+                            // -0.35 Token match to an app still installed.
+                            // What exact matching misses is the most common form: `ms-playwright` / `Code` /
+                            // `comfyui-desktop-2-updater` - they never match DisplayName;
+                            // without a penalty they would appear in results as 0.30 items and be treated by users as "deletable".
                             ctx.add(
                                 -0.35,
                                 format!("目录名与仍在安装的应用吻合: {}", owner),
                             );
                         }
 
-                        // -0.60 文件夹名精确匹配已安装应用的 InstallLocation 末级目录
+                        // -0.60 Folder name exactly matches an installed app's InstallLocation last directory
                         if let Some(owner) = self.app_map.find_owner(&folder_lower) {
                             ctx.add(-0.60, format!("映射到已安装应用: {}", owner));
                         }
 
-                        // -0.40 通用目录名
+                        // -0.40 Generic directory name
                         if GENERIC_FOLDER_NAMES.contains(&folder_lower.as_str()) {
                             ctx.add(-0.40, format!("通用目录名: {}", folder_name));
                         }
 
-                        // -0.30 位于 ProgramData
+                        // -0.30 Located under ProgramData
                         if *source == LeftoverSource::ProgramData {
                             ctx.add(-0.30, "位于 ProgramData（系统共享目录）".into());
                         }
 
-                        // -0.20 7 天内有修改记录。
+                        // -0.20 Modified within 7 days.
                         //
-                        // 空壳目录不参与：它的修改时间几乎必然等于"内容被删掉的那一刻"，
-                        // 拿它当"最近还在用"的证据是反的 —— 那恰恰是卸载刚发生。
+                        // Empty shell directories are excluded: their modification time almost inevitably equals "the moment contents were deleted",
+                        // using it as evidence of "recently still in use" is backwards - it actually means the uninstall just happened.
                         if days_old < 7 && !is_empty_shell {
                             ctx.add(-0.20, format!("最近 {} 天内有修改", days_old));
                         }
 
-                        // -0.15 包名格式目录（预过滤已跳过大部分，此处作为负向信号兜底）
-                        // （已在预过滤阶段 skip，此处不再重复）
+                        // -0.15 Package-name format folder (pre-filter already skips most; kept here as a negative-signal fallback)
+                        // (already skipped in the pre-filter stage, not repeated here)
 
-                        // -0.15 纯版本号目录
-                        // （已在预过滤阶段 skip，此处不再重复）
+                        // -0.15 Pure version-number folder
+                        // (already skipped in the pre-filter stage, not repeated here)
 
-                        // -0.50 已知共享厂商目录
+                        // -0.50 Known shared vendor directory
                         if KNOWN_SHARED_VENDORS.contains(&folder_lower.as_str()) {
                             ctx.add(-0.50, format!("已知共享厂商目录: {}", folder_name));
                         }
@@ -1417,10 +1417,10 @@ impl LeftoverScanner {
 
                     ctx.finalize();
 
-                    // 记录诊断：最高分是多少、有多少条卡在门槛下
+                    // Record diagnostics: what the top score is and how many entries are stuck below the threshold
                     highest_confidence = highest_confidence.max(ctx.score);
 
-                    // 过滤低分条目（score < SUSPICIOUS_SCORE 不输出）
+                    // Filter low-score entries (score < SUSPICIOUS_SCORE is not output)
                     if ctx.score < self.min_confidence_threshold {
                         below_threshold += 1;
                         continue;
@@ -1429,7 +1429,7 @@ impl LeftoverScanner {
                     let detection_category = if emulator_match.is_some() {
                         DetectionCategory::HighConfidenceLeftover
                     } else if is_updater_dir {
-                        // 比"高置信度"更具体：这一类连删掉的后果都能说清
+                        // More specific than "high confidence": for this category even the consequence of deletion can be stated clearly
                         DetectionCategory::UpdaterCache
                     } else if is_cache_dir {
                         DetectionCategory::CacheDir
@@ -1467,7 +1467,7 @@ impl LeftoverScanner {
             }
         }
 
-        // 【深度扫描】扫描虚拟磁盘文件
+        // [Deep scan] Scan for virtual disk files
         if self.deep_scan {
             log::info!("执行深度扫描: 搜索孤立虚拟磁盘文件...");
             let virtual_disks = self.scan_virtual_disk_files(&scan_paths, user_whitelist);
@@ -1477,13 +1477,13 @@ impl LeftoverScanner {
             }
         }
 
-        // 根目录下的孤立可执行文件（`Roaming\ollama app.exe` 这类）
+        // Orphaned executables in the root directory (like `Roaming\ollama app.exe`)
         for entry in self.scan_loose_files(&scan_paths, user_whitelist) {
             total_size += entry.size;
             leftovers.push(entry);
         }
 
-        // 按置信度降序排列（同分则按大小降序）
+        // Sort by confidence descending (ties broken by size descending)
         leftovers.sort_by(|a, b| {
             b.confidence
                 .partial_cmp(&a.confidence)
@@ -1519,23 +1519,23 @@ impl LeftoverScanner {
     }
 
     // ========================================================================
-    // 私有方法
+    // Private methods
     // ========================================================================
 
-    /// 白名单检查（结构化规则匹配）
+    /// Whitelist check (structured rule matching)
     fn is_whitelisted(&self, folder_name: &str) -> bool {
         let name_lower = folder_name.to_lowercase();
         self.whitelist.iter().any(|rule| rule.matches(&name_lower))
     }
 
-    /// 检查文件路径中是否有任何一级祖先目录在白名单内
+    /// Check whether any ancestor directory of a file path is in the whitelist
     ///
-    /// 从文件的父目录开始，逐级向上（到 base_dir 为止），
-    /// 如果某级目录名命中白名单则返回 true。
-    /// 用于 scan_virtual_disk_files 中防止 WSL2（\wsl\<GUID>\ext4.vhdx）等
-    /// 深层嵌套虚拟磁盘被误判——直接父目录是 GUID，但上级 "wsl" 在名单中。
+    /// Starting from the file's parent directory, walk upward (up to base_dir),
+    /// returning true if any level's directory name matches the whitelist.
+    /// Used in scan_virtual_disk_files to prevent deep-nested virtual disks like WSL2 (\wsl\<GUID>\ext4.vhdx)
+    /// from being misjudged - the immediate parent is a GUID, but the ancestor "wsl" is on the list.
     fn is_path_in_whitelist(&self, file_path: &Path, base_dir: &Path) -> bool {
-        // 从文件的父目录开始，逐级向上检查
+        // Start from the file's parent directory, checking upward level by level
         let mut current = match file_path.parent() {
             Some(p) => p.to_path_buf(),
             None => return false,
@@ -1548,7 +1548,7 @@ impl LeftoverScanner {
                     return true;
                 }
             }
-            // 继续向上一级
+            // Continue to the parent level
             current = match current.parent() {
                 Some(p) => p.to_path_buf(),
                 None => break,
@@ -1557,14 +1557,14 @@ impl LeftoverScanner {
         false
     }
 
-    /// 模拟器检测（精确/前缀匹配，非全局 contains）
-    /// 返回匹配到的模拟器名称（如有）
+    /// Emulator detection (exact/prefix matching, not global contains)
+    /// Returns the matched emulator name (if any)
     fn detect_emulator(&self, folder_name: &str) -> Option<String> {
         let name_lower = folder_name.to_lowercase();
 
         for sig in EMULATOR_SIGNATURES {
             for keyword in sig.folder_keywords {
-                // 使用精确匹配或前缀匹配代替 contains
+                // Use exact or prefix matching instead of contains
                 if name_lower == *keyword || name_lower.starts_with(keyword) {
                     log::debug!("检测到模拟器残留: {} (匹配 {})", folder_name, sig.name);
                     return Some(sig.name.to_string());
@@ -1575,19 +1575,19 @@ impl LeftoverScanner {
         None
     }
 
-    /// 【深度扫描】扫描孤立虚拟磁盘文件
-    /// 扫描 AppData / ProgramData 根目录下的**孤立文件**。
+    /// [Deep scan] Scan for orphaned virtual disk files
+    /// Scan **orphaned files** directly under the AppData / ProgramData roots.
     ///
-    /// 卸载残留不只有目录。安装器把启动器直接丢在 `AppData\Roaming` 根下是常见做法，
-    /// 卸载时又只删自己登记过的那几项 —— `Roaming\ollama app.exe` 就是这种：
-    /// 一个可执行文件独自躺在根目录里，而主流程只遍历目录（`if !path.is_dir() continue`），
-    /// 完全看不见它。
+    /// Uninstall leftovers are not only directories. Installers often drop a launcher directly in the `AppData\Roaming` root,
+    /// and on uninstall only delete the items they registered - `Roaming\ollama app.exe` is exactly this:
+    /// a single executable lying alone in the root, while the main flow only traverses directories (`if !path.is_dir() continue`)
+    /// and never sees it.
     ///
-    /// 只收可执行文件：根目录下其余文件是配置或缓存标志（`obs-virtualcam.txt`、
-    /// `viap.json`、`IconCache.db`），删了要么无害、要么是系统在管，报出来只是噪音。
+    /// Only executables are collected: other files in the root are config or cache markers (`obs-virtualcam.txt`,
+    /// `viap.json`, `IconCache.db`), whose deletion is either harmless or system-managed; reporting them is just noise.
     ///
-    /// 基础分给 0.25 而不是 0.30：根目录下出现 exe 本身可疑，但一条弱信号不该单独定罪。
-    /// 要过 0.30 的门槛，必须再有一条 —— 「很久没改」（+0.10）或「对得上已卸载的应用」（+0.25）。
+    /// The base score is 0.25 rather than 0.30: an exe in the root is suspicious by itself, but one weak signal should not convict alone.
+    /// To pass the 0.30 threshold, a second signal is required - "long unchanged" (+0.10) or "matches an uninstalled app" (+0.25).
     fn scan_loose_files(
         &self,
         scan_paths: &[(PathBuf, LeftoverSource)],
@@ -1601,7 +1601,7 @@ impl LeftoverScanner {
             };
 
             for entry in entries.filter_map(|e| e.ok()) {
-                // 只要文件：目录由主流程按残留规则处理
+                // Files only: directories are handled by the main flow under leftover rules
                 let Ok(file_type) = entry.file_type() else {
                     continue;
                 };
@@ -1631,7 +1631,7 @@ impl LeftoverScanner {
                 }
 
                 let size = entry.metadata().map(|meta| meta.len()).unwrap_or(0);
-                // 几百字节的 exe 通常只是占位标记，删不删都没有意义
+                // A few-hundred-byte exe is usually just a placeholder marker; deleting or not is meaningless
                 if size < LOOSE_FILE_MIN_SIZE {
                     continue;
                 }
@@ -1646,7 +1646,7 @@ impl LeftoverScanner {
                 );
 
                 if let Some(owner) = self.app_map.installed_app_for_name(&name_lower) {
-                    // 同名应用还装着：这大概是它自己放的启动器，不能动
+                    // The same-named app is still installed: this is probably its own launcher, must not be touched
                     ctx.add(
                         -0.45,
                         format!("文件名与仍在安装的应用吻合: {}", owner),
@@ -1666,7 +1666,7 @@ impl LeftoverScanner {
                     ctx.add(0.10, format!("已 {} 天未修改", days_old));
                 }
 
-                // ProgramData 是系统共享目录，同样的证据不足以说明问题
+                // ProgramData is a system shared directory; the same evidence is not enough to prove anything
                 if *source == LeftoverSource::ProgramData {
                     ctx.add(-0.20, "位于 ProgramData（系统共享目录）".into());
                 }
@@ -1709,27 +1709,27 @@ impl LeftoverScanner {
     ) -> Vec<LeftoverEntry> {
         let mut results = Vec::new();
 
-        // 与主流程共用同一份扫描根：这里原来自己写了一份三元素数组，
-        // get_scan_paths() 一旦增减位置，两处就会不一致（目录扫得到、磁盘却查不到）。
-        // 参数化之后测试也能用临时目录验证剪枝规则，不必碰真实 AppData。
+        // Share the same scan roots as the main flow: this used to define its own three-element array,
+        // and once get_scan_paths() added or removed a location the two would disagree (directories found, disks not).
+        // Parameterizing also lets tests verify pruning rules with temp directories without touching real AppData.
         for (base_dir, _source) in scan_paths {
             if !base_dir.exists() {
                 continue;
             }
 
-            // 递归搜索虚拟磁盘文件。
+            // Recursively search for virtual disk files.
             //
-            // 深度 4 够用：WSL 的 `Local\Packages\<发行版>\LocalState\ext4.vhdx` 和
-            // Docker 的 `Local\Docker\wsl\data\ext4.vhdx` 都落在这一层。
-            // 原来是 5，多那一层换不来任何命中，只是多遍历一层目录。
+            // Depth 4 is enough: WSL's `Local\Packages\<distribution>\LocalState\ext4.vhdx` and
+            // Docker's `Local\Docker\wsl\data\ext4.vhdx` both land at this level.
+            // It was 5; the extra level earned no hits, just traversed one more directory level.
             //
-            // 剪枝才是关键：全树扫一次要 5.9 秒，而目录数几乎全由 node_modules、
-            // Temp、包缓存这类目录贡献 —— 它们底下不可能有虚拟磁盘。
+            // Pruning is the key: a full-tree pass takes 5.9 s, and the directory count is almost entirely from node_modules,
+            // Temp, and package caches - virtual disks cannot be under them.
             //
-            // 两道剪枝：
-            //   ① 按目录名排除明显的碎目录；
-            //   ② 第三层起只进 `DISK_SCAN_DIR_HINTS` 里的目录 ——
-            //      前两层是应用名，第三层开始只剩 `LocalState` / `wsl\data` 这几种叫法。
+            // Two pruning rules:
+            //   ① Exclude obviously fragmented directories by name;
+            //   ② From the third level, only enter directories in `DISK_SCAN_DIR_HINTS` -
+            //      the first two levels are app names; from the third level only `LocalState` / `wsl\data` and a few such names remain.
             for entry in WalkDir::new(base_dir)
                 .max_depth(6)
                 .into_iter()
@@ -1744,17 +1744,17 @@ impl LeftoverScanner {
             {
                 let path = entry.path();
 
-                // 只处理文件
+                // Only process files
                 if !path.is_file() {
                     continue;
                 }
 
-                // 用户白名单可以保护虚拟磁盘文件本身或其上级目录。
+                // The user whitelist can protect the virtual disk file itself or any of its ancestor directories.
                 if leftover_whitelist::contains_path(user_whitelist, path) {
                     continue;
                 }
 
-                // 检查扩展名
+                // Check the extension
                 let ext = path
                     .extension()
                     .map(|e| format!(".{}", e.to_string_lossy().to_lowercase()))
@@ -1764,23 +1764,23 @@ impl LeftoverScanner {
                     continue;
                 }
 
-                // 获取文件大小
+                // Get the file size
                 let size = path.metadata().map(|m| m.len()).unwrap_or(0);
 
-                // 虚拟磁盘文件通常很大，忽略小于 100MB 的
+                // Virtual disk files are usually large; ignore anything under 100MB
                 if size < 100 * 1024 * 1024 {
                     continue;
                 }
 
-                // 检查路径中是否有上级目录在白名单内
-                // WSL2 等场景：文件在 \wsl\<GUID>\ext4.vhdx，直接父目录是 GUID，
-                // 但上级目录 "wsl" 在白名单中，应跳过
+                // Check whether any ancestor directory is in the whitelist
+                // In WSL2-like cases: the file is at \wsl\<GUID>\ext4.vhdx and the immediate parent is a GUID,
+                // but the ancestor "wsl" is on the whitelist, so it should be skipped
                 if self.is_path_in_whitelist(path, base_dir) {
                     log::info!("虚拟磁盘文件路径命中白名单，跳过: {}", path.display());
                     continue;
                 }
 
-                // 检查父目录是否对应已安装应用
+                // Check whether the parent directory corresponds to an installed app
                 let parent_folder = path
                     .parent()
                     .and_then(|p| p.file_name())
@@ -1825,7 +1825,7 @@ impl LeftoverScanner {
         results
     }
 
-    /// 获取需要扫描的路径列表
+    /// Get the list of paths to scan
     fn get_scan_paths(&self) -> Vec<(PathBuf, LeftoverSource)> {
         let mut paths = Vec::new();
 
@@ -1833,7 +1833,7 @@ impl LeftoverScanner {
         if let Some(local_app_data) = dirs::data_local_dir() {
             paths.push((local_app_data.clone(), LeftoverSource::LocalAppData));
 
-            // AppData\LocalLow（模拟器残留常见位置）
+            // AppData\LocalLow (common location for emulator leftovers)
             if let Some(parent) = local_app_data.parent() {
                 let local_low = parent.join("LocalLow");
                 if local_low.exists() {
@@ -1856,7 +1856,7 @@ impl LeftoverScanner {
         paths
     }
 
-    /// 获取文件夹最后修改时间（Unix 时间戳）
+    /// Get a folder's last modified time (Unix timestamp)
     fn get_last_modified(path: &Path) -> i64 {
         if let Ok(metadata) = fs::metadata(path) {
             if let Ok(modified) = metadata.modified() {
@@ -1868,7 +1868,7 @@ impl LeftoverScanner {
         0
     }
 
-    /// 获取距离上次修改的天数
+    /// Get the number of days since last modification
     fn get_days_since_modified(path: &Path) -> u64 {
         if let Ok(metadata) = fs::metadata(path) {
             if let Ok(modified) = metadata.modified() {
@@ -1889,30 +1889,30 @@ impl Default for LeftoverScanner {
 }
 
 // ============================================================================
-// 卸载残留删除操作
+// Uninstall leftover deletion operations
 // ============================================================================
 
-/// 卸载残留删除结果
+/// Uninstall leftover deletion result
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct LeftoverDeleteResult {
-    /// 成功删除的文件夹数
+    /// Number of folders successfully deleted
     pub deleted_count: u32,
-    /// 释放的空间大小（字节）
+    /// Space freed (bytes)
     pub deleted_size: u64,
-    /// 删除失败的路径（含因包含可执行文件而被跳过的，前端按下标与 `errors` 对应）
+    /// Paths that failed to delete (including those skipped for containing executables; frontend indexes into `errors` by position)
     pub failed_paths: Vec<String>,
-    /// 错误信息列表
+    /// List of error messages
     pub errors: Vec<String>,
-    /// 因包含可执行文件而被跳过的路径
+    /// Paths skipped for containing executables
     pub skipped_executables: Vec<String>,
 }
 
-/// 浅层可执行文件扫描，发现则返回警告信息
+/// Shallow executable scan; returns a warning message if any are found
 ///
-/// 【中文说明】
-/// 快速扫描目标文件夹的浅层（depth=3），如果发现 .exe/.dll/.sys 文件，
-/// 说明该目录可能包含正在使用的便携软件或系统组件。
-/// 返回 Some(消息) 表示发现可执行文件，应跳过删除。
+/// [Note]
+/// Quickly scan the shallow layers (depth=3) of the target folder; if .exe/.dll/.sys files are found,
+/// the directory may contain portable software or system components still in use.
+/// Returning Some(message) means executables were found and deletion should be skipped.
 fn has_executables_shallow(path: &Path) -> Option<String> {
     const EXE_EXTENSIONS: &[&str] = &["exe", "dll", "sys"];
     let max_depth = 3;
@@ -1959,17 +1959,17 @@ fn has_executables_shallow(path: &Path) -> Option<String> {
     }
 }
 
-/// 删除卸载残留文件夹（含安全预检查）
+/// Delete uninstall leftover folders (with safety pre-checks)
 ///
-/// 【中文说明】
-/// 每个路径依次执行：路径范围检查 → 分类（目录 / 文件）→ 可执行文件扫描 → 删除。
-/// 包含可执行文件的**目录**不会被删除，而是标记为 skipped_executables，
-/// 引导用户通过深度清理（含人工审核机制）处理。
+/// [Note]
+/// For each path, in order: path-scope check -> classify (directory / file) -> executable scan -> delete.
+/// **Directories** containing executables are not deleted; they are marked as skipped_executables
+/// and the user is guided to handle them via deep cleanup (which includes manual review).
 pub fn delete_folders(paths: Vec<String>) -> LeftoverDeleteResult {
     let whitelist_entries = match leftover_whitelist::list_entries() {
         Ok(entries) => entries,
         Err(error) => {
-            // 白名单无法读取时拒绝删除，宁可要求用户修复配置，也不能让保护规则失效。
+            // If the whitelist cannot be read, refuse to delete: better to ask the user to fix the config than let protection rules fail.
             return LeftoverDeleteResult {
                 deleted_count: 0,
                 deleted_size: 0,
@@ -1985,14 +1985,14 @@ pub fn delete_folders(paths: Vec<String>) -> LeftoverDeleteResult {
     delete_folders_with_whitelist(paths, &whitelist_entries)
 }
 
-/// 允许删除的根目录，必须与 `get_scan_paths()` 的扫描范围同一口径。
+/// Allowed deletion roots, aligned with the scan scope of `get_scan_paths()`.
 ///
-/// 两处一旦不一致，就会出现「扫得到、删不掉」（判定落在扫描范围外）。
+/// If the two disagree, "found but cannot delete" occurs (a judgment falls outside the scan scope).
 fn deletion_roots() -> Vec<PathBuf> {
     let mut roots = Vec::new();
     if let Some(local) = dirs::data_local_dir() {
         roots.push(local.clone());
-        // LocalLow 与 Local 同级，模拟器残留常落在这里
+        // LocalLow is at the same level as Local; emulator leftovers often land here
         if let Some(parent) = local.parent() {
             let local_low = parent.join("LocalLow");
             if local_low.exists() {
@@ -2010,7 +2010,7 @@ fn deletion_roots() -> Vec<PathBuf> {
     roots
 }
 
-/// 供正常删除和测试复用，保证过期扫描结果也不能绕过用户保护规则。
+/// Shared by normal deletion and tests, ensuring even stale scan results cannot bypass user protection rules.
 fn delete_folders_with_whitelist(
     paths: Vec<String>,
     whitelist_entries: &[leftover_whitelist::LeftoverWhitelistEntry],
@@ -2032,25 +2032,25 @@ fn delete_folders_in(
     for path in paths {
         let path_buf = PathBuf::from(&path);
 
-        // 删除前重新检查，避免白名单更新后仍被旧扫描结果删除。
+        // Re-check before deleting so a whitelist update cannot still be bypassed by old scan results.
         if leftover_whitelist::contains_path(whitelist_entries, &path_buf) {
             failed_paths.push(path.clone());
             errors.push(format!("路径受用户白名单保护: {}", path));
             continue;
         }
 
-        // 安全检查 1: 路径在允许范围内
+        // Safety check 1: path is within the allowed scope
         if !is_safe_leftover_path_under(&path_buf, roots) {
             failed_paths.push(path.clone());
             errors.push(format!("路径不在允许的目录内: {}", path));
             continue;
         }
 
-        // 安全检查 2: 判类型。孤立虚拟磁盘（`ext4.vhdx` 这类）是**文件**，
-        // 走到 `remove_dir_all` 上必然报「目录名无效」，用户看到的就是
-        // 「几十 GB 的残留删不掉」，所以这里先分流。
-        // junction / 目录软链接不算 is_file，仍走目录分支 —— `remove_dir_all`
-        // 只会删掉链接本身，不会跟进去。
+        // Safety check 2: determine type. Orphaned virtual disks (like `ext4.vhdx`) are **files**,
+        // and would inevitably report "invalid directory name" through `remove_dir_all`; what the user sees is
+        // "tens of GB of leftovers cannot be deleted", so split them out here first.
+        // junctions / directory symlinks do not count as is_file and still take the directory branch - `remove_dir_all`
+        // deletes only the link itself and does not follow into the target.
         let metadata = match fs::symlink_metadata(&path_buf) {
             Ok(metadata) => metadata,
             Err(error) => {
@@ -2075,18 +2075,18 @@ fn delete_folders_in(
             continue;
         }
 
-        // 安全检查 3: 浅层可执行文件扫描（只对目录有意义）
+        // Safety check 3: shallow executable scan (only meaningful for directories)
         if let Some(msg) = has_executables_shallow(&path_buf) {
             skipped_executables.push(path.clone());
-            // 跳过也算"没删掉"，一并进 failed_paths：
-            // 前端是按 failed_paths 的下标去 errors 里取错误信息的，
-            // 这里少推一条，后面所有条目的错误信息都会串位。
+            // A skip also counts as "not deleted" and goes into failed_paths as well:
+            // the frontend indexes into errors by the position in failed_paths;
+            // pushing one fewer here would shift the error messages of all later entries.
             failed_paths.push(path.clone());
             errors.push(format!("{}: {}", path, msg));
             continue;
         }
 
-        // 删除前计算文件夹大小
+        // Compute folder size before deleting
         let folder_size = calculate_dir_size(&path_buf);
 
         match fs::remove_dir_all(&path_buf) {
@@ -2110,13 +2110,13 @@ fn delete_folders_in(
     }
 }
 
-/// 递归计算目录大小
+/// Recursively compute directory size
 fn calculate_dir_size(path: &std::path::Path) -> u64 {
     let mut size = 0u64;
     if let Ok(entries) = std::fs::read_dir(path) {
         for entry in entries.flatten() {
-            // `file_type()` 不跟随软链接 / junction：用 `is_dir()` 会跟进去，
-            // 一是把别的盘的容量算进来，二是遇到指回上层的环会无限递归。
+            // `file_type()` does not follow symlinks / junctions; using `is_dir()` would follow them:
+            // one, it would count capacity from other drives; two, a loop pointing upward would recurse infinitely.
             let Ok(file_type) = entry.file_type() else {
                 continue;
             };
@@ -2132,18 +2132,18 @@ fn calculate_dir_size(path: &std::path::Path) -> u64 {
     size
 }
 
-/// 检查路径是否在允许删除的范围内（可注入根目录，便于测试）。
+/// Check whether a path is within the allowed deletion scope (root injectable for testing).
 ///
-/// 【安全说明】
-/// 三条约束缺一不可：
-/// 1. **拒绝 `.` / `..` 组件** —— `remove_dir_all` 按解析后的真实路径动手，
-///    而前缀匹配是对字面量做的。`...\Local\..\..\..\Windows` 会以
-///    「在 AppData\Local 之下」的身份通过校验，实际删的却是别的目录。
-/// 2. **按组件比较，不按字符串前缀** —— 字符串 `starts_with` 会放过
-///    `AppData\LocalBackup`（它的前 19 个字符和 `AppData\Local` 一样）。
-/// 3. **目录只能是根的直接子目录** —— 扫描只产出一级目录，更深层的目录
-///    不该由这个模块整目录删除；文件（孤立虚拟磁盘）允许更深，
-///    它的真实位置就在 `Packages\<包名>\LocalState\` 里面。
+/// [Safety note]
+/// All three constraints are required:
+/// 1. **Reject `.` / `..` components** - `remove_dir_all` acts on the resolved real path,
+///    while prefix matching is done on the literal. `...\Local\..\..\..\Windows` would pass validation
+///    as "under AppData\Local" while actually deleting a different directory.
+/// 2. **Compare by components, not string prefix** - string `starts_with` would allow
+///    `AppData\LocalBackup` (its first 19 characters are the same as `AppData\Local`).
+/// 3. **Directories must be direct children of the root** - the scanner only produces first-level directories;
+///    deeper directories should not be wholesale deleted by this module; files (orphaned virtual disks) may go deeper,
+///    as their real location is inside `Packages\<package name>\LocalState\`.
 fn is_safe_leftover_path_under(path: &Path, roots: &[PathBuf]) -> bool {
     if path
         .components()
@@ -2158,7 +2158,7 @@ fn is_safe_leftover_path_under(path: &Path, roots: &[PathBuf]) -> bool {
         .unwrap_or(false);
 
     roots.iter().any(|root| {
-        // 严格在根目录之下：根目录本身不能被当成残留删掉
+        // Strictly below the root: the root itself cannot be treated as a leftover and deleted
         if path_depth <= root.components().count() {
             return false;
         }
@@ -2174,7 +2174,7 @@ fn is_safe_leftover_path_under(path: &Path, roots: &[PathBuf]) -> bool {
     })
 }
 
-/// 按组件比较，忽略大小写（Windows 路径大小写不敏感）。
+/// Compare paths by components, case-insensitively (Windows paths are case-insensitive).
 fn starts_with_ignore_case(path: &Path, root: &Path) -> bool {
     let mut path_components = path.components();
     for root_component in root.components() {
@@ -2192,7 +2192,7 @@ fn starts_with_ignore_case(path: &Path, root: &Path) -> bool {
     true
 }
 
-/// 两个路径是否完全等价（按组件、忽略大小写）。
+/// Whether two paths are fully equivalent (by components, case-insensitive).
 fn components_eq_ignore_case(left: &Path, right: &Path) -> bool {
     let mut left_components = left.components();
     let mut right_components = right.components();
@@ -2214,7 +2214,7 @@ fn components_eq_ignore_case(left: &Path, right: &Path) -> bool {
 }
 
 // ============================================================================
-// 单元测试
+// Unit tests
 // ============================================================================
 
 #[cfg(test)]
@@ -2240,7 +2240,7 @@ mod tests {
         ));
         let candidate = root.join("leidian_whitelist_fixture");
         fs::create_dir_all(&candidate).expect("创建模拟残留目录失败");
-        // 模拟器特征和超过阈值的内容确保夹具能经过真实扫描器的筛选，而非只测试字符串过滤。
+        // Emulator signatures and above-threshold content ensure the fixture passes the real scanner's filters, rather than only testing string filtering.
         fs::write(candidate.join("uninstall.exe"), vec![0u8; 1024 * 1024])
             .expect("创建模拟卸载程序失败");
 
@@ -2271,30 +2271,30 @@ mod tests {
     #[test]
     fn test_whitelist_exact() {
         let rules = build_whitelist_rules();
-        // 精确匹配
+        // Exact match
         assert!(rules.iter().any(|r| r.matches("microsoft")));
         assert!(rules.iter().any(|r| r.matches("nvidia corporation")));
-        // 隐藏文件夹通配符
+        // Hidden-folder wildcard
         assert!(rules.iter().any(|r| r.matches(".vscode")));
         assert!(rules.iter().any(|r| r.matches(".git")));
-        // 不匹配随机名
+        // No match for random names
         assert!(!rules.iter().any(|r| r.matches("somerandomapp")));
     }
 
     #[test]
     fn test_whitelist_no_global_contains() {
-        // 确保白名单不会因为 contains 而误匹配
+        // Ensure the whitelist does not falsely match because of contains
         let rules = build_whitelist_rules();
-        // "microsoftedge" 不该被 "microsoft" 精确规则匹配
+        // "microsoftedge" should not be matched by the "microsoft" exact rule
         assert!(!rules.iter().any(|r| r.matches("microsoftedge")));
-        // "amdgpu_settings" 不该被 "amd" 精确规则匹配
+        // "amdgpu_settings" should not be matched by the "amd" exact rule
         assert!(!rules.iter().any(|r| r.matches("amdgpu_settings")));
     }
 
     #[test]
     fn test_scoring_context() {
         let mut ctx = ScoringContext::new();
-        // 基线 0.0
+        // Baseline 0.0
         assert!((ctx.score - 0.0).abs() < f32::EPSILON);
 
         ctx.add(0.40, "测试正向信号".into());
@@ -2328,12 +2328,12 @@ mod tests {
         ctx.score = 0.50;
         assert_eq!(ctx.category(), DetectionCategory::Suspicious);
 
-        // 门槛本身就是 Suspicious 的下限：0.30 必须落进"可疑"，
-        // 否则门槛调了、分档没调，条目会以"可能是正在使用的应用数据"的身份出现在结果里
+        // The threshold itself is the lower bound of Suspicious: 0.30 must land in "suspicious",
+        // otherwise if the threshold is changed but bucketing is not, entries appear in results labeled "possibly app data still in use"
         ctx.score = SUSPICIOUS_SCORE;
         assert_eq!(ctx.category(), DetectionCategory::Suspicious);
 
-        // 低于门槛 → LikelyAppData（正常情况下已被过滤，纯防御）
+        // Below threshold -> LikelyAppData (normally already filtered; purely defensive)
         ctx.score = SUSPICIOUS_SCORE - 0.01;
         assert_eq!(ctx.category(), DetectionCategory::LikelyAppData);
     }
@@ -2353,18 +2353,18 @@ mod tests {
         assert!(!KNOWN_SHARED_VENDORS.contains(&"somerandomvendor"));
     }
 
-    // ===== 新增测试 =====
+    // ===== New tests =====
 
     #[test]
     fn test_score_starts_at_zero() {
-        // 验证 ScoringContext::new() 初始分为 0.0
+        // Verify ScoringContext::new() starts at 0.0
         let ctx = ScoringContext::new();
         assert!((ctx.score - 0.0).abs() < f32::EPSILON, "基线分应为 0.0");
     }
 
     #[test]
     fn test_package_name_filtered() {
-        // 验证包名格式目录被预过滤跳过
+        // Verify package-name format folders are skipped by the pre-filter
         assert!(
             RE_PACKAGE_NAME.is_match("com.example.app"),
             "com.example.app 应匹配包名格式"
@@ -2385,7 +2385,7 @@ mod tests {
 
     #[test]
     fn test_version_folder_filtered() {
-        // 验证纯版本号目录被预过滤跳过
+        // Verify pure version-number folders are skipped by the pre-filter
         assert!(
             RE_VERSION_FOLDER.is_match("1.2.3.4"),
             "1.2.3.4 应匹配版本号格式"
@@ -2407,7 +2407,7 @@ mod tests {
 
     #[test]
     fn test_high_confidence_threshold() {
-        // 验证阈值 >= 0.75 分类为 HighConfidenceLeftover
+        // Verify threshold >= 0.75 is classified as HighConfidenceLeftover
         let mut ctx = ScoringContext::new();
         ctx.score = 0.75;
         assert_eq!(
@@ -2440,13 +2440,13 @@ mod tests {
 
     #[test]
     fn test_no_token_in_known_folders() {
-        // 验证 known_folders 不包含长度 <= 3 的纯 token
-        // InstalledAppMap::build() 不再拆分 DisplayName，因此 known_folders
-        // 只来自 InstallLocation 末级/倒数第二级目录名
+        // Verify known_folders does not contain pure tokens of length <= 3
+        // InstalledAppMap::build() no longer splits DisplayName, so known_folders
+        // only comes from the last/second-to-last directory of InstallLocation
         let map = InstalledAppMap::build();
         for folder in &map.known_folders {
-            // 长度 <= 3 的条目必须是合法目录名（如 "amd"、"git"），不是 token 碎片
-            // 验证方式：known_folders 中不应出现纯数字或常见 token 碎片
+            // Entries of length <= 3 must be valid directory names (like "amd", "git"), not token fragments
+            // Verification: known_folders should not contain pure numbers or common token fragments
             let is_pure_numeric = folder.chars().all(|c| c.is_ascii_digit());
             assert!(
                 !is_pure_numeric || folder.len() > 3,
@@ -2457,35 +2457,35 @@ mod tests {
     }
 
     // ========================================================================
-    // v2.4.3 修复：白名单覆盖 WSL2 虚拟磁盘 & 剪映工作区
+    // v2.4.3 fix: whitelist covers WSL2 virtual disks & JianyingPro workspace
     // ========================================================================
 
     #[test]
     fn test_whitelist_wsl_and_jianying() {
         let rules = build_whitelist_rules();
 
-        // === WSL2 场景 ===
-        // Microsoft Store 版 WSL（Ubuntu 等发行版）
+        // === WSL2 scenario ===
+        // Microsoft Store version of WSL (Ubuntu and other distributions)
         let store_path = Path::new(
             r"C:\Users\test_user\AppData\Local\Packages\CanonicalGroupLimited.Ubuntu_79rhkp1fndgsc\LocalState\ext4.vhdx",
         );
-        // 非 Store 版 WSL
+        // Non-Store WSL
         let legacy_wsl_path = Path::new(
             r"C:\Users\test_user\AppData\Local\wsl\a1b2c3d4-e5f6-7890-abcd-ef1234567890\ext4.vhdx",
         );
 
-        // === 剪映场景 ===
+        // === JianyingPro scenario ===
         let jianying_pro_path =
             Path::new(r"C:\Users\test_user\AppData\Local\JianyingPro\User Data\Projects");
         let jianying_drafts_path =
             Path::new(r"C:\Users\test_user\AppData\Local\JianyingPro Drafts\xxx");
         let capcut_path = Path::new(r"C:\Users\test_user\AppData\Roaming\CapCut\User Data");
 
-        // === 真实残留场景 ===
+        // === Real leftover scenario ===
         let real_leftover_path =
             Path::new(r"C:\Users\test_user\AppData\Local\SomeRandomUninstalledApp\cache");
 
-        // 验证：白名单包含关键目录名
+        // Verify: the whitelist contains key directory names
         assert!(rules.iter().any(|r| r.matches("wsl")), "wsl 应在白名单中");
         assert!(
             rules.iter().any(|r| r.matches("packages")),
@@ -2508,45 +2508,45 @@ mod tests {
             "capcut 应在白名单中"
         );
 
-        // 验证：is_path_in_whitelist 正确识别受保护路径
+        // Verify: is_path_in_whitelist correctly identifies protected paths
         let scanner = LeftoverScanner::new();
-        // mock 路径基目录必须与测试路径前缀一致才能 strip_prefix 成功
+        // The mock path base directory must share the test path's prefix for strip_prefix to succeed
         let mock_local = PathBuf::from(r"C:\Users\test_user\AppData\Local");
         let mock_roaming = PathBuf::from(r"C:\Users\test_user\AppData\Roaming");
 
-        // Store 版 WSL: Packages 在白名单 → 应跳过
+        // Store version of WSL: Packages is on the whitelist -> should be skipped
         assert!(
             scanner.is_path_in_whitelist(store_path, &mock_local),
             "Microsoft Store WSL 路径应命中白名单 (Packages)"
         );
-        // 非 Store 版 WSL: wsl 在白名单 → 应跳过
+        // Non-Store WSL: wsl is on the whitelist -> should be skipped
         assert!(
             scanner.is_path_in_whitelist(legacy_wsl_path, &mock_local),
             "传统 WSL 路径应命中白名单 (wsl)"
         );
-        // 剪映专业版
+        // JianyingPro
         assert!(
             scanner.is_path_in_whitelist(jianying_pro_path, &mock_local),
             "剪映专业版路径应命中白名单 (JianyingPro)"
         );
-        // 剪映草稿目录
+        // JianyingPro drafts directory
         assert!(
             scanner.is_path_in_whitelist(jianying_drafts_path, &mock_local),
             "剪映草稿目录应命中白名单 (JianyingPro Drafts)"
         );
-        // CapCut 国际版
+        // CapCut international version
         assert!(
             scanner.is_path_in_whitelist(capcut_path, &mock_roaming),
             "CapCut 路径应命中白名单 (CapCut)"
         );
-        // 真实残留：SomeRandomUninstalledApp 不在白名单 → 不应跳过
+        // Real leftover: SomeRandomUninstalledApp is not on the whitelist -> should not be skipped
         assert!(
             !scanner.is_path_in_whitelist(real_leftover_path, &mock_local),
             "真实残留路径不应命中白名单"
         );
     }
 
-    /// 测试用临时目录（带进程号与时间戳，避免并发用例互相踩）。
+    /// Temp directory for tests (with process id and timestamp, so concurrent cases don't clash).
     fn case_dir(tag: &str) -> PathBuf {
         std::env::temp_dir().join(format!(
             "lightc-leftover-{}-{}-{}",
@@ -2559,11 +2559,11 @@ mod tests {
         ))
     }
 
-    /// 路径校验的三条底线：拒绝 `..`、按组件比较、目录只放行一级。
+    /// The three bottoms of path validation: reject `..`, compare by components, allow directories only one level deep.
     ///
-    /// 旧实现用字符串 `starts_with`，`AppData\LocalBackup` 和
-    /// `AppData\Local\..\..\..\Windows` 都能通过 —— 而 `remove_dir_all`
-    /// 是按解析后的真实路径动手的。
+    /// The old implementation used string `starts_with`; both `AppData\LocalBackup` and
+    /// `AppData\Local\..\..\..\Windows` would pass - while `remove_dir_all`
+    /// acts on the resolved real path.
     #[test]
     fn safe_path_check_rejects_traversal_and_prefix_lookalikes() {
         let base = case_dir("safe-path");
@@ -2582,32 +2582,32 @@ mod tests {
 
         let roots = vec![root.clone()];
 
-        // 一级子目录：允许（扫描只会产出这一层）
+        // First-level subdirectory: allowed (the scanner only produces this level)
         assert!(is_safe_leftover_path_under(&app_dir, &roots));
-        // 根目录本身：不允许
+        // The root itself: not allowed
         assert!(!is_safe_leftover_path_under(&root, &roots));
-        // 兄弟前缀：字符串前缀匹配会放过，组件比较必须挡住
+        // Sibling prefix: string prefix matching would allow it; component comparison must block it
         assert!(!is_safe_leftover_path_under(
             &base.join("LocalBackup").join("x"),
             &roots
         ));
-        // `..` 穿越：字面量看上去在根目录下，实际删的是别的目录
+        // `..` traversal: the literal looks under the root, but actually deletes a different directory
         assert!(!is_safe_leftover_path_under(
             &app_dir.join("..").join("..").join("Windows"),
             &roots
         ));
-        // 二级子目录：整目录删除不在本模块职责内
+        // Second-level subdirectory: wholesale deletion is outside this module's responsibility
         assert!(!is_safe_leftover_path_under(&nested_dir, &roots));
-        // 深层文件（孤立虚拟磁盘）：允许，真实位置就在 Packages 里面
+        // Deep file (orphaned virtual disk): allowed; its real location is inside Packages
         assert!(is_safe_leftover_path_under(&virtual_disk, &roots));
 
         let _ = fs::remove_dir_all(&base);
     }
 
-    /// 孤立虚拟磁盘是**文件**，必须走 `remove_file`。
+    /// An orphaned virtual disk is a **file** and must go through `remove_file`.
     ///
-    /// 旧实现一律 `remove_dir_all`，对文件必然报「目录名无效」——
-    /// 而 WSL 的 `ext4.vhdx` 动辄几十 GB，是最值钱的一条。
+    /// The old implementation always used `remove_dir_all`, which inevitably reports "invalid directory name" for files -
+    /// and WSL's `ext4.vhdx` is often tens of GB, the most valuable entry.
     #[test]
     fn virtual_disk_file_is_deleted_as_file() {
         let base = case_dir("virtual-disk");
@@ -2635,11 +2635,11 @@ mod tests {
         let _ = fs::remove_dir_all(&base);
     }
 
-    /// `errors` 与 `failed_paths` 必须逐条对齐。
+    /// `errors` and `failed_paths` must align entry by entry.
     ///
-    /// 前端用 `failed_paths.indexOf(path)` 去 `errors` 里取错误信息，
-    /// 旧实现把「因可执行文件跳过」的路径只推进 errors、不推进 failed_paths，
-    /// 结果从第一条跳过项开始，后面每个条目的错误信息都串到别人头上。
+    /// The frontend uses `failed_paths.indexOf(path)` to fetch the error message from `errors`;
+    /// the old implementation pushed paths skipped "because of executables" only into errors, not failed_paths,
+    /// so from the first skipped entry on, every later entry's error message was attributed to the wrong one.
     #[test]
     fn skipped_executables_stay_index_aligned_with_errors() {
         let base = case_dir("aligned");
@@ -2683,9 +2683,9 @@ mod tests {
         let _ = fs::remove_dir_all(&base);
     }
 
-    /// 空结果必须带上"为什么"，否则用户分不清「真没残留」和「扫描坏了」。
+    /// Empty results must carry a "why", otherwise users cannot tell "really no leftovers" from "scan broken".
     ///
-    /// 这条钉住三个诊断字段：检查过多少目录、有多少条卡在门槛下、最高分多少。
+    /// This pins the three diagnostic fields: how many directories were checked, how many entries are below the threshold, and the top score.
     #[test]
     fn empty_result_reports_scan_diagnostics() {
         let base = case_dir("diagnostics");
@@ -2715,10 +2715,10 @@ mod tests {
         let _ = fs::remove_dir_all(&base);
     }
 
-    /// 构造一个"装了什么、卸载了什么"完全可控的扫描器。
+    /// Construct a scanner with fully controlled "what is installed, what was uninstalled".
     ///
-    /// 真实注册表不可预期：这台机器装着 Playwright，换台机器可能没有。
-    /// 评分规则要能脱离机器环境验证，否则只能在"我这台是这结果"的层面打转。
+    /// The real registry is unpredictable: this machine has Playwright installed, another machine may not.
+    /// Scoring rules must be verifiable independently of the machine, otherwise you can only go in circles at the "it's like this on my machine" level.
     fn scanner_with_apps(installed: &[&str], uninstalled: &[&str]) -> LeftoverScanner {
         let apps: Vec<InstalledAppInfo> = installed
             .iter()
@@ -2749,7 +2749,7 @@ mod tests {
                 leftover_candidates: HashSet::new(),
                 uninstalled_tokens,
             },
-            // 内置白名单会挡住 `code`、`nvidia` 这类真实目录名；测试只关心评分，传空最可控
+            // The built-in whitelist would block real directory names like `code` and `nvidia`; tests only care about scoring, so passing empty is most controllable
             whitelist: Vec::new(),
             min_size_threshold: 1024 * 1024,
             min_days_old: 7,
@@ -2758,11 +2758,11 @@ mod tests {
         }
     }
 
-    /// 拆词的唯一目的：让"目录名"和"应用名"能对上，同时不被泛指词带偏。
+    /// The only purpose of token splitting: let "directory name" and "app name" match, without being led astray by generic words.
     #[test]
     fn name_tokens_keep_only_meaningful_words() {
-        // 写成带显式生命周期的函数而不是闭包：闭包推断不出返回引用指向入参，
-        // 编译器会报 lifetime may not live long enough
+        // Written as a function with an explicit lifetime rather than a closure: a closure cannot infer that the returned reference points to the input,
+        // and the compiler reports "lifetime may not live long enough"
         fn tokens(name: &str) -> Vec<&str> {
             name_tokens(name).collect()
         }
@@ -2772,15 +2772,15 @@ mod tests {
         assert_eq!(tokens("ollama app"), vec!["ollama"]);
         assert_eq!(tokens("comfyui-desktop-2-updater"), vec!["comfyui"]);
 
-        // 泛指词 / 太短 / 纯数字都不参与匹配 —— 否则装了任意一个 Electron 应用，
-        // 所有带 desktop 的目录都会被当成它的数据
+        // Generic words / too short / purely numeric do not participate in matching - otherwise if any Electron app is installed,
+        // every directory containing desktop would be treated as its data
         assert!(tokens("application").is_empty());
         assert!(tokens("desktop").is_empty());
         assert!(tokens("app").is_empty());
         assert!(tokens("2022").is_empty());
     }
 
-    /// 同一个目录名，应用还装着是负向证据，已卸载才是正向证据。
+    /// For the same directory name, an app still installed is negative evidence; only uninstalled is positive.
     #[test]
     fn token_match_tells_installed_apart_from_uninstalled() {
         let installed = scanner_with_apps(&["ms-playwright"], &[]);
@@ -2807,10 +2807,10 @@ mod tests {
         );
     }
 
-    /// 空壳目录：删空之后留下的目录，只有"历史里出现过"才够格输出。
+    /// Empty shell directories: directories left after being emptied are only worth output if they "appeared in history".
     ///
-    /// 这一条钉的是真实卸载残留的主要形态（豆包卸载后 Local\Doubao 剩 0 字节），
-    /// 它以前连评分都进不了 —— 体积门槛在评分之前就把它过滤了。
+    /// This pins the main form of real uninstall leftovers (after Doubao uninstall, Local\Doubao has 0 bytes),
+    /// which previously could not even enter scoring - the size threshold filtered it out before scoring.
     #[test]
     fn empty_shell_needs_history_evidence() {
         let base = case_dir("empty-shell");
@@ -2844,10 +2844,10 @@ mod tests {
         let _ = fs::remove_dir_all(&base);
     }
 
-    /// 根目录孤立文件：只认可执行文件，且太小的不报。
+    /// Orphaned root files: only executables are recognized, and too-small ones are not reported.
     ///
-    /// `Roaming\ollama app.exe` 是这类残留的典型：安装器把启动器丢在根目录，
-    /// 卸载时没删。主流程只遍历目录，永远看不见它。
+    /// `Roaming\ollama app.exe` is a typical leftover of this kind: the installer drops the launcher in the root,
+    /// and it was not deleted on uninstall. The main flow only traverses directories and never sees it.
     #[test]
     fn loose_file_needs_executable_type_and_real_size() {
         let base = case_dir("loose");
@@ -2857,7 +2857,7 @@ mod tests {
         fs::write(root.join("tiny.exe"), vec![0u8; 1024]).expect("写入小 exe 失败");
         fs::write(root.join("settings.json"), vec![0u8; 128 * 1024]).expect("写入配置文件失败");
 
-        // 让 stray.exe 对上一条"已卸载"的历史，否则单凭"根目录有个 exe"不足以定罪
+        // Make stray.exe match a "uninstalled" history, otherwise "there's an exe in the root" alone is not enough to convict
         let scanner = scanner_with_apps(&[], &["stray"]);
         let entries =
             scanner.scan_loose_files(&[(root.clone(), LeftoverSource::RoamingAppData)], &[]);
@@ -2871,7 +2871,7 @@ mod tests {
         let _ = fs::remove_dir_all(&base);
     }
 
-    /// 同名应用还装着时，根目录的 exe 不能被当成残留。
+    /// When the same-named app is still installed, a root exe must not be treated as a leftover.
     #[test]
     fn loose_file_ignored_while_its_app_is_still_installed() {
         let base = case_dir("loose-installed");
@@ -2893,18 +2893,18 @@ mod tests {
         let _ = fs::remove_dir_all(&base);
     }
 
-    /// 虚拟磁盘搜索的剪枝规则。
+    /// Pruning rules for virtual disk search.
     ///
-    /// 写错这条不会有任何报错，只会表现为"WSL 用户的 ext4.vhdx 永远扫不出来"——
-    /// 所以两头都要钉：噪音目录必须剪掉，WSL / Docker 的真实路径必须留住。
+    /// Getting this wrong produces no error, only "WSL users' ext4.vhdx is never found" -
+    /// so both ends must be pinned: noisy directories must be pruned, and real WSL / Docker paths must be kept.
     #[test]
     fn disk_scan_prunes_noise_but_keeps_wsl_and_docker() {
-        // 前两层是应用名，一律进入
+        // The first two levels are app names; always enter
         assert!(should_descend_for_disks("packages", 1));
         assert!(should_descend_for_disks("docker", 1));
         assert!(should_descend_for_disks("ubuntu", 2));
 
-        // 第三层起只认已知容器：WSL 的 LocalState、Docker 的 wsl/data
+        // From the third level, only known containers: WSL's LocalState, Docker's wsl/data
         assert!(
             should_descend_for_disks("localstate", 3),
             "WSL 的 ext4.vhdx 就在 LocalState 下，剪掉等于功能失效"
@@ -2916,11 +2916,11 @@ mod tests {
         assert!(!should_descend_for_disks("ac", 3), "UWP 包里的噪音目录");
         assert!(!should_descend_for_disks("settings", 3));
 
-        // 碎目录任何时候都不进
+        // Fragmented directories are never entered
         assert!(!should_descend_for_disks("node_modules", 1));
         assert!(!should_descend_for_disks("cache", 2));
 
-        // 这条防的是以后"顺手"把 packages 加进剪枝名单
+        // This guards against later "casually" adding packages to the pruning list
         assert!(
             !DISK_SCAN_SKIP_DIRS.contains(&"packages"),
             "Local/Packages 正是 WSL 磁盘所在，任何情况下都不能整体跳过"

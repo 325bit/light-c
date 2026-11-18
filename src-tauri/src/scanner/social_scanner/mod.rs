@@ -1,9 +1,9 @@
 // ============================================================================
-// 社交软件扫描模块
+// Social app scanner module
 // ============================================================================
 //
-// core 只负责结果模型、统一遍历和分类；各软件文件负责路径发现，避免
-// 单个扫描器持续膨胀，也方便针对不同客户端版本独立修复漏扫问题。
+// core only handles the result model, unified traversal, and classification; each app file handles path discovery, avoiding
+// a single scanner from continuously bloating, and making it easier to independently fix missed-scan issues for different client versions.
 // ============================================================================
 
 mod common;

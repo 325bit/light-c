@@ -1,6 +1,6 @@
 // ============================================================================
-// C盘清理工具 - 主应用组件
-// 单页仪表盘布局，支持浅色/深色/跟随系统主题
+// C drive cleanup tool - main application component
+// Single-page dashboard layout, supports light/dark/follow-system themes
 // ============================================================================
 
 import { useState, useCallback, useEffect, useRef } from 'react';
@@ -29,7 +29,7 @@ function PageTransitionAccent({ active }: { active: boolean }) {
 
   return (
     <motion.div
-      // 只动画一条轻量流光，不让大结果 DOM 参与复杂过渡，兼顾质感和性能。
+      // Only animate one lightweight light streak; don't drag the large result DOM into complex transitions, balancing aesthetics and performance.
       className="pointer-events-none absolute inset-x-3 top-0 z-20 h-1 overflow-hidden rounded-full"
       initial={{ opacity: 0 }}
       animate={{ opacity: [0, 1, 0.85, 0] }}
@@ -46,25 +46,25 @@ function PageTransitionAccent({ active }: { active: boolean }) {
 }
 
 // ============================================================================
-// 仪表盘内容组件
+// Dashboard content component
 // ============================================================================
 
 function DashboardContent() {
   const { triggerOneClickScan } = useDashboardActions();
   const { settings } = useSettings();
 
-  // 设置弹窗状态
+  // Settings modal state
   const [showSettings, setShowSettings] = useState(false);
-  // 欢迎弹窗状态
+  // Welcome modal state
   const [showWelcome, setShowWelcome] = useState(() => shouldShowWelcome());
-  // 模块实例常驻挂载，切换菜单只改可见性，扫描结果和本地状态才能保留。
+  // Module instances stay mounted permanently; switching menus only changes visibility, so scan results and local state are preserved.
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const [visibleModuleId, setVisibleModuleId] = useState(settings.activeModuleId);
   const [transitionModuleId, setTransitionModuleId] = useState(settings.activeModuleId);
   const [pageTransitionSequence, setPageTransitionSequence] = useState(0);
   const visibleModuleIdRef = useRef(settings.activeModuleId);
 
-  // 一键扫描：通过触发器并发启动所有模块扫描
+  // One-click scan: concurrently starts scans for all modules via the trigger
   const handleOneClickScan = useCallback(() => {
     triggerOneClickScan();
   }, [triggerOneClickScan]);
@@ -73,12 +73,12 @@ function DashboardContent() {
     const previousModuleId = visibleModuleIdRef.current;
     if (settings.activeModuleId === previousModuleId) return;
 
-    // 只让新页面做轻量入场动画，旧页面立即隐藏。
-    // 大目录/全盘分析这类结果 DOM 很重，如果旧页面也参与离场动画，会触发大面积合成和掉帧。
-    // 切换前先回到顶部，防止从长页面切到短页面时继承旧 scrollTop，出现大段空白和多余滚动条。
+    // Only let the new page do a light entrance animation; hide the old page immediately.
+    // Heavy result DOM like big-directory/full-disk analysis: if the old page also played an exit animation, it would trigger large-scale compositing and dropped frames.
+    // Scroll back to top before switching, to avoid inheriting the old scrollTop when going from a long page to a short one, which shows big blank areas and extra scrollbars.
     scrollContainerRef.current?.scrollTo({ top: 0, behavior: 'auto' });
     visibleModuleIdRef.current = settings.activeModuleId;
-    // 用序号切换两组等价 class，避免重新挂载模块也能稳定重播 CSS 入场动画。
+    // Toggle two equivalent class groups by index, so the CSS entrance animation replays reliably without remounting modules.
     setPageTransitionSequence((current) => current + 1);
     setTransitionModuleId(settings.activeModuleId);
     setVisibleModuleId(settings.activeModuleId);
@@ -90,40 +90,40 @@ function DashboardContent() {
       data-wallpaper-surface
       className="h-screen flex flex-col bg-[var(--bg-base)] overflow-hidden select-none"
     >
-      {/* 自定义标题栏 */}
+      {/* Custom title bar */}
       <TitleBar onSettingsClick={() => setShowSettings(true)} />
 
-      {/* 顶部统计栏 */}
+      {/* Top statistics bar */}
       <DashboardHeader 
         onOneClickScan={handleOneClickScan}
         onShowWelcome={() => setShowWelcome(true)}
         hideOneClickScan
       />
 
-      {/* 设置弹窗 */}
+      {/* Settings modal */}
       <SettingsModal isOpen={showSettings} onClose={() => setShowSettings(false)} />
 
-      {/* 欢迎弹窗 */}
+      {/* Welcome modal */}
       <WelcomeModal isOpen={showWelcome} onClose={() => setShowWelcome(false)} />
 
-      {/* 自动更新检查弹窗 */}
+      {/* Auto-update check modal */}
       <UpdateModal autoCheck={true} />
 
       <BackToTopButton scrollContainerRef={scrollContainerRef} />
-      {/* AI 助手：横向新增的独立浮层，不参与任何模块逻辑。
-          传入当前模块 id，让助手知道用户正停留在哪个模块。
-          入口可在「设置 → AI 助手」里关掉，关掉只隐藏界面，服务商与密钥都保留。 */}
+      {/* AI assistant: a separate overlay added horizontally, not part of any module logic.
+          Pass the current module id so the assistant knows which module the user is on.
+          The entry can be turned off in "Settings → AI Assistant"; turning it off only hides the UI, providers and API keys are retained. */}
       {settings.aiAssistantEnabled && <AiAssistant activeModuleId={visibleModuleId} />}
 
-      {/* 主内容区 - 模块实例仍常驻，但 inactive 模块会自行跳过重结果 DOM。 */}
+      {/* Main content area - module instances stay mounted, but inactive modules skip heavy result DOM themselves. */}
       <main data-wallpaper-surface className="flex-1 min-h-0 overflow-hidden bg-[var(--bg-base)] sidebar-layout">
         <SidebarNav />
         <div className="h-full min-h-0 min-w-0 flex flex-1 flex-col">
           <div ref={scrollContainerRef} className="flex-1 min-h-0 overflow-auto">
-            {/* 单页这一层必须自己是 flex 容器：卡片靠 flex-1 铺满可用高度，
-                父级不是 flex 的话卡片高度只能由内容决定 —— 各模块头部行数不同，
-                底部落点就会各不相同（Evan 反馈"有的太高有的又太低"）。
-                min-h-full 保证短内容时至少占满滚动区，长内容仍由外层滚动承载。 */}
+            {/* This single-page layer must itself be a flex container: cards use flex-1 to fill the available height,
+                if the parent isn't flex the card height is content-driven — modules have different header line counts,
+                so the bottom lands differently (Evan reported "some too tall, some too low").
+                min-h-full ensures short content still fills the scroll area, long content still scrolls via the outer layer. */}
             <div className="min-h-full box-border flex flex-col relative p-6 dashboard-container module-stage">
               {APP_MODULES.map((moduleConfig) => {
                 const ModuleComponent = moduleConfig.component;
@@ -140,8 +140,8 @@ function DashboardContent() {
                     data-module-id={moduleConfig.id}
                     className={
                       isActivePage
-                        // flex-1 + flex-col：把"铺满剩下的高度"继续往下传，
-                        // 卡片才能吃满；min-height: auto 保证长结果不被压缩。
+                        // flex-1 + flex-col: pass "fill the remaining height" down,
+                        // so the card can fill it; min-height: auto keeps long results from being compressed.
                         ? `relative z-10 overflow-visible flex flex-1 flex-col ${pageEnterClass}`
                         : 'hidden'
                     }
@@ -155,7 +155,7 @@ function DashboardContent() {
             </div>
           </div>
 
-          {/* Footer 不放进滚动区，短页面不会因为版权区参与滚动而出现额外空白。 */}
+          {/* Footer isn't put in the scroll area, so short pages don't get extra blank space from the copyright area scrolling. */}
           {/* <Footer /> */}
         </div>
       </main>
@@ -165,22 +165,22 @@ function DashboardContent() {
 }
 
 // ============================================================================
-// 主应用组件
+// Main application component
 // ============================================================================
 
 function App() {
   const [showSplash, setShowSplash] = useState(true);
   const handleSplashComplete = useCallback(() => setShowSplash(false), []);
 
-  // 在启动屏期间恢复窗口尺寸，避免主界面出现后才突然改变布局。
+  // Restore window size during the splash screen, to avoid the layout suddenly changing after the main UI appears.
   useWindowStatePersistence();
 
-  // 启动屏和主界面共用同一个 WebView，避免双窗口初始化和窗口切换开销。
+  // The splash screen and main UI share the same WebView, avoiding double-window initialization and window-switching overhead.
   if (showSplash) {
     return <SplashScreen onComplete={handleSplashComplete} />;
   }
 
-  // 主窗口
+  // Main window
   return (
     <FontSizeProvider>
       <SettingsProvider>

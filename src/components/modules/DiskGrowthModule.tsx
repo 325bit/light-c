@@ -4,9 +4,9 @@ import { useAiModuleBridge } from '../ai/useAiModuleBridge';
 import { AiAskButton } from '../ai/AiAskButton';
 import { buildItemQuestion } from '../ai/aiQuestions';
 // ============================================================================
-// 多盘全盘变化分析模块
+// Multi-drive full-disk change analysis module
 //
-// 全盘变化只负责定位空间增减来源，不提供删除能力，避免把“变化目录”误当成“可清理目录”。
+// Full-disk change analysis only locates the sources of space increase/decrease and provides no deletion capability, to avoid mistaking "changed directories" for "cleanable directories".
 // ============================================================================
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -115,7 +115,7 @@ function buildPathTitle(path: string, modified?: number | null, extraLine?: stri
   if (extraLine) lines.push(extraLine);
   const modifiedText = formatModifiedTime(modified);
   if (modifiedText !== '-') {
-    // title 支持换行，路径很长时把真实修改时间单独放一行，避免关键信息被长路径淹没。
+    // title supports line breaks; when the path is very long, put the real modification time on its own line so key info is not drowned out by the path.
     lines.push(i18n.t('diskGrowth.modifiedTimeTitle', { ns: 'modules', time: modifiedText }));
   }
   return lines.join('\n');
@@ -126,11 +126,11 @@ function normalizeDiskPath(path: string): string {
 }
 
 /**
- * 选出导出报告需要的顶层变化目录。
+ * Select the top-level changed directories needed for the export report.
  *
- * 中文说明：后端的变化目录列表是扁平的，父目录可能出现在子目录之后，因此不能简单地
- * "逐个向后看"；这里先按路径排序，再只和最近一次选中的根目录比较，把 O(n²) 的
- * 两两比较收敛成一次排序加一次线性扫描。返回原始路径，找不到入口时返回空数组。
+ * Note: the backend's changed-directory list is flat, and a parent may appear after its child, so one cannot simply
+ * "look backwards one by one"; here we sort by path first, then compare only with the most recently accepted root, reducing O(n²)
+ * pairwise comparisons to one sort plus one linear scan. Return the original paths; return an empty array when no entry is found.
  */
 function selectTopLevelGrowthPaths(entries: DiskGrowthEntry[]): string[] {
   const normalizedEntries = entries
@@ -288,7 +288,7 @@ function DiskGrowthDiagnostics({
   maxEntries: number;
 }) {
   const { t: moduleT } = useTranslation('modules');
-  // 阶段耗时、$MFT 分段、大小来源都是排查用的数字：收进浮层，页面只留一个小秒表
+  // Phase durations, $MFT fragmentation, and size sources are troubleshooting numbers: put them in the popover, leaving only a small stopwatch on the page
   const phaseRows = scanSummary.phase_durations.map((phase) => ({
     label: getPhaseLabel(phase.stage),
     value: formatDuration(phase.duration_ms),
@@ -310,7 +310,7 @@ function DiskGrowthDiagnostics({
   const timingGroups: TimingGroup[] = phaseRows.length > 0 || detailNotes.length > 0
     ? [{ title: '', rows: phaseRows, note: detailNotes.join(' · ') }]
     : [];
-  // 与大目录分析复用同一类诊断布局，让用户在不同 MFT 模块里看到一致的阶段耗时信息。
+  // Reuse the same diagnostic layout as big-file analysis so users see consistent phase-timing info across MFT modules.
   const hasPhaseDurations = scanSummary.phase_durations.length > 0;
   const latestPhase = hasPhaseDurations
     ? scanSummary.phase_durations[scanSummary.phase_durations.length - 1]
@@ -425,14 +425,14 @@ function ChangeRow({
         title={growth ? moduleT('diskGrowth.viewDetails') : undefined}
       >
         {diff === 0 ? '-' : formatDiff(diff)}
-        {/* 原先只有鼠标悬停才出现下划线，不悬停完全看不出这一列能点开明细，
-            所以补一个常驻的箭头提示。动画极轻：只向右推 3px、播 3 次就停
-            （见 App.css 的 .hint-nudge），不会在几十行列表里一直动。 */}
+        {/* Previously the underline appeared only on hover, giving no hint that this column opens details,
+            so add a persistent arrow hint. The animation is very light: nudge 3px right, play 3 times, then stop
+            (see .hint-nudge in App.css) so it does not keep moving across a list of dozens of rows. */}
         {growth && <ChevronRight className="hint-nudge h-3 w-3 shrink-0" aria-hidden="true" />}
       </button>
 
-      {/* 操作按钮：**常驻显示**（原来 hover 才出现，用户根本不知道这里有按钮），
-          并与左边"变化量 + 箭头"留出呼吸位 —— 两者贴在一起显得很挤。 */}
+      {/* Action buttons: **always visible** (previously shown only on hover, so users did not know they existed),
+          and leave some breathing room from the "change + arrow" on the left - sitting together looks cramped. */}
       <div className="flex shrink-0 items-center justify-end gap-1 pl-2">
         <button
           onClick={() => onSearchPath(entry.path)}
@@ -441,7 +441,7 @@ function ChangeRow({
         >
           <Search className="w-4 h-4" />
         </button>
-        {/* 快捷提问：变大的目录只是"变化"，不等于可删，问句里说清是问用途 */}
+        {/* Quick ask: a grown directory is only a "change", not necessarily deletable; the question makes clear it asks about purpose */}
         <AiAskButton
           question={buildItemQuestion(entry.path, 'folder')}
           className="inline-flex h-7 w-7 items-center justify-center"
@@ -502,7 +502,7 @@ function DiskGrowthDetailsModal({
     setFileLoading(true);
     setDirectoryLoading(true);
 
-    // 文件级明细按需懒加载，避免主扫描结果一次性携带几十万文件记录。
+    // File-level details are lazy-loaded on demand to avoid carrying hundreds of thousands of file records in the main scan result.
     getDiskGrowthFileDetails(currentEntry.path, 0, detailPageSize, driveLetter)
       .then((result) => {
         if (!cancelled) {
@@ -517,7 +517,7 @@ function DiskGrowthDetailsModal({
         if (!cancelled) setFileLoading(false);
       });
 
-    // 目录明细也按当前目录懒加载，避免主结果只带少量 details 时无法继续分页。
+    // Directory details are also lazy-loaded per current directory, to avoid being unable to continue pagination when the main result carries only a few details.
     getDiskGrowthDirectoryDetails(currentEntry.path, 0, detailPageSize, driveLetter)
       .then((result) => {
         if (!cancelled) {
@@ -602,7 +602,7 @@ function DiskGrowthDetailsModal({
       setDirectoryLoading(false);
     }
   };
-  // 弹窗必须挂到 body 下，避免被页面模式外层 motion transform 改写 fixed 定位的参照物。
+  // The modal must be mounted under body to avoid the outer motion transform of the page mode changing the reference for fixed positioning.
   return createPortal(
     <motion.div
       className="fixed inset-0 z-[10000] flex items-center justify-center bg-black/40 backdrop-blur-sm glass-backdrop"
@@ -705,9 +705,9 @@ function DiskGrowthDetailsModal({
                           <span className="w-20 text-right text-[0.93rem] font-medium text-[var(--text-primary)] tabular-nums">{formatSize(detail.new_size)}</span>
                           <span className={`w-24 text-right text-[0.93rem] font-medium tabular-nums ${detailStyle.color}`}>{formatDiff(detail.diff)}</span>
                           <div className="w-24 flex items-center justify-end gap-0.5">
-                            {/* 快捷提问：这一行是**用户自己展开看到的**，问句里带的路径就是它本身，
-                                `skipLookup` → 不让助手去查（这层文件级明细本来就不在它的读取能力里，
-                                查只会白试一次）。 */}
+                            {/* Quick ask: this row is **what the user expanded to see**, so the path in the question is itself,
+                                `skipLookup` -> do not let the assistant look it up (this file-level detail is outside its read capability,
+                                looking it up would only waste a try). */}
                             <AiAskButton
                               question={buildItemQuestion(detail.path, 'folder')}
                               skipLookup
@@ -779,8 +779,8 @@ function DiskGrowthDetailsModal({
                           <span className="w-20 text-right text-[0.93rem] font-medium text-[var(--text-primary)] tabular-nums">{formatSize(file.new_size)}</span>
                           <span className={`w-24 text-right text-[0.93rem] font-medium tabular-nums ${fileStyle.color}`}>{formatDiff(file.diff)}</span>
                           <div className="w-16 flex items-center justify-end gap-0.5">
-                            {/* 快捷提问：这一行是**具体文件**（用户展开明细才看到的），
-                                `skipLookup` → 不让助手去查，直接用模型自己的知识答"这是什么、能不能删" */}
+                            {/* Quick ask: this row is a **specific file** (seen only after expanding details),
+                                `skipLookup` -> do not let the assistant look it up; answer "what this is and whether it can be deleted" from the model's own knowledge */}
                             <AiAskButton
                               question={buildItemQuestion(file.path, 'file')}
                               skipLookup
@@ -840,7 +840,7 @@ export function DiskGrowthModule({ isPageActive = true }: ModuleRenderProps) {
   const scanRunIdRef = useRef(0);
 
   const [scanSummary, setScanSummary] = useState<DiskGrowthScanResponse | null>(null);
-  // 接入 AI 助手（**只读**：磁盘变化分析只做分析，不提供删除动作）。
+  // Integrate with the AI assistant (**read-only**: disk change analysis only analyzes, no delete action).
   useAiModuleBridge('disk-growth', {
     summary: () => {
       if (!scanSummary) return null;
@@ -852,8 +852,8 @@ export function DiskGrowthModule({ isPageActive = true }: ModuleRenderProps) {
           : '这是首次快照，还没有可对比的历史数据；下次扫描之后就能看出增减来自哪里。',
       ].join('');
     },
-    // 只读读取：变化目录列表（界面上那一列）。给**全部**并带上变化量 ——
-    // 界面默认只显示显著的几条，但用户可能问到任何一条。
+    // Read-only: the changed-directory list (the column in the UI). Give **all** entries with their change amounts -
+    // the UI shows only the significant ones by default, but the user may ask about any of them.
     readItems: (_targetId, offset, limit) => {
       const list = growthReport?.entries ?? [];
       if (list.length === 0) return null;
@@ -866,8 +866,8 @@ export function DiskGrowthModule({ isPageActive = true }: ModuleRenderProps) {
         }),
       };
     },
-    // 只读：单条详情。itemId 用行首那个目录路径。
-    // 只报这一条自己的事实 —— 具体是哪个文件顶上去的属于界面上那层下钻，这里不编。
+    // Read-only: single-item detail. itemId is the directory path at the start of the line.
+    // Report only this entry's own facts - which specific file drove the growth belongs to the UI drill-down; do not fabricate it here.
     readItemDetail: (itemId) => {
       const wanted = itemId.trim();
       if (!wanted) return null;
@@ -888,7 +888,7 @@ export function DiskGrowthModule({ isPageActive = true }: ModuleRenderProps) {
   });
 
   const [growthReport, setGrowthReport] = useState<DiskGrowthReport | null>(null);
-  // 管理员状态走共享 hook：AdminRequiredHint 里已经探过一次，这里复用同一份缓存
+  // Admin status uses the shared hook: AdminRequiredHint has already probed once, reuse that cache here
   const isAdmin = useAdminPrivilege();
   const [error, setError] = useState<string | null>(null);
   const [showAll, setShowAll] = useState(false);
@@ -946,7 +946,7 @@ export function DiskGrowthModule({ isPageActive = true }: ModuleRenderProps) {
     try {
       const result = await scanDiskGrowth(settings.diskGrowthMaxEntries, selectedDriveLetter);
       if (cancelRequestedRef.current || scanRunId !== scanRunIdRef.current) {
-        // 用户取消后不接收可能已经返回的旧结果，避免把被中断的扫描写成正常完成。
+        // After user cancellation, do not accept old results that may already have returned, to avoid recording an interrupted scan as a normal completion.
         return;
       }
       setScanSummary(result);
@@ -998,7 +998,7 @@ export function DiskGrowthModule({ isPageActive = true }: ModuleRenderProps) {
 
   useEffect(() => {
     if (stopScanTrigger > 0 && scanningRef.current) {
-      // 全局停止按钮已发后端取消信号；本地只标记取消，避免旧扫描结果回写 UI。
+      // The global stop button has already sent the backend cancel signal; locally just mark cancellation to avoid old scan results writing back to the UI.
       cancelRequestedRef.current = true;
       scanRunIdRef.current += 1;
       scanningRef.current = false;
@@ -1015,7 +1015,7 @@ export function DiskGrowthModule({ isPageActive = true }: ModuleRenderProps) {
 
   const handleSearchPath = useCallback(async (path: string) => {
     try {
-      // 变化目录不等于可清理目录，搜索文案先确认用途，再辅助判断是否可删。
+      // A changed directory is not necessarily a cleanable one; the search query first confirms purpose, then helps decide whether deletion is safe.
       await openSearchUrl(`${moduleT('diskGrowth.searchQueryPrefix')} ${path} ${moduleT('diskGrowth.searchQuerySuffix')}`);
     } catch (err) {
       console.error('搜索路径用途失败:', err);
@@ -1034,7 +1034,7 @@ export function DiskGrowthModule({ isPageActive = true }: ModuleRenderProps) {
     if (!scanSummary || !growthReport) return;
 
     try {
-      // 只为当前结果一次性获取多级目录树，避免逐条请求造成不必要的 IPC 和快照读取。
+      // Fetch the multi-level directory tree once for the current result, avoiding unnecessary IPC and snapshot reads from per-entry requests.
       const exportTree = growthReport.entries.length > 0
         ? await getDiskGrowthExportTree(
             selectTopLevelGrowthPaths(growthReport.entries),
@@ -1156,7 +1156,7 @@ export function DiskGrowthModule({ isPageActive = true }: ModuleRenderProps) {
       titleExtra={driveSelector}
       error={error}
       headerExtra={
-        // 停止按钮放头部：扫描可能跑几十秒，用户要中断时不该去正文里找
+        // Put the stop button in the header: a scan may run tens of seconds; users should not hunt in the body to interrupt it
         moduleState.status === 'scanning' ? (
           <StopScanButton onClick={handleStopScan} label={moduleT('diskGrowth.stop')} />
         ) : null
@@ -1200,9 +1200,9 @@ export function DiskGrowthModule({ isPageActive = true }: ModuleRenderProps) {
         </div>
       )}
 
-      {/* 扫描中状态：统一走公共组件。
-          阶段名和已处理条数都是实现细节（排查耗时有结果的耗时浮层），
-          扫描中只留"在分析哪个盘"和一句首次扫描的说明。 */}
+      {/* Scanning state: use the shared component uniformly.
+          phase names and processed counts are implementation details (the timing overlay is for troubleshooting completed scans),
+          during scanning, keep only "which drive is being analyzed" and a first-scan note. */}
       {moduleState.status === 'scanning' && (
         <div className="p-4">
           <ModuleScanProgress
@@ -1244,7 +1244,7 @@ export function DiskGrowthModule({ isPageActive = true }: ModuleRenderProps) {
               <div className="w-20 shrink-0 text-center">{moduleT('diskGrowth.changeTime')}</div>
               <div className="w-24 shrink-0 text-right">{moduleT('diskGrowth.changeLevel')}</div>
               <div className="w-20 shrink-0 text-right">{moduleT('diskGrowth.currentSizeHeader')}</div>
-              {/* 末尾留出与数据列箭头同宽的空位，否则数字会比表头右边界多缩进一格、列对不齐 */}
+              {/* Leave a spacer at the end as wide as the data-column arrow, otherwise numbers indent one extra step past the header's right edge and columns misalign */}
               <div className="flex w-24 shrink-0 items-center justify-end gap-1">
                 {moduleT('diskGrowth.differenceHeader')}
                 <span className="h-3 w-3 shrink-0" aria-hidden="true" />

@@ -1,12 +1,12 @@
 // ============================================================================
-// 卸载残留扫描与删除命令
+// Uninstall leftover scanning and deletion commands
 // ============================================================================
 
 use crate::scanner::leftover_whitelist::{self, LeftoverWhitelistEntry};
 use crate::scanner::{LeftoverScanResult, LeftoverScanner};
 use log::info;
 
-/// 扫描卸载残留
+/// Scans uninstall leftovers
 #[tauri::command]
 pub async fn scan_uninstall_leftovers(
     deep_scan: Option<bool>,
@@ -30,7 +30,7 @@ pub async fn scan_uninstall_leftovers(
     Ok(result)
 }
 
-/// 删除卸载残留文件夹
+/// Deletes uninstall leftover folders
 #[tauri::command]
 pub async fn delete_leftover_folders(
     paths: Vec<String>,
@@ -50,7 +50,7 @@ pub async fn delete_leftover_folders(
     Ok(result)
 }
 
-/// 获取用户手动保护的卸载残留路径。
+/// Gets the uninstall leftover paths manually protected by the user.
 #[tauri::command]
 pub async fn list_leftover_whitelist() -> Result<Vec<LeftoverWhitelistEntry>, String> {
     tokio::task::spawn_blocking(leftover_whitelist::list_entries)
@@ -58,7 +58,7 @@ pub async fn list_leftover_whitelist() -> Result<Vec<LeftoverWhitelistEntry>, St
         .map_err(|error| format!("读取卸载残留白名单任务失败: {}", error))?
 }
 
-/// 将当前扫描结果加入白名单，后续扫描和删除都会重新校验该保护规则。
+/// Adds the current scan result to the whitelist; subsequent scans and deletions re-validate this protection rule.
 #[tauri::command]
 pub async fn add_leftover_whitelist_entry(path: String) -> Result<LeftoverWhitelistEntry, String> {
     tokio::task::spawn_blocking(move || leftover_whitelist::add_entry(&path))
@@ -66,7 +66,7 @@ pub async fn add_leftover_whitelist_entry(path: String) -> Result<LeftoverWhitel
         .map_err(|error| format!("添加卸载残留白名单任务失败: {}", error))?
 }
 
-/// 移除用户配置的路径保护。
+/// Removes a user-configured path protection.
 #[tauri::command]
 pub async fn remove_leftover_whitelist_entry(path: String) -> Result<(), String> {
     tokio::task::spawn_blocking(move || leftover_whitelist::remove_entry(&path))

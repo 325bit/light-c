@@ -6,7 +6,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>LightC</title>
     <style>
-      /* React 和业务 CSS 加载前先提供可见启动画面，避免主窗口显示白色空文档。 */
+      /* Provide a visible splash screen before React and business CSS load, to avoid the main window showing a blank white document. */
       html,
       body,
       #root {
@@ -80,7 +80,7 @@
         display: flex;
         flex-direction: column;
         align-items: center;
-        /* 与 React 启动屏保持一致，避免接管前后内容位置跳动。 */
+        /* Keep consistent with the React splash screen, to avoid content jumping before/after takeover. */
         gap: 14px;
       }
 
@@ -93,7 +93,7 @@
       }
 
       #initial-splash .splash-screen__slogan {
-        /* 清除 p 默认外边距，避免静态首屏的标语额外撑开内容区。 */
+        /* Clear the default margin of p, so the static first-screen tagline does not push the content area open. */
         margin: 0;
         color: rgba(255, 255, 255, 0.88);
         font-size: 15px;
@@ -168,12 +168,12 @@
   <body>
     <div id="root"></div>
     <script>
-      // 启动屏由脚本注入，而不是写成静态 HTML。
+      // The splash screen is injected by a script, rather than written as static HTML.
       //
-      // 中文说明：静态标记在 index.html 里必然带缩进，解析后会在标签之间产生空白文本节点，
-      // 而 React 的 SplashScreen 渲染出的子树没有这些空白节点；hydrateRoot 接管 #root 时
-      // 就会报 "Hydration failed ... {"\n      "}"。这里用字符串拼接出与 React 完全一致的
-      // 节点结构（不含元素间空白），既保留首帧零闪烁，也不再触发 hydration 报错。
+      // Note: static markup in index.html inevitably carries indentation, which creates whitespace text nodes between tags after parsing,
+      // while the subtree rendered by React's SplashScreen has no such whitespace nodes; when hydrateRoot takes over #root
+      // it reports "Hydration failed ... {"\n      "}". Here a string is built to produce a node structure exactly matching React's
+      // (no whitespace between elements), preserving zero flicker on the first frame without triggering hydration errors.
       (() => {
         const SLOGANS = {
           zh: "LightC，让磁盘优化更简单",
@@ -182,7 +182,7 @@
           ja: "LightC — ディスク最適化をもっとシンプルに"
         };
 
-        // 与 src/i18n/index.ts 的 getInitialLanguage 保持同一判定，避免标语语言不一致。
+        // Use the same determination as getInitialLanguage in src/i18n/index.ts, to avoid the tagline language being inconsistent.
         let language = "zh";
         let theme = "dark";
         try {
@@ -190,7 +190,7 @@
           language = settings.language === "en" || settings.language === "ja" || settings.language === "zh-TW"
             ? settings.language
             : "zh";
-          // 与 ThemeContext 同一判定：light / dark / system(跟随系统)。
+          // Same determination as ThemeContext: light / dark / system (follow the system).
           const mode = localStorage.getItem("c-cleanup-theme");
           theme = mode === "light"
             ? "light"
@@ -198,10 +198,10 @@
               ? (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light")
               : "dark";
         } catch {
-          // localStorage 不可用时使用与应用一致的默认值（深色 + 中文）。
+          // When localStorage is unavailable, use the app's default values (dark + Chinese).
         }
 
-        // 主题与语言提前写到 html 上，index.html 里的样式选择器仍按这两个值工作。
+        // Theme and language are written to html early; the style selectors in index.html still work with these two values.
         document.documentElement.dataset.splashTheme = theme;
         document.documentElement.dataset.splashLanguage = language;
         document.documentElement.dataset.splashStartedAt = String(performance.now());

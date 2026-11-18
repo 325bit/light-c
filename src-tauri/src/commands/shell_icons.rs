@@ -1,6 +1,6 @@
 // ============================================================================
-// 外壳图标清理命令
-// 命令层只负责异步调度和错误边界，注册表安全校验集中在 scanner::shell_icons。
+// Shell icon cleanup commands
+// The command layer only handles async scheduling and error boundaries; registry safety validation is centralized in scanner::shell_icons.
 // ============================================================================
 
 use crate::scanner::{self, ShellIconOperationResult, ShellIconTarget};
@@ -19,7 +19,7 @@ pub async fn remove_shell_icon(
     mode: u8,
 ) -> Result<ShellIconOperationResult, String> {
     info!("处理虚拟磁盘节点: {} / {}", target.hive, target.clsid);
-    // 后台任务需要取得目标所有权，但日志仍需使用原始目标，因此保留一份副本。
+    // The background task needs ownership of the target, but logs still use the original target, so keep a copy.
     let target_for_task = target.clone();
     let result =
         tokio::task::spawn_blocking(move || scanner::remove_shell_icon(&target_for_task, mode))
@@ -37,7 +37,7 @@ pub async fn remove_shell_icon(
 pub async fn unlock_shell_icon(
     target: ShellIconTarget,
 ) -> Result<ShellIconOperationResult, String> {
-    // 解锁操作同样在阻塞线程执行，复制目标避免影响后续操作记录。
+    // The unlock operation also runs on a blocking thread; copy the target so later operation records are unaffected.
     let target_for_task = target.clone();
     let result = tokio::task::spawn_blocking(move || scanner::unlock_shell_icon(&target_for_task))
         .await
@@ -50,7 +50,7 @@ pub async fn unlock_shell_icon(
 pub async fn restore_shell_icon(
     target: ShellIconTarget,
 ) -> Result<ShellIconOperationResult, String> {
-    // 恢复操作可能包含注册表导入，复制目标后再交给阻塞线程执行。
+    // The restore operation may involve registry imports; copy the target before handing it to the blocking thread.
     let target_for_task = target.clone();
     let result = tokio::task::spawn_blocking(move || scanner::restore_shell_icon(&target_for_task))
         .await

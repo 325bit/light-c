@@ -1,6 +1,6 @@
 // ============================================================================
-// 模块卡片组件
-// 通用的可展开清理模块卡片，用于仪表盘布局
+// Module card component
+// A reusable expandable cleanup module card for the dashboard layout
 // ============================================================================
 
 import { ReactNode, useRef, useState, useEffect } from 'react';
@@ -10,65 +10,65 @@ import { formatSize } from '../utils/format';
 import type { ModuleStatus } from '../contexts/DashboardContext';
 
 // ============================================================================
-// 类型定义
+// Type definitions
 // ============================================================================
 
 export interface ModuleCardProps {
-  /** 模块唯一标识 */
+  /** Unique module identifier */
   id: string;
-  /** 模块标题 */
+  /** Module title */
   title: string;
-  /** 模块描述 */
+  /** Module description */
   description: string;
-  /** 模块图标 */
+  /** Module icon */
   icon: ReactNode;
-  /** 图标背景色类名 */
+  /** Icon background color class name */
   iconBgClass?: string;
-  /** 模块状态 */
+  /** Module status */
   status: ModuleStatus;
-  /** 发现的文件数量 */
+  /** Number of files found */
   fileCount: number;
-  /** 可清理的总大小（字节） */
+  /** Total cleanable size (bytes) */
   totalSize: number;
-  /** 完成且有结果时的状态文案，分析类模块不应默认显示“可清理”。 */
+  /** Status text when finished with results; analysis-type modules should not default to showing "cleanable". */
   doneBadgeText?: string;
-  /** 完成但没有结果时的状态文案，避免非清理模块显示“已清理”。 */
+  /** Status text when finished with no results, to avoid non-cleanup modules showing "cleaned". */
   emptyDoneBadgeText?: string;
-  /** 隐藏完成状态徽章，适合检测类模块避免显示无意义的“已检测”。 */
+  /** Hide the completion-status badge, suitable for detection-type modules to avoid showing a meaningless "detected". */
   hideDoneBadge?: boolean;
-  /** fileCount 的单位标签，默认"个文件"。大目录模块可传"个大目录" */
+  /** Unit label for fileCount, defaults to "files". Large-directory modules may pass "large directories". */
   countLabel?: string;
-  /** 仅展示数量，不展示不适用的空间统计。 */
+  /** Show only the count, not the inapplicable space statistics. */
   hideTotalSize?: boolean;
-  /** 扫描按钮点击回调 */
+  /** Scan button click callback */
   onScan: () => void;
-  /** 扫描按钮文本 */
+  /** Scan button text */
   scanButtonText?: string;
-  /** 是否禁用扫描按钮 */
+  /** Whether the scan button is disabled */
   scanDisabled?: boolean;
-  /** 展开后的内容 */
+  /** Expanded content */
   children: ReactNode;
-  /** 标题旁额外内容，适合放轻量筛选器或模式切换。 */
+  /** Extra content beside the title, suitable for a lightweight filter or mode switch. */
   titleExtra?: ReactNode;
-  /** 头部右侧额外内容 */
+  /** Extra content on the right side of the header */
   headerExtra?: ReactNode;
-  /** 错误信息 */
+  /** Error message */
   error?: string | null;
-  /** 允许模块内容中的 sticky 元素跨越卡片内容滚动时保持可见。 */
+  /** Allow sticky elements inside the module content to stay visible while the card content scrolls. */
   allowStickyContent?: boolean;
 }
 
 // ============================================================================
-// 组件实现
+// Component implementation
 // ============================================================================
 
 export function ModuleCard({
-  // id 保留用于未来扩展（如数据追踪）
+  // id is reserved for future extensions (e.g. analytics)
   id: _id,
   title,
   description,
   icon,
-  // 图标背景色默认使用微信绿 10% 透明度
+  // Icon background color defaults to WeChat green at 10% opacity
   iconBgClass = 'bg-[var(--brand-green-10)]',
   status,
   fileCount,
@@ -95,7 +95,7 @@ export function ModuleCard({
   const isDone = status === 'done';
   const hasError = status === 'error' || !!error;
 
-  // 获取状态标签 - 使用微信绿色系
+  // Get the status label - uses the WeChat green palette
   const getStatusBadge = () => {
     if (isScanning) {
       return (
@@ -133,7 +133,7 @@ export function ModuleCard({
     return null;
   };
 
-  // 获取扫描按钮文本
+  // Get the scan button text
   const getButtonText = () => {
     if (scanButtonText) return scanButtonText;
     if (isScanning) return t('scanningShort');
@@ -144,23 +144,23 @@ export function ModuleCard({
   return (
     <div 
       className={`
-        /* 微信风格卡片：纯白背景 + 极淡阴影 + 大圆角 */
+        /* WeChat-style card: pure white background + very subtle shadow + large rounded corners */
         glass-surface bg-[var(--bg-card)] rounded-2xl ${allowStickyContent ? 'overflow-visible' : 'overflow-hidden'}
-        /* flex-1 让卡片吃满剩余高度；min-height: auto 保证长结果不被压缩。 */
+        /* flex-1 lets the card fill the remaining height; min-height: auto keeps long results from being compressed. */
         module-card--page flex flex-1 flex-col
         shadow-sm ring-1 ring-[var(--border-color)]
         transition-all duration-300 ease-out
       `}
     >
-      {/* 卡片头部 - 增加内边距提供呼吸空间 */}
+      {/* Card header - extra padding for breathing room */}
       <div className="shrink-0 p-6">
         <div className="flex flex-wrap items-center gap-4">
-          {/* 模块图标 - 微信绿 10% 透明度圆角容器 */}
+          {/* Module icon - WeChat green 10% opacity rounded container */}
           <div className={`w-14 h-14 rounded-2xl ${iconBgClass} flex items-center justify-center shrink-0`}>
             {icon}
           </div>
 
-          {/* 模块信息 - 清晰的文字层次 */}
+          {/* Module info - clear text hierarchy */}
           <div className="min-w-0 flex-1 basis-[15.71rem]">
             <div className="flex min-w-0 flex-wrap items-center gap-2.5">
               <h3 className="min-w-0 text-[1.07rem] font-bold text-[var(--text-primary)]">{title}</h3>
@@ -170,7 +170,7 @@ export function ModuleCard({
             <p className="text-[0.93rem] text-[var(--text-muted)] mt-1 truncate">{description}</p>
           </div>
 
-          {/* 统计信息 - 使用 tabular-nums 确保数字稳定不抖动 */}
+          {/* Statistics - tabular-nums keeps digits from jittering */}
           {isDone && fileCount > 0 && (
             <div className="text-right shrink-0 mr-3">
               {!hideTotalSize && <p className="text-xl font-bold text-[var(--brand-green)] tabular-nums">{formatSize(totalSize)}</p>}
@@ -178,10 +178,10 @@ export function ModuleCard({
             </div>
           )}
 
-          {/* 额外内容 */}
+          {/* Extra content */}
           {headerExtra}
 
-          {/* 扫描按钮：完成态也保留按钮边界，避免“重新扫描/检测”在列表里看起来像普通文字。 */}
+          {/* Scan button: keep the button boundary even in the done state, so "Rescan/Detect" does not look like plain text in the list. */}
           <button
             onClick={(e) => {
               e.stopPropagation();
@@ -208,7 +208,7 @@ export function ModuleCard({
           </button>
         </div>
 
-        {/* 扫描进度条 - 微信绿流光动画 */}
+        {/* Scan progress bar - WeChat green flowing-light animation */}
         {isScanning && (
           <div className="mt-5 pt-5 border-t border-[var(--border-muted)]">
             <div className="h-1.5 bg-[var(--bg-hover)] rounded-full overflow-hidden">
@@ -225,7 +225,7 @@ export function ModuleCard({
           </div>
         )}
 
-        {/* 错误信息 */}
+        {/* Error message */}
         {hasError && error && (
           <div className="mt-4 px-4 py-3 bg-[var(--color-danger)]/10 rounded-xl">
             <p className="text-[0.93rem] text-[var(--color-danger)]">{error}</p>
@@ -233,7 +233,7 @@ export function ModuleCard({
         )}
       </div>
 
-      {/* 内容区常驻展示：侧边栏模式下由外层控制当前模块，卡片内不再做手风琴折叠。 */}
+      {/* Content area always shown: in sidebar mode the outer layer controls the current module, so the card no longer does accordion folding. */}
       <div className="flex flex-1 min-h-0 flex-col">
         <div className="border-t border-[var(--border-color)] pb-2 module-card__body flex flex-1 flex-col">
           {children}
@@ -244,7 +244,7 @@ export function ModuleCard({
 }
 
 // ============================================================================
-// 手风琴动画组件
+// Accordion animation component
 // ============================================================================
 
 interface AccordionContentProps {
@@ -254,7 +254,7 @@ interface AccordionContentProps {
   className?: string;
 }
 
-// 导出给同样需要手风琴过渡的模块复用（如大目录分析的树形展开），避免各处重复实现高度动画。
+// Exported for reuse by modules that also need accordion transitions (e.g. the tree expansion of big-directory analysis), avoiding repeated height-animation implementations everywhere.
 export function AccordionContent({ expanded, children, animated = true, className = '' }: AccordionContentProps) {
   const contentRef = useRef<HTMLDivElement>(null);
   const [height, setHeight] = useState<number | 'auto'>(expanded ? 'auto' : 0);
@@ -269,7 +269,7 @@ export function AccordionContent({ expanded, children, animated = true, classNam
     prevExpandedRef.current = expanded;
 
     if (expanded && !wasExpanded) {
-      // 展开：先设置实际高度，动画结束后设为 auto
+      // Expanding: set the actual height first, then set to auto after the animation ends
       const scrollHeight = content.scrollHeight;
       setHeight(scrollHeight);
       setIsAnimating(true);
@@ -281,13 +281,13 @@ export function AccordionContent({ expanded, children, animated = true, classNam
       
       return () => clearTimeout(timer);
     } else if (!expanded && wasExpanded) {
-      // 折叠：先获取当前高度，再动画到 0
+      // Collapsing: first capture the current height, then animate to 0
       const scrollHeight = content.scrollHeight;
-      // 先设置为具体高度（从 auto 转换）
+      // Set a concrete height first (converting from auto)
       setHeight(scrollHeight);
       setIsAnimating(true);
       
-      // 使用 requestAnimationFrame 确保浏览器先渲染具体高度
+      // Use requestAnimationFrame to ensure the browser renders the concrete height first
       requestAnimationFrame(() => {
         requestAnimationFrame(() => {
           setHeight(0);
@@ -307,7 +307,7 @@ export function AccordionContent({ expanded, children, animated = true, classNam
   if (!shouldRender) return null;
 
   if (!animated) {
-    // 页面模式或悬浮操作模块不做高度动画，避免 overflow 规则截断 sticky 子元素。
+    // Page mode and floating-action modules skip the height animation, to avoid overflow rules clipping sticky children.
     return expanded ? <div ref={contentRef} className={className}>{children}</div> : null;
   }
 

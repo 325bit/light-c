@@ -1,5 +1,5 @@
 // ============================================================================
-// 开发空间清理命令
+// Dev space cleanup commands
 // ============================================================================
 
 use crate::scanner::{
@@ -8,9 +8,9 @@ use crate::scanner::{
 };
 use log::info;
 
-/// 扫描开发工具链缓存与多版本残留。
+/// Scans dev toolchain caches and multi-version leftovers.
 ///
-/// 要遍历十几个目录（NuGet 包缓存动辄上万个目录），放阻塞线程池里跑，避免卡住 UI。
+/// Traverses a dozen or so directories (NuGet package caches can have tens of thousands of directories), so run in the blocking thread pool to avoid freezing the UI.
 #[tauri::command]
 pub async fn scan_dev_cache() -> Result<DevCacheScanResult, String> {
     info!("开始扫描开发空间");
@@ -28,13 +28,13 @@ pub async fn scan_dev_cache() -> Result<DevCacheScanResult, String> {
     Ok(result)
 }
 
-/// 删除选中的目录，返回成功数与失败明细。
+/// Deletes the selected directories, returning the success count and failure details.
 ///
-/// 前端传来的路径不可信：后端会重新校验归属（必须精确等于某个目标目录，
-/// 或位于版本根目录之下的版本号目录），只读项与当前使用的版本一律拒绝。
+/// Paths from the frontend are not trusted: the backend re-validates ownership (must exactly equal a target directory,
+/// or be a version-number directory under a version root); read-only items and the currently used version are always rejected.
 ///
-/// 返回值必须看 `failed`：IDE / 构建进程开着时文件常被占用，删除会部分失败，
-/// 只报成功数会让界面显示"已删完"而实际占用没降。
+/// The return value must include `failed`: files are often in use while IDE/build processes run, so deletion may partially fail,
+/// reporting only the success count would make the UI show "all deleted" while actual usage has not dropped.
 #[tauri::command]
 pub async fn delete_dev_cache_paths(paths: Vec<String>) -> Result<DevCacheDeleteResult, String> {
     if paths.is_empty() {

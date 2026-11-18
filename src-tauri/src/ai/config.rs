@@ -1,32 +1,32 @@
 // ============================================================================
-// AI 配置读写（多服务商档案）
+// AI config read/write (multi-provider profiles)
 //
-// 存放位置：{数据目录}/ai/ai_settings.json（跟随主数据目录，便携版也能带走）
+// Location: {data dir}/ai/ai_settings.json (follows the main data directory, so portable builds can take it along)
 //
-// 结构：
-//   { "activeProfileId": "p_xxx", "profiles": [ { ...一份完整服务商配置 } ], "dataDir": "" }
+// Structure:
+//   { "activeProfileId": "p_xxx", "profiles": [ { ...a complete provider config } ], "dataDir": "" }
 //
-// 为什么是"数组 + 当前选中"而不是一份配置：
-//   用户可能同时有官方 API 和第三方中转、或者不同用途用不同模型。
-//   拆成档案后，"再加一个服务商"就是加一个元素，"切换"只改 activeProfileId 一个字段。
+// Why "array + current selection" instead of a single config:
+//   Users may have both an official API and a third-party relay, or use different models for different purposes.
+//   With profiles, "adding another provider" is just adding an element, and "switching" only changes the activeProfileId field.
 //
-// 关于密钥：当前与多数桌面工具一致，以明文保存在该文件里；但**绝不回传前端** ——
-//   前端只拿得到掩码（sk-****1234），界面层无法取得可用密钥。
-//   后续若要做到"拷走文件也解不开"，可接 Windows DPAPI（见 docs/dev/AI服务商与密钥存储方案.md），
-//   本文件对外接口不用变。
+// About keys: as with most desktop tools, they are currently stored in plaintext in this file; but **never returned to the frontend** —
+//   the frontend only gets the masked value (sk-****1234); the UI layer cannot obtain a usable key.
+//   To make a copied file unreadable later, Windows DPAPI could be plugged in (see docs/dev/AI-provider-and-key-storage.md);
+//   the public interface of this file does not need to change.
 // ============================================================================
 
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
 
-/// 一份服务商档案：一个密钥 + 一个地址 + 一个当前模型。
+/// A provider profile: one key + one endpoint + one current model.
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AiProfile {
-    /// 稳定 id，切换与更新都靠它
+    /// Stable id, used for switching and updates
     pub id: String,
-    /// 用户可改的显示名；留空时界面回落到服务商名
+    /// User-editable display name; when empty the UI falls back to the provider name
     #[serde(default)]
     pub name: String,
     #[serde(default)]
@@ -37,16 +37,16 @@ pub struct AiProfile {
     pub model: String,
     #[serde(default)]
     pub api_key: String,
-    /// **上次成功拉取到的模型列表**。
-    /// 必须缓存：否则界面只有一个孤零零的模型名，用户既看不到有几个可选，
-    /// 也无法判断这个名字是不是还有效（历史问题：早期预设带过 default_model，
-    /// 用户保存后一直显示那个名字，即使它早就不在该密钥可用的列表里）。
+    /// **The last successfully fetched model list**.
+    /// Must be cached: otherwise the UI shows only a lone model name, and users can neither see how many options there are
+    /// nor judge whether that name is still valid (historical issue: early presets carried default_model,
+    /// and after saving users kept seeing that name even when it was long gone from the key's available list).
     #[serde(default)]
     pub models: Vec<String>,
-    /// 模型列表的拉取时间（Unix 秒），0 表示从未拉过
+    /// When the model list was fetched (Unix seconds), 0 means never
     #[serde(default)]
     pub models_fetched_at: i64,
-    /// 思考强度。**留空 = 不发送该参数** —— 不支持的模型收到它可能直接报错。
+    /// Reasoning effort. **Leaving it empty means the parameter is not sent** — unsupported models may error out if it is.
     #[serde(default)]
     pub reasoning_effort: String,
 }
@@ -58,15 +58,15 @@ pub struct AiStoredConfig {
     pub active_profile_id: String,
     #[serde(default)]
     pub profiles: Vec<AiProfile>,
-    /// AI 数据目录（会话记录等）。**全局设置**，不属于某个服务商 ——
-    /// 换服务商不该把聊天记录也搬走。
+    /// AI data directory (chat history, etc.). **Global setting**, not tied to any provider —
+    /// switching providers should not move the chat history as well.
     #[serde(default)]
     pub data_dir: String,
 }
 
 impl AiStoredConfig {
-    /// 当前生效的档案。id 找不到时回退到第一个 ——
-    /// 配置还在却"用不了"是最难排查的状态，这里宁可退回一个能用的。
+    /// The currently active profile. When the id is not found, fall back to the first —
+    /// a config that exists but "cannot be used" is the hardest state to diagnose, so prefer falling back to a working one.
     pub fn active_profile(&self) -> Option<&AiProfile> {
         self.profiles
             .iter()
@@ -84,7 +84,7 @@ impl AiStoredConfig {
     }
 }
 
-/// 交给前端的档案视图：密钥只给掩码。
+/// Profile view for the frontend: keys are masked only.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AiPublicProfile {
@@ -100,20 +100,20 @@ pub struct AiPublicProfile {
     pub reasoning_effort: String,
 }
 
-/// 交给前端的整体视图。
+/// Overall view for the frontend.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AiPublicConfig {
     pub active_profile_id: String,
     pub profiles: Vec<AiPublicProfile>,
     pub data_dir: String,
-    /// **解析后的真实目录**（配置为空时就是默认位置）。
-    /// 界面要显示"到底存在哪"并支持一键打开，靠前端自己拼是拼不出来的。
+    /// **Resolved real directory** (the default location when config is empty).
+    /// The UI must show "where exactly it is stored" and support one-click opening; the frontend cannot construct that on its own.
     pub resolved_data_dir: String,
 }
 
-/// 解析后的 AI 数据根目录：配置为空时回落到「数据目录/ai」。
-/// 会话落盘与"清空本地数据"都用它，保证两处永远指向同一个地方。
+/// Resolved AI data root: falls back to "data dir/ai" when config is empty.
+/// Both chat persistence and "clear local data" use it, ensuring both always point to the same place.
 pub fn resolve_data_dir() -> PathBuf {
     let configured = read_config().data_dir;
     let trimmed = configured.trim();
@@ -124,12 +124,12 @@ pub fn resolve_data_dir() -> PathBuf {
     }
 }
 
-/// 配置文件所在目录：{数据目录}/ai
+/// Directory containing the config file: {data dir}/ai
 fn config_dir() -> PathBuf {
     crate::data_dir::get_data_dir().join("ai")
 }
 
-/// 配置文件路径。
+/// Config file path.
 pub fn config_path() -> PathBuf {
     config_dir().join("ai_settings.json")
 }
@@ -141,10 +141,10 @@ fn now_seconds() -> i64 {
         .unwrap_or(0)
 }
 
-/// 把旧版单配置结构迁移成一份档案。
+/// Migrate the old single-config structure into a profile.
 ///
-/// 旧文件长这样：`{ "providerId": "...", "baseUrl": "...", "model": "...", "apiKey": "..." }`
-/// 没有 profiles 字段。**必须迁移**：否则升级后用户的密钥与模型全部"消失"。
+/// The old file looked like: `{ "providerId": "...", "baseUrl": "...", "model": "...", "apiKey": "..." }`
+/// No profiles field. **Migration is mandatory**: otherwise users' keys and models all "disappear" after upgrading.
 fn migrate_legacy(value: &serde_json::Value) -> Option<AiStoredConfig> {
     let text = |key: &str| -> String {
         value
@@ -158,7 +158,7 @@ fn migrate_legacy(value: &serde_json::Value) -> Option<AiStoredConfig> {
     let provider_id = text("providerId");
     let base_url = text("baseUrl");
     let model = text("model");
-    // 旧配置里连密钥都没有，就是没配过，不必造一个空档案
+    // If the old config has no key either, it was never configured; do not create an empty profile
     if api_key.trim().is_empty() && provider_id.trim().is_empty() {
         return None;
     }
@@ -195,13 +195,13 @@ fn migrate_legacy(value: &serde_json::Value) -> Option<AiStoredConfig> {
     })
 }
 
-/// DPAPI 加密后的密钥前缀。
+/// Prefix for DPAPI-encrypted keys.
 ///
-/// **没有前缀的一律当明文处理** —— 升到这个版本之前存下的老配置不需要迁移代码，
-/// 读出来照样能用，下次保存时自动变成密文。
+/// **Anything without the prefix is treated as plaintext** — configs saved before this version need no migration code,
+/// they still work when read and are automatically encrypted on the next save.
 const DPAPI_PREFIX: &str = "dpapi:";
 
-/// 二进制 → 十六进制。只是为了把密文塞进 JSON 字符串，不值得为它引 base64 依赖。
+/// Binary → hex. Only to fit ciphertext into a JSON string; not worth adding a base64 dependency.
 fn to_hex(bytes: &[u8]) -> String {
     let mut text = String::with_capacity(bytes.len() * 2);
     for byte in bytes {
@@ -223,11 +223,11 @@ fn from_hex(text: &str) -> Option<Vec<u8>> {
     Some(bytes)
 }
 
-/// 用当前 Windows 用户的 DPAPI 加密密钥（`CryptProtectData`）。
+/// Encrypt a key with the current Windows user's DPAPI (`CryptProtectData`).
 ///
-/// **只加密 api_key 这一个字段**，不动档案的其它内容：换用户 / 换机器读不回来，
-/// 对密钥来说恰好是正确语义（解密失败就当没配，让用户重填，而不是把旧密文发给服务商）。
-/// 加密本身失败时**退回明文**并记日志 —— 宁可降级，也不能让用户存不了密钥。
+/// **Encrypt only the api_key field**, leave everything else in the profile alone: another user / another machine cannot decrypt it,
+/// which is exactly the right semantic for a key (decryption failure means treat as unconfigured and ask the user to re-enter it, rather than sending old ciphertext to the provider).
+/// If encryption itself fails, **fall back to plaintext** and log it — degradation is acceptable, but users must be able to save a key.
 fn protect_key(plain: &str) -> String {
     if plain.trim().is_empty() || plain.starts_with(DPAPI_PREFIX) {
         return plain.to_string();
@@ -241,8 +241,8 @@ fn protect_key(plain: &str) -> String {
     }
 }
 
-/// 解密（`CryptUnprotectData`）。没有前缀 = 老的明文配置，原样返回。
-/// 解密失败返回空串：界面会显示"未配置"，用户重填即可 —— 绝不能把密文当密钥发出去。
+/// Decrypt (`CryptUnprotectData`). No prefix = old plaintext config, returned as is.
+/// Return an empty string on decryption failure: the UI shows "not configured" and the user re-enters it — never send ciphertext out as a key.
 fn unprotect_key(stored: &str) -> String {
     let Some(encoded) = stored.strip_prefix(DPAPI_PREFIX) else {
         return stored.to_string();
@@ -336,48 +336,48 @@ fn dpapi_unprotect(encrypted: &[u8]) -> Option<Vec<u8>> {
     Some(plain)
 }
 
-/// 落盘前把每个档案的密钥加密（已是密文的跳过，避免二次加密）。
+/// Before writing to disk, encrypt each profile's key (skip ones already encrypted, to avoid double encryption).
 fn encrypt_keys(config: &mut AiStoredConfig) {
     for profile in &mut config.profiles {
         profile.api_key = protect_key(&profile.api_key);
     }
 }
 
-/// 读盘后把每个档案的密钥解密（没有前缀的明文原样保留）。
+/// After reading from disk, decrypt each profile's key (plaintext without a prefix is kept as is).
 fn decrypt_keys(config: &mut AiStoredConfig) {
     for profile in &mut config.profiles {
         profile.api_key = unprotect_key(&profile.api_key);
     }
 }
 
-/// 读配置。文件不存在、内容损坏都回退到默认值 —— 配置读不出来不该让界面打不开。
+/// Read config. Missing file or corrupt content falls back to defaults — unreadable config must not prevent the UI from opening.
 pub fn read_config() -> AiStoredConfig {
     let mut config = read_config_raw();
     decrypt_keys(&mut config);
     config
 }
 
-/// 真正的读取逻辑（不含加解密）。
+/// The actual read logic (no encryption/decryption).
 ///
-/// 单独拆一层是因为 `read_config` 有好几个 return 点（默认值 / 新结构 / 旧结构迁移），
-/// 解密放在外层只需要接一次 —— 以后再加分支也不会漏掉解密。
+/// Split into a separate layer because `read_config` has several return points (default / new structure / old-structure migration),
+/// so decryption in the outer layer only needs to happen once — future branches cannot forget it.
 fn read_config_raw() -> AiStoredConfig {
     let path = config_path();
     let text = match fs::read_to_string(&path) {
         Ok(text) => text,
-        // "还没配置过"是正常状态，不打日志
+        // "Never configured" is a normal state; do not log it
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             return AiStoredConfig::default();
         }
         Err(error) => {
-            // ⚠️ 文件在、但读不出来（被占用 / 权限 / 坏盘）**不能当成"没有配置"静默过去**：
-            // 用户看到的现象是"我的密钥全没了"，而查不到任何线索。
+            // ⚠️ File present but unreadable (locked / permissions / bad disk) **must not be silently treated as "no config"**:
+            // users see "all my keys are gone" with no clue to diagnose.
             log::warn!("读取 AI 配置失败，已回退默认值 {}: {}", path.display(), error);
             return AiStoredConfig::default();
         }
     };
 
-    // 先当通用 JSON 读：这样才能判断是旧结构（需要迁移）还是新结构
+    // Read as generic JSON first: this lets us tell old structure (needs migration) from new structure
     let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
         log::warn!("AI 配置不是合法 JSON，已回退默认值: {}", path.display());
         return AiStoredConfig::default();
@@ -390,8 +390,8 @@ fn read_config_raw() -> AiStoredConfig {
         });
     }
 
-    // 旧结构：迁移并**立即写回**，避免每次启动都判断一次；
-    // 用户不一定会再点保存，不写回就会一直停在"看似没有配置"的状态。
+    // Old structure: migrate and **write back immediately**, so we do not judge it on every startup;
+    // users may not click save again, and without writing back they stay in a "seemingly unconfigured" state.
     match migrate_legacy(&value) {
         Some(migrated) => {
             log::info!("检测到旧版 AI 配置，已迁移为单档案结构");
@@ -404,15 +404,15 @@ fn read_config_raw() -> AiStoredConfig {
     }
 }
 
-/// 写配置。
+/// Write config.
 ///
-/// **必须原子写**：直接 `fs::write` 是先截断再写，中途崩溃或被结束进程就会留下半个
-/// JSON —— 下次读回来解析失败 → 回退默认值 → 用户所有密钥与档案静默消失。
-/// 改成"写临时文件 → rename 覆盖"：同一卷上 rename 是原子的，
-/// 要么是旧的完整文件、要么是新的完整文件，没有中间态。
+/// **Must write atomically**: plain `fs::write` truncates first, so a crash or process kill mid-write leaves half a
+/// JSON file — next read fails to parse → falls back to defaults → all keys and profiles silently vanish.
+/// Use "write temp file → rename over target": rename on the same volume is atomic,
+/// leaving either the complete old file or the complete new file, never an intermediate state.
 pub fn save_config(mut config: AiStoredConfig) -> Result<(), String> {
-    // 落盘前加密密钥（只加密这一个字段）。这里改的是副本 ——
-    // 调用方手里的仍是明文，返回给命令层时不必再解密。
+    // Encrypt keys before writing (only this field). This modifies a copy —
+    // the caller still holds plaintext, so no decryption is needed when returning to the command layer.
     encrypt_keys(&mut config);
     let directory = config_dir();
     fs::create_dir_all(&directory)
@@ -422,38 +422,38 @@ pub fn save_config(mut config: AiStoredConfig) -> Result<(), String> {
         .map_err(|error| format!("序列化 AI 配置失败: {}", error))?;
 
     let path = config_path();
-    // 临时名带上进程号：避免和另一个实例/另一个正在写的临时文件撞名
+    // Temp name includes the process id: avoid collisions with another instance or another in-progress temp file
     let temporary = path.with_extension(format!("{}.tmp", std::process::id()));
     fs::write(&temporary, text)
         .map_err(|error| format!("写入 AI 配置失败 {}: {}", temporary.display(), error))?;
     fs::rename(&temporary, &path).map_err(|error| {
-        // 换名都失败了，临时文件没有留下的意义，顺手清掉，别在配置目录里留垃圾
+        // Even the rename failed; the temp file has no reason to remain, so clean it up rather than leaving junk in the config directory
         let _ = fs::remove_file(&temporary);
         format!("替换 AI 配置失败 {}: {}", path.display(), error)
     })?;
     Ok(())
 }
 
-/// 配置"读 → 改 → 写"的串行闸。
+/// Serialization gate for config read → modify → write.
 ///
-/// Tauri 命令是可以并发进来的，而下面每个改配置的函数都是 read_config → 改 → save_config：
-/// 两个交叉执行就会丢更新（典型场景：测试连接在写模型缓存的同时，用户点了保存档案）。
-/// 用 std 的 Mutex 就够 —— 这些操作只是读写一个很小的本地文件。
-/// ⚠️ 不要在持闸函数内部再调另一个持闸函数：std 的 Mutex 不可重入，会死锁。
-/// （`read_config` / `save_config` 自己不持闸，所以它们互相调用是安全的。）
+/// Tauri commands can arrive concurrently, and every config-modifying function below is read_config → modify → save_config:
+/// interleaving two of them loses updates (typical case: test connection caching a model list while the user clicks save profile).
+/// A std Mutex suffices — these operations only read/write a tiny local file.
+/// ⚠️ Do not call another gated function from inside a gated function: std's Mutex is not reentrant and will deadlock.
+/// (`read_config` / `save_config` themselves do not hold the gate, so calling each other is safe.)
 static CONFIG_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-/// 取配置闸。锁中毒（持锁线程 panic 过）时照常放行 —— 这道闸只防并发交叉，不保护任何不变量。
+/// Acquire the config gate. If the lock is poisoned (holder panicked), let it through as normal — this gate only prevents interleaving, it protects no invariant.
 fn lock_config() -> std::sync::MutexGuard<'static, ()> {
     CONFIG_LOCK
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-/// 校验并规整一份档案（新增/更新都走这里）。
+/// Validate and normalize a profile (used by both create and update).
 ///
-/// 前端表单已经校验过一次，但命令层是**对外表面**（任何调用方都能传），
-/// 这里再挡一道：坏档案一旦写进配置，表现出来就是"设置页看着填好了、提问却一直失败"。
+/// The frontend form already validates once, but the command layer is an **external surface** (any caller can pass anything),
+/// so add another check here: a bad profile written into config shows up as "settings page looks filled in but questions keep failing".
 fn validate_profile(mut profile: AiProfile) -> Result<AiProfile, String> {
     let preset = super::presets::list_providers()
         .into_iter()
@@ -461,11 +461,11 @@ fn validate_profile(mut profile: AiProfile) -> Result<AiProfile, String> {
     let Some(preset) = preset else {
         return Err(format!("未知的服务商: {}", profile.provider_id));
     };
-    // 显示名留空时回落到服务商名：档案列表里不该出现空白项，否则用户分不清在用哪个
+    // Empty display name falls back to the provider name: the profile list should have no blank entries, or users cannot tell which one is active
     if profile.name.trim().is_empty() {
         profile.name = preset.name.to_string();
     }
-    // 地址留空是**合法**的（表示用预设默认地址），但填了就必须是 http(s)
+    // Empty endpoint is **legal** (means use the preset default), but if provided it must be http(s)
     let base_url = profile.base_url.trim();
     if !base_url.is_empty() && !(base_url.starts_with("http://") || base_url.starts_with("https://")) {
         return Err(format!("接口地址必须以 http:// 或 https:// 开头: {}", base_url));
@@ -473,10 +473,10 @@ fn validate_profile(mut profile: AiProfile) -> Result<AiProfile, String> {
     Ok(profile)
 }
 
-/// 生成新档案 id：秒级时间戳 + 重名时自增后缀。
+/// Generate a new profile id: second-level timestamp plus an incrementing suffix on collision.
 ///
-/// ⚠️ 只用 `p_{秒级时间戳}` 会在"同一秒内新建两份"时撞 id ——
-/// 撞了之后 upsert 会认到前一份（新填的密钥写进旧档案）、删除会把两份一起删。
+/// ⚠️ Using only `p_{second timestamp}` collides when "two profiles are created within the same second" —
+/// after a collision upsert matches the earlier one (the new key is written into the old profile) and deletion removes both.
 fn next_profile_id(config: &AiStoredConfig) -> String {
     let base = format!("p_{}", now_seconds());
     if !config.profiles.iter().any(|profile| profile.id == base) {
@@ -492,15 +492,15 @@ fn next_profile_id(config: &AiStoredConfig) -> String {
     }
 }
 
-/// 把前端提交的档案合并进已有档案：只让表单能表达的字段生效。
+/// Merge the profile submitted by the frontend into existing profiles: only let fields the form can express take effect.
 ///
-/// `models` / `models_fetched_at` 是后端「测试连接」时缓存的元数据，前端表单里
-/// 根本没有这两项（`AiProfileInput` 不含它们，反序列化后就是空值）。整份替换会把
-/// 缓存清空 —— 面板的下拉随即退化成纯文本、用户再也切不了模型，只能重开设置页
-/// 等自动重拉。所以这两个字段必须原样带过来。
-/// 但换了服务商 / 接口地址 / 密钥时，旧列表已经不可信，留空让设置页重新拉取。
+/// `models` / `models_fetched_at` are metadata cached by the backend during "test connection"; the frontend form
+/// has neither field (`AiProfileInput` does not include them, so they deserialize to empty). Replacing wholesale would
+/// clear the cache — the panel's dropdown would immediately degrade to plain text and users could no longer switch models,
+/// only reopening the settings page and waiting for an automatic refetch. So these two fields must be carried over unchanged.
+/// But when the provider / endpoint / key changes, the old list is no longer trustworthy; leave it empty so the settings page refetches.
 fn merge_profile_update(existing: &mut AiProfile, incoming: AiProfile) {
-    // 密钥留空 = 不改动已保存的密钥（前端只拿得到掩码，回传不了明文）
+    // Empty key = do not change the saved key (the frontend only has the masked value, it cannot send back plaintext)
     let keep_key = incoming.api_key.trim().is_empty();
     let previous_key = existing.api_key.clone();
     let same_endpoint = existing.provider_id == incoming.provider_id
@@ -518,7 +518,7 @@ fn merge_profile_update(existing: &mut AiProfile, incoming: AiProfile) {
             existing.models = models;
             existing.models_fetched_at = fetched_at;
         }
-        // 端点变了就显式作废：不能指望调用方"恰好没夹带"旧列表
+        // If the endpoint changes, invalidate explicitly: do not rely on the caller "happening not to include" the old list
         None => {
             existing.models.clear();
             existing.models_fetched_at = 0;
@@ -526,7 +526,7 @@ fn merge_profile_update(existing: &mut AiProfile, incoming: AiProfile) {
     }
 }
 
-/// 新增或更新一份档案（按 id 匹配）。返回更新后的整体配置。
+/// Create or update a profile (match by id). Return the updated overall config.
 pub fn upsert_profile(profile: AiProfile) -> Result<AiStoredConfig, String> {
     let _guard = lock_config();
     let profile = validate_profile(profile)?;
@@ -538,9 +538,9 @@ pub fn upsert_profile(profile: AiProfile) -> Result<AiStoredConfig, String> {
             if created.id.trim().is_empty() {
                 created.id = next_profile_id(&config);
             }
-            // ⚠️ 新建的档案**必须设为当前**。
-            // 否则：界面里的表单永远编辑"当前档案"，用户新建后填的密钥会被存进旧档案，
-            // 新档案永远是空的（这是实现时靠读流程发现的一个真 bug）。
+            // ⚠️ A newly created profile **must be set as current**.
+            // Otherwise: the form in the UI always edits "the current profile", so a key entered after creating would be saved into the old profile,
+            // and the new profile stays empty forever (a real bug found while reading the flow during implementation).
             config.active_profile_id = created.id.clone();
             config.profiles.push(created);
         }
@@ -549,10 +549,10 @@ pub fn upsert_profile(profile: AiProfile) -> Result<AiStoredConfig, String> {
     Ok(config)
 }
 
-/// 清掉某份档案已保存的密钥（档案本身保留）。
+/// Clear a saved key for a profile (keep the profile itself).
 ///
-/// 单独出一个入口，是因为"密钥留空 = 不改动"那条约定让用户**没法撤销**一份泄露的
-/// Key（只能删掉整份档案）。撤销密钥是安全操作，必须做得到。
+/// A separate entry point because the "empty key = no change" convention means users **cannot revoke** a leaked
+/// key (they could only delete the whole profile). Revoking a key is a security operation and must be possible.
 pub fn clear_profile_key(profile_id: &str) -> Result<AiStoredConfig, String> {
     let _guard = lock_config();
     let mut config = read_config();
@@ -568,7 +568,7 @@ pub fn clear_profile_key(profile_id: &str) -> Result<AiStoredConfig, String> {
     Ok(config)
 }
 
-/// 删除一份档案。删掉的正好是当前档案时，自动切到剩下的第一份。
+/// Delete a profile. If the deleted one is current, automatically switch to the first remaining.
 pub fn delete_profile(profile_id: &str) -> Result<AiStoredConfig, String> {
     let _guard = lock_config();
     let mut config = read_config();
@@ -584,7 +584,7 @@ pub fn delete_profile(profile_id: &str) -> Result<AiStoredConfig, String> {
     Ok(config)
 }
 
-/// 切换当前档案。
+/// Switch the current profile.
 pub fn set_active_profile(profile_id: &str) -> Result<AiStoredConfig, String> {
     let _guard = lock_config();
     let mut config = read_config();
@@ -596,8 +596,8 @@ pub fn set_active_profile(profile_id: &str) -> Result<AiStoredConfig, String> {
     Ok(config)
 }
 
-/// 缓存模型列表到**当前档案**：拉取成功后调用。
-/// 只改这两个字段，其余配置原样保留 —— 这个函数不该有别的副作用。
+/// Cache a model list into the **current profile**: called after a successful fetch.
+/// Only change these two fields, keep everything else as is — this function must have no other side effects.
 pub fn cache_fetched_models(models: Vec<String>) -> Result<(), String> {
     let _guard = lock_config();
     let mut config = read_config();
@@ -609,7 +609,7 @@ pub fn cache_fetched_models(models: Vec<String>) -> Result<(), String> {
     save_config(config)
 }
 
-/// 给前端的公开视图：密钥只给掩码，另有布尔标记表示是否已配置。
+/// Public view for the frontend: keys are masked only, plus a boolean indicating whether configured.
 pub fn read_public_config() -> AiPublicConfig {
     let stored = read_config();
     AiPublicConfig {
@@ -635,8 +635,8 @@ pub fn read_public_config() -> AiPublicConfig {
     }
 }
 
-/// 掩码规则：保留前 3 位与后 4 位，中间用固定四个星号。
-/// 太短（少于 12 位）就整体打码，避免把密钥本身泄露出去。
+/// Masking rule: keep the first 3 and last 4 characters, with four fixed asterisks in between.
+/// Too short (under 12 characters) is masked entirely, to avoid leaking the key itself.
 pub fn mask_api_key(key: &str) -> String {
     let trimmed = key.trim();
     if trimmed.is_empty() {
@@ -657,7 +657,7 @@ pub fn mask_api_key(key: &str) -> String {
     format!("{}****{}", prefix, suffix)
 }
 
-/// 全局数据目录设置（不属于任何档案）。
+/// Global data directory setting (not part of any profile).
 pub fn set_data_dir(data_dir: String) -> Result<AiStoredConfig, String> {
     let _guard = lock_config();
     let mut config = read_config();
@@ -670,7 +670,7 @@ pub fn set_data_dir(data_dir: String) -> Result<AiStoredConfig, String> {
 mod tests {
     use super::*;
 
-    /// 密钥加密：本机加密能解回原样；老配置的明文原样通过；无法解密的按"未配置"处理。
+    /// Key encryption: locally encrypted keys decrypt back to the original; old plaintext passes through unchanged; undecryptable ones are treated as "not configured".
     #[test]
     fn api_key_round_trips_through_dpapi_and_legacy_plaintext_passes_through() {
         let encrypted = protect_key("sk-abcdefghijklmn");
@@ -682,17 +682,17 @@ mod tests {
         assert_ne!(encrypted, "sk-abcdefghijklmn", "密文不该还是明文");
         assert_eq!(unprotect_key(&encrypted), "sk-abcdefghijklmn");
 
-        // 升版本前的明文配置：原样读出来，不需要迁移代码
+        // Plaintext config from before the version upgrade: read as is, no migration code needed
         assert_eq!(unprotect_key("sk-legacy-plain-key"), "sk-legacy-plain-key");
 
-        // 空密钥不加密：否则会存下一个"加密过的空串"，看起来像配过了
+        // Do not encrypt an empty key: otherwise we store an "encrypted empty string" that looks configured
         assert_eq!(protect_key(""), "");
 
-        // 坏密文（换机器 / 手改文件）：当未配置 —— 绝不能把密文当密钥发出去
+        // Bad ciphertext (machine changed / file edited by hand): treat as not configured — never send ciphertext out as a key
         assert_eq!(unprotect_key("dpapi:zzzz"), "");
     }
 
-    /// 新增档案时 id 不能撞：撞了 upsert 会认错档案、删除会删掉两份。
+    /// New profile ids must not collide: a collision makes upsert pick the wrong profile and deletion remove both.
     #[test]
     fn new_profile_ids_do_not_collide_within_the_same_second() {
         let mut config = AiStoredConfig {
@@ -710,8 +710,8 @@ mod tests {
         assert!(second.starts_with(&first), "冲突时应带后缀，实际 {}", second);
     }
 
-    /// 面板里就地切模型会再存一次档案；前端表单不带 models，
-    /// 合并时不能把已缓存的列表冲掉（否则下拉消失、切不了第二次）。
+    /// Switching models in place in the panel saves the profile again; the frontend form does not include models,
+    /// so merging must not wipe the cached list (or the dropdown disappears and users cannot switch a second time).
     #[test]
     fn updating_model_keeps_cached_model_list_and_api_key() {
         let mut existing = AiProfile {
@@ -724,7 +724,7 @@ mod tests {
             models_fetched_at: 1_760_000_000,
             ..Default::default()
         };
-        // 模拟面板提交：只有 model 变了，密钥留空，且没有 models / modelsFetchedAt
+        // Simulate a panel submit: only model changed, key left empty, no models / modelsFetchedAt
         let incoming = AiProfile {
             id: "p_1".into(),
             provider_id: "deepseek".into(),
@@ -743,7 +743,7 @@ mod tests {
         assert_eq!(existing.models_fetched_at, 1_760_000_000);
     }
 
-    /// 换了地址或密钥后旧列表已不可信，必须清掉让设置页重新拉取。
+    /// After changing endpoint or key, the old list is untrustworthy and must be cleared so the settings page refetches.
     #[test]
     fn changing_endpoint_or_key_invalidates_cached_model_list() {
         let base = AiProfile {
@@ -755,7 +755,7 @@ mod tests {
             ..Default::default()
         };
 
-        // 换地址：模拟前端提交（表单不带 models 字段），密钥留空 = 沿用旧密钥
+        // Endpoint change: simulate frontend submit (form has no models field), empty key = keep old key
         let mut existing = base.clone();
         merge_profile_update(
             &mut existing,
@@ -770,7 +770,7 @@ mod tests {
         assert_eq!(existing.models_fetched_at, 0);
         assert_eq!(existing.api_key, "sk-old", "密钥留空时仍要沿用旧密钥");
 
-        // 换密钥：即使调用方夹带了旧列表，也必须作废
+        // Key change: even if the caller includes the old list, it must be invalidated
         let mut existing = base.clone();
         merge_profile_update(
             &mut existing,
@@ -789,7 +789,7 @@ mod tests {
         assert_eq!(existing.api_key, "sk-new");
     }
 
-    /// 档案校验：未知服务商与非法地址要挡住；显示名留空回落到服务商名。
+    /// Profile validation: reject unknown providers and invalid endpoints; empty display name falls back to the provider name.
     #[test]
     fn profile_validation_rejects_broken_configs_and_fills_name() {
         let unknown = validate_profile(AiProfile {
@@ -813,7 +813,7 @@ mod tests {
         .expect("合法档案应通过");
         assert!(!ok.name.trim().is_empty(), "显示名留空时应回落到服务商名");
 
-        // 地址留空 = 用预设默认地址，必须放行
+        // Empty endpoint = use the preset default, must be allowed
         assert!(validate_profile(AiProfile {
             provider_id: "deepseek".into(),
             ..Default::default()
@@ -823,7 +823,7 @@ mod tests {
 
     #[test]
     fn legacy_single_config_migrates_into_one_profile() {
-        // 旧文件没有 profiles 字段；不迁移就等于用户配置全丢
+        // Old files have no profiles field; not migrating means all user config is lost
         let legacy = serde_json::json!({
             "providerId": "deepseek",
             "baseUrl": "https://api.deepseek.com",
@@ -835,7 +835,7 @@ mod tests {
         assert_eq!(migrated.profiles.len(), 1);
         assert_eq!(migrated.profiles[0].model, "deepseek-chat");
         assert_eq!(migrated.profiles[0].models.len(), 2);
-        // 迁移出来的档案必须是当前档案，否则用户保存了却不生效
+        // The migrated profile must be the current one, otherwise users save but nothing takes effect
         assert_eq!(migrated.active_profile_id, migrated.profiles[0].id);
     }
 

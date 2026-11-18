@@ -1,7 +1,7 @@
 // ============================================================================
-// 目录下钻模态框组件
-// 以沉浸式弹窗模式展示指定路径的无限下钻内容
-// 支持面包屑导航、ESC 关闭、Portal 渲染、清理同步回调
+// Directory drill-down modal component
+// Shows unlimited drill-down content for a given path in an immersive popup
+// Supports breadcrumb navigation, ESC to close, Portal rendering, and cleanup sync callbacks
 // ============================================================================
 
 import { useState, useCallback, useEffect, useRef, useMemo, memo } from 'react';
@@ -23,12 +23,12 @@ import { AiAskButton } from '../ai/AiAskButton';
 import { buildItemQuestion } from '../ai/aiQuestions';
 
 // ============================================================================
-// 工具函数（与 HotspotModule 共享逻辑）
+// Utility functions (logic shared with HotspotModule)
 // ============================================================================
 
 function formatDateTime(timestamp: number): string {
   if (!timestamp) return '-';
-  // 大目录 MFT 引擎使用 Unix 秒，降级扫描使用毫秒；展示层统一归一化，兼容两种来源。
+  // The big-directory MFT engine uses Unix seconds, fallback scans use milliseconds; the display layer normalizes both to one format, compatible with either source.
   const normalizedTimestamp = timestamp < 10_000_000_000 ? timestamp * 1000 : timestamp;
   const d = new Date(normalizedTimestamp);
   if (Number.isNaN(d.getTime())) return '-';
@@ -90,8 +90,8 @@ function FolderRankBadge({
 }
 
 // ============================================================================
-// 面包屑导航
-// 路径过长时截断中间部分，保留最后两级
+// Breadcrumb navigation
+// Truncate the middle of an overlong path, keeping the last two levels
 // ============================================================================
 
 interface BreadcrumbSegment {
@@ -99,14 +99,14 @@ interface BreadcrumbSegment {
   path: string;
 }
 
-/** 将 Windows 绝对路径拆分为面包屑段 */
+/** Split a Windows absolute path into breadcrumb segments */
 function buildBreadcrumbs(fullPath: string): BreadcrumbSegment[] {
   const parts = fullPath.replace(/\//g, '\\').split('\\').filter(Boolean);
   const segments: BreadcrumbSegment[] = [];
   let accumulated = '';
   for (const part of parts) {
     accumulated = accumulated ? `${accumulated}\\${part}` : part;
-    // 第一段是盘符如 "C:"，补上反斜杠
+    // The first segment is a drive letter like "C:", add a trailing backslash
     const path = segments.length === 0 ? `${accumulated}\\` : accumulated;
     segments.push({ name: part, path });
   }
@@ -119,20 +119,20 @@ function ModalBreadcrumbs({
   onNavigate,
 }: {
   segments: BreadcrumbSegment[];
-  /** 初始路径的层级数，前 initialDepth 级不可点击 */
+  /** Number of levels in the initial path; the first initialDepth levels aren't clickable */
   initialDepth: number;
   onNavigate: (path: string) => void;
 }) {
-  // 如果段数 > 5，截断中间保留 前2 + "..." + 后2
+  // If there are more than 5 segments, keep first 2 + "..." + last 2
   const MAX_VISIBLE = 5;
-  // 记录原始索引以判断是否可点击
+  // Record original indices to determine clickability
   type VisibleItem = { seg: BreadcrumbSegment; originalIndex: number } | null;
   let visible: VisibleItem[] = segments.map((seg, i) => ({ seg, originalIndex: i }));
   if (segments.length > MAX_VISIBLE) {
     visible = [
       { seg: segments[0], originalIndex: 0 },
       { seg: segments[1], originalIndex: 1 },
-      null, // 省略号占位
+      null, // ellipsis placeholder
       { seg: segments[segments.length - 2], originalIndex: segments.length - 2 },
       { seg: segments[segments.length - 1], originalIndex: segments.length - 1 },
     ];
@@ -151,8 +151,8 @@ function ModalBreadcrumbs({
         }
         const { seg, originalIndex } = item;
         const isLast = idx === visible.length - 1;
-        // initialPath 的父级目录不可点击（已在父模块扫描过），initialPath 本身及之后可点击
-        // initialDepth 是 initialPath 的层级数，所以 index < initialDepth - 1 的不可点击
+        // Parent directories of initialPath aren't clickable (already scanned in the parent module); initialPath and beyond are clickable
+        // initialDepth is the number of levels in initialPath, so index < initialDepth - 1 is not clickable
         const isClickable = originalIndex >= initialDepth - 1 && !isLast;
         return (
           <span key={seg.path} className="flex items-center gap-1 shrink-0">
@@ -188,7 +188,7 @@ function ModalBreadcrumbs({
 }
 
 // ============================================================================
-// 下钻列表条目（沉浸式 - 全宽、无缩进）
+// Drill-down list entry (immersive - full width, no indentation)
 // ============================================================================
 
 interface ModalEntryItemProps {
@@ -201,7 +201,7 @@ interface ModalEntryItemProps {
   onSearch: (path: string) => void;
 }
 
-// 使用 React.memo 避免列表项无关重渲染（父组件 state 变化时不波及已渲染的条目）
+// Use React.memo to avoid irrelevant re-renders of list items (parent state changes don't affect already-rendered entries)
 const ModalEntryItem = memo(function ModalEntryItem({
   entry, rank, maxSize, onDrillDown, onOpenFolder, onCleanup, onSearch,
 }: ModalEntryItemProps) {
@@ -215,8 +215,8 @@ const ModalEntryItem = memo(function ModalEntryItem({
         entry.is_protected ? 'border border-[var(--hotspot-danger-border)]' : ''
       }`}
     >
-      {/* 占比背景条。危险目录用主题变量（同 HotspotModule 主列表）——
-          不要用 `bg-red-100 dark:…`：本项目没启用 dark 变体，深色下会命中浅色的红 ✗ */}
+      {/* Percentage background bar. Dangerous dirs use a theme variable (same as HotspotModule's main list) —
+          do not use `bg-red-100 dark:…`: this project doesn't enable the dark variant, so in dark mode it picks the light red ✗ */}
       <div
         className={`absolute inset-0 rounded-xl opacity-40 transition-all ${
           entry.is_protected ? 'bg-[var(--hotspot-danger-fill)]' : 'bg-[var(--brand-green-10)]'
@@ -225,10 +225,10 @@ const ModalEntryItem = memo(function ModalEntryItem({
       />
 
       <div className="relative flex items-center gap-3">
-        {/* 文件夹徽标：与大目录分析主列表保持一致，序号作为角标承载排序信息。 */}
+        {/* Folder badge: consistent with the big-directory main list, the rank as a corner badge carries ordering info. */}
         <FolderRankBadge rank={rank} isProtected={entry.is_protected} />
 
-        {/* 左侧：图标 + 名称 */}
+        {/* Left side: icon + name */}
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 flex-wrap">
             <FolderOpen className="w-4 h-4 text-[var(--text-muted)] flex-shrink-0" />
@@ -251,7 +251,7 @@ const ModalEntryItem = memo(function ModalEntryItem({
           </div>
         </div>
 
-        {/* 右侧：大小 + 修改日期 + 操作按钮 */}
+        {/* Right side: size + modified date + action buttons */}
         <div className="flex-shrink-0 flex items-center gap-4 text-xs">
           <div className="hidden sm:flex items-center gap-1 text-[var(--text-muted)]">
             <HardDrive className="w-3 h-3" />
@@ -267,9 +267,9 @@ const ModalEntryItem = memo(function ModalEntryItem({
             {formatSize(entry.total_size)}
           </div>
 
-          {/* 操作按钮组 */}
+          {/* Action button group */}
           <div className="flex items-center gap-1">
-            {/* 下钻 */}
+            {/* Drill down */}
             <button
               onClick={(e) => { e.stopPropagation(); onDrillDown(entry.path); }}
               className="p-1.5 rounded-lg hover:bg-[var(--brand-green-10)] text-[var(--brand-green)] transition-all"
@@ -277,7 +277,7 @@ const ModalEntryItem = memo(function ModalEntryItem({
             >
               <ChevronRight className="w-4 h-4" />
             </button>
-            {/* 清理 */}
+            {/* Clean up */}
             {canCleanup && (
               <button
                 onClick={(e) => { e.stopPropagation(); onCleanup(entry); }}
@@ -287,7 +287,7 @@ const ModalEntryItem = memo(function ModalEntryItem({
                 <Trash2 className="w-4 h-4" />
               </button>
             )}
-            {/* 搜索 全路径用.path，文件夹名称用.name */}
+            {/* Search: use .path for the full path, .name for the folder name */}
             <button
               onClick={(e) => { e.stopPropagation(); onSearch(entry.path); }}
               className="p-1.5 rounded-lg hover:bg-[var(--bg-card)] text-[var(--text-muted)] hover:text-blue-500 transition-all"
@@ -295,7 +295,7 @@ const ModalEntryItem = memo(function ModalEntryItem({
             >
               <Search className="w-4 h-4" />
             </button>
-            {/* 打开文件夹 */}
+            {/* Open folder */}
             <button
               onClick={(e) => { e.stopPropagation(); onOpenFolder(entry.path); }}
               className="p-1.5 rounded-lg hover:bg-[var(--bg-card)] text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-all"
@@ -303,8 +303,8 @@ const ModalEntryItem = memo(function ModalEntryItem({
             >
               <FolderOpen className="w-4 h-4" />
             </button>
-            {/* 快捷提问：这一行是**用户自己下钻看到的**，数据就在问句里 ——
-                用 skipLookup，不让助手先去查（这层文件级明细本来也不在它的读取能力里） */}
+            {/* Quick question: this row is something **the user reached by drilling down themselves**, the data is in the question —
+                use skipLookup so the assistant doesn't look it up first (this file-level detail isn't in its read capability anyway) */}
             <AiAskButton
               question={buildItemQuestion(entry.path, 'folder')}
               skipLookup
@@ -318,15 +318,15 @@ const ModalEntryItem = memo(function ModalEntryItem({
 });
 
 // ============================================================================
-// DrillDownModal 主组件
+// DrillDownModal main component
 // ============================================================================
 
 interface DrillDownModalProps {
-  /** 初始路径（点击下钻时传入的路径） */
+  /** Initial path (the path passed in when drill-down is clicked) */
   initialPath: string;
-  /** 关闭回调 */
+  /** Close callback */
   onClose: () => void;
-  /** 清理发生后的同步回调（通知主界面刷新） */
+  /** Sync callback after cleanup happens (notifies the main UI to refresh) */
   onCleanupDone?: () => void;
 }
 
@@ -335,39 +335,39 @@ export function DrillDownModal({ initialPath, onClose, onCleanupDone }: DrillDow
   const { t } = useTranslation('common');
   const { showToast } = useToast();
 
-  // ====== 动画状态 ======
+  // ====== Animation state ======
   const [isVisible, setIsVisible] = useState(false);
   const [isAnimating, setIsAnimating] = useState(true);
   const enteredRef = useRef(false);
   if (isVisible) enteredRef.current = true;
 
-  // ====== 数据状态 ======
-  /** 路径栈：从初始路径开始，每次下钻 push，回退 pop */
+  // ====== Data state ======
+  /** Path stack: starts from the initial path, push on each drill-down, pop on back */
   const [pathStack, setPathStack] = useState<string[]>([initialPath]);
   const [scanResult, setScanResult] = useState<HotspotScanResult | null>(null);
   const [loading, setLoading] = useState(true);
-  /** 记录本次模态框内是否发生过清理（用于关闭时同步） */
+  /** Track whether cleanup happened in this modal (for syncing on close) */
   const didCleanupRef = useRef(false);
 
-  // ====== 清理确认对话框 ======
+  // ====== Cleanup confirmation dialog ======
   const [cleanupTarget, setCleanupTarget] = useState<HotspotEntry | null>(null);
   const [isCleaning, setIsCleaning] = useState(false);
 
-  // ====== 条目上限：默认展示30条，超出时显示"展示全部"（防止数百个子目录撑爆 DOM） ======
+  // ====== Entry cap: show 30 by default, "Show all" when exceeded (prevents hundreds of subdirectories from bloating the DOM) ======
   const [showAll, setShowAll] = useState(false);
   const DEFAULT_DISPLAY_COUNT = 30;
 
-  // 当前路径（栈顶）
+  // Current path (top of stack)
   const currentPath = pathStack[pathStack.length - 1];
 
-  // ====== 入场动画 ======
+  // ====== Enter animation ======
   useEffect(() => {
-    // 延迟一帧触发动画
+    // Delay one frame before triggering the animation
     const raf = requestAnimationFrame(() => setIsVisible(true));
     return () => cancelAnimationFrame(raf);
   }, []);
 
-  // ====== ESC 键关闭 ======
+  // ====== ESC key to close ======
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') handleClose();
@@ -376,7 +376,7 @@ export function DrillDownModal({ initialPath, onClose, onCleanupDone }: DrillDow
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ====== 数据加载 ======
+  // ====== Data loading ======
   const fetchData = useCallback(async (targetPath: string) => {
     setLoading(true);
     try {
@@ -390,13 +390,13 @@ export function DrillDownModal({ initialPath, onClose, onCleanupDone }: DrillDow
     }
   }, [showToast]);
 
-  // 初始加载 + 路径变化时重新加载，同时重置展示上限
+  // Initial load + reload on path change, also resetting the display cap
   useEffect(() => {
     fetchData(currentPath);
     setShowAll(false);
   }, [currentPath, fetchData]);
 
-  // ====== 关闭（带退出动画） ======
+  // ====== Close (with exit animation) ======
   const handleClose = useCallback(() => {
     setIsVisible(false);
     setTimeout(() => {
@@ -408,12 +408,12 @@ export function DrillDownModal({ initialPath, onClose, onCleanupDone }: DrillDow
     }, 190);
   }, [onClose, onCleanupDone]);
 
-  // ====== 下钻 ======
+  // ====== Drill down ======
   const handleDrillDown = useCallback((path: string) => {
     setPathStack(prev => [...prev, path]);
   }, []);
 
-  // ====== 返回上级 ======
+  // ====== Go back to parent ======
   const handleGoBack = useCallback(() => {
     if (pathStack.length <= 1) {
       handleClose();
@@ -422,10 +422,10 @@ export function DrillDownModal({ initialPath, onClose, onCleanupDone }: DrillDow
     setPathStack(prev => prev.slice(0, -1));
   }, [pathStack.length, handleClose]);
 
-  // ====== 面包屑跳转 ======
+  // ====== Breadcrumb navigation ======
   const handleBreadcrumbNavigate = useCallback((targetPath: string) => {
-    // 找到 pathStack 中对应的位置，截断到那里
-    // 如果目标不在栈中（面包屑是完整路径拆分），直接替换栈
+    // Find the matching position in pathStack and truncate there
+    // If the target isn't in the stack (breadcrumbs come from splitting a full path), replace the stack directly
     const idx = pathStack.findIndex(p => p === targetPath);
     if (idx >= 0) {
       setPathStack(prev => prev.slice(0, idx + 1));
@@ -434,7 +434,7 @@ export function DrillDownModal({ initialPath, onClose, onCleanupDone }: DrillDow
     }
   }, [pathStack]);
 
-  // ====== 打开文件夹 ======
+  // ====== Open folder ======
   const handleOpenFolder = useCallback(async (path: string) => {
     try {
       await openInFolder(path);
@@ -443,7 +443,7 @@ export function DrillDownModal({ initialPath, onClose, onCleanupDone }: DrillDow
     }
   }, []);
 
-  // ====== 搜索 ======
+  // ====== Search ======
   const handleSearch = useCallback(async (path: string) => {
     try {
       await openSearchUrl(`Windows 文件夹 ${path} 可以删除吗`);
@@ -452,7 +452,7 @@ export function DrillDownModal({ initialPath, onClose, onCleanupDone }: DrillDow
     }
   }, []);
 
-  // ====== 清理 ======
+  // ====== Clean up ======
   const handleCleanupConfirm = useCallback(async () => {
     if (!cleanupTarget) return;
     setIsCleaning(true);
@@ -465,7 +465,7 @@ export function DrillDownModal({ initialPath, onClose, onCleanupDone }: DrillDow
           description: moduleT('hotspot.cleanupDoneDesc', { count: result.deleted_count, size: formatSize(result.freed_size) }),
         });
         didCleanupRef.current = true;
-        // 重新加载当前层
+        // Reload the current level
         fetchData(currentPath);
       } else if (result.failed_count > 0) {
         showToast({ type: 'warning', title: moduleT('drillDown.cleanupBlocked'), description: moduleT('hotspot.cleanupBlockedDesc', { count: result.failed_count }) });
@@ -481,13 +481,13 @@ export function DrillDownModal({ initialPath, onClose, onCleanupDone }: DrillDow
     }
   }, [cleanupTarget, currentPath, fetchData, showToast]);
 
-  // 面包屑段（useMemo 避免每次 render 重新计算）
+  // Breadcrumb segments (useMemo avoids recomputing on every render)
   const breadcrumbSegments = useMemo(() => buildBreadcrumbs(currentPath), [currentPath]);
-  // 初始路径的层级数（前 initialDepth 级不可点击，因为父模块已扫描过）
+  // Number of levels in the initial path (the first initialDepth levels aren't clickable because the parent module already scanned them)
   const initialDepth = useMemo(() => buildBreadcrumbs(initialPath).length, [initialPath]);
   const maxSize = scanResult?.entries[0]?.total_size || 0;
 
-  // 显示的条目列表（默认限制 30 条，超出时显示"展示全部"按钮）
+  // Entries to display (limited to 30 by default, with a "Show all" button when exceeded)
   const displayedEntries = useMemo(() => {
     if (!scanResult) return [];
     return showAll ? scanResult.entries : scanResult.entries.slice(0, DEFAULT_DISPLAY_COUNT);
@@ -497,7 +497,7 @@ export function DrillDownModal({ initialPath, onClose, onCleanupDone }: DrillDow
 
   return createPortal(
     <div className="fixed inset-0 z-[9998] flex items-center justify-center p-4">
-      {/* 遮罩层 - 半透明磨砂 */}
+      {/* Overlay - semi-transparent frosted */}
       <div
         className={`absolute inset-0 bg-black/40 backdrop-blur-md glass-backdrop ${
           isVisible ? 'modal-overlay-in' : enteredRef.current ? 'modal-overlay-out' : 'opacity-0'
@@ -505,15 +505,15 @@ export function DrillDownModal({ initialPath, onClose, onCleanupDone }: DrillDow
         onClick={handleClose}
       />
 
-      {/* 模态框主体 */}
+      {/* Modal body */}
       <div
         className={`glass-dialog relative flex flex-col bg-[var(--bg-elevated)] rounded-2xl shadow-2xl border border-[var(--border-default)]
           w-[51.43em] max-w-[calc(100vw-2em)] max-h-[min(57.14em,calc(100vh_-_2em))] overflow-hidden ${
           isVisible ? 'modal-content-in' : enteredRef.current ? 'modal-content-out' : 'opacity-0'
         }`}
       >
-        {/* ====== 头部：面包屑 + 关闭按钮 ====== */}
-        {/* 内部尺寸统一用 em，跟随全局字号缩放，避免只有外壳变大而内容不变 */}
+        {/* ====== Header: breadcrumbs + close button ====== */}
+        {/* All inner sizes use em, scaling with the global font size, so only the shell grows while the content stays the same */}
         <div className="glass-bar flex items-center justify-between px-[1.43em] py-[0.86em] border-b border-[var(--border-default)] bg-[var(--bg-card)]/80 backdrop-blur-sm">
           <div className="flex-1 min-w-0 mr-[0.86em]">
             <ModalBreadcrumbs segments={breadcrumbSegments} initialDepth={initialDepth} onNavigate={handleBreadcrumbNavigate} />
@@ -527,9 +527,9 @@ export function DrillDownModal({ initialPath, onClose, onCleanupDone }: DrillDow
           </button>
         </div>
 
-        {/* ====== 内容区：可滚动列表 ====== */}
+        {/* ====== Content area: scrollable list ====== */}
         <div className="flex-1 overflow-y-auto px-[1.14em] py-[0.86em] space-y-[0.57em] min-h-[14.29em]">
-          {/* 加载中 */}
+          {/* Loading */}
           {loading && (
             <div className="flex items-center justify-center py-[4.57em]">
               <Loader2 className="w-[1.71em] h-[1.71em] animate-spin text-[var(--brand-green)] mr-[0.57em]" />
@@ -537,10 +537,10 @@ export function DrillDownModal({ initialPath, onClose, onCleanupDone }: DrillDow
             </div>
           )}
 
-          {/* 列表内容 */}
+          {/* List content */}
           {!loading && scanResult && (
             <>
-              {/* 返回上级 */}
+              {/* Go back to parent */}
               <button
                 onClick={handleGoBack}
                 className="w-full flex items-center gap-[0.86em] p-[0.86em] rounded-xl hover:bg-[var(--bg-hover)] transition-colors text-left"
@@ -553,7 +553,7 @@ export function DrillDownModal({ initialPath, onClose, onCleanupDone }: DrillDow
                 </span>
               </button>
 
-              {/* 目录条目（默认 30 条上限，防止大目录卡顿） */}
+              {/* Directory entries (30-item cap by default, prevents big directories from lagging) */}
               {displayedEntries.map((entry, index) => (
                 <ModalEntryItem
                   key={entry.path}
@@ -567,7 +567,7 @@ export function DrillDownModal({ initialPath, onClose, onCleanupDone }: DrillDow
                 />
               ))}
 
-              {/* 展示全部按钮（条目数超过限制时显示） */}
+              {/* Show all button (shown when entry count exceeds the limit) */}
               {!showAll && scanResult.entries.length > DEFAULT_DISPLAY_COUNT && (
                 <button
                   onClick={() => setShowAll(true)}
@@ -578,7 +578,7 @@ export function DrillDownModal({ initialPath, onClose, onCleanupDone }: DrillDow
                 </button>
               )}
 
-              {/* 空状态 */}
+              {/* Empty state */}
               {scanResult.entries.length === 0 && (
                 <div className="text-center py-[2.86em] text-[var(--text-muted)]">
                   <FolderOpen className="w-[2.29em] h-[2.29em] mx-auto mb-[0.57em] opacity-30" />
@@ -589,7 +589,7 @@ export function DrillDownModal({ initialPath, onClose, onCleanupDone }: DrillDow
           )}
         </div>
 
-        {/* ====== 底栏：统计信息 ====== */}
+        {/* ====== Footer: statistics ====== */}
         {!loading && scanResult && scanResult.entries.length > 0 && (
           <div className="glass-bar flex items-center justify-between px-[1.43em] py-[0.71em] border-t border-[var(--border-default)] text-[0.86em] text-[var(--text-muted)] bg-[var(--bg-card)]/80 backdrop-blur-sm">
             <span>
@@ -600,7 +600,7 @@ export function DrillDownModal({ initialPath, onClose, onCleanupDone }: DrillDow
         )}
       </div>
 
-      {/* 清理确认对话框（嵌套 Portal，z-index 更高） */}
+      {/* Cleanup confirmation dialog (nested Portal, higher z-index) */}
       {cleanupTarget && (
         <ConfirmDialog
           isOpen={!!cleanupTarget}

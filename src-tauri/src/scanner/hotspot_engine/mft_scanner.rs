@@ -1,8 +1,8 @@
 // ============================================================================
-// 大目录分析 MFT 引擎
-// 复用 big_files_engine::mft_core 的顺序读取能力：一遍 $MFT 就同时拿到名字、
-// 父子关系和大小。原来先 USN 枚举拿名字、再按 id 集合回读一遍 $MFT 拿大小，
-// 同一份数据过两遍，而其中 USN 枚举是内核遍历整张表，比用户态顺序读慢得多。
+// Big-directory analysis MFT engine
+// Reuses big_files_engine::mft_core's sequential read capability: one pass over $MFT yields name,
+// parent-child relation and size together. Previously USN enumeration got names first, then $MFT was read again by id set for sizes,
+// the same data passed through twice, and USN enumeration walked the whole table in kernel mode, much slower than sequential reads in user mode.
 // ============================================================================
 
 #![cfg(windows)]
@@ -17,9 +17,9 @@ use rayon::prelude::*;
 use crate::scanner::big_files_engine::mft_core;
 use crate::scanner::hotspot::{is_hotspot_scan_cancelled, FolderStats};
 
-/// 卷根目录在 NTFS 里的固定记录号：MFT 前 16 条都是元文件，`$Root` 就是 5。
+/// Fixed record number of the volume root in NTFS: the first 16 MFT entries are metafiles and `$Root` is 5.
 const ROOT_MFT_ID: u64 = 5;
-/// 进度事件每处理这么多条记录发一次，发太密会挤占扫描线程
+/// Emit a progress event every this many records processed; emitting too densely would crowd the scan thread
 const PROGRESS_STEP: usize = 100_000;
 
 #[derive(Clone)]
@@ -41,10 +41,10 @@ pub struct MftScanProgress {
     pub message: String,
     pub processed: usize,
     pub stage_elapsed_ms: u64,
-    /// 该阶段的关键数字（分段/读盘/解析、目录数、回退 stat 数…）。
+    /// Key numbers for this stage (segments/reading/parsing, directory count, fallback stat count…).
     ///
-    /// 只给界面看：热点扫描以前只有阶段名和耗时，判断瓶颈全靠猜 ——
-    /// 有了这一行才能一眼看出慢在读盘、解析还是聚合。
+    /// For UI only: hotspot scanning previously had only a stage name and elapsed time, so judging the bottleneck was pure guesswork —
+    /// with this line one can tell at a glance whether the slow part is reading, parsing or aggregation.
     pub detail: String,
 }
 
@@ -61,7 +61,7 @@ pub fn scan_via_mft(
 
     let records = read_all_records(drive_letter, &progress_cb)?;
 
-    // ---------- 目录索引 ----------
+    // ---------- Directory index ----------
     let stage_start = Instant::now();
     progress_cb(MftScanProgress {
         stage: "index",
@@ -80,7 +80,7 @@ pub fn scan_via_mft(
         detail: format!("有效记录 {} 条", records.len()),
     });
 
-    // ---------- 累加文件大小 ----------
+    // ---------- Accumulate file sizes ----------
     let stage_start = Instant::now();
     let (mut stats_by_dir, fallback, file_count) =
         accumulate_file_stats(&records, &directories);
@@ -101,7 +101,7 @@ pub fn scan_via_mft(
         detail: format!("其中 {} 个 $DATA 未解析，回退 stat", fallback_count),
     });
 
-    // ---------- 向上聚合 ----------
+    // ---------- Aggregate upward ----------
     let stage_start = Instant::now();
     progress_cb(MftScanProgress {
         stage: "aggregate",
@@ -111,7 +111,7 @@ pub fn scan_via_mft(
         detail: String::new(),
     });
     propagate_to_ancestors(&directories, directory_index.deepest_depth, &mut stats_by_dir);
-    // 目录索引这时已经没用了，直接 move 出路径，不再 clone 一遍
+    // The directory index is no longer useful now; move paths out directly instead of cloning again
     let folder_map = into_folder_map(directories, &mut stats_by_dir);
     progress_cb(MftScanProgress {
         stage: "aggregate",
@@ -129,9 +129,9 @@ pub fn scan_via_mft(
     Ok(folder_map)
 }
 
-/// 把「目录 id → 统计」的中间结果转成对外的「路径 → 统计」。
+/// Convert the intermediate "directory id → stats" result into the external "path → stats".
 ///
-/// 目录已经用完，路径直接 move 出去；没有文件的目录不入结果（与旧实现口径一致）。
+/// Directories are done, move paths straight out; directories with no files are omitted (consistent with the old implementation).
 fn into_folder_map(
     directories: HashMap<u64, DirectoryInfo>,
     stats_by_dir: &mut HashMap<u64, DirectoryStats>,
@@ -152,7 +152,7 @@ fn into_folder_map(
         .collect()
 }
 
-/// 一遍顺序读完 `$MFT`，返回全部有效记录。
+/// Read `$MFT` once sequentially and return all valid records.
 fn read_all_records(
     drive_letter: char,
     progress_cb: &(impl Fn(MftScanProgress) + Sync),
@@ -196,7 +196,7 @@ fn build_directory_index(
     drive_letter: char,
 ) -> DirectoryIndex {
     let mut directories = HashMap::new();
-    // 只有目录会出现在父子关系里，文件没有子节点
+    // Only directories appear in parent-child relations; files have no children
     let mut children: HashMap<u64, Vec<usize>> = HashMap::with_capacity(entries.len() / 6);
     let mut deepest_depth = 0u16;
 
@@ -223,12 +223,12 @@ fn build_directory_index(
 
     while let Some(index) = queue.pop_front() {
         let entry = &entries[index];
-        // 已经建过路径的目录直接跳过：这也挡住了异常父链造成的死循环
+        // Skip directories whose paths were already built: this also blocks infinite loops from abnormal parent chains
         if directories.contains_key(&entry.mft_id) {
             continue;
         }
 
-        // 父目录不在索引里说明这条链从根不可达，整支都建不出来
+        // A parent not in the index means the chain is unreachable from the root, so that whole branch cannot be built
         let Some(parent) = directories.get(&entry.parent_id) else {
             continue;
         };
@@ -255,10 +255,10 @@ fn build_directory_index(
     }
 }
 
-/// 把每个文件的大小记到它的直接父目录上，返回(统计表, 需要回退 stat 的文件, 文件总数)。
+/// Record each file's size on its immediate parent directory; return (stats table, files needing fallback stat, total file count).
 ///
-/// 有 `$DATA` 的记录直接用记录里的大小；缺 `$DATA` 的（约 6%）先攒起来，
-/// 交给 `read_fallback_sizes` 并行补一次 stat —— 这部分不补会让目录少算体积。
+/// Records with `$DATA` use the size in the record; those without (about 6%) are collected first,
+/// then handed to `read_fallback_sizes` for a parallel stat pass — skipping this makes directories undercount size.
 fn accumulate_file_stats<'a>(
     entries: &'a [mft_core::MftRecordInfo],
     directories: &HashMap<u64, DirectoryInfo>,
@@ -275,7 +275,7 @@ fn accumulate_file_stats<'a>(
         if entry.is_dir || entry.mft_id == 0 {
             continue;
         }
-        // 父目录不在索引里（从根不可达）的文件直接忽略，与原来的口径一致
+        // Files whose parent is not in the index (unreachable from root) are ignored, consistent with the previous rule
         if !directories.contains_key(&entry.parent_id) {
             continue;
         }
@@ -298,9 +298,9 @@ fn accumulate_file_stats<'a>(
     (stats_by_dir, fallback, file_count)
 }
 
-/// 给缺 `$DATA` 的文件并行补一次 `fs::metadata`。
+/// Parallel fallback `fs::metadata` for files missing `$DATA`.
 ///
-/// 这类文件几万个、位置分散，串行 stat 要几百毫秒；并行之后耗时基本被 IO 摊平。
+/// Such files number tens of thousands and are scattered; serial stat takes hundreds of ms, while parallel flattens the cost into IO.
 fn read_fallback_sizes(
     directories: &HashMap<u64, DirectoryInfo>,
     fallback: &[(u64, &str)],
@@ -338,7 +338,7 @@ fn read_fallback_sizes(
     }
 }
 
-/// 从最深的目录往上加：处理到某一层时，它的所有子目录都已经汇总完。
+/// Add upward from the deepest directory: by the time a level is processed, all its child directories have been aggregated.
 fn propagate_to_ancestors(
     directories: &HashMap<u64, DirectoryInfo>,
     deepest_depth: u16,
@@ -378,7 +378,7 @@ fn add_file_stats(
     let stats = stats_by_dir.entry(directory_id).or_default();
     stats.total_size = stats.total_size.saturating_add(size);
     stats.file_count += 1;
-    // `FolderStats.last_modified` 对外约定是毫秒，调用方已经统一换算过，这里只取最新
+    // `FolderStats.last_modified` is externally specified in milliseconds; the caller has already converted, we just take the newest here
     if modified_millis > stats.last_modified {
         stats.last_modified = modified_millis;
     }
@@ -409,7 +409,7 @@ pub fn is_ntfs(drive_letter: char) -> bool {
 mod tests {
     use super::*;
 
-    /// 造一条记录。目录不会有 `$DATA`，和真实 MFT 的形态一致。
+    /// Create a record. Directories have no `$DATA`, matching the shape of real MFT records.
     fn record(
         mft_id: u64,
         parent_id: u64,
@@ -424,16 +424,16 @@ mod tests {
             name: name.to_string(),
             is_dir,
             size,
-            // 固定时间戳，方便断言 last_modified
+            // Fixed timestamp, convenient for asserting last_modified
             modified: 1_700_000_000,
             has_data_stream,
         }
     }
 
-    /// 目录体积必须一层层加上去，且只看「从根可达」的那部分。
+    /// Directory size must be added level by level, and only the part "reachable from the root" counts.
     ///
-    /// 这是界面排行榜的依据：少算一层，用户看到的目录大小就是错的，
-    /// 而这种错不会报错、只会显示成一个偏小的数字。
+    /// This is the basis of the UI ranking: undercount one level and the directory size users see is wrong,
+    /// and such an error raises no alarm — it only shows up as a smaller number.
     #[test]
     fn file_sizes_are_aggregated_up_to_the_root() {
         let entries = vec![
@@ -442,19 +442,19 @@ mod tests {
             record(30, 26, "Evan", true, 0, false),
             record(40, 30, "a.bin", false, 100, true),
             record(41, 30, "b.bin", false, 200, true),
-            // 空文件：占用为 0，不计入体积，但仍是文件
+            // Empty file: usage 0, not counted in size, but still a file
             record(42, 30, "empty.bin", false, 0, true),
             record(50, 26, "Other", true, 0, false),
             record(51, 50, "c.bin", false, 300, true),
-            // 父目录不在索引里（从根不可达）：整条忽略
+            // Parent not in index (unreachable from root): ignore the whole entry
             record(60, 999, "orphan.bin", false, 400, true),
-            // 缺 $DATA 的文件：这次不 stat（表里没这个文件，stat 也会失败），
-            // 只验证它被归到回退队列而不是被当成 0
+            // File missing $DATA: do not stat this time (the table has no such file, stat would fail too),
+            // only verify it is assigned to the fallback queue rather than treated as 0
             record(43, 30, "no-data.bin", false, 0, false),
         ];
 
         let index = build_directory_index(&entries, 'C');
-        // 根 0 → Users 1 → Evan/Other 2
+        // root 0 → Users 1 → Evan/Other 2
         assert_eq!(index.deepest_depth, 2);
 
         let (mut stats_by_dir, fallback, file_count) =
@@ -477,7 +477,7 @@ mod tests {
         let other = &folder_map[&PathBuf::from("C://Users//Other")];
         assert_eq!(other.total_size, 300);
 
-        // 上层目录是「自己 + 所有子目录」的合计
+        // Parent directory is the total of "itself + all child directories"
         assert_eq!(folder_map[&PathBuf::from("C://Users")].total_size, 600);
         assert_eq!(folder_map[&PathBuf::from("C://")].total_size, 600);
         assert_eq!(folder_map[&PathBuf::from("C://")].file_count, 3);

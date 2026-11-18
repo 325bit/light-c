@@ -1,6 +1,6 @@
 // ============================================================================
-// 操作按钮组件 - 现代化设计风格
-// 特点：渐变背景、发光效果、流畅动画
+// Action buttons component - modern design style
+// Features: gradient background, glow effect, smooth animations
 // ============================================================================
 
 import { memo } from 'react';
@@ -10,30 +10,30 @@ import { openDiskCleanup } from '../api/commands';
 import { useTranslation } from 'react-i18next';
 
 // ============================================================================
-// 类型定义
+// Type definitions
 // ============================================================================
 
 interface ActionButtonsProps {
-  /** 当前应用状态 */
+  /** Current app status */
   status: AppStatus;
-  /** 是否有扫描结果 */
+  /** Whether a scan result exists */
   hasScanResult: boolean;
-  /** 已选中的文件数量 */
+  /** Number of selected files */
   selectedCount: number;
-  /** 总文件数量 */
+  /** Total number of files */
   totalCount: number;
-  /** 扫描回调 */
+  /** Scan callback */
   onScan: () => void;
-  /** 删除回调 */
+  /** Delete callback */
   onDelete: () => void;
-  /** 全选回调 */
+  /** Select-all callback */
   onSelectAll: () => void;
-  /** 取消全选回调 */
+  /** Deselect-all callback */
   onDeselectAll: () => void;
 }
 
 // ============================================================================
-// 主按钮组件 - 带渐变和发光效果
+// Primary button component - with gradient and glow
 // ============================================================================
 
 interface PrimaryButtonProps {
@@ -51,7 +51,7 @@ const PrimaryButton = memo(function PrimaryButton({
   isLoading,
   children,
 }: PrimaryButtonProps) {
-  // 根据变体选择颜色方案
+  // Choose the color scheme based on the variant
   const colorScheme = {
     scan: {
       gradient: 'from-emerald-500 via-teal-500 to-emerald-600',
@@ -90,12 +90,12 @@ const PrimaryButton = memo(function PrimaryButton({
         }
       `}
     >
-      {/* 按钮内容 */}
+      {/* Button content */}
       <span className="relative z-10 flex items-center gap-2">
         {children}
       </span>
       
-      {/* 悬停时的光晕效果 */}
+      {/* Glow effect on hover */}
       {!disabled && (
         <span className="absolute inset-0 rounded-lg bg-white/10 opacity-0 group-hover:opacity-100 transition-opacity duration-300" />
       )}
@@ -104,7 +104,7 @@ const PrimaryButton = memo(function PrimaryButton({
 });
 
 // ============================================================================
-// 次要按钮组件 - 轻量级样式
+// Secondary button component - lightweight style
 // ============================================================================
 
 interface SecondaryButtonProps {
@@ -144,7 +144,7 @@ const SecondaryButton = memo(function SecondaryButton({
 });
 
 // ============================================================================
-// 主组件
+// Main component
 // ============================================================================
 
 export const ActionButtons = memo(function ActionButtons({
@@ -158,7 +158,7 @@ export const ActionButtons = memo(function ActionButtons({
   onDeselectAll,
 }: ActionButtonsProps) {
   const { t } = useTranslation('common');
-  // 状态判断
+  // Determine state
   const isScanning = status === 'scanning';
   const isDeleting = status === 'deleting';
   const isBusy = isScanning || isDeleting;
@@ -167,7 +167,7 @@ export const ActionButtons = memo(function ActionButtons({
 
   return (
     <div className="flex items-center gap-3">
-      {/* ========== 扫描按钮 ========== */}
+      {/* ========== Scan button ========== */}
       <PrimaryButton
         onClick={onScan}
         disabled={isBusy}
@@ -191,7 +191,7 @@ export const ActionButtons = memo(function ActionButtons({
         )}
       </PrimaryButton>
 
-      {/* ========== 清理按钮 ========== */}
+      {/* ========== Cleanup button ========== */}
       {hasScanResult && (
         <PrimaryButton
           onClick={onDelete}
@@ -213,12 +213,12 @@ export const ActionButtons = memo(function ActionButtons({
         </PrimaryButton>
       )}
 
-      {/* ========== 分隔线 ========== */}
+      {/* ========== Divider ========== */}
       {hasScanResult && totalCount > 0 && (
         <div className="w-px h-7 bg-[var(--border-default)] mx-1" />
       )}
 
-      {/* ========== 全选/取消全选 ========== */}
+      {/* ========== Select all / deselect all ========== */}
       {hasScanResult && totalCount > 0 && (
         <div className="flex items-center gap-1">
           <SecondaryButton
@@ -236,10 +236,10 @@ export const ActionButtons = memo(function ActionButtons({
         </div>
       )}
 
-      {/* ========== 分隔线 ========== */}
+      {/* ========== Divider ========== */}
       <div className="w-px h-7 bg-[var(--border-default)] mx-1" />
 
-      {/* ========== 系统磁盘清理 ========== */}
+      {/* ========== System disk cleanup ========== */}
       <SecondaryButton
         onClick={() => openDiskCleanup()}
         disabled={isBusy}

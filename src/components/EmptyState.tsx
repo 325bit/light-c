@@ -1,5 +1,5 @@
 // ============================================================================
-// 通用空数据占位组件
+// Generic empty-data placeholder component
 // ============================================================================
 
 import type { ComponentType, ReactNode } from 'react';
@@ -7,7 +7,7 @@ import { CheckCircle2, Sparkles } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
 interface EmptyStateProps {
-  /** 用图标承载当前状态，避免不同模块各自写一套空白占位。 */
+  /** Use an icon to carry the current state, avoiding each module writing its own blank placeholder. */
   icon?: ComponentType<{ className?: string }>;
   title?: string;
   description?: string;
@@ -27,7 +27,7 @@ export function EmptyState({
   className = '',
 }: EmptyStateProps) {
   const { t } = useTranslation('common');
-  // 默认空状态由公共语言包提供，业务页面传入的专属标题仍然优先保留。
+  // The default empty state comes from the shared language pack; a page-specific title passed in still takes priority.
   const resolvedTitle = title ?? t('noData');
   const resolvedDescription = description ?? t('emptyDescription');
   const Icon = icon ?? (tone === 'success' ? CheckCircle2 : Sparkles);
@@ -41,7 +41,7 @@ export function EmptyState({
         compact ? 'empty-state--compact min-h-[18.57rem] py-8' : 'min-h-[22.86rem] py-14'
       } ${className}`}
     >
-      {/* 用低对比度背景层增加空状态质感，避免纯灰色占位在页面模式下显得空。 */}
+      {/* Use a low-contrast background layer to add texture to the empty state, avoiding a plain gray placeholder looking empty in page mode. */}
       <div className="pointer-events-none absolute -left-10 -top-10 h-32 w-32 rounded-full bg-[var(--brand-green)]/5" />
       <div className="pointer-events-none absolute -right-12 bottom-4 h-28 w-28 rounded-full bg-[var(--brand-green)]/5" />
       <div className={`relative mb-3 flex h-14 w-14 items-center justify-center rounded-2xl shadow-sm ${iconClassName}`}>

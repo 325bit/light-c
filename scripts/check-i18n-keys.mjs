@@ -1,9 +1,9 @@
-// i18n 键校验：按「文件用的命名空间 + 代码里引用的键路径」去查四语言 JSON。
+// i18n key validation: check keys across the four locale JSON files using the file's namespace + the key path referenced in code.
 //
-// 为什么需要它：i18next 找不到键时**不会报错**，而是把键名原样显示在界面上
-// （例如按钮上出现 "aiAssistant.removeKey"）。tsc 和构建都看不到这类问题。
+// Why it matters: when i18next cannot find a key it **does not error** - it shows the key name verbatim in the UI
+// (e.g. a button reads "aiAssistant.removeKey"). Neither tsc nor the build catches this.
 //
-// 用法：node scripts/check-i18n-keys.mjs（或 npm run check:i18n）
+// Usage: node scripts/check-i18n-keys.mjs (or npm run check:i18n)
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -12,7 +12,7 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const langs = ['zh', 'en', 'ja', 'zh-TW'];
 const nsDir = path.join(root, 'src/i18n/locales');
 
-// 数组当叶子：guide.notes 这类是数组，展开成 .0/.1 会让路径判据失效
+// Treat arrays as leaves: expanding guide.notes-style arrays into .0/.1 would break the path check
 const flat = (obj, prefix = '') =>
   Object.entries(obj).flatMap(([k, v]) => {
     const key = prefix ? `${prefix}.${k}` : k;
@@ -42,9 +42,9 @@ const walk = (dir) =>
 const problems = [];
 for (const file of walk(path.join(root, 'src'))) {
   const text = fs.readFileSync(file, 'utf8');
-  // common 是全局加载的，任何文件都可能用它；其余按 useTranslation 收集。
-  // 还要认 prop 注入的翻译函数：`t: TFunction<'modules'>` 的泛型参数就是它的命名空间
-  // （LeftoverWhitelistModal 这类子组件就是靠这个拿 t 的）。
+  // common is loaded globally, so any file may use it; collect the rest via useTranslation.
+  // Also recognize translation functions injected as props: `t: TFunction<'modules'>` names its namespace via the generic argument
+  // (child components such as LeftoverWhitelistModal get `t` this way).
   const namespaces = [
     'common',
     ...new Set([
@@ -55,9 +55,9 @@ for (const file of walk(path.join(root, 'src'))) {
 
   for (const match of text.matchAll(/\b(?:t|moduleT|commonT)\(\s*['"`]([A-Za-z][\w.]*)['"`]/g)) {
     const key = match[1];
-    // ⚠️ 不要跳过"没有点"的键：根级键（如 footerWebsite）同样会找不到而原样显示。
-    //    之前跳过它们，结果一个被误放进 groups 里的键顺利通过检查（2026-10-22 踩过）。
-    // 键在这个文件用到的**所有**命名空间里都缺失，才算问题
+    // ⚠️ Do not skip keys without a dot: root-level keys (e.g. footerWebsite) can also go missing and render verbatim.
+    //    We once skipped them and a key wrongly placed in groups passed validation (hit on 2026-10-22).
+    // A key is only a problem when it is missing in **every** namespace this file uses.
     const missingEverywhere = namespaces.every((ns) =>
       langs.some((lang) => !nsKeys[ns]?.[lang]?.has(key)),
     );
@@ -73,7 +73,7 @@ for (const file of walk(path.join(root, 'src'))) {
   }
 }
 
-// 语言之间键不一致（漏翻 / 多出来的键）
+// Key mismatches between locales (missing translations / extra keys)
 for (const [namespace, byLang] of Object.entries(nsKeys)) {
   const base = byLang.zh;
   for (const lang of langs.slice(1)) {

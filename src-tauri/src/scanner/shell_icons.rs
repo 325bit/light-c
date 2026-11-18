@@ -1,7 +1,7 @@
 // ============================================================================
-// 外壳入口扫描与处理
+// Shell icon entry scanning and handling
 //
-// 此电脑入口和导航窗格入口使用不同的注册表挂载机制，必须按入口类型分别校验和操作。
+// The "This PC" entry and the navigation pane entry use different registry mounting mechanisms, so they must be validated and operated on separately by entry type.
 // ============================================================================
 
 use chrono::Local;
@@ -52,7 +52,7 @@ const SYSTEM_CLSIDS: &[&str] = &[
     "{645FF040-5081-101B-9F08-00AA002F954E}",
     "{59031A47-3F72-44A7-89C5-5595FE6B30EE}",
     "{374DE290-123F-4565-9164-39C4925E467B}",
-    // Linux 是 Windows 功能入口，不应因使用导航窗格固定标记被识别为第三方项目。
+    // Linux is a Windows feature entry and should not be identified as a third-party item just because it uses the navigation-pane pinned marker.
     "{B2B4A4D1-2754-4140-A2EB-9A76D9D7CDC6}",
 ];
 
@@ -94,7 +94,7 @@ pub struct ShellIconTarget {
     pub clsid: String,
     pub hive: String,
     pub registry_view: String,
-    /// 旧版备份没有该字段，默认按原有“此电脑入口”兼容处理。
+    /// Older backups do not have this field; by default they are handled with the original "This PC entry" compatibility behavior.
     #[serde(default)]
     pub entry_kind: ShellEntryKind,
 }
@@ -125,10 +125,10 @@ struct ShellIconBackup {
     target: ShellIconTarget,
     backup_path: String,
     acl_sddl: Option<String>,
-    /// 彻底删除会锁定父级 Namespace，必须保存原 ACL 才能完整恢复。
+    /// A thorough delete locks the parent Namespace, so the original ACL must be saved for a complete restore.
     #[serde(default)]
     namespace_acl_sddl: Option<String>,
-    /// 导航窗格只修改固定标记，备份原始值即可避免恢复时覆盖应用其他注册信息。
+    /// The navigation pane only modifies the pinned marker; backing up the original value is enough to avoid overwriting other app registration info on restore.
     #[serde(default)]
     navigation_pin_value: Option<u32>,
     created_at: String,
@@ -140,7 +140,7 @@ struct RegistryTargetContext {
     view_flags: u32,
 }
 
-/// 扫描所有受支持的 Hive / Registry View，避免只看当前进程视图而漏掉 32 位软件节点。
+/// Scan all supported Hives / Registry Views, to avoid missing 32-bit software nodes by looking only at the current process view.
 pub fn scan_shell_icons() -> Result<Vec<ShellIconInfo>, String> {
     let scan_targets = [
         (
@@ -178,7 +178,7 @@ pub fn scan_shell_icons() -> Result<Vec<ShellIconInfo>, String> {
                 let Some(clsid) = normalize_clsid(&raw_clsid) else {
                     continue;
                 };
-                // 某个第三方节点权限异常不应阻断其他分区视图的扫描结果。
+                // A permission anomaly on one third-party node should not block the scan results of other partition views.
                 match build_shell_icon_info(&namespace_key, &clsid, hive, view, context) {
                     Ok(info) if info.risk_level == "safe" || info.risk_level == "locked" => {
                         entries.push(info)
@@ -189,7 +189,7 @@ pub fn scan_shell_icons() -> Result<Vec<ShellIconInfo>, String> {
             }
         }
 
-        // 先从 Desktop\NameSpace 获取候选 CLSID，再读取固定标记，避免遍历整个 Classes\CLSID。
+        // First get candidate CLSIDs from Desktop\NameSpace, then read the pinned marker, avoiding a walk of the entire Classes\CLSID.
         if let (Ok(navigation_namespace), Ok(clsid_root)) = (
             RegKey::predef(context.root)
                 .open_subkey_with_flags(DESKTOP_NAMESPACE_PATH, KEY_READ | context.view_flags),
@@ -211,8 +211,8 @@ pub fn scan_shell_icons() -> Result<Vec<ShellIconInfo>, String> {
         }
     }
 
-    // 同一个 CLSID 可能同时存在于 HKCU、HKLM 或不同 Registry View；这些是真实不同的注册表节点，
-    // 不能为了界面去重，否则只处理其中一个节点时，客户端仍可从另一处重新挂载图标。
+    // The same CLSID may exist in HKCU, HKLM or different Registry Views; these are genuinely different registry nodes,
+    // and must not be deduplicated for the UI, otherwise handling only one node still lets the client remount the icon from the other.
     let mut unique_entries: HashMap<String, ShellIconInfo> = HashMap::new();
     for entry in entries {
         let key = format!(
@@ -243,7 +243,7 @@ fn build_shell_icon_info(
         .open_subkey_with_flags(&format!(r"CLSID\{}", clsid), KEY_READ | context.view_flags)
         .ok();
 
-    // 某些软件会写入空的 Namespace 默认值；空值不能遮蔽 CLSID 下真实的产品名称。
+    // Some software writes an empty Namespace default value; an empty value must not mask the real product name under CLSID.
     let raw_name = namespace_item
         .get_value::<String, _>("")
         .ok()
@@ -265,7 +265,7 @@ fn build_shell_icon_info(
     let system_by_clsid = SYSTEM_CLSIDS
         .iter()
         .any(|item| item.eq_ignore_ascii_case(clsid));
-    // 部分网盘把自己的 Namespace 节点挂在 shdocvw.dll 等系统宿主 DLL 上，不能仅凭组件路径过滤。
+    // Some cloud drives mount their Namespace node on system host DLLs like shdocvw.dll, so filtering by component path alone is not enough.
     let system_by_source =
         source_path.as_deref().is_some_and(is_system_component_path) && known_application.is_none();
     let is_system_protected = system_by_clsid || system_by_source;
@@ -291,7 +291,7 @@ fn build_shell_icon_info(
             if source_path.is_some() {
                 "已确认第三方应用关联，清理前会自动备份".to_string()
             } else {
-                // 部分软件只注册 Namespace 名称，组件路径可能在其他注册表视图或权限范围内不可读。
+                // Some software only registers a Namespace name, and its component path may be unreadable in other registry views or permission scopes.
                 "已根据外壳图标名称确认第三方应用，组件路径暂不可读，清理前会自动备份".to_string()
             },
         )
@@ -313,7 +313,7 @@ fn build_shell_icon_info(
     })
 }
 
-/// 读取固定到 Explorer 左侧导航窗格的第三方 CLSID；返回 None 表示未固定或不适合展示。
+/// Read the third-party CLSIDs pinned to Explorer's left navigation pane; returning None means not pinned or not suitable for display.
 fn build_navigation_info(
     clsid_root: &RegKey,
     clsid: &str,
@@ -332,7 +332,7 @@ fn build_navigation_info(
         registry_view: registry_view.to_string(),
         entry_kind: ShellEntryKind::NavigationPane,
     };
-    // 只把 LightC 已备份并隐藏的入口带回结果，确保扫描不会膨胀成整个 CLSID 列表。
+    // Only bring back entries that LightC has backed up and hidden, ensuring the scan does not balloon into the entire CLSID list.
     if !is_pinned && !has_navigation_backup(&target)? {
         return Ok(None);
     }
@@ -381,8 +381,8 @@ fn build_navigation_info(
     }))
 }
 
-/// 通过 CLSID、注册表显示名和组件文件名识别用户真正安装的应用。
-/// 只有能识别应用的节点才进入 MVP 列表，避免把 RegFolder 等内部节点暴露给用户。
+/// Identify the application the user actually installed via CLSID, registry display name and component file name.
+/// Only nodes whose application can be identified enter the MVP list, avoiding exposing internal nodes like RegFolder to users.
 fn identify_application(
     clsid: &str,
     display_name: &str,
@@ -404,13 +404,13 @@ fn identify_application(
     None
 }
 
-/// 识别有明确产品特征的应用，用于覆盖第三方借用系统 Shell 宿主 DLL 的情况。
+/// Identify applications with clear product characteristics, covering cases where third parties borrow system Shell host DLLs.
 fn identify_known_application(
     clsid: &str,
     display_name: &str,
     source_path: Option<&str>,
 ) -> Option<&'static str> {
-    // 百度网盘使用 shdocvw.dll 作为系统 Shell 宿主，组件路径无法反映产品归属。
+    // Baidu Netdisk uses shdocvw.dll as a system Shell host, so the component path cannot reflect product ownership.
     if clsid.eq_ignore_ascii_case("{679F137C-3162-45DA-BE3C-2F9C3D093F64}") {
         return Some("百度网盘");
     }
@@ -418,7 +418,7 @@ fn identify_known_application(
         .and_then(|path| Path::new(path).file_stem())
         .map(|value| value.to_string_lossy().to_lowercase())
         .unwrap_or_default();
-    // GUID 只是定位键，不能参与应用名匹配，否则普通 CLSID 中的数字片段可能造成误关联。
+    // The GUID is only a lookup key and must not participate in app name matching, otherwise numeric fragments in ordinary CLSIDs could cause false associations.
     let haystack = format!("{} {}", display_name, source_name).to_lowercase();
     let known_applications = [
         (
@@ -439,7 +439,7 @@ fn identify_known_application(
     None
 }
 
-/// 普通删除或强力锁定前统一重新校验目标，不能信任前端传入任意注册表路径。
+/// Re-validate the target before any normal delete or strong lock; arbitrary registry paths from the frontend must not be trusted.
 pub fn remove_shell_icon(
     target: &ShellIconTarget,
     mode: u8,
@@ -455,13 +455,13 @@ pub fn remove_shell_icon(
         return remove_navigation_entry(&target);
     }
     let context = target_context(&target)?;
-    // 先只申请读取和修改 ACL 的权限，兼容之前由 LightC 添加拒绝 ACE 后无法申请 FullControl 的节点。
+    // First request only read and ACL-modify permissions, to stay compatible with nodes where a previous LightC deny ACE prevents requesting FullControl.
     let initial_key = open_target_key(
         &target,
         context,
         KEY_READ | WRITE_DAC | WRITE_OWNER | context.view_flags,
     )?;
-    // 先用能读取和改 ACL 的权限打开父键，兼容旧版本已经添加拒绝 ACE 的情况。
+    // First open the parent key with permissions to read and modify the ACL, compatible with older versions that already added a deny ACE.
     let initial_namespace_key = open_namespace_key(context, KEY_READ | WRITE_DAC | WRITE_OWNER)?;
     let info = build_shell_icon_info_from_key(&initial_key, &target, context)?;
     if info.is_system_protected || info.risk_level == "unknown" {
@@ -470,10 +470,10 @@ pub fn remove_shell_icon(
 
     let original_acl = read_acl_sddl(&initial_key)?;
     let original_namespace_acl = read_acl_sddl(&initial_namespace_key)?;
-    // 必须在解除旧锁前备份，确保恢复功能保留用户看到的原始 ACL 状态。
+    // Must back up before removing the old lock, so the restore function preserves the original ACL state the user saw.
     let backup = create_backup(&target, &initial_key, &initial_namespace_key, context)?;
 
-    // 旧版本已经锁定过的节点会拒绝 KEY_ALL_ACCESS，先恢复到无 LightC 拒绝 ACE 的临时状态。
+    // Nodes already locked by an older version reject KEY_ALL_ACCESS; first restore a temporary state with no LightC deny ACE.
     let had_lightc_lock = original_acl.as_deref().is_some_and(is_lightc_lock_sddl_ref);
     if had_lightc_lock {
         remove_lightc_lock_acl(&initial_key)?;
@@ -491,7 +491,7 @@ pub fn remove_shell_icon(
     }
     drop(initial_key);
 
-    // 兼容旧版本留下的父级 LightC 锁，先临时解除，否则无法删除旧占位节点。
+    // Compatible with the parent LightC lock left by older versions; temporarily remove it first, otherwise the old placeholder node cannot be deleted.
     if original_namespace_acl
         .as_deref()
         .is_some_and(is_lightc_namespace_lock_sddl_ref)
@@ -507,7 +507,7 @@ pub fn remove_shell_icon(
     ) {
         Ok(key) => key,
         Err(error) if had_lightc_lock => {
-            // 重新打开失败时恢复旧 ACL，避免留下“已解锁但操作未完成”的中间状态。
+            // If reopening fails, restore the old ACL, to avoid leaving an intermediate "unlocked but operation incomplete" state.
             if let Ok(rollback_key) = open_target_key(
                 &target,
                 context,
@@ -521,7 +521,7 @@ pub fn remove_shell_icon(
         }
         Err(error) => return Err(error),
     };
-    // 父键必须在加拒绝 ACL 前以可删除权限打开；之后复用该句柄完成删除，避免竞态复活。
+    // The parent key must be opened with delete permission before adding the deny ACL; then reuse that handle for deletion to avoid race-condition revival.
     let namespace_key = match open_namespace_key(context, KEY_ALL_ACCESS | WRITE_DAC | WRITE_OWNER)
     {
         Ok(namespace_key) => namespace_key,
@@ -533,11 +533,11 @@ pub fn remove_shell_icon(
     let operation_result = (|| {
         match mode {
             1 => {
-                // 先清空目标内容，避免子键自身 ACL 或残留句柄导致父键递归删除失败。
+                // First clear the target's contents, to avoid a child key's own ACL or leftover handles causing the recursive parent deletion to fail.
                 clear_key_contents(&key)?;
                 drop(key);
                 delete_target_key_from_parent(&namespace_key, &target, context)?;
-                // 普通删除只处理当前节点；如果是兼容旧版本临时解除的父级锁，成功后恢复它。
+                // A normal delete handles only the current node; if a parent lock was temporarily removed for old-version compatibility, restore it on success.
                 if original_namespace_acl
                     .as_deref()
                     .is_some_and(is_lightc_namespace_lock_sddl_ref)
@@ -552,7 +552,7 @@ pub fn remove_shell_icon(
                 verify_target_absent(&target, context)
             }
             2 => {
-                // 先锁父键，再复用已取得删除权限的句柄删除目标，消除客户端抢先重建节点的窗口。
+                // Lock the parent key first, then reuse the handle with delete permission to delete the target, eliminating the window for the client to recreate the node first.
                 add_namespace_lock_and_verify(&namespace_key)?;
                 clear_key_contents(&key)?;
                 drop(key);
@@ -563,7 +563,7 @@ pub fn remove_shell_icon(
         }
     })();
     if let Err(error) = operation_result {
-        // 任一核验失败都恢复操作前 ACL，避免留下“半清理、半锁定”的不可解释状态。
+        // Any verification failure restores the pre-operation ACL, to avoid leaving an unexplainable "half-cleaned, half-locked" state.
         if let Ok(rollback_key) = open_target_key(
             &target,
             context,
@@ -580,7 +580,7 @@ pub fn remove_shell_icon(
     }
 
     let refresh_message = if mode == 2 {
-        // 物理删除后刷新 Explorer，确保旧的 Shell Namespace 缓存立即失效。
+        // Refresh Explorer after physical deletion, ensuring the old Shell Namespace cache is invalidated immediately.
         match restart_explorer() {
             Ok(()) => "节点已物理删除，已锁定父级防止复活并刷新 Explorer".to_string(),
             Err(error) => format!(
@@ -600,7 +600,7 @@ pub fn remove_shell_icon(
     })
 }
 
-/// 解锁只恢复原 ACL，不自动重新导入内容，避免用户只想允许软件重新注册时被意外恢复图标。
+/// Unlocking only restores the original ACL and does not automatically re-import content, avoiding unexpected icon restoration when the user just wants to allow the software to re-register.
 pub fn unlock_shell_icon(target: &ShellIconTarget) -> Result<ShellIconOperationResult, String> {
     let target = normalize_target(target)?;
     if matches!(target.entry_kind, ShellEntryKind::NavigationPane) {
@@ -610,17 +610,17 @@ pub fn unlock_shell_icon(target: &ShellIconTarget) -> Result<ShellIconOperationR
     let backup =
         find_latest_backup(&target)?.ok_or_else(|| "未找到该节点的 ACL 备份".to_string())?;
     let namespace_key = open_namespace_key(context, KEY_READ | WRITE_DAC | WRITE_OWNER)?;
-    // 新版防复活锁在父级，解锁时必须同时恢复父级，否则软件仍无法重新创建节点。
+    // The new anti-revival lock is on the parent, so unlocking must restore the parent as well, otherwise the software still cannot recreate the node.
     if let Some(namespace_sddl) = backup.namespace_acl_sddl.as_deref() {
         restore_acl(&namespace_key, namespace_sddl)?;
     } else if read_acl_sddl(&namespace_key)?
         .as_deref()
         .is_some_and(is_lightc_namespace_lock_sddl_ref)
     {
-        // 旧版备份没有父级快照，只能移除 LightC 自己的拒绝 ACE，保留其他系统 ACL。
+        // Older backups have no parent snapshot, so only remove LightC's own deny ACE, preserving other system ACLs.
         remove_lightc_lock_acl(&namespace_key)?;
     }
-    // 物理删除后的目标键不存在是正常状态，解锁只需恢复父级权限即可。
+    // After physical deletion the target key not existing is a normal state; unlocking only needs to restore the parent's permissions.
     if let Ok(key) = open_target_key(
         &target,
         context,
@@ -638,7 +638,7 @@ pub fn unlock_shell_icon(target: &ShellIconTarget) -> Result<ShellIconOperationR
     })
 }
 
-/// 从最近一次备份导入注册表内容，并恢复原始 ACL，覆盖普通删除和强力清理两种场景。
+/// Import registry content from the most recent backup and restore the original ACL, covering both normal delete and thorough cleanup scenarios.
 pub fn restore_shell_icon(target: &ShellIconTarget) -> Result<ShellIconOperationResult, String> {
     let target = normalize_target(target)?;
     if matches!(target.entry_kind, ShellEntryKind::NavigationPane) {
@@ -650,7 +650,7 @@ pub fn restore_shell_icon(target: &ShellIconTarget) -> Result<ShellIconOperation
     let namespace_key = open_namespace_key(context, KEY_READ | WRITE_DAC | WRITE_OWNER)?;
     let runtime_namespace_acl = read_acl_sddl(&namespace_key)?;
     let mut namespace_acl_changed = false;
-    // 导入前先恢复父级写权限；旧版元数据没有父级快照时，兼容移除 LightC 旧锁。
+    // Restore parent write permission before importing; when older metadata has no parent snapshot, remove the old LightC lock for compatibility.
     if let Some(namespace_sddl) = backup.namespace_acl_sddl.as_deref() {
         restore_acl(&namespace_key, namespace_sddl)?;
         namespace_acl_changed = true;
@@ -662,7 +662,7 @@ pub fn restore_shell_icon(target: &ShellIconTarget) -> Result<ShellIconOperation
         namespace_acl_changed = true;
     }
     let restore_result = (|| {
-        // 强力模式的目标键仍可能带有拒绝写入 ACL，导入前先恢复目标 ACL。
+        // The target key in thorough mode may still have a deny-write ACL; restore the target ACL before importing.
         if let Some(sddl) = backup.acl_sddl.as_deref() {
             if let Ok(key) = open_target_key(
                 &target,
@@ -673,7 +673,7 @@ pub fn restore_shell_icon(target: &ShellIconTarget) -> Result<ShellIconOperation
             }
         }
         import_registry_backup(&backup.backup_path, &target)?;
-        // reg.exe import 会重建节点；导入后的 ACL 仍需再恢复一次，兼容备份中带有完整安全描述符的情况。
+        // reg.exe import recreates the node; the ACL after import must be restored once more, covering backups that contain a full security descriptor.
         if let Some(sddl) = backup.acl_sddl.as_deref() {
             let key = open_target_key(
                 &target,
@@ -685,7 +685,7 @@ pub fn restore_shell_icon(target: &ShellIconTarget) -> Result<ShellIconOperation
         Ok::<(), String>(())
     })();
     if let Err(error) = restore_result {
-        // 导入失败时恢复操作前的父级 ACL，避免留下“可写权限已被改变”的中间状态。
+        // On import failure, restore the pre-operation parent ACL, to avoid leaving an intermediate "write permission has been changed" state.
         if namespace_acl_changed {
             if let Some(runtime_sddl) = runtime_namespace_acl.as_deref() {
                 let _ = restore_acl(&namespace_key, runtime_sddl);
@@ -711,7 +711,7 @@ pub fn open_shell_icon_backup_dir() -> Result<(), String> {
     Ok(())
 }
 
-/// 打开独立的虚拟磁盘操作记录，避免用户只能依赖一次性的 Toast 回顾历史。
+/// Open a separate virtual-disk operation log, so users are not limited to one-off toasts to review history.
 pub fn open_shell_icon_log() -> Result<(), String> {
     let path = shell_icon_log_path();
     if let Some(parent) = path.parent() {
@@ -720,7 +720,7 @@ pub fn open_shell_icon_log() -> Result<(), String> {
     if !path.exists() {
         fs::write(&path, "").map_err(|error| format!("创建操作记录失败: {}", error))?;
     }
-    // 直接打开日志内容比只定位文件更符合“操作记录”的预期，且不依赖资源管理器刷新状态。
+    // Opening the log content directly matches the expectation of an "operation record" better than just locating the file, and does not depend on Explorer refresh state.
     Command::new("notepad.exe")
         .arg(&path)
         .spawn()
@@ -728,7 +728,7 @@ pub fn open_shell_icon_log() -> Result<(), String> {
     Ok(())
 }
 
-/// 记录虚拟磁盘操作结果；日志写入失败不影响注册表操作本身。
+/// Record the result of a virtual-disk operation; a log write failure does not affect the registry operation itself.
 pub fn record_shell_icon_operation(
     target: &ShellIconTarget,
     operation: &str,
@@ -778,7 +778,7 @@ fn shell_icon_log_path() -> PathBuf {
         .join("shell_icons.log")
 }
 
-/// 将目标键写入 Regedit 的 LastKey 后打开注册表编辑器，避免用户手动复制长路径。
+/// Write the target key into Regedit's LastKey and then open the registry editor, avoiding manual copying of long paths by the user.
 pub fn open_shell_icon_registry(target: &ShellIconTarget) -> Result<(), String> {
     let target = normalize_target(target)?;
     let context = target_context(&target)?;
@@ -800,7 +800,7 @@ pub fn open_shell_icon_registry(target: &ShellIconTarget) -> Result<(), String> 
     regedit_config
         .set_value("LastKey", &registry_path)
         .map_err(|error| format!("保存注册表定位信息失败: {}", error))?;
-    // Regedit 已经运行时通常不会重新读取 LastKey；关闭旧进程后再启动，才能稳定展开到目标键。
+    // An already-running Regedit usually does not re-read LastKey; close the old process before launching to reliably expand to the target key.
     let regedit_status = hidden_command("taskkill", &["/f", "/im", "regedit.exe"])?;
     if !regedit_status.status.success() && regedit_status.status.code() != Some(128) {
         return Err("关闭已有注册表编辑器失败，无法定位到目标节点".to_string());
@@ -811,7 +811,7 @@ pub fn open_shell_icon_registry(target: &ShellIconTarget) -> Result<(), String> 
     Ok(())
 }
 
-/// Regedit 的 LastKey 使用本地化的根节点名称，沿用已有值可兼容中英文系统。
+/// Regedit's LastKey uses localized root node names; reusing the existing value stays compatible with both Chinese and English systems.
 fn regedit_root_name(regedit_config: &RegKey) -> String {
     regedit_config
         .get_value::<String, _>("LastKey")
@@ -826,7 +826,7 @@ fn regedit_root_name(regedit_config: &RegKey) -> String {
 }
 
 pub fn restart_explorer() -> Result<(), String> {
-    // 只发送 Shell 变更通知，不结束 explorer.exe，避免 TranslucentTB 等任务栏扩展丢失注入状态。
+    // Only send a Shell change notification, do not end explorer.exe, avoiding loss of injected state for taskbar extensions like TranslucentTB.
     unsafe {
         SHChangeNotify(
             SHCNE_ASSOCCHANGED,
@@ -980,14 +980,14 @@ fn delete_target_key_from_parent(
     target: &ShellIconTarget,
     context: RegistryTargetContext,
 ) -> Result<(), String> {
-    // 父键句柄必须在加锁前取得，否则新加入的拒绝 ACE 会让删除再次返回拒绝访问。
+    // The parent key handle must be acquired before locking, otherwise the newly added deny ACE makes deletion return access denied again.
     parent
         .delete_subkey_with_flags(&target.clsid, context.view_flags)
         .map_err(|error| format!("删除外壳图标节点失败: {}", error))
 }
 
 fn clear_key_contents(key: &RegKey) -> Result<(), String> {
-    // 不能忽略枚举错误，否则部分子键清理失败时仍会返回“成功”，留下可复活内容。
+    // Enumeration errors must not be ignored, otherwise partial child-key cleanup failures still return "success", leaving revivable content.
     let child_names = key
         .enum_keys()
         .collect::<Result<Vec<_>, _>>()
@@ -1025,7 +1025,7 @@ fn verify_target_absent(
     }
 }
 
-/// 在父级 Namespace 上拒绝普通用户创建、修改和删除子键，避免目标被软件重新注册。
+/// Deny ordinary users from creating, modifying and deleting child keys on the parent Namespace, preventing the target from being re-registered by software.
 fn add_namespace_lock_and_verify(namespace_key: &RegKey) -> Result<(), String> {
     add_lock_acl(namespace_key)?;
     let acl = read_acl_sddl(namespace_key)?;
@@ -1064,7 +1064,7 @@ fn create_backup(
         return consolidate_backup(target, context, existing);
     }
 
-    // 备份文件使用稳定名称，同一个注册表目标只维护一份原始备份，避免每次点击都产生重复文件。
+    // Backup files use stable names; only one original backup is kept per registry target, avoiding duplicate files on every click.
     let backup_path = canonical_path;
     export_registry_key(target, &backup_path)?;
     let metadata = ShellIconBackup {
@@ -1083,7 +1083,7 @@ fn create_backup(
     Ok(metadata)
 }
 
-/// 导航窗格只备份 CLSID 节点和固定值，避免把整个 CLSID 注册信息误当成可删除对象。
+/// The navigation pane only backs up the CLSID node and the pinned value, avoiding mistaking the entire CLSID registration info for removable objects.
 fn remove_navigation_entry(
     target: &ShellIconTarget,
 ) -> Result<ShellIconOperationResult, String> {
@@ -1232,7 +1232,7 @@ fn consolidate_backup(
         && Path::new(&original.backup_path).is_file()
         && !canonical_path.is_file()
     {
-        // 兼容旧版带时间戳备份：以最早的一份为原始快照并迁移为稳定文件名。
+        // Compatible with older timestamped backups: take the earliest one as the original snapshot and migrate to a stable file name.
         fs::copy(&original.backup_path, &canonical_path)
             .map_err(|error| format!("整理注册表备份失败: {}", error))?;
     }
@@ -1248,7 +1248,7 @@ fn consolidate_backup(
         .map_err(|error| format!("写入整理后的备份信息失败: {}", error))?;
     fs::write(&metadata_path, json).map_err(|error| format!("写入备份信息失败: {}", error))?;
 
-    // 同一个目标只保留稳定名称的一组文件，避免备份目录持续膨胀。
+    // Keep only one set of files with stable names per target, avoiding continuous growth of the backup directory.
     for backup in find_backups(target)? {
         if backup.backup_path == canonical.backup_path {
             continue;
@@ -1379,7 +1379,7 @@ fn expand_environment_variables(path: &str) -> String {
     let mut expanded = path.to_string();
     let environment_names = [
         ("WINDIR", None),
-        // SystemRoot 在部分精简系统或测试环境中未暴露，回退到 Windir 才能继续过滤系统组件。
+        // SystemRoot is not exposed on some trimmed systems or test environments; falling back to Windir is needed to continue filtering system components.
         ("SYSTEMROOT", Some("WINDIR")),
         ("SYSTEMDRIVE", None),
         ("PROGRAMFILES", None),
@@ -1411,7 +1411,7 @@ fn expand_environment_variables(path: &str) -> String {
     expanded
 }
 
-/// Windows 环境变量名称不区分大小写，替换时也必须兼容注册表返回的混合大小写写法。
+/// Windows environment variable names are case-insensitive, so replacement must also tolerate the mixed-case forms returned by the registry.
 fn replace_case_insensitive(source: &str, marker: &str, replacement: &str) -> String {
     let source_upper = source.to_ascii_uppercase();
     let marker_upper = marker.to_ascii_uppercase();
@@ -1505,7 +1505,7 @@ fn read_acl_sddl(key: &RegKey) -> Result<Option<String>, String> {
 
 fn add_lock_acl(key: &RegKey) -> Result<(), String> {
     unsafe {
-        // 重复点击彻底删除时不重复追加相同 ACE，避免 ACL 和备份一样持续膨胀。
+        // Repeated clicks on thorough delete do not append the same ACE again, avoiding the ACL growing along with the backup.
         if read_acl_sddl(key)?
             .as_deref()
             .is_some_and(is_lightc_lock_sddl_ref)
@@ -1683,7 +1683,7 @@ fn is_lightc_lock_mask(mask: &str) -> bool {
         })
 }
 
-/// 从当前安全描述符中移除 LightC 自己添加的 Everyone 拒绝 ACE，保留其他用户 ACL 不变。
+/// Remove the Everyone deny ACE LightC itself added from the current security descriptor, leaving other users' ACLs unchanged.
 fn remove_lightc_lock_acl(key: &RegKey) -> Result<(), String> {
     let current_sddl = read_acl_sddl(key)?.ok_or_else(|| "读取目标注册表 ACL 失败".to_string())?;
     let unlocked_sddl = remove_lightc_lock_aces_from_sddl(&current_sddl)
@@ -1796,7 +1796,7 @@ mod tests {
             registry_view: "64".to_string(),
             entry_kind: ShellEntryKind::NavigationPane,
         };
-        // 导航窗格目标必须固定到 CLSID 根路径，不能被前端传入的内容改写。
+        // The navigation pane target must be pinned to the CLSID root path and must not be rewritten by frontend-supplied content.
         assert!(registry_path(&target)
             .contains("Software\\Classes\\CLSID\\{AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE}"));
     }

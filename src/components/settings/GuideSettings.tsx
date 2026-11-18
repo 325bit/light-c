@@ -1,4 +1,4 @@
-// 使用说明页面
+// User guide page
 
 import { BookOpen, Bot, Cpu, Database, FileBox, HardDrive, Layers, MessageCircle, MousePointerClick, Package, Shield, ShieldCheck, Zap } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
@@ -8,7 +8,7 @@ const GUIDE_ITEMS = [
   { key: 'bigFiles', icon: FileBox },
   { key: 'diskInfo', icon: HardDrive },
   { key: 'social', icon: MessageCircle },
-  // AI 工具清理：按工具统计缓存目录，排在社交专清后面（同为"某类软件留下的缓存"）
+  // AI tool cleanup: count cache directories by tool, placed after social-specific cleanup (both are "caches left by some kind of software")
   { key: 'aiTools', icon: Bot },
   { key: 'systemSlim', icon: Layers },
   { key: 'drivers', icon: Cpu },
@@ -19,7 +19,7 @@ const GUIDE_ITEMS = [
   { key: 'diskGrowth', icon: HardDrive },
   { key: 'shellIcons', icon: HardDrive },
   { key: 'aiModels', icon: Cpu },
-  // AI 助手单独一条：这里最容易被误解成"软件自带模型"，必须写清"要自己的 Key、不提供本地模型"
+  // The AI assistant is a separate entry: this is the most easily mistaken for "software's built-in model", must state clearly "needs your own key, no local model provided"
   { key: 'aiAssistant', icon: Bot },
 ] as const;
 

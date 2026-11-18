@@ -1,11 +1,11 @@
 // ============================================================================
-// 大目录分析与下钻命令
+// Large directory analysis and drill-down commands
 // ============================================================================
 
 use log::info;
 use serde::{Deserialize, Serialize};
 
-/// 目录清理结果
+/// Directory cleanup result
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CleanupDirectoryResult {
     pub deleted_count: usize,
@@ -14,13 +14,13 @@ pub struct CleanupDirectoryResult {
     pub errors: Vec<String>,
 }
 
-/// 取消大目录扫描
+/// Cancel a large-directory scan
 #[tauri::command]
 pub fn cancel_hotspot_scan() {
     crate::scanner::cancel_hotspot_scan();
 }
 
-/// 扫描大目录
+/// Scan large directories
 #[tauri::command]
 pub async fn scan_hotspot(
     app: tauri::AppHandle,
@@ -101,11 +101,11 @@ fn normalize_hotspot_drive_letter(value: Option<&str>) -> Result<char, String> {
     else {
         return Err("无效的磁盘盘符".to_string());
     };
-    // 大目录深度扫描只需要盘符，统一转大写可避免 d/D 触发不同扫描根。
+    // A large-directory deep scan only needs the drive letter; normalizing to uppercase avoids d/D triggering different scan roots.
     Ok(letter.to_ascii_uppercase())
 }
 
-/// 单层路径钻取扫描
+/// Single-level path drill-down scan
 #[tauri::command]
 pub async fn scan_path_direct(path: String) -> Result<crate::scanner::HotspotScanResult, String> {
     use crate::scanner::HotspotScanner;
@@ -132,7 +132,7 @@ pub async fn scan_path_direct(path: String) -> Result<crate::scanner::HotspotSca
     result
 }
 
-/// 清理目录内容（保留根目录）
+/// Clear directory contents (keeping the root directory)
 #[tauri::command]
 pub async fn cleanup_directory_contents(path: String) -> Result<CleanupDirectoryResult, String> {
     use std::fs;

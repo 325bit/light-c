@@ -1,8 +1,8 @@
 // ============================================================================
-// C 盘空间变化分析
+// C drive space change analysis
 //
-// 对比本次 MFT 聚合结果和上一次快照，找出新增、减少和增长最快的目录。
-// 这里只做变化分析，不做清理判断，避免把“能不能删”的语义误加到全盘目录上。
+// Compares this MFT aggregation with the previous snapshot to find added, reduced, and fastest-growing directories.
+// This only analyzes changes, without making cleanup judgments, to avoid wrongly applying "can it be deleted" semantics to all disk directories.
 // ============================================================================
 
 use serde::{Deserialize, Serialize};
@@ -16,20 +16,20 @@ use super::snapshot::{build_snapshot, DiskSnapshot, DiskSnapshotEntry, DiskSnaps
 
 const SIGNIFICANT_THRESHOLD: i64 = 1024 * 1024 * 1024;
 const FAST_THRESHOLD: i64 = 300 * 1024 * 1024;
-// 小变化也需要进入列表，否则会出现汇总有净变化、明细变化量为空的割裂体验。
+// Small changes must also enter the list, otherwise users see a disjointed experience where the summary shows a net change but the details show nothing.
 const MINOR_THRESHOLD: i64 = 1;
 const DEFAULT_MAX_CHANGE_ENTRIES: usize = 300;
 const MIN_CHANGE_ENTRIES: usize = 50;
 const MAX_CHANGE_ENTRIES: usize = 1000;
 const MAX_DETAIL_ENTRIES: usize = 50;
-/// HTML 报告的最大节点数。
+/// Maximum number of nodes in the HTML report.
 ///
-/// 中文说明：每个节点会渲染成一段完整的详情卡片，节点数决定报告体积与浏览器解析成本。
-/// 实测（无头浏览器，扣掉启动开销）约每 MB 需要 300 ms 解析 + 建 DOM：5000 节点约 3.2 MB / 1.0 s，
-/// 10000 节点约 6.5 MB / 2.1 s，20000 节点约 12.9 MB / 4.7 s。
-/// 10000 是本模块给出的平衡点：单次导出仍能覆盖所有 1000 个变化目录的多数细节，
-/// 打开耗时控制在 2 s 量级，且报告页脚会明确提示内容被截断。真实体积取决于数据量，
-/// 目录结构扁平时节点数远小于上限，导出的报告可能只有几百 KB。
+/// Note: each node renders as a full detail card; node count determines report size and browser parsing cost.
+/// Measured (headless browser, excluding startup overhead): about 300 ms per MB for parsing + DOM construction; 5000 nodes ≈ 3.2 MB / 1.0 s,
+/// 10000 nodes ≈ 6.5 MB / 2.1 s, 20000 nodes ≈ 12.9 MB / 4.7 s.
+/// 10000 is the balance point chosen here: a single export still covers most details of all 1000 changed directories,
+/// opening time stays around 2 s, and the report footer explicitly notes truncation. Actual size depends on the data volume;
+/// with a flat directory structure the node count is far below the cap, so the exported report may be only a few hundred KB.
 const MAX_EXPORT_TREE_NODES: usize = 10_000;
 const DEFAULT_DETAIL_PAGE_SIZE: usize = 200;
 const MAX_DETAIL_PAGE_SIZE: usize = 1000;
@@ -77,8 +77,8 @@ pub struct DiskGrowthEntry {
     pub details: Vec<DiskGrowthDetailEntry>,
 }
 
-/// HTML 导出专用的目录变化树节点。
-/// 将多级明细在后端一次性构造，避免前端为每个目录重复发起分页 IPC 请求。
+/// Directory change tree node dedicated to HTML export.
+/// Build multi-level details all at once on the backend, avoiding repeated paginated IPC requests from the frontend for each directory.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DiskGrowthExportNode {
     pub path: String,
@@ -91,8 +91,8 @@ pub struct DiskGrowthExportNode {
     pub children: Vec<DiskGrowthExportNode>,
 }
 
-/// HTML 导出目录树响应。
-/// 显式返回截断状态，避免极端目录数量超出保护上限时让用户误以为报告包含全部明细。
+/// HTML export directory tree response.
+/// Explicitly return truncation status so that when an extreme number of directories exceeds the cap, users are not misled into thinking the report contains all details.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DiskGrowthExportTreeResponse {
     pub nodes: Vec<DiskGrowthExportNode>,
@@ -144,7 +144,7 @@ pub struct DiskScanAndAnalyzeResponse {
     pub phase_durations: Vec<DiskGrowthPhaseDuration>,
     pub mft_size_count: usize,
     pub metadata_fallback_count: usize,
-    /// $MFT 的段数 / 读盘耗时 / 解析耗时，用来判断瓶颈在盘还是 CPU。
+    /// $MFT segment count / disk read time / parse time, used to tell whether the bottleneck is disk or CPU.
     pub mft_fragments: usize,
     pub mft_io_ms: u64,
     pub mft_parse_ms: u64,
@@ -209,7 +209,7 @@ where
         max_change_entries,
         &drive_label,
     );
-    // 文件级明细只用于写入旁路分片，移动出去可以避免超大盘下再复制一份完整文件列表。
+    // File-level details are only used for writing a side-car shard; moving them out avoids copying a full file list again on very large disks.
     let file_records = std::mem::take(&mut scan.file_records);
     manager.save_scan_snapshot(&scan, file_records)?;
 
@@ -294,8 +294,8 @@ pub fn get_file_change_details(
 
     if entries.is_empty() && should_use_subtree_fallback(&normalized_path, &current_handle.snapshot)
     {
-        // 目录聚合快照只保留有限层级；当父目录变化来自更深层文件时，直属文件可能没有变化。
-        // 兜底只在深度边界目录启用，并且只保留当前分页需要的 Top N，避免超大目录把所有后代文件读进内存。
+        // Directory aggregation snapshots keep only limited levels; when a parent's change comes from deeper files, direct files may show no change.
+        // The fallback is enabled only at depth-boundary directories and keeps only the Top N needed for the current page, avoiding reading all descendant files of a huge directory into memory.
         let (subtree_entries, subtree_total) = manager.collect_subtree_file_diffs(
             &previous_handle.path,
             &previous_handle.snapshot,
@@ -365,7 +365,7 @@ fn build_file_detail_entries(
             if diff == 0 {
                 return None;
             }
-            // 删除或减少时当前快照可能没有该文件，退回上次快照的最后已知修改时间。
+            // When deleted or reduced, the current snapshot may not have the file; fall back to the last known modification time from the previous snapshot.
             let modified = current_value
                 .map(|value| value.modified)
                 .or_else(|| previous_value.map(|value| value.modified))
@@ -425,8 +425,8 @@ pub fn get_directory_change_details(
     })
 }
 
-/// 为导出报告构造最多三级目录变化明细。
-/// 快照只读取一次，并在内存中复用父子索引，避免导出操作放大磁盘 IO 和 IPC 次数。
+/// Builds up to three levels of directory change details for the export report.
+/// Read the snapshot only once and reuse parent-child indexes in memory, avoiding amplification of disk IO and IPC counts during export.
 pub fn get_export_directory_tree(
     paths: Vec<String>,
     max_depth: Option<usize>,
@@ -506,7 +506,7 @@ fn build_export_node(
         *truncated = true;
         return None;
     }
-    // 极端目录结构也不能无限制放大导出报告的内存占用和文件体积。
+    // Even with extreme directory structures, the export report's memory usage and file size must not grow without bound.
     *remaining_nodes -= 1;
 
     let children = if depth < max_depth {
@@ -647,7 +647,7 @@ fn normalize_growth_drive_letter(value: Option<&str>) -> Result<String, String> 
     else {
         return Err("无效的磁盘盘符".to_string());
     };
-    // 盘符在快照、扫描和摘要中统一为大写，避免 D / d / D: 产生多组数据。
+    // Drive letters are normalized to uppercase in snapshots, scans, and summaries to avoid D / d / D: producing multiple data sets.
     Ok(letter.to_ascii_uppercase().to_string())
 }
 
@@ -722,7 +722,7 @@ fn remove_redundant_parent_entries(entries: &mut Vec<DiskGrowthEntry>) {
         .collect();
 
     entries.retain(|entry| {
-        // 只有父目录变化量与某个直接子目录完全一致时才折叠父级，避免多个子目录共同变化时误删有效汇总。
+        // Only collapse a parent when its change amount exactly matches one direct child, avoiding removal of a valid summary when multiple children change together.
         !entry.details.iter().any(|detail| {
             detail.diff == entry.diff
                 && detail.diff.signum() == entry.diff.signum()
@@ -739,7 +739,7 @@ fn direct_child_map(
         let Some(parent) = parent_path(&entry.path) else {
             continue;
         };
-        // 变化明细只展示直接子目录，避免把所有后代目录重复摊开造成列表噪音。
+        // Change details show only direct subdirectories, avoiding the noise of expanding all descendant directories repeatedly.
         child_map.entry(parent).or_default().insert(
             entry.path.clone(),
             SnapshotValue {
@@ -1051,9 +1051,9 @@ mod tests {
 
     #[test]
     fn export_tree_node_budget_stays_browser_friendly() {
-        // 导出上限直接决定 HTML 体积与浏览器解析成本：实测 20000 节点约 12.9 MB、需要约 4.7 s
-        // 解析建 DOM，浏览器打开后会长时间占用主线程。这里锁定合理区间：过低会丢用户要看的
-        // 变化明细，过高会让报告卡死。
+        // The export cap directly determines HTML size and browser parsing cost: measured 20000 nodes ≈ 12.9 MB, needing about 4.7 s
+        // to parse and build the DOM; opening in the browser keeps the main thread busy for a long time. Lock in a sensible range here: too low loses the details users want to see,
+        // too high makes the report freeze.
         assert!(
             (5_000..=10_000).contains(&MAX_EXPORT_TREE_NODES),
             "导出树节点上限需要落在 5000-10000：过低会丢数据，过高会让报告在浏览器中卡死"
@@ -1062,7 +1062,7 @@ mod tests {
 
     #[test]
     fn recursive_export_node_count_handles_deep_trees() {
-        // count_export_nodes 是递归实现，这里确认深层嵌套不会算错数量。
+        // count_export_nodes is recursive; this confirms deep nesting does not miscount.
         let leaf = |diff: i64| DiskGrowthExportNode {
             name: "leaf".to_string(),
             path: r"C:\a\leaf".to_string(),

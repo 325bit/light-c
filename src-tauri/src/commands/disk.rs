@@ -1,11 +1,11 @@
 // ============================================================================
-// 磁盘信息命令
+// Disk info commands
 // ============================================================================
 
 use log::info;
 use serde::Serialize;
 
-/// 磁盘信息
+/// Disk info
 #[derive(Debug, Serialize)]
 pub struct DiskInfo {
     pub total_space: u64,
@@ -15,7 +15,7 @@ pub struct DiskInfo {
     pub drive_letter: String,
 }
 
-/// 本机固定分区信息，后续大文件、大目录等多盘模块也复用这份结构。
+/// Fixed partitions of this machine; reused by multi-disk modules such as big files and big directories.
 #[derive(Debug, Serialize)]
 pub struct LocalDriveInfo {
     pub drive_letter: String,
@@ -30,14 +30,14 @@ pub struct LocalDriveInfo {
     pub is_ntfs: bool,
 }
 
-/// 获取C盘磁盘信息
+/// Get disk info for drive C
 #[tauri::command]
 pub fn get_disk_info() -> Result<DiskInfo, String> {
     info!("获取磁盘信息");
 
     #[cfg(target_os = "windows")]
     {
-        // 默认统计系统盘（%SYSTEMDRIVE%），兼容系统盘不叫 C 的机器
+        // Default to the system drive (%SYSTEMDRIVE%), compatible with machines where the system drive is not named C
         let drive = query_drive_info(crate::system_info::system_drive_letter())?;
 
         Ok(DiskInfo {
@@ -55,7 +55,7 @@ pub fn get_disk_info() -> Result<DiskInfo, String> {
     }
 }
 
-/// 获取本机固定磁盘分区列表。
+/// Get the list of fixed disk partitions on this machine.
 #[tauri::command]
 pub fn get_local_drives() -> Result<Vec<LocalDriveInfo>, String> {
     info!("获取本机固定磁盘分区列表");
@@ -87,7 +87,7 @@ pub fn get_local_drives() -> Result<Vec<LocalDriveInfo>, String> {
             match query_drive_info(letter) {
                 Ok(drive) => drives.push(drive),
                 Err(error) => {
-                    // 单个分区异常不应阻断列表展示，避免坏盘或权限问题拖垮整个设置入口。
+                    // A single partition error should not block the whole list, so a bad disk or permission issue does not drag down the whole settings entry.
                     log::warn!("读取磁盘 {} 信息失败: {}", root, error);
                 }
             }

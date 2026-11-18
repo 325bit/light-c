@@ -1,17 +1,17 @@
 // ============================================================================
-// AI 会话落盘
+// AI session persistence
 //
-// 位置：{数据目录}/ai/sessions/{模块 id}/{YYYY-MM-DD}.jsonl
+// Location: {data dir}/ai/sessions/{module id}/{YYYY-MM-DD}.jsonl
 //
-// 三个选择都有实际理由：
-// - **按模块分目录**：切换模块时只需加载该模块的历史，这既是"模块隔离"，
-//   也避免了"在旧驱动里看到垃圾清理对话"这种串台。
-// - **按日期分文件**：jsonl 是追加写，一次崩溃不会毁掉整份历史；
-//   清理过期会话也只需删文件，不用读改写。
-// - **日期由前端传入**：本机时区的"今天"前端最清楚，后端为此引入日期库不划算。
+// All three choices have real reasons:
+// - **One directory per module**: switching modules only loads that module's history, which is both "module isolation"
+//   and avoids cross-talk like "seeing junk-cleanup conversations in the old driver".
+// - **One file per date**: jsonl is append-only, so a single crash won't destroy the whole history;
+//   clearing expired sessions is also just deleting files, no read-modify-write.
+// - **Date passed in by the frontend**: the frontend knows best what "today" is in the local timezone; pulling in a date library on the backend isn't worth it.
 //
-// ⚠️ module_id 与 date 会被拼进文件路径，**必须先校验**：
-//    否则 `..\\..\\` 这类输入就能写到数据目录之外（路径穿越）。
+// ⚠️ module_id and date are concatenated into the file path, **they must be validated first**:
+//    otherwise input like `..\\..\\` could write outside the data directory (path traversal).
 // ============================================================================
 
 use serde::{Deserialize, Serialize};
@@ -19,50 +19,50 @@ use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
 
-/// 一条会话消息。
+/// A single session message.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AiSessionMessage {
-    /// 只允许 user / assistant；system 提示是每次现取的，不落盘
+    /// Only user / assistant allowed; system prompts are fetched fresh each time, not persisted
     pub role: String,
     pub content: String,
-    /// 附件文件名（存在 attachments 目录下）。
-    /// **只存文件名，不存 base64** —— 否则会话文件会被图片撑爆。
+    /// Attachment file names (stored under the attachments directory).
+    /// **Store only file names, not base64** — otherwise image data would bloat the session file.
     #[serde(default)]
     pub images: Vec<String>,
-    /// Unix 毫秒时间戳，便于按时间排序与展示
+    /// Unix millisecond timestamp, for time-based sorting and display
     pub at: i64,
-    /// 思考模式下这一轮的思维链。
+    /// The chain of thought for this round in reasoning mode.
     ///
-    /// **落盘是必须的**：服务端要求请求带 tools 时把 assistant 的 reasoning_content
-    /// 原样回传（不回传 400），而重启后从磁盘恢复的历史同样要带着它发出去。
+    /// **Persisting is mandatory**: when a request carries tools, the server requires the assistant's reasoning_content
+    /// to be returned verbatim (otherwise 400), and history restored from disk after a restart must be sent with it too.
     #[serde(default)]
     pub reasoning_content: Option<String>,
-    /// 这条 assistant 消息是**本地生成的**（工具查询结果），不是模型说的话。
+    /// This assistant message was **generated locally** (a tool query result), not spoken by the model.
     ///
-    /// 发请求时要按用户侧内容对待 —— 一旦当成 assistant，就会变成
-    /// "一条没有 reasoning_content 的 assistant"，带 tools 的请求会被服务端 400 拒掉。
+    /// When sending requests it must be treated as user-side content — if treated as assistant, it becomes
+    /// "an assistant message with no reasoning_content", and requests with tools get a 400 from the server.
     #[serde(default)]
     pub local_tool_output: bool,
-    /// 产出这条回复的**档案 id**。
+    /// The **profile id** that produced this reply.
     ///
-    /// 思维链只对产出它的那家服务商有意义：换一家（尤其严格的第三方网关）就变成未知字段，
-    /// 可能被 400 拒掉。所以发请求时只回传"当前档案自己产出的"那些 ——
-    /// 这个字段就是判断依据，必须落盘，否则重启后就认不出来了。
+    /// A chain of thought only means something to the provider that produced it: switch providers (especially strict third-party gateways) and it becomes an unknown field,
+    /// possibly rejected with 400. So on requests, return only those "produced by the current profile" —
+    /// this field is the basis for that decision and must be persisted, otherwise it can't be recognized after a restart.
     #[serde(default)]
     pub produced_by_profile: Option<String>,
 }
 
-/// 会话根目录：{AI 数据目录}/sessions
+/// Session root directory: {AI data dir}/sessions
 ///
-/// 统一走 config 的解析逻辑，而不是自己拼一遍 ——
-/// 「清空本地数据」也要按同一个路径去算大小和删除，两处必须永远指向同一个地方。
+/// Go through config's resolution logic instead of assembling the path again —
+/// "Clear local data" must compute size and delete along the same path; the two must always point to the same place.
 pub fn sessions_root() -> PathBuf {
     super::config::resolve_data_dir().join("sessions")
 }
 
-/// 校验模块 id：只允许小写字母、数字与连字符（内置模块 id 都是这种形状）。
-/// 拒绝路径分隔符与 `..`，从源头堵住路径穿越。
+/// Validate module id: only lowercase letters, digits and hyphens allowed (built-in module ids all have this shape).
+/// Reject path separators and `..`, blocking path traversal at the source.
 fn is_safe_segment(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= 64
@@ -71,7 +71,7 @@ fn is_safe_segment(value: &str) -> bool {
             .all(|character| character.is_ascii_lowercase() || character.is_ascii_digit() || character == '-')
 }
 
-/// 校验日期：必须是严格的 YYYY-MM-DD。
+/// Validate date: must be a strict YYYY-MM-DD.
 fn is_safe_date(value: &str) -> bool {
     let bytes = value.as_bytes();
     if bytes.len() != 10 {
@@ -93,7 +93,7 @@ fn session_file(module_id: &str, date: &str) -> Result<PathBuf, String> {
     Ok(sessions_root().join(module_id).join(format!("{}.jsonl", date)))
 }
 
-/// 追加一条消息。目录不存在时自动创建。
+/// Append one message. Creates the directory automatically if it doesn't exist.
 pub fn append_message(module_id: &str, date: &str, message: AiSessionMessage) -> Result<(), String> {
     let path = session_file(module_id, date)?;
     if let Some(parent) = path.parent() {
@@ -111,9 +111,9 @@ pub fn append_message(module_id: &str, date: &str, message: AiSessionMessage) ->
     Ok(())
 }
 
-/// 读取某模块某天的全部消息。
-/// 文件不存在返回空列表（"还没有历史"是正常状态，不是错误）；
-/// 单行解析失败只跳过该行 —— 一条坏数据不该让整份历史读不出来。
+/// Read all messages for a module on a given day.
+/// A missing file returns an empty list ("no history yet" is a normal state, not an error);
+/// a single line's parse failure only skips that line — one bad record shouldn't make the whole history unreadable.
 pub fn load_session(module_id: &str, date: &str) -> Result<Vec<AiSessionMessage>, String> {
     let path = session_file(module_id, date)?;
     if !path.exists() {
@@ -136,8 +136,8 @@ pub fn load_session(module_id: &str, date: &str) -> Result<Vec<AiSessionMessage>
     Ok(messages)
 }
 
-/// 删除某模块某天的会话文件（界面的「清空对话」）。
-/// 文件本来就不存在时也算成功 —— 目标是"清空后是这个状态"，不是"必须删掉一个文件"。
+/// Delete a module's session file for a given day (the UI's "Clear conversation").
+/// A file that doesn't exist is also a success — the goal is "this state after clearing", not "must delete a file".
 pub fn clear_session(module_id: &str, date: &str) -> Result<(), String> {
     let path = session_file(module_id, date)?;
     if !path.exists() {
@@ -146,27 +146,27 @@ pub fn clear_session(module_id: &str, date: &str) -> Result<(), String> {
     fs::remove_file(&path).map_err(|error| format!("删除会话文件失败 {}: {}", path.display(), error))
 }
 
-/// 一次按范围读取的结果。
+/// Result of a range read.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AiSessionPage {
-    /// **按时间正序**（旧 → 新），前端拼到消息列表顶部即可
+    /// **In chronological order** (old → new), the frontend can prepend it to the message list
     pub messages: Vec<AiSessionMessage>,
-    /// 还有更早的没读（界面据此显示「加载更早」）
+    /// Whether there is older data left (UI shows "Load earlier" accordingly)
     pub has_more: bool,
 }
 
-/// 单次最多读多少条：前端传什么都夹在这个范围内，**从源头防止一次读爆**。
+/// Max messages per read: whatever the frontend passes is clamped to this range, **preventing one read from blowing up** at the source.
 const MAX_RANGE_MESSAGES: usize = 200;
 
-/// 从候选文件名里挑出要读的日期：只留合法且**不晚于** `end_date` 的，按时间倒序。
+/// Pick dates to read from candidate file names: keep only valid ones **no later than** `end_date`, in descending time order.
 ///
-/// 单独抽出来是为了能单测 —— 它决定"读哪几天"，出错的后果是"历史少了"或"读到未来"。
+/// Extracted separately so it can be unit-tested — it decides "which days to read", and getting it wrong means "missing history" or "reading the future".
 fn candidate_dates(names: Vec<String>, end_date: &str) -> Vec<String> {
     let mut dates: Vec<String> = names
         .into_iter()
         .filter_map(|name| name.strip_suffix(".jsonl").map(str::to_string))
-        // `YYYY-MM-DD` 直接按字典序比较就是时间序，不需要引入日期库
+        // `YYYY-MM-DD` compares lexicographically in time order, no date library needed
         .filter(|date| is_safe_date(date) && date.as_str() <= end_date)
         .collect();
     dates.sort_unstable();
@@ -174,10 +174,10 @@ fn candidate_dates(names: Vec<String>, end_date: &str) -> Vec<String> {
     dates
 }
 
-/// 从 `end_date` 往前读，攒够 `max_messages` 条就停。
+/// Read backward from `end_date`, stop once `max_messages` have been collected.
 ///
-/// 会话是**每天一个文件**，所以"加载更早"天然就是"再往前读几天"：
-/// 按日期倒序逐天读，够数就返回，不做日期运算。
+/// Sessions are **one file per day**, so "load earlier" naturally means "read a few more days back":
+/// read day by day in reverse date order, return when we have enough, no date arithmetic.
 pub fn load_session_range(
     module_id: &str,
     end_date: &str,
@@ -206,7 +206,7 @@ pub fn load_session_range(
     let mut collected: Vec<AiSessionMessage> = Vec::new();
     let mut consumed = 0usize;
     for date in &dates {
-        // 逐天从新往旧读：新的一天拼在**前面**，读完后整体就是正序
+        // Read day by day from newest to oldest: the newer day is prepended **in front**, so the whole result ends up chronological
         let mut merged = load_session(module_id, date)?;
         merged.append(&mut collected);
         collected = merged;
@@ -216,10 +216,10 @@ pub fn load_session_range(
         }
     }
 
-    // ⚠️ **按整日返回**，不在一天中间截断：
-    // 「加载更早」用的是"当前最早那条所在日期的前一天"作边界 —— 如果这里切在某天中间，
-    // 那半天就永远读不到了（用户看到的历史会缺一截）。
-    // 只有**单日就超过两倍上限**这种极端情况才截断：宁可留个缺口，也不一次读爆。
+    // ⚠️ **Return whole days**, never truncate in the middle of a day:
+    // "Load earlier" uses "the day before the current earliest message's date" as its boundary — if we cut mid-day here,
+    // that half day would never be readable (the user's history would have a missing chunk).
+    // Only the extreme case of **a single day exceeding twice the cap** gets truncated: better a small gap than one giant read.
     let mut has_more = dates.len() > consumed;
     if collected.len() > limit.saturating_mul(2) {
         collected.drain(0..collected.len() - limit);
@@ -229,10 +229,10 @@ pub fn load_session_range(
     Ok(AiSessionPage { messages: collected, has_more })
 }
 
-/// 清空某模块**所有日期**的会话（界面的「清空对话」）。
+/// Clear a module's sessions for **all dates** (the UI's "Clear conversation").
 ///
-/// 只删当天那一个文件是不够的：历史是按天加载的，删了今天、昨天的还会被加载回来 ——
-/// 用户看到的就是"清空了又冒出来"。所以清空 = 把这个模块的整个目录删掉。
+/// Deleting only today's file isn't enough: history loads by day, so after deleting today, yesterday's gets loaded back —
+/// what the user sees is "cleared but it came back". So clearing = delete the module's entire directory.
 pub fn clear_all_sessions(module_id: &str) -> Result<(), String> {
     if !is_safe_segment(module_id) {
         return Err(format!("非法的模块标识: {}", module_id));
@@ -251,7 +251,7 @@ mod tests {
 
     #[test]
     fn rejects_path_traversal_in_module_id_and_date() {
-        // 这两个是拼进路径的，必须挡住
+        // These two are concatenated into paths, they must be blocked
         assert!(!is_safe_segment("../../windows"));
         assert!(!is_safe_segment("junk/clean"));
         assert!(!is_safe_segment("junk\\clean"));
@@ -277,7 +277,7 @@ mod tests {
 
     #[test]
     fn candidate_dates_keep_valid_past_dates_newest_first() {
-        // 只读合法日期、且**不晚于** end_date；顺序必须是最新在前（加载顺序依赖它）
+        // Only keep valid dates **no later than** end_date; order must be newest first (load order depends on it)
         let names = vec![
             "2026-10-14.jsonl".to_string(),
             "2026-10-16.jsonl".to_string(),

@@ -1,41 +1,41 @@
 // ============================================================================
-// 模块内联扫描状态
-// 用于扫描页面内部的等待状态，避免不同模块重复维护一套低矮的 Loading UI。
+// Inline module scan state
+// Used for the waiting state inside the scan page, avoiding each module maintaining its own low-profile Loading UI.
 //
-// 【为什么长这样】
-// 旧版是"整块淡绿底 + 转圈"，高度写死 220px：窗口一变高就剩一条矮绿带悬在卡片顶部，
-// 下面一大片空白；大面积品牌色比内容还抢眼，还和"已清理"的绿色成功态撞色。
+// [Why it looks like this]
+// The old version was "a block of pale green background + spinner" with a hard-coded height of 220px: when the window grew taller, only a short green strip hung at the top of the card,
+// with a large blank area below; a large brand-color block outshone the content and clashed with the green success state of "cleaned".
 //
-// 现在的分工：
-//   ① 进度条只留一条，在卡片头部（ModuleCard 负责），正文字段不再画 ——
-//      同一条信息画两遍就是"两条 loading 线"；
-//   ② 阶段行：图标 + 阶段名 + 耗时，字号与正文一致，不放大；
-//   ③ 骨架列表：按**真实结果行的形状**摆（左侧图标位 + 主标题 + 右侧数值），
-//      并随正文高度拉开行距。之前是五条居中细线，窗口一大就缩成中间一小撮，
-//      上下各留一大片空 —— 那不是留白，是没填满。
+// Current division of labor:
+//   ① Keep only one progress bar, in the card header (handled by ModuleCard), not drawn again in the body —
+//      drawing the same info twice means "two loading lines";
+//   ② Stage line: icon + stage name + elapsed time, same font size as body text, not enlarged;
+//   ③ Skeleton list: laid out **in the shape of real result rows** (left icon slot + main title + right-side value),
+//      with row spacing stretched along with body height. Previously it was five centered thin lines that shrank into a small cluster in the middle on large windows,
+//      leaving big empty areas above and below — that was not whitespace, it was unfilled space.
 // ============================================================================
 
 import type { ReactNode } from 'react';
 import { Loader2 } from 'lucide-react';
 
 interface ModuleScanProgressProps {
-  /** 扫描阶段标题 */
+  /** Scan stage title */
   title: string;
-  /** 扫描阶段说明 */
+  /** Scan stage description */
   description?: string;
-  /** 模块专属图标 */
+  /** Module-specific icon */
   icon?: ReactNode;
-  /** 额外的阶段信息或操作按钮 */
+  /** Extra stage info or action buttons */
   footer?: ReactNode;
-  /** 补充样式类名 */
+  /** Additional style class name */
   className?: string;
 }
 
 /**
- * 骨架行的形状：`[主条宽度, 数值条宽度]`（百分比）。
+ * Shape of a skeleton row: `[main bar width, value bar width]` (percentages).
  *
- * 宽度错开是为了像一段真实内容（每行文字长短不同），等宽会像表格分隔线。
- * 数值条靠右，对应结果行里的文件大小 / 数量。
+ * Stagger the widths to look like real content (each line has a different length); equal widths look like table separators.
+ * The value bar is right-aligned, corresponding to file size / count in result rows.
  */
 const SKELETON_ROWS: [number, number][] = [
   [58, 14],
@@ -47,13 +47,13 @@ const SKELETON_ROWS: [number, number][] = [
 ];
 
 /**
- * 骨架行本体。
+ * The skeleton row itself.
  *
- * 形状按真实结果行摆：左侧方形图标位 + 主标题条 + 右侧数值条。
- * （删除态曾经也用它，后来去掉了 —— 删除不是"结果还没出来"，摆一排假列表反而像卡住。）
+ * Shape follows real result rows: left square icon slot + main title bar + right-side value bar.
+ * (The deleting state once used it too, but that was removed — deleting is not "results not out yet", and a row of fake lists just looks stuck.)
  */
 function ScanSkeletonRows() {
-  // 骨架列表只是形态暗示，读屏用户不需要，整块 aria-hidden
+  // The skeleton list is only a visual hint, screen readers do not need it; mark the whole block aria-hidden
   return (
     <div className="scan-state__skeleton" aria-hidden="true">
       {SKELETON_ROWS.map(([titleWidth, metaWidth]) => (
@@ -74,8 +74,8 @@ export function ModuleScanProgress({
   footer,
   className = '',
 }: ModuleScanProgressProps) {
-  // 不再渲染"扫描中"胶囊：卡片头部状态徽章已经写着同样的字，正文再放一个是重复信息。
-  // 外观走 `.scan-state`，`module-scan-progress-area` 只用来让页面模式把这块撑满。
+  // No longer render the "scanning" pill: the card header's status badge already says the same thing, a second one in the body is redundant.
+  // Appearance goes through `.scan-state`; `module-scan-progress-area` is only used to let page mode fill this area.
   return (
     <div className={`module-scan-progress-area scan-state ${className}`}>
       <div className="scan-state__stack">

@@ -1,19 +1,19 @@
 // ============================================================================
-// 极简 Markdown 渲染
+// Minimal Markdown rendering
 //
-// 两个刻意的选择：
+// Two deliberate choices:
 //
-// 1. **不用现成的库**：项目约定「能用原生能力就不加依赖」，而模型输出实际用到的语法
-//    就这几种（标题、列表、粗体、行内代码、代码块、引用），自己写反而更可控。
+// 1. **Do not use an off-the-shelf library**: the project convention is "no new dependency if native capability suffices", and the syntax actually used in model output
+//    is just these few kinds (headings, lists, bold, inline code, code blocks, quotes) — writing it ourselves is actually more controllable.
 //
-// 2. **产出 React 节点，而不是 HTML 字符串**：如果用 dangerouslySetInnerHTML，
-//    模型输出里的内容会被当成 HTML 执行，存在注入风险。这里全部走 React 元素，
-//    也就**从结构上不可能执行脚本** —— 不需要再叠一层净化。
+// 2. **Produce React nodes, not an HTML string**: if dangerouslySetInnerHTML were used,
+//    content in the model output would be executed as HTML, an injection risk. Everything here goes through React elements,
+//    so it is **structurally impossible to execute scripts** — no need to add another sanitization layer.
 // ============================================================================
 
 import type { ReactNode } from 'react';
 
-/** 行内语法：粗体与行内代码。只认这两种，够用且不会误伤正常文本。 */
+/** Inline syntax: bold and inline code. Only these two are recognized — enough and will not damage normal text. */
 function renderInline(text: string, keyPrefix: string): ReactNode[] {
   const nodes: ReactNode[] = [];
   const pattern = /(\*\*[^*\n]+\*\*|`[^`\n]+`)/g;
@@ -49,8 +49,8 @@ function renderInline(text: string, keyPrefix: string): ReactNode[] {
 }
 
 /**
- * 把模型返回的 Markdown 渲染成 React 节点。
- * 解析到不认识的写法就按普通段落处理 —— 宁可少认，也不要渲染错。
+ * Render the Markdown returned by the model into React nodes.
+ * Unrecognized syntax is treated as a normal paragraph — better to recognize too little than to render wrong.
  */
 export function renderMarkdown(source: string): ReactNode {
   const lines = source.replace(/\r\n/g, '\n').split('\n');
@@ -61,7 +61,7 @@ export function renderMarkdown(source: string): ReactNode {
   while (index < lines.length) {
     const line = lines[index];
 
-    // 代码块：``` 开头到下一个 ``` 结束，内部原样保留（不做行内解析）
+    // Code block: from ``` to the next ```, contents preserved verbatim (no inline parsing)
     if (line.trimStart().startsWith('```')) {
       const codeLines: string[] = [];
       index += 1;
@@ -69,7 +69,7 @@ export function renderMarkdown(source: string): ReactNode {
         codeLines.push(lines[index]);
         index += 1;
       }
-      index += 1; // 跳过结束的 ```
+      index += 1; // skip the closing ```
       blocks.push(
         <pre
           key={`code-${key++}`}
@@ -81,7 +81,7 @@ export function renderMarkdown(source: string): ReactNode {
       continue;
     }
 
-    // 标题：# 的个数决定层级，对话里够用
+    // Heading: the number of # determines the level, enough for conversation
     const heading = /^(#{1,4})\s+(.*)$/.exec(line);
     if (heading) {
       const level = heading[1].length;
@@ -97,7 +97,7 @@ export function renderMarkdown(source: string): ReactNode {
       continue;
     }
 
-    // 无序列表：连续多行合并成一个列表块
+    // Unordered list: consecutive lines merged into one list block
     if (/^\s*[-*]\s+/.test(line)) {
       const items: string[] = [];
       while (index < lines.length && /^\s*[-*]\s+/.test(lines[index])) {
@@ -114,7 +114,7 @@ export function renderMarkdown(source: string): ReactNode {
       continue;
     }
 
-    // 有序列表
+    // Ordered list
     if (/^\s*\d+[.)]\s+/.test(line)) {
       const items: string[] = [];
       while (index < lines.length && /^\s*\d+[.)]\s+/.test(lines[index])) {
@@ -131,7 +131,7 @@ export function renderMarkdown(source: string): ReactNode {
       continue;
     }
 
-    // 引用
+    // Quote
     if (/^\s*>\s?/.test(line)) {
       blocks.push(
         <blockquote
@@ -145,13 +145,13 @@ export function renderMarkdown(source: string): ReactNode {
       continue;
     }
 
-    // 空行跳过
+    // Skip blank lines
     if (!line.trim()) {
       index += 1;
       continue;
     }
 
-    // 普通段落（相邻非空行合并，避免每行都被切成一段）
+    // Normal paragraph (merge adjacent non-empty lines, so every line is not cut into its own paragraph)
     const paragraph: string[] = [];
     while (
       index < lines.length &&

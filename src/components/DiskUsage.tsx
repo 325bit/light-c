@@ -1,5 +1,5 @@
 // ============================================================================
-// 磁盘使用情况组件 - 支持主题切换
+// Disk usage component - supports theme switching
 // ============================================================================
 
 import { useRef } from 'react';
@@ -12,38 +12,38 @@ interface DiskUsageProps {
   diskInfo: DiskInfo | null;
   loading?: boolean;
   compact?: boolean;
-  /** 三击时的回调（彩蛋功能） */
+  /** Callback on triple click (easter egg feature) */
   onTripleClick?: () => void;
 }
 
 export function DiskUsage({ diskInfo, loading, compact, onTripleClick }: DiskUsageProps) {
   const { t } = useTranslation('common');
-  // 三击检测
+  // Triple-click detection
   const clickCountRef = useRef(0);
   const clickTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const handleClick = () => {
     clickCountRef.current += 1;
     
-    // 清除之前的定时器
+    // Clear the previous timer
     if (clickTimerRef.current) {
       clearTimeout(clickTimerRef.current);
     }
     
-    // 检测三击
+    // Detect triple click
     if (clickCountRef.current >= 3) {
       clickCountRef.current = 0;
       onTripleClick?.();
       return;
     }
     
-    // 500ms 内没有继续点击则重置计数
+    // Reset the count if no further clicks within 500ms
     clickTimerRef.current = setTimeout(() => {
       clickCountRef.current = 0;
     }, 500);
   };
 
-  // 加载中或数据为空时显示骨架屏
+  // Show a skeleton screen while loading or when data is empty
   if (loading || !diskInfo) {
     return (
       <div className="glass-block bg-[var(--bg-card)] rounded-lg border border-[var(--border-default)] p-4">
@@ -59,7 +59,7 @@ export function DiskUsage({ diskInfo, loading, compact, onTripleClick }: DiskUsa
     );
   }
 
-  // 根据使用率确定颜色
+  // Determine the color based on usage percentage
   const getUsageColor = (percent: number) => {
     if (percent >= 90) return { bar: 'bg-red-500', text: 'text-red-500' };
     if (percent >= 75) return { bar: 'bg-orange-500', text: 'text-orange-500' };
@@ -77,7 +77,7 @@ export function DiskUsage({ diskInfo, loading, compact, onTripleClick }: DiskUsa
       } cursor-default`}
     >
       <div className={`flex items-center ${compact ? 'gap-3' : 'gap-4'}`}>
-        {/* 磁盘图标 */}
+        {/* Disk icon */}
         <div
           className={`rounded-lg bg-emerald-500/15 flex items-center justify-center ${
             compact ? 'w-10 h-10' : 'w-12 h-12'
@@ -86,7 +86,7 @@ export function DiskUsage({ diskInfo, loading, compact, onTripleClick }: DiskUsa
           <HardDrive className={compact ? 'w-5 h-5 text-emerald-500' : 'w-6 h-6 text-emerald-500'} />
         </div>
 
-        {/* 磁盘信息 */}
+        {/* Disk info */}
         <div className="flex-1 min-w-0">
           <div className={`flex items-center justify-between ${compact ? 'mb-1.5' : 'mb-2'}`}>
             <div>
@@ -104,7 +104,7 @@ export function DiskUsage({ diskInfo, loading, compact, onTripleClick }: DiskUsa
             </div>
           </div>
 
-          {/* 进度条 */}
+          {/* Progress bar */}
           <div className={`${compact ? 'h-1.5' : 'h-2'} bg-[var(--bg-hover)] rounded-full overflow-hidden ${compact ? 'mb-1.5' : 'mb-2'}`}>
             <div
               className={`h-full ${colors.bar} rounded-full`}
@@ -112,7 +112,7 @@ export function DiskUsage({ diskInfo, loading, compact, onTripleClick }: DiskUsa
             />
           </div>
 
-          {/* 统计信息 */}
+          {/* Stats */}
           <div className={`flex items-center ${compact ? 'gap-3 text-[0.79rem]' : 'gap-4 text-xs'}`}>
             <span className="text-[var(--fg-muted)]">
               {t('totalCapacity')} <span className="text-[var(--fg-secondary)] font-medium">{formatSize(diskInfo.total_space)}</span>

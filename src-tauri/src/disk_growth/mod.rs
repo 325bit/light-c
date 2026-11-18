@@ -1,8 +1,8 @@
 // ============================================================================
-// 全盘增长分析模块
+// Full-disk growth analysis module
 //
-// 将 C 盘扫描、快照和差异分析集中在独立模块中，避免继续把全盘逻辑塞进
-// ProgramData 专用规则里，后续维护扫描策略和对比策略会更清晰。
+// Centralizes C drive scanning, snapshots, and diff analysis in a standalone module, avoiding continuing to cram full-disk logic into
+// ProgramData-specific rules; future maintenance of scan and comparison strategies will be clearer.
 // ============================================================================
 
 pub mod growth;

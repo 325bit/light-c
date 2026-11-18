@@ -1,24 +1,24 @@
 // ============================================================================
-// AI 面板尺寸：可拖拽调整 + 持久化
+// AI panel size: draggable resize + persistence
 //
-// 两个容易忽略的点：
+// Two easily overlooked points:
 //
-// 1. **内联样式会压过 CSS 里的 max-* 上限**。面板默认用 em + vw/vh 计算尺寸，
-//    一旦用户在拖拽时写入内联 px，CSS 那层"随窗口缩小"的保护就失效了 ——
-//    所以夹紧必须在这里自己做，而且窗口尺寸变化时也要重算。
-// 2. **拖拽要钳制在合理区间**：太小看不清、太大盖住模块主页面（正是不想要的）。
+// 1. **Inline styles override CSS max-* limits**. The panel defaults to em + vw/vh for sizing,
+//    once the user writes inline px while dragging, the CSS layer's "shrink with window" protection stops working —
+//    so clamping must be done here, and must be recomputed when the window size changes.
+// 2. **Dragging must be clamped to a reasonable range**: too small is unreadable, too large covers the module's main page (exactly what we do not want).
 // ============================================================================
 
 import { useCallback, useEffect, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react';
 
 const STORAGE_KEY = 'c-cleanup-ai-panel-size';
 
-/** 拖拽下限：再小就没法读对话了。 */
+/** Lower bound for dragging: any smaller and the conversation becomes unreadable. */
 const MIN_WIDTH = 320;
-/* 拖拽下限。原来 240px：头部 40 + 输入区 ~70 之后只剩 ~130 给消息，
-   一进来就是"挤"的观感，所以抬到 320。 */
+/* Drag lower bound. It used to be 240px: after a 40px header and ~70px input area, only ~130px was left for messages,
+   giving a "cramped" look right away, so it was raised to 320. */
 const MIN_HEIGHT = 320;
-/** 与视口之间至少留出的边距（右侧 20px + 左侧留白）。 */
+/** Minimum margin to keep from the viewport (20px on the right + left whitespace). */
 const VIEWPORT_MARGIN_X = 48;
 const VIEWPORT_MARGIN_Y = 120;
 
@@ -37,12 +37,12 @@ function readStoredSize(): AiPanelSize | null {
     if (!Number.isFinite(parsed.width) || !Number.isFinite(parsed.height)) return null;
     return { width: parsed.width, height: parsed.height };
   } catch {
-    // 存储损坏就当没存过，不能让设置读不出就崩溃
+    // Treat corrupt storage as never saved; a failed settings read must not crash
     return null;
   }
 }
 
-/** 把尺寸夹到"当前视口允许的最大值"之间。窗口变小后必须重新夹。 */
+/** Clamp the size to "the maximum allowed by the current viewport". Must re-clamp when the window shrinks. */
 function clampToViewport(size: AiPanelSize): AiPanelSize {
   const maxWidth = Math.max(MIN_WIDTH, window.innerWidth - VIEWPORT_MARGIN_X);
   const maxHeight = Math.max(MIN_HEIGHT, window.innerHeight - VIEWPORT_MARGIN_Y);
@@ -53,7 +53,7 @@ function clampToViewport(size: AiPanelSize): AiPanelSize {
 }
 
 export interface UsePanelSizeResult {
-  /** 铺到面板上的内联尺寸；用默认尺寸时宽度交给 CSS（em 计算，跟随字号设置） */
+  /** Inline sizes applied to the panel; with the default size, width is left to CSS (em-based, following the font-size setting) */
   sizeStyle: CSSProperties;
   hasCustomSize: boolean;
   startResize: (event: ReactPointerEvent<HTMLElement>) => void;
@@ -66,19 +66,19 @@ export function usePanelSize(): UsePanelSizeResult {
     return stored ? clampToViewport(stored) : null;
   });
 
-  // 视口变化时重新夹紧：否则用户拖大过、之后窗口缩小，面板会顶出屏幕。
+  // Re-clamp when the viewport changes: otherwise if the user dragged it larger and the window later shrinks, the panel sticks out of the screen.
   useEffect(() => {
     if (!size) return;
     const handleResize = () => setSize((previous) => (previous ? clampToViewport(previous) : previous));
     window.addEventListener('resize', handleResize);
     return () => window.removeEventListener('resize', handleResize);
-    // 依赖里用 size 的引用会让每次拖拽都重挂监听，这里只需要"存在自定义尺寸"这个事实
+    // Depending on the size reference would re-attach the listener on every drag; only the fact "a custom size exists" is needed here
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [size !== null]);
 
   const startResize = useCallback((event: ReactPointerEvent<HTMLElement>) => {
-    // 面板固定在右下角，所以拖拽发生在左上角手柄：
-    // 指针向左/上移动 = 面板变大，取反即可。
+    // The panel is fixed at the bottom-right, so dragging happens at the top-left handle:
+    // moving the pointer left/up = panel grows, so just negate the delta.
     const panel = event.currentTarget.parentElement as HTMLElement | null;
     if (!panel) return;
     const rect = panel.getBoundingClientRect();
@@ -90,9 +90,9 @@ export function usePanelSize(): UsePanelSizeResult {
     const handle = event.currentTarget;
     handle.setPointerCapture(event.pointerId);
 
-    // 用 ref 记住最新尺寸：松手时直接读它落盘。
-    // 不能把写 localStorage 放进 setSize 的 updater 里 —— 那是纯函数，
-    // StrictMode 下会被调用两次，写盘就成了副作用。
+    // Keep the latest size in a ref: read it directly on release to write to disk.
+    // Do not put the localStorage write inside the setSize updater — that is a pure function,
+    // and under StrictMode it is called twice, making the disk write a side effect.
     let latest = initial;
 
     const handleMove = (moveEvent: PointerEvent) => {
@@ -103,21 +103,21 @@ export function usePanelSize(): UsePanelSizeResult {
       setSize(latest);
     };
     const handleUp = () => {
-      // 指针被系统收走时（pointercancel）捕获可能已经没了，直接 release 会抛
+      // When the pointer is taken by the system (pointercancel), the capture may already be gone, so a direct release would throw
       if (handle.hasPointerCapture(event.pointerId)) {
         handle.releasePointerCapture(event.pointerId);
       }
       handle.removeEventListener('pointermove', handleMove);
       handle.removeEventListener('pointerup', handleUp);
       handle.removeEventListener('pointercancel', handleUp);
-      // 松手时才落盘：拖拽过程中反复写 localStorage 是没必要的 IO
+      // Only write to disk on release: repeatedly writing localStorage during dragging is needless IO
       localStorage.setItem(STORAGE_KEY, JSON.stringify(latest));
     };
 
     handle.addEventListener('pointermove', handleMove);
     handle.addEventListener('pointerup', handleUp);
-    // 指针被系统抢走（触屏手势、失焦、被弹窗打断）时只会来 pointercancel：
-    // 不接它，move 监听就会留在手柄上，下次拖拽会叠一份旧的。
+    // When the pointer is stolen by the system (touch gesture, focus loss, interrupted by a dialog) only pointercancel arrives:
+    // without handling it, the move listener stays on the handle and the next drag stacks an old copy.
     handle.addEventListener('pointercancel', handleUp);
   }, []);
 

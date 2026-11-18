@@ -1,16 +1,16 @@
 // ============================================================================
-// 流式响应的增量解析
+// Incremental parsing of streaming responses
 //
-// 服务端返回的是 SSE（Server-Sent Events），两个坑必须处理：
+// The server returns SSE (Server-Sent Events); two pitfalls must be handled:
 //
-// 1. **数据包边界与行边界不对齐**。网络按块到达，一个 `data: {...}` 可能被切成两半，
-//    也可能一次来好几条。所以必须自己缓冲，只处理"完整的行"，剩下的留到下一块。
-// 2. **两种协议的增量格式不同**：
-//      OpenAI 兼容：data: {"choices":[{"delta":{"content":"文字"}}]}
-//      Anthropic：  data: {"type":"content_block_delta","delta":{"text":"文字"}}
-//    结束标记也不同，由各自的解析函数负责识别。
+// 1. **Packet boundaries don't align with line boundaries**. Network data arrives in chunks; one `data: {...}` may be split in two,
+//    or several records may arrive at once. So we must buffer ourselves, process only "complete lines", and keep the rest for the next chunk.
+// 2. **The two protocols have different incremental formats**:
+//      OpenAI-compatible: data: {"choices":[{"delta":{"content":"text"}}]}
+//      Anthropic:  data: {"type":"content_block_delta","delta":{"text":"text"}}
+//    The end markers also differ, handled by each protocol's own parse function.
 //
-// 这里全部是纯函数，不碰网络 —— 便于单测钉住这两个坑。
+// Everything here is a pure function that doesn't touch the network — convenient for unit tests pinning down these two pitfalls.
 // ============================================================================
 
 use super::presets::AiProtocol;
@@ -19,12 +19,12 @@ use super::tools::{
 };
 use std::collections::BTreeMap;
 
-/// 一次工具调用的分片累积。
+/// Accumulation of a single tool call's fragments.
 ///
-/// 流式下工具参数是**分多次吐出来的半个 JSON**，必须按索引拼回去：
-/// OpenAI 给 `delta.tool_calls[{index, id?, function:{name?, arguments?}}]`，
-/// 只有第一片带 id 与 name；Anthropic 则是 `content_block_start`（带 id/name）
-/// 加一串 `input_json_delta`（带 partial_json）。
+/// In streaming, tool arguments are **half a JSON emitted across multiple pieces** and must be reassembled by index:
+/// OpenAI gives `delta.tool_calls[{index, id?, function:{name?, arguments?}}]`,
+/// where only the first fragment has id and name; Anthropic uses `content_block_start` (with id/name)
+/// plus a series of `input_json_delta` (with partial_json).
 #[derive(Default)]
 struct PartialToolCall {
     id: String,
@@ -32,34 +32,34 @@ struct PartialToolCall {
     arguments: String,
 }
 
-/// 未成行的残留数据上限。正常的一行就是一个 SSE 数据块（几十 KB 量级）；
-/// 顶到 4MB 说明服务端在持续吐不含换行的数据 —— 那是异常，必须断，不能让它一直涨内存。
+/// Cap on leftover incomplete-line data. A normal line is one SSE data block (tens of KB);
+/// hitting 4MB means the server keeps emitting data with no newline — that's an anomaly and must be cut off, not allowed to grow memory forever.
 const MAX_BUFFER_BYTES: usize = 4 * 1024 * 1024;
 
-/// SSE 数据块的增量解析器。
-/// 用法：每收到一块网络数据就 `push_bytes`，取出返回的增量文本；流结束时调用 `finish`。
+/// Incremental parser for SSE data blocks.
+/// Usage: call `push_bytes` on every chunk of network data and take the returned incremental text; call `finish` when the stream ends.
 pub struct StreamDecoder {
     protocol: AiProtocol,
-    /// 尚未构成完整行的残留数据。
+    /// Leftover data that doesn't yet form a complete line.
     ///
-    /// ⚠️ 这里存**字节**而不是字符串：网络分片与 UTF-8 字符边界毫无关系，
-    /// 一个汉字完全可能被切成"前 2 字节 + 后 1 字节"两块。如果在喂进来之前
-    /// 就按分片解码，半个字会变成乱码 —— 而且这段文本是要入库的，错字会永久留在会话记录里。
-    /// 所以先在字节层按 `\n` 切出完整行，再对整行解码。
+    /// ⚠️ Here we store **bytes**, not a string: network fragments have nothing to do with UTF-8 character boundaries,
+    /// a Chinese character can easily be split into "first 2 bytes + last 1 byte". If we decoded per fragment as it arrived,
+    /// half a character would become mojibake — and this text is stored, so a wrong character would persist forever in the session record.
+    /// So we split complete lines at the byte level on `\n`, then decode the whole line.
     buffer: Vec<u8>,
-    /// 服务端已宣告结束（data: [DONE] 之类）
+    /// Server has declared the end (data: [DONE] or similar)
     pub finished: bool,
-    /// 缓冲区超过上限（服务端一直不吐换行）。调用方看到它应当直接报错中断。
+    /// Buffer exceeded the cap (server never emits a newline). The caller seeing this should report an error and abort.
     pub overflowed: bool,
-    /// 思考模式下的思维链（reasoning_content）。
+    /// Chain of thought (reasoning_content) in thinking mode.
     ///
-    /// ⚠️ **必须原样回传给 API**：DeepSeek 明确规定，请求带 `tools` 时，
-    /// 中间那轮 assistant 的 reasoning_content 要在后续所有请求里完整回传，
-    /// 哪怕那一轮没有真的调工具 —— 不回传就 400
+    /// ⚠️ **Must be sent back to the API verbatim**: DeepSeek explicitly requires that when a request carries `tools`,
+    /// the intermediate assistant turn's reasoning_content be sent back in full in all subsequent requests,
+    /// even if that turn didn't actually call a tool — if not sent back, you get a 400.
     /// （"The reasoning_content in the thinking mode must be passed back to the API"）。
-    /// 它**不进正文**：界面显示和落盘内容都只用 content。
+    /// It **does not go into the body**: both UI display and persisted content use only content.
     reasoning: String,
-    /// 累积中的工具调用，按分片索引排序保证顺序稳定
+    /// Accumulating tool calls, sorted by fragment index to keep order stable
     partial_tools: BTreeMap<usize, PartialToolCall>,
 }
 
@@ -75,23 +75,23 @@ impl StreamDecoder {
         }
     }
 
-    /// 取走这一轮累积的思维链。为空表示这个模型/这一轮没有思考内容。
+    /// Takes this round's accumulated chain of thought. Empty means this model/round had no thinking content.
     pub fn take_reasoning(&mut self) -> String {
         std::mem::take(&mut self.reasoning)
     }
 
-    /// 喂入一段原始文本；内部就是字节版本，**只有单测用**（生产路径都走 `push_bytes`）。
-    /// 标 `cfg(test)` 是为了让它在正式构建里不产生 dead_code 警告。
+    /// Feeds in a piece of raw text; internally it's the byte version, **only for unit tests** (production paths all use `push_bytes`).
+    /// Marked `cfg(test)` so it doesn't produce a dead_code warning in release builds.
     #[cfg(test)]
     pub fn push(&mut self, chunk: &str) -> Vec<String> {
         self.push_bytes(chunk.as_bytes())
     }
 
-    /// 喂入一块原始字节，返回本次能解析出的全部增量文本片段。
+    /// Feeds in a chunk of raw bytes, returning all incremental text fragments parseable this time.
     pub fn push_bytes(&mut self, chunk: &[u8]) -> Vec<String> {
         self.buffer.extend_from_slice(chunk);
         if self.buffer.len() > MAX_BUFFER_BYTES {
-            // 清掉缓冲并立标记：调用方据此中断，而不是一边涨内存一边装作正常
+            // Clear the buffer and set the flag: the caller aborts based on this, rather than growing memory while pretending all is normal
             self.buffer.clear();
             self.overflowed = true;
             return Vec::new();
@@ -99,9 +99,9 @@ impl StreamDecoder {
 
         let mut deltas = Vec::new();
 
-        // 只处理完整的行；最后一段（可能只有半行）留在缓冲区里等下一块
+        // Only process complete lines; the last segment (possibly half a line) stays in the buffer for the next chunk
         while let Some(index) = self.buffer.iter().position(|byte| *byte == b'\n') {
-            // 这一行已经收到完整了，此时解码不会切断任何多字节字符
+            // This line is fully received, so decoding now won't cut any multibyte character
             let line: Vec<u8> = self.buffer.drain(..=index).collect();
             let text = String::from_utf8_lossy(&line).to_string();
 
@@ -112,7 +112,7 @@ impl StreamDecoder {
         deltas
     }
 
-    /// 流结束：把缓冲区里可能残留的最后一行也处理掉。
+    /// Stream end: also process any last line that may remain in the buffer.
     pub fn finish(&mut self) -> Vec<String> {
         if self.buffer.iter().all(|byte| byte.is_ascii_whitespace()) {
             return Vec::new();
@@ -122,11 +122,11 @@ impl StreamDecoder {
         self.parse_line(&text).into_iter().collect()
     }
 
-    /// 把这一片里的工具增量累积下来（如果有）。必须在取正文之前调用。
+    /// Accumulates this fragment's tool increment (if any). Must be called before taking the body.
     fn record_tool_fragments(&mut self, value: &serde_json::Value) {
         match self.protocol {
             AiProtocol::OpenAi => {
-                // delta.tool_calls[]：按 index 累积，只有首片带 id 与 name
+                // delta.tool_calls[]: accumulate by index, only the first fragment has id and name
                 let Some(calls) = value
                     .get("choices")
                     .and_then(|choices| choices.get(0))
@@ -153,7 +153,7 @@ impl StreamDecoder {
                 }
             }
             AiProtocol::Anthropic => {
-                // content_block_start 给 id/name，随后一串 input_json_delta 给参数片段
+                // content_block_start gives id/name, then a series of input_json_delta gives the argument fragments
                 let index = value
                     .get("index")
                     .and_then(|item| item.as_u64())
@@ -181,8 +181,8 @@ impl StreamDecoder {
         }
     }
 
-    /// 取出累积完成的工具调用。参数解析失败时给空对象 ——
-    /// 调用方据此当作"没有 id"，不会拿它去做任何操作。
+    /// Takes the completed accumulated tool calls. On argument parse failure it gives an empty object —
+    /// the caller treats it as "no id" and won't use it for any operation.
     pub fn take_tool_calls(&mut self) -> Vec<AiToolCall> {
         std::mem::take(&mut self.partial_tools)
             .into_iter()
@@ -201,10 +201,10 @@ impl StreamDecoder {
             .collect()
     }
 
-    /// 解析单行 SSE。返回 Some 表示这一行贡献了一段正文。
+    /// Parses a single SSE line. Returns Some if this line contributed a piece of body text.
     fn parse_line(&mut self, line: &str) -> Option<String> {
         let trimmed = line.trim();
-        // 空行、注释行（:heartbeat 之类）、event: 行都不含正文
+        // Blank lines, comment lines (like :heartbeat), and event: lines contain no body text
         if trimmed.is_empty() || trimmed.starts_with(':') || trimmed.starts_with("event:") {
             return None;
         }
@@ -217,16 +217,16 @@ impl StreamDecoder {
 
         let value: serde_json::Value = serde_json::from_str(payload).ok()?;
 
-        // 服务端有时会把错误放进流里，这时也要能识别出来，否则界面会"卡住不出字"
+        // The server sometimes puts errors into the stream; these must also be recognized, otherwise the UI "freezes with no output"
         if let Some(error) = extract_stream_error(&value) {
             self.finished = true;
             return Some(format!("\n[服务端返回错误] {}", error));
         }
 
-        // 先把这一片里的工具增量累积下来，再取正文 —— 两者可能同时出现
+        // First accumulate this fragment's tool increment, then take the body — both may appear together
         self.record_tool_fragments(&value);
 
-        // 思考模式的思维链单独收下，**不进正文**（回传规则见 reasoning 字段的说明）
+        // Thinking-mode chain of thought is collected separately, **not into the body** (see the reasoning field's description for the send-back rule)
         if let Some(fragment) = extract_reasoning_fragment(&value, self.protocol) {
             self.reasoning.push_str(&fragment);
         }
@@ -238,7 +238,7 @@ impl StreamDecoder {
     }
 }
 
-/// OpenAI 兼容：choices[0].delta.content
+/// OpenAI-compatible: choices[0].delta.content
 fn parse_openai_delta(value: &serde_json::Value) -> Option<String> {
     let text = value.get("choices")?.get(0)?.get("delta")?.get("content")?.as_str()?;
     if text.is_empty() {
@@ -258,11 +258,11 @@ fn parse_anthropic_delta(value: &serde_json::Value) -> Option<String> {
     }
 }
 
-/// 取这一片里的思考内容。
+/// Takes the thinking content in this fragment.
 ///
-/// OpenAI 兼容协议（DeepSeek 等）把思维链放在 `choices[0].delta.reasoning_content`，
-/// 与 `content` **同级**；正文那边只读 `content`，所以这里必须单独收一遍。
-/// Anthropic 的思考是独立的 content block，而我们的 Anthropic 路径不开启思考，这里不处理。
+/// OpenAI-compatible protocols (DeepSeek etc.) put the chain of thought in `choices[0].delta.reasoning_content`,
+/// **at the same level** as `content`; the body side reads only `content`, so it must be collected separately here.
+/// Anthropic thinking is a separate content block, and our Anthropic path doesn't enable thinking, so it's not handled here.
 fn extract_reasoning_fragment(value: &serde_json::Value, protocol: AiProtocol) -> Option<String> {
     match protocol {
         AiProtocol::OpenAi => value
@@ -276,7 +276,7 @@ fn extract_reasoning_fragment(value: &serde_json::Value, protocol: AiProtocol) -
     }
 }
 
-/// 从流式分片里提取错误信息（两家都可能把 error 放在任何一条分片里）。
+/// Extracts error info from streaming fragments (both providers may put error in any fragment).
 fn extract_stream_error(value: &serde_json::Value) -> Option<String> {
     let error = value.get("error")?;
     if let Some(message) = error.get("message").and_then(|item| item.as_str()) {
@@ -304,10 +304,10 @@ mod tests {
     #[test]
     fn partial_lines_are_buffered_until_complete() {
         let mut decoder = StreamDecoder::new(AiProtocol::OpenAi);
-        // 这一块故意把一行切成两半：不应该解析出任何内容
+        // This chunk deliberately splits a line in half: nothing should be parsed out
         let first = decoder.push("data: {\"choices\":[{\"delta\":{\"cont");
         assert!(first.is_empty(), "半行不该产出增量");
-        // 补全后才产出
+        // produced only after completion
         let second = decoder.push("ent\":\"完整\"}}]}\n");
         assert_eq!(second, vec!["完整".to_string()]);
     }
@@ -324,7 +324,7 @@ mod tests {
 
     #[test]
     fn openai_tool_call_fragments_are_reassembled_by_index() {
-        // 真实流式下参数是分片来的，而且只有首片带 id/name —— 这是最容易拼错的地方
+        // In real streaming, arguments arrive in fragments and only the first has id/name — this is the easiest place to get assembly wrong
         let mut decoder = StreamDecoder::new(AiProtocol::OpenAi);
         assert!(decoder
             .push("data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"function\":{\"name\":\"select_items\",\"arguments\":\"\"}}]}}]}\n")
@@ -337,7 +337,7 @@ mod tests {
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].name, "select_items");
         assert_eq!(calls[0].call_id, "call_1");
-        // 拼回来的参数必须能解析出 id
+        // The reassembled arguments must yield the id when parsed
         assert_eq!(
             calls[0].arguments.get("ids").and_then(|v| v.as_array()).map(|a| a.len()),
             Some(1)
@@ -362,7 +362,7 @@ mod tests {
 
     #[test]
     fn unknown_tool_names_are_dropped_in_stream() {
-        // 只认声明过的两个工具，别的一律丢弃 —— 免得出现"没声明的工具被执行"
+        // Only recognize the two declared tools, discard everything else — to avoid "undeclared tool executed"
         let mut decoder = StreamDecoder::new(AiProtocol::OpenAi);
         decoder.push("data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"x\",\"function\":{\"name\":\"run_shell\",\"arguments\":\"{}\"}}]}}]}\n");
         assert!(decoder.take_tool_calls().is_empty());
@@ -386,9 +386,9 @@ mod tests {
 
     #[test]
     fn a_character_split_across_two_chunks_is_not_corrupted() {
-        // 真实网络按字节分片，分片边界和 UTF-8 字符边界毫无关系。
-        // 这里故意把 "好"（E5 A5 BD）从中间切开喂进去：解码必须等整行完整才做，
-        // 否则会解出替换字符 —— 而这段文本同时用于实时显示与入库，错字是永久的。
+        // Real networks fragment by bytes, and fragment boundaries have nothing to do with UTF-8 character boundaries.
+        // Here we deliberately split a 3-byte Chinese character (E5 A5 BD) down the middle and feed it in: decoding must wait until the whole line is complete,
+        // otherwise you get replacement characters — and this text is used for both live display and persistence, so a wrong character is permanent.
         let line = "data: {\"choices\":[{\"delta\":{\"content\":\"好\"}}]}\n";
         let bytes = line.as_bytes();
         let split = bytes
@@ -412,8 +412,8 @@ mod tests {
 
     #[test]
     fn reasoning_content_is_collected_without_leaking_into_the_text() {
-        // 思考模式下 reasoning_content 与 content 同级：正文只取 content，
-        // 思维链要单独攒起来 —— 它**必须回传给 API**（不回传就 400），但不该显示给用户。
+        // In thinking mode reasoning_content is at the same level as content: the body takes only content,
+        // while the chain of thought must be accumulated separately — it **must be sent back to the API** (400 otherwise), but shouldn't be shown to the user.
         let mut decoder = StreamDecoder::new(AiProtocol::OpenAi);
         let deltas = decoder.push(
             "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"先看路径\"}}]}\n\

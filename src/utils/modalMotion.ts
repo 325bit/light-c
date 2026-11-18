@@ -1,15 +1,15 @@
 // ============================================================================
-// 弹窗动画预设（framer-motion）
+// Modal animation presets (framer-motion)
 //
-// 中文说明：项目里多个弹窗各自写了一份 spring 参数（stiffness/damping），既难调也容易
-// 改一处漏一处。这里统一改用 framer-motion 自带的 spring 语义参数：
-//   - visualDuration：动画"看起来"用多久到达目标（秒），比 stiffness 直观；
-//   - bounce：回弹强度，0 不弹、1 非常弹。
-// 注意 framer-motion 的规则：一旦设置 stiffness/damping/mass，visualDuration 与 bounce
-// 会被忽略，因此这里不再出现这三个物理参数。
+// Chinese note: several modals in the project each wrote their own spring parameters (stiffness/damping), hard to tune and easy to
+// change one place and miss another. Here we uniformly switch to framer-motion's own semantic spring parameters:
+//   - visualDuration: how long the animation "looks" like it takes to reach the target (seconds), more intuitive than stiffness;
+//   - bounce: rebound strength, 0 no bounce, 1 very bouncy.
+// Note framer-motion's rule: once stiffness/damping/mass are set, visualDuration and bounce
+// are ignored, so those three physical parameters no longer appear here.
 // ============================================================================
 
-/** 遮罩层：只做透明度渐变，避免大面积模糊层同时位移产生拖影。 */
+/** Overlay layer: only a opacity fade, to avoid a large blurred layer moving at the same time and producing smear. */
 export const MODAL_BACKDROP_MOTION = {
   initial: { opacity: 0 },
   animate: { opacity: 1 },
@@ -17,7 +17,7 @@ export const MODAL_BACKDROP_MOTION = {
   transition: { duration: 0.2, ease: 'easeOut' },
 } as const;
 
-/** 弹窗卡片：轻微上移 + 放大入场，退场更快更小，符合"出现从容、消失干脆"。 */
+/** Modal card: slight upward move + scale-in on entry, faster and smaller on exit — "appear composed, disappear crisp". */
 export const MODAL_CARD_MOTION = {
   initial: { opacity: 0, y: 24, scale: 0.94 },
   animate: { opacity: 1, y: 0, scale: 1 },

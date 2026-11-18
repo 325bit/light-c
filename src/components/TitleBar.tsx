@@ -1,5 +1,5 @@
 // ============================================================================
-// 自定义标题栏组件
+// Custom title bar component
 // ============================================================================
 
 import { useState, useEffect, useRef, useCallback } from 'react';
@@ -28,7 +28,7 @@ export function TitleBar({ onSettingsClick }: TitleBarProps) {
   }, [appWindow]);
 
   useEffect(() => {
-    // 初始化时检查窗口状态
+    // Check window state at initialization
     refreshMaximizedState();
 
     const unlisteners: Array<() => void> = [];
@@ -76,7 +76,7 @@ export function TitleBar({ onSettingsClick }: TitleBarProps) {
 
   const handleTitleBarMouseDown = (event: React.MouseEvent<HTMLDivElement>) => {
     if (event.button !== 0 || event.detail > 1 || isWindowControl(event.target)) return;
-    // Windows 多显示器 DPI 不一致时，最大化窗口直接 startDragging 容易触发错误还原坐标。
+    // When Windows has multiple monitors with inconsistent DPI, calling startDragging directly on a maximized window can easily trigger wrong restore coordinates.
     if (isMaximized) return;
     dragStartRef.current = { x: event.clientX, y: event.clientY };
   };
@@ -115,18 +115,18 @@ export function TitleBar({ onSettingsClick }: TitleBarProps) {
       onMouseLeave={handleTitleBarMouseUp}
       onMouseUp={handleTitleBarMouseUp}
     >
-      {/* 左侧：应用图标和标题 - 使用主文字色 */}
+      {/* Left: app icon and title - use primary text color */}
       <div className="flex items-center gap-2 px-3 h-full flex-1">
-        {/* 用项目真实 logo。之前是「绿底 + C: 文字 + rounded-lg」拼出来的近似品，
-            圆角 33%（8/24）和 logo 自身的 18.75%（rx 96/512）对不上，看起来比真 logo 圆。
-            logo 自带底色和圆角，这里只控制尺寸。 */}
+        {/* Use the project's real logo. Previously it was an approximation pieced together with "green background + C: text + rounded-lg",
+            with 33% rounding (8/24) not matching the logo's own 18.75% (rx 96/512), making it look rounder than the real logo.
+            The logo has its own background and rounding; here we only control size. */}
         <img src="/logo.svg" alt="" aria-hidden="true" className="h-6 w-6 shrink-0 object-contain" />
         <span className="text-sm font-semibold text-[var(--text-primary)]">LightC</span>
       </div>
 
-      {/* 右侧：设置 + 窗口控制按钮 - 极简风格 */}
+      {/* Right: settings + window control buttons - minimal style */}
       <div className="flex items-center h-full">
-        {/* 设置按钮 - Ghost 风格 */}
+        {/* Settings button - Ghost style */}
         <button
           data-window-control
           data-titlebar-control
@@ -137,10 +137,10 @@ export function TitleBar({ onSettingsClick }: TitleBarProps) {
           <Settings className="w-4 h-4" />
         </button>
 
-        {/* 分隔线 */}
+        {/* Divider */}
         <div className="w-px h-4 bg-[var(--border-color)] mx-1" />
 
-        {/* 最小化 */}
+        {/* Minimize */}
         <button
           data-window-control
           data-titlebar-control
@@ -151,7 +151,7 @@ export function TitleBar({ onSettingsClick }: TitleBarProps) {
           <Minus className="w-4 h-4" />
         </button>
 
-        {/* 最大化/还原 */}
+        {/* Maximize/Restore */}
         <button
           data-window-control
           data-titlebar-control
@@ -159,11 +159,11 @@ export function TitleBar({ onSettingsClick }: TitleBarProps) {
           className="h-full px-3 flex items-center justify-center text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-colors"
           title={isMaximized ? t('windowRestore') : t('windowMaximize')}
         >
-          {/* 最大化后显示叠框图标，符合 Windows「还原窗口」的视觉习惯。 */}
+          {/* Show an overlapping-boxes icon when maximized, matching Windows' visual convention for "Restore window". */}
           {isMaximized ? <Copy className="w-3.5 h-3.5" /> : <Square className="w-3.5 h-3.5" />}
         </button>
 
-        {/* 关闭 */}
+        {/* Close */}
         <button
           data-window-control
           data-titlebar-control

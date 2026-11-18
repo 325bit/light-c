@@ -1,5 +1,5 @@
 // ============================================================================
-// 通用下拉选择组件 - 适配主题配色
+// Common dropdown select component - adapted to theme colors
 // ============================================================================
 
 import { useState, useRef, useEffect, useCallback } from 'react';
@@ -8,31 +8,31 @@ import { ChevronDown } from 'lucide-react';
 export interface SelectOption<T extends string = string> {
   value: T;
   label: string;
-  /** 完整提示文本；下拉项需要短标签时，用 title 保留完整信息。 */
+  /** Full hint text; when an item needs a short label, use title to keep the full information. */
   title?: string;
 }
 
 interface SelectProps<T extends string = string> {
-  /** 当前选中值 */
+  /** Currently selected value */
   value: T;
-  /** 选项列表 */
+  /** Option list */
   options: SelectOption<T>[];
-  /** 选中回调 */
+  /** Selection callback */
   onChange: (value: T) => void;
-  /** 宽度类名，默认 w-28 */
+  /** Width class name, defaults to w-28 */
   widthClass?: string;
-  /** 尺寸模式，小尺寸用于模块筛选条，默认保持设置页现有观感 */
+  /** Size mode; small is for module filter bars, default keeps the existing settings-page look */
   size?: 'sm' | 'md';
-  /** 下拉列表高度类名，长列表需要限制高度避免撑破模块布局 */
+  /** Dropdown max-height class; long lists need a height limit to avoid breaking the module layout */
   menuMaxHeightClass?: string;
-  /** 是否禁用 */
+  /** Whether disabled */
   disabled?: boolean;
   /**
-   * 触发器的视觉形态。
-   * - `default`：带底色和描边，用于设置页、筛选条这类独立控件；
-   * - `bare`：去掉底色和描边，只在悬停时浮现一层淡底。
-   *   用于顶栏这类**本身已经有材质**的容器 —— 在上面再压一个白底带边框的小方块，
-   *   会读成"贴在玻璃上的另一样东西"，而不是同一层。
+   * Visual form of the trigger.
+   * - `default`: has a background and border, for standalone controls like settings pages and filter bars;
+   * - `bare`: no background or border, only a faint background appears on hover.
+   *   for containers that **already have their own material**, such as the top bar - stacking a bordered white box on top
+   *   would read as "another thing stuck on the glass" rather than the same layer.
    */
   variant?: 'default' | 'bare';
 }
@@ -49,16 +49,16 @@ export function Select<T extends string = string>({
 }: SelectProps<T>) {
   const [open, setOpen] = useState(false);
   /**
-   * 下拉向上弹出。
+   * Open the dropdown upward.
    *
-   * **自动判断**而不是让调用方传参数：贴在窗口底部的控件（例如 AI 助手面板的输入区）
-   * 向下展开会被裁掉或顶出屏幕，而调用方很难自己判断"我离底部还有多少"。
-   * 打开时量一次，下方空间不够、上方更宽裕就翻上去。
+   * **Determine automatically** rather than having callers pass a parameter: controls stuck to the window bottom (e.g., the AI assistant panel's input area)
+   * would be clipped or pushed off-screen if opened downward, and callers can hardly tell "how much room is left below".
+   * Measure once on open; if space below is insufficient and there is more room above, flip upward.
    */
   const [openUpward, setOpenUpward] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
 
-  /** 下拉大致需要的高度；低于这个值就认为"下方放不下"。 */
+  /** Approximate height the dropdown needs; below this value, consider "not enough room below". */
   const MENU_MIN_SPACE = 180;
 
   const updateDirection = useCallback(() => {
@@ -69,7 +69,7 @@ export function Select<T extends string = string>({
     setOpenUpward(below < MENU_MIN_SPACE && above > below);
   }, []);
 
-  // 点击外部关闭
+  // Close when clicking outside
   const handleClickOutside = useCallback((e: MouseEvent) => {
     if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
       setOpen(false);
@@ -83,7 +83,7 @@ export function Select<T extends string = string>({
     }
   }, [open, handleClickOutside]);
 
-  // ESC 关闭
+  // Close on ESC
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => {
@@ -94,15 +94,15 @@ export function Select<T extends string = string>({
   }, [open]);
 
   const selectedOption = options.find(o => o.value === value);
-  // 尺寸只管内边距和圆角，**字号不跟尺寸走**。
-  // 之前 sm=12px、md=14px，同一个控件在筛选条和设置页里差一档，看着像两个组件。
-  // 现在统一 text-sm（0.875rem，跟随全局字号设置）；
-  // 只有 bare 变体（顶栏）用 inherit —— 那处要跟顶栏自己的字号节奏，属于特调。
+  // Size only controls padding and border radius; **font size does not follow size**.
+  // Previously sm=12px and md=14px, so the same control differed by one step between filter bars and settings pages, looking like two components.
+  // Now uniformly text-sm (0.875rem, following the global font-size setting);
+  // only the bare variant (top bar) uses inherit - there it follows the top bar's own rhythm, a special tuning.
   const triggerSizeClass = size === 'sm' ? 'px-2.5 py-1.5 rounded-lg' : 'px-3 py-2 rounded-xl';
   const textClass = variant === 'bare' ? 'text-[inherit]' : 'text-sm';
   const optionSizeClass = size === 'sm' ? 'px-2.5 py-1.5' : 'px-3 py-2';
-  // bare：没有底色和描边，靠悬停时的一层淡底表达可点；打开时也不画绿色描边，
-  // 否则在玻璃顶栏上会突然冒出一个绿框。
+  // bare: no background or border; clickability is shown by a faint background on hover; no green outline when open either,
+  // otherwise a green box would suddenly appear on the glass top bar.
   const triggerVariantClass = variant === 'bare'
     ? 'bg-transparent border border-transparent hover:bg-[var(--bg-hover)]'
     : `bg-[var(--bg-card)] border border-[var(--border-color)] hover:border-[var(--brand-green)]/50 hover:bg-[var(--bg-hover)] ${
@@ -111,12 +111,12 @@ export function Select<T extends string = string>({
 
   return (
     <div ref={containerRef} className={`relative ${widthClass}`}>
-      {/* 触发器 */}
+      {/* Trigger */}
       <button
         type="button"
         disabled={disabled}
         onClick={() => {
-          // 打开前先量一次方向：贴在窗口底部的控件要向上弹
+          // Measure direction once before opening: controls at the window bottom must open upward
           if (!open) updateDirection();
           setOpen(!open);
         }}
@@ -137,23 +137,23 @@ export function Select<T extends string = string>({
         />
       </button>
 
-      {/* 下拉列表 */}
+      {/* Dropdown list */}
       {open && (
         <div
-          /* ⚠️ 宽度不能是 w-full：那是"跟着触发器宽度走"，
-             触发器一旦是自适应（w-auto，比如顶栏那个盘符选择器只有 "C: ⌄" 那么宽），
-             菜单项就会被截成 "D: o..."。这里改成「至少和触发器一样宽，
-             内容更多时按最长的那一项撑开」—— 两侧都照顾到。 */
+          /* ⚠️ Width cannot be w-full: that means "follow the trigger width",
+             if the trigger is auto-sized (w-auto, e.g., the top-bar drive selector is only as wide as "C: ⌄"),
+             menu items would be truncated to "D: o...". Change it to "at least as wide as the trigger,
+             expand to the longest item when content is wider" - covering both cases. */
           className={`glass-overlay absolute left-0 min-w-full w-max py-1 rounded-xl
             ${openUpward ? 'bottom-full mb-1.5 slide-in-from-bottom-1' : 'top-full mt-1.5 slide-in-from-top-1'}
-            /* 底色用浮层专用的 --glass-overlay-bg：.glass-overlay 的默认值会被
-               bg-[var(--bg-card)]（玻璃态只有 0.42 白）覆盖，菜单会透出背后的列表文字，
-               读选项时很干扰。非玻璃主题下该变量未定义，回退到 --bg-card。 */
+            /* Use the overlay-specific --glass-overlay-bg as the background: .glass-overlay's default would be overridden by
+               bg-[var(--bg-card)] (only 0.42 white in glass mode), letting the list text behind show through,
+               which is distracting when reading options. In non-glass themes the variable is undefined, falling back to --bg-card. */
             bg-[var(--glass-overlay-bg,var(--bg-card))] border border-[var(--border-color)]
             shadow-lg shadow-black/5 z-50 overflow-y-auto ${menuMaxHeightClass}
             animate-in fade-in duration-150`}
         >
-          {/* 筛选项可能来自平台/模型类型，数量不可控；截断与滚动能避免下拉层挤压结果区。 */}
+          {/* Filter items may come from platform/model types with unpredictable counts; truncation and scrolling keep the dropdown from squeezing the result area. */}
           {options.map((option) => {
             const isSelected = option.value === value;
             return (

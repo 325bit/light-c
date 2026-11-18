@@ -1,7 +1,7 @@
 /**
- * AI 工具清理的调用层。
+ * Invocation layer for AI tool cleanup.
  *
- * 只做 invoke 转发，字段与 `src/types/aiToolCleanup.ts` 对应。
+ * Only forwards invoke calls; fields correspond to `src/types/aiToolCleanup.ts`.
  */
 import { invoke } from '@tauri-apps/api/core';
 import type {
@@ -10,30 +10,30 @@ import type {
   AiToolScanResult,
 } from '../types/aiToolCleanup';
 
-/** 扫描各家 AI 工具的可清理缓存 */
+/** Scan the cleanable caches of each AI tool */
 export function scanAiToolCaches(): Promise<AiToolScanResult> {
   return invoke('scan_ai_tool_caches');
 }
 
 /**
- * 删除选中的缓存目录，返回成功数与失败明细。
+ * Delete the selected cache directories, returning the success count and failure details.
  *
- * 后端会再校验一遍路径归属（不含 `..`、目录名在该工具允许的范围内、且在它的根目录之下），
- * 所以这里传上来的路径即使被篡改也删不掉越界的东西。
+ * The backend validates path ownership again (no `..`, directory name within the tool's allowed range, and under its root),
+ * so even a tampered path passed from here cannot delete anything out of bounds.
  *
- * 返回值必须看 `failed`：工具开着时缓存文件常被占用，删除会部分失败，
- * 只读成功数会让界面显示"已删完"而实际占用没降。
+ * You must check `failed` in the return value: when a tool is running, cache files are often locked and deletion partially fails;
+ * reading only the success count would make the UI show "all deleted" while the actual usage has not dropped.
  */
 export function deleteAiToolCaches(paths: string[]): Promise<AiCacheDeleteResult> {
   return invoke('delete_ai_tool_caches', { paths });
 }
 
 /**
- * 列出某个缓存目录下的全部文件。
+ * List all files under a cache directory.
  *
- * 按需调用：单个工具可能有上千个文件，扫描阶段只给汇总，
- * 用户点「查看全部」才拉明细，避免扫描结果变得很大。
- * 超过上限会被后端截断，`truncated` 为真时界面要说明只显示了前 N 条。
+ * Called on demand: a single tool may have thousands of files; the scan stage only gives a summary,
+ * and details are fetched when the user clicks "View All", to avoid huge scan results.
+ * Over the limit it will be truncated by the backend; when `truncated` is true the UI must state that only the first N entries are shown.
  */
 export function listAiCacheFiles(path: string): Promise<AiCacheFileList> {
   return invoke('list_ai_cache_files', { path });

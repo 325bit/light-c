@@ -1,5 +1,5 @@
 // ============================================================================
-// 文件完整性校验命令
+// File integrity verification commands
 // ============================================================================
 
 use crate::runtime::{detect_distribution_channel, DistributionChannel};
@@ -38,7 +38,7 @@ struct SignatureSource {
     signature: String,
 }
 
-/// 校验当前正在运行的 LightC.exe 是否由官方签名。
+/// Verify whether the currently running LightC.exe is officially signed.
 #[tauri::command]
 pub async fn verify_integrity() -> VerifyIntegrityResult {
     match verify_integrity_inner().await {
@@ -106,7 +106,7 @@ async fn fetch_signatures(
     app_version: &str,
 ) -> Result<Vec<SignatureSource>, VerifyError> {
     let asset_names: &[&'static str] = match channel {
-        // 安装版可能来自常规安装包，也可能来自内置 WebView2 离线安装包；两者由不同打包步骤生成，exe 字节不一定相同。
+        // The installed build may come from a regular installer or from the built-in WebView2 offline installer; the two are produced by different packaging steps, so the exe bytes are not necessarily identical.
         DistributionChannel::Installer => &[
             INSTALLER_EXE_SIGNATURE_ASSET,
             WEBVIEW2_OFFLINE_EXE_SIGNATURE_ASSET,
@@ -120,7 +120,7 @@ async fn fetch_signatures(
         match fetch_signature_asset(app_version, asset_name).await {
             Ok(signature) => signatures.push(signature),
             Err(VerifyError::ReleaseUnavailable(error)) => {
-                // 新旧 Release 资产可能不完全一致，单个候选缺失不应阻断其他官方签名继续校验。
+                // New and old Release assets may not be fully consistent; one missing candidate should not block verification of other official signatures.
                 last_error = Some(VerifyError::ReleaseUnavailable(error));
             }
             Err(error) => return Err(error),
@@ -177,7 +177,7 @@ async fn fetch_signature_asset(
 }
 
 fn release_asset_url(app_version: &str, asset_name: &str) -> String {
-    // 直接请求当前版本 Release 资产，避免 GitHub API 限流，也避免旧版误拿 latest 签名。
+    // Request the current version Release assets directly, avoiding GitHub API rate limits and also preventing older versions from mistakenly picking up the latest signature.
     format!(
         "https://github.com/Chunyu33/light-c/releases/download/v{}/{}",
         app_version, asset_name
@@ -241,7 +241,7 @@ fn normalize_signature_text(signature_text: &str) -> Result<String, VerifyError>
             return Ok(current);
         }
 
-        // 兼容历史 Release 中被多包了一层 base64 的签名资产；只在能解成 UTF-8 时继续向内展开。
+        // Support legacy Releases where signature assets were wrapped in an extra layer of base64; only keep unwrapping inward when it decodes as UTF-8.
         current = decode_base64_text(&current).map_err(|message| {
             VerifyError::SignatureFormat(format!("签名文件解析失败：{}", message))
         })?;

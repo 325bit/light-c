@@ -29,7 +29,7 @@ export function LeftoverWhitelistModal({
   t,
   commonT,
 }: LeftoverWhitelistModalProps) {
-  // 与项目其它弹窗一致支持 Esc 关闭，避免用户只能点关闭按钮。
+  // Like other modals in the project, support Esc to close, so users are not forced to click the close button.
   useEffect(() => {
     if (!isOpen) return;
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -116,6 +116,6 @@ export function LeftoverWhitelistModal({
 
 function formatAddedTime(addedAt: string): string {
   const date = new Date(addedAt);
-  // 历史文件可能缺少时间字段，保留原值比显示无效日期更便于排查。
+  // History files may lack a time field; keeping the original value is more useful for troubleshooting than showing an invalid date.
   return Number.isNaN(date.getTime()) ? addedAt : date.toLocaleString();
 }

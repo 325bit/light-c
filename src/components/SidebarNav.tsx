@@ -1,5 +1,5 @@
-// 侧边栏布局导航
-// 侧边栏模式将原有悬浮导航变为稳定的内容列，避免菜单遮挡模块结果。
+// Sidebar layout navigation
+// Sidebar mode turns the original floating nav into a stable content column, preventing menus from covering module results.
 
 import { useEffect, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from 'react';
 import { createPortal } from 'react-dom';
@@ -13,20 +13,20 @@ import { AUTHOR_HOMEPAGE_URL, LIGHTC_CHANGELOG_URL, LIGHTC_GITHUB_URL, LIGHTC_OF
 
 const SIDEBAR_COLLAPSED_STORAGE_KEY = 'c-cleanup-sidebar-collapsed';
 const SIDEBAR_WIDTH_STORAGE_KEY = 'c-cleanup-sidebar-width';
-// 宽度以标准字号下的像素保存，实际显示宽度会随用户字号同比缩放。
+// Width is stored in pixels at the standard font size; the displayed width scales proportionally with the user's font size.
 const SIDEBAR_WIDTH_DEFAULT = 220;
 const SIDEBAR_WIDTH_MIN = 180;
 const SIDEBAR_WIDTH_MAX = 360;
 
 /**
- * 侧边栏分组。
+ * Sidebar grouping.
  *
- * 分组的轴是**"动哪里"**，不是"清理的粒度"（后者是硬凑的：12 个里 8 个都叫清理，
- * 按粒度切怎么切都不准 —— Evan 指出来过）。
- *   清理：删的是**文件**（缓存、大文件、聊天记录、卸载残留的文件）
- *   系统：动的是**系统配置**（系统组件、驱动仓库、注册表、右键菜单、外壳图标）
- *   分析：**只读**，不改任何东西（占用分布、变化量、模型空间）
- * 三层轴互不重叠，用户看一眼就知道这一组会不会动我的系统设置。
+ * The grouping axis is **"what gets changed"**, not "cleanup granularity" (the latter is forced: 8 of the 12 are called cleanup,
+ * and slicing by granularity is never accurate — Evan pointed this out).
+ *   Cleanup: deletes **files** (caches, big files, chat history, uninstall leftover files)
+ *   System: changes **system configuration** (system components, driver store, registry, context menus, shell icons)
+ *   Analysis: **read-only**, changes nothing (usage distribution, change amount, model space)
+ * The three axes do not overlap, so the user can tell at a glance whether a group will touch their system settings.
  */
 const SIDEBAR_GROUPS: { id: string; ids: AppModuleId[] }[] = [
   { id: 'cleanup', ids: ['junk-clean', 'big-files', 'social-clean', 'ai-tool-cleanup', 'dev-cache', 'leftovers'] },
@@ -34,16 +34,16 @@ const SIDEBAR_GROUPS: { id: string; ids: AppModuleId[] }[] = [
   { id: 'analyze', ids: ['hotspot', 'disk-growth', 'ai-models'] },
 ];
 
-/** 模块 id → 元信息，供分组渲染时按 id 取图标与文案 */
+/** Module id → metadata, used to look up icons and text by id when rendering groups */
 const MODULE_META_BY_ID = new Map(APP_MODULE_META.map((meta) => [meta.id, meta]));
 
 /**
- * 自绘的折叠图标：圆角外框 + 一条圆头竖线。
+ * Hand-drawn collapse icon: a rounded outer frame plus a round-capped vertical line.
  *
- * 为什么不用图标库的 PanelLeft：那个外框圆角太小、线条偏硬，和侧边栏的
- * 大圆角面板/胶囊选中态不是一套语言（Evan 明确说"一看就是默认图标库的"）。
- * 这里把圆角放大到 4.5/16、线宽降到 1.5，并让竖线在折叠后翻到右侧，
- * 让图标本身就能表达当前状态。
+ * Why not use the icon library's PanelLeft: its frame corner radius is too small and its strokes too hard, not matching the sidebar's
+ * large rounded panels / pill-shaped selected state (Evan explicitly said "it looks like a default icon library icon").
+ * Here the radius is enlarged to 4.5/16, stroke width reduced to 1.5, and the vertical line flips to the right after collapsing,
+ * so the icon itself expresses the current state.
  */
 function SidebarToggleIcon({ collapsed }: { collapsed: boolean }) {
   return (
@@ -65,7 +65,7 @@ function readCollapsedState(): boolean {
   try {
     return localStorage.getItem(SIDEBAR_COLLAPSED_STORAGE_KEY) === 'true';
   } catch (error) {
-    // 存储不可用时使用展开状态，保证用户仍能看到完整的功能名称。
+    // When storage is unavailable, use the expanded state so the user can still see the full feature names.
     console.warn('读取侧边栏状态失败:', error);
     return false;
   }
@@ -75,7 +75,7 @@ function writeCollapsedState(isCollapsed: boolean): void {
   try {
     localStorage.setItem(SIDEBAR_COLLAPSED_STORAGE_KEY, String(isCollapsed));
   } catch (error) {
-    // 当前会话的折叠仍然有效，存储失败只影响下次启动的默认状态。
+    // Collapsing in the current session still works; a storage failure only affects the default state on next launch.
     console.warn('保存侧边栏状态失败:', error);
   }
 }
@@ -87,7 +87,7 @@ function readSidebarWidth(): number {
       ? Math.min(SIDEBAR_WIDTH_MAX, Math.max(SIDEBAR_WIDTH_MIN, Math.round(savedWidth)))
       : SIDEBAR_WIDTH_DEFAULT;
   } catch (error) {
-    // 存储不可用时使用默认宽度，避免侧边栏因本地数据问题无法显示。
+    // When storage is unavailable, use the default width so the sidebar does not fail to display due to local data issues.
     console.warn('读取侧边栏宽度失败:', error);
     return SIDEBAR_WIDTH_DEFAULT;
   }
@@ -97,7 +97,7 @@ function writeSidebarWidth(width: number): void {
   try {
     localStorage.setItem(SIDEBAR_WIDTH_STORAGE_KEY, String(width));
   } catch (error) {
-    // 当前会话的拖拽结果仍保留，存储失败只影响下次启动的宽度。
+    // The drag result in the current session is still kept; a storage failure only affects the width on next launch.
     console.warn('保存侧边栏宽度失败:', error);
   }
 }
@@ -130,14 +130,14 @@ export function SidebarNav() {
   }, [isCollapsed]);
 
   /**
-   * 底部的版本信息。
+   * Version info at the bottom.
    *
-   * 只放**确定的事实**：程序版本、发行渠道（便携/安装）。这两项来自应用自身与安装登记，
-   * 不存在"统计口径"问题 —— 之前那个"累计释放"是从清理日志汇总的，
-   * 日志会被轮转，数字并不等于真实累计，所以撤掉了。
+   * Only **certain facts** are shown: program version and release channel (portable/installed). These come from the app itself and install registration,
+   * so there is no "measurement basis" issue — the previous "total freed" was aggregated from cleanup logs,
+   * which are rotated, so the number did not equal the real total and was removed.
    */
   const [appVersion, setAppVersion] = useState('');
-  /** 支持作者弹窗。与设置页「意见反馈 - 支持作者」共用同一个组件 */
+  /** Support-the-author dialog. Shares the same component as the settings page "Feedback - Support the Author" */
   const [isSupportOpen, setIsSupportOpen] = useState(false);
 
   useEffect(() => {
@@ -169,7 +169,7 @@ export function SidebarNav() {
     window.addEventListener('pointermove', handlePointerMove);
     window.addEventListener('pointerup', handlePointerUp);
     window.addEventListener('pointercancel', handlePointerUp);
-    // 窗口失焦时也结束本次拖拽，避免鼠标离开应用后宽度状态一直卡在拖拽中。
+    // Also end the drag when the window loses focus, so the width does not stay stuck in "dragging" after the mouse leaves the app.
     window.addEventListener('blur', handlePointerUp);
     return () => {
       window.removeEventListener('pointermove', handlePointerMove);
@@ -181,7 +181,7 @@ export function SidebarNav() {
 
   const handleNavigate = (moduleId: AppModuleId) => {
     if (moduleId === settings.activeModuleId) return;
-    // 仅更新活动模块，不触碰模块实例，保证扫描中的状态和结果继续保留。
+    // Only update the active module, without touching module instances, so in-progress scan state and results are preserved.
     updateSettings({ activeModuleId: moduleId });
   };
 
@@ -222,11 +222,11 @@ export function SidebarNav() {
       <nav className="sidebar-nav__list">
         {SIDEBAR_GROUPS.map((group) => (
           <div key={group.id} className="sidebar-nav__group-block">
-            {/* 折叠态没有文字，这一条会变成一根极淡的分组线（见 layout.css） */}
+            {/* In collapsed state there is no text, so this becomes a very faint group divider line (see layout.css) */}
             <span className="sidebar-nav__group">{t(`groups.${group.id}`)}</span>
             {group.ids.map((moduleId) => {
               const meta = MODULE_META_BY_ID.get(moduleId);
-              // 元信息缺项时跳过这一项，不让整个侧边栏崩掉
+              // Skip an item when metadata is missing, so the whole sidebar does not crash
               if (!meta) return null;
               const { id, label, icon: Icon } = meta;
               const isActive = settings.activeModuleId === id;
@@ -250,12 +250,12 @@ export function SidebarNav() {
         ))}
       </nav>
 
-      {/* 底部：一行「官网 + 版本」，排版照抄菜单项（同左边缘、同图标间距），
-          让它读起来是菜单的收尾，而不是两块散落的元信息。
-          版本号右对齐用表格数字；渠道（便携/安装）放进 title，不占版面。 */}
+      {/* Bottom: a line of "official site + version", laid out exactly like a menu item (same left edge, same icon spacing),
+          to read as the ending of the menu rather than two scattered pieces of metadata.
+          Version right-aligned with tabular numbers; the channel (portable/installed) goes into title, taking no layout space. */}
       <div className="sidebar-nav__footer">
-        {/* 折叠态只剩官网一个图标（4.25em 宽放不下两个，而且此时用户是在"图标模式"，
-            多一个入口反而更难认）。文案一律走 title/aria-label。 */}
+        {/* In collapsed state only the official site icon remains (4.25em cannot fit two, and the user is in "icon mode",
+            where an extra entry is harder to recognize). All text goes through title/aria-label. */}
         <a
           href={LIGHTC_OFFICIAL_WEBSITE_URL}
           target="_blank"
@@ -302,9 +302,9 @@ export function SidebarNav() {
             <UserRound size={15} strokeWidth={1.7} />
           </a>
         )}
-        {/* 原来这里是版本号文字，现在换成爱心：点击打开赞助弹窗。
-            版本号挪到弹窗底部（「设置 - 关于」里本来就有）。
-            刻意不放进悬停提示：那里只写「赞助 LightC」，多挂一串版本/渠道反而让人看不出这是可点的入口。 */}
+        {/* This used to be version text; now it is a heart: click to open the sponsorship dialog.
+            The version moved to the bottom of that dialog (it is also in Settings - About).
+            Deliberately not put in the hover tooltip: that only says "Sponsor LightC"; adding version/channel there would hide the fact that this is a clickable entry. */}
         {!isCollapsed && (
           <button
             type="button"
@@ -352,7 +352,7 @@ export function SidebarNav() {
         document.body,
       )}
 
-      {/* 支持作者弹窗：与设置页共用，自己不维护二维码和支付切换 */}
+      {/* Support-the-author dialog: shared with the settings page, does not maintain its own QR code and payment switching */}
       <SupportModal isOpen={isSupportOpen} onClose={() => setIsSupportOpen(false)} version={appVersion} />
     </aside>
   );

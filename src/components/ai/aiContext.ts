@@ -1,21 +1,21 @@
 // ============================================================================
-// AI 对话上下文构造
+// AI chat context construction
 //
-// 分三层（见 docs/dev/AI助手-设计方案.md）：
-//   ① 系统提示 —— 固定且体积很小，本文件负责
-//   ② 模块数据摘要 —— 下一阶段由各模块提供适配器
-//   ③ 对话历史 —— 由面板维护（保留最近若干轮）
+// Three layers (see docs/dev/AI-assistant-design.md):
+//   (1) System prompt — fixed and very small, handled by this file
+//   (2) Module data summary — adapters provided by each module in a later phase
+//   (3) Chat history — maintained by the panel (keeps the most recent turns)
 //
-// ⚠️ 明确禁止的做法：把模块的原始列表塞进 prompt。
-// 垃圾清理一次能扫出几千个文件，全量注入会直接把上下文撑爆，又慢又贵还答不准。
-// 正确的做法是"摘要 + 让 AI 用工具按需取明细"。
+// ⚠️ Explicitly forbidden: stuffing a module's raw list into the prompt.
+// Junk cleanup can scan thousands of files at once; injecting them all would blow up the context, slow and costly, and still give poor answers.
+// The right approach is "summary + let the AI fetch details on demand via tools".
 // ============================================================================
 
 import type { AiChatMessage } from '../../types/ai';
 
 /**
- * 各模块对 AI 的说明：显示名 + 一句话职责。
- * 只交代"这个模块在做什么"，不含任何用户数据。
+ * Per-module descriptions for the AI: display name + one-line responsibility.
+ * Only state "what this module does"; no user data.
  */
 const MODULE_INFO: Record<string, { name: string; role: string }> = {
   'junk-clean': { name: '垃圾清理', role: '扫描系统与各类应用的临时文件、缓存，由用户勾选后删除。' },
@@ -38,10 +38,10 @@ const MODULE_INFO: Record<string, { name: string; role: string }> = {
 };
 
 /**
- * 组装系统提示：应用身份 + 当前模块角色 + **实时数据摘要** + 行为约束。
+ * Assemble the system prompt: app identity + current module role + **live data summary** + behavior constraints.
  *
- * 摘要由模块在每次发送时现取（见 moduleDataRegistry），这里不做缓存 ——
- * 用户可能刚扫完、刚勾选，缓存一秒都会让助手答错。
+ * The summary is fetched fresh from modules on every send (see moduleDataRegistry); no caching here —
+ * the user may have just scanned or just checked items; even a one-second cache would make the assistant answer wrong.
  */
 export function buildSystemPrompt(
   moduleId: string | null,
@@ -58,9 +58,9 @@ export function buildSystemPrompt(
       : '当前没有打开具体的功能模块。',
   ];
 
-  // 用户是**展开某一层之后**点的那一行的「咨询 AI 助手」（例如磁盘变化分析的「变化明细」弹窗）：
-  // 那一项本身就在问题里，而且往往不在模块的读取能力里（文件级明细）。
-  // 不说清这点，模型会先去查一次、碰壁，再冒出一句"没有读到内容"才作答。
+  // The user clicked "Ask AI Assistant" on a row **after expanding a level** (e.g. the "change details" modal in disk growth analysis):
+  // that item itself is in the question, and is often outside the module's read capabilities (file-level details).
+  // Without saying this, the model would first try a lookup, fail, then blurt out "no content read" before answering.
   if (skipLookup) {
     lines.push(
       '',
@@ -71,16 +71,16 @@ export function buildSystemPrompt(
     );
   }
 
-  // 有真实数据时注入；没有就明说没有，绝不让它凭印象描述（那正是"编造"的来源）
+  // Inject when real data exists; if not, say so explicitly — never let it describe from impression (that is the source of "fabrication")
   if (dataSummary && dataSummary.trim()) {
     lines.push(
       '',
       '以下是当前模块的实时数据摘要，就是用户此刻在界面上看到的内容，回答时以此为准：',
       dataSummary.trim(),
       '',
-      // ⚠️ 这句以前写的是"需要文件级明细就如实告诉用户看不到" —— 那是**只读工具还没有**的时候写的，
-      // 后来加了 read_items / read_item_detail 却没同步改。于是它和第 4 条直接打架：
-      // 模型照着这句回答"我看不到明细/只能看摘要"，就成了只会复述摘要的复读机。
+      // ⚠️ This line used to say "if you need file-level details, honestly tell the user you cannot see them" — written when **read-only tools did not yet exist**,
+      // read_items / read_item_detail were added later but this was not updated. So it directly conflicts with rule 4:
+      // a model following it would answer "I cannot see details / only the summary", becoming a parrot that just repeats the summary.
       '注意：你拿到的是摘要，没有文件级明细。需要具体到某个文件或目录时，',
       '**用第 4 条里的只读工具去查**，不要凭空编造文件名或路径。',
     );
@@ -142,23 +142,23 @@ export function buildSystemPrompt(
 }
 
 /**
- * 把连续的同角色消息合并成一条。
+ * Merges consecutive messages of the same role into one.
  *
- * 为什么需要：一次只读查询会产出**多条** assistant 消息（每个工具调用一条），
- * 于是历史里会连着出现好几条 assistant。OpenAI 兼容协议能容忍，
- * **Anthropic 会直接报 "roles must alternate" 拒掉整个请求** ——
- * 而只要用户用过一次「咨询 AI 助手」（必然触发只读工具），之后每次提问都会撞上。
+ * Why needed: one read-only query produces **multiple** assistant messages (one per tool call),
+ * so several assistant messages appear in a row in the history. OpenAI-compatible protocols tolerate this,
+ * **Anthropic rejects the whole request outright with "roles must alternate"** —
+ * and once the user has used "Ask AI Assistant" even once (which necessarily triggers read-only tools), every later question hits this.
  */
 function mergeConsecutiveRoles(messages: AiChatMessage[]): AiChatMessage[] {
   const merged: AiChatMessage[] = [];
   for (const message of messages) {
     const previous = merged[merged.length - 1];
-    // system 不参与合并：它必须是独立的第一条
+    // system is not merged: it must be the standalone first message
     if (previous && previous.role === message.role && message.role !== 'system') {
       merged[merged.length - 1] = {
         role: previous.role,
         content: `${previous.content}\n\n${message.content}`,
-        // 图片要一起带上：同一角色连发两条时它们各自可能带图
+        // Carry images along: when the same role sends two messages in a row, each may have images
         images:
           previous.images || message.images
             ? [...(previous.images ?? []), ...(message.images ?? [])]
@@ -171,25 +171,25 @@ function mergeConsecutiveRoles(messages: AiChatMessage[]): AiChatMessage[] {
   return merged;
 }
 
-/** 本地工具结果发给模型时的前缀：说清"这是你要的数据"，而不是让模型以为这话是它自己说的。 */
+/** Prefix for local tool results sent to the model: make clear "this is the data you requested", rather than letting the model think it said this itself. */
 const TOOL_OUTPUT_PREFIX = '【以下是你刚才要求查询的数据】\n';
 
 /**
- * 把历史消息整理成可发送的形态。
+ * Normalizes history messages into a sendable form.
  *
- * 唯一的转换是**本地工具结果**：它在界面上是一条 assistant 气泡，但发出去必须算用户侧内容 ——
- * 服务端要求"带 tools 的请求里，assistant 消息必须带上它的 reasoning_content"，
- * 而这条是本地拼出来的、没有思维链，当成 assistant 发出去会被直接 400 拒掉
- *（实测报错：The reasoning_content in the thinking mode must be passed back to the API）。
+ * The only transformation is **local tool results**: they appear as an assistant bubble in the UI but must be sent as user-side content —
+ * the provider requires that "in requests with tools, assistant messages must carry their reasoning_content",
+ * and this message is assembled locally with no chain of thought, so sending it as assistant gets a 400 outright
+ *(observed error: The reasoning_content in the thinking mode must be passed back to the API).
  */
 function toRequestMessage(message: AiChatMessage, activeProfileId: string): AiChatMessage {
   if (message.role === 'assistant' && message.localToolOutput) {
     return { role: 'user', content: `${TOOL_OUTPUT_PREFIX}${message.content}` };
   }
-  // 思维链只回传给**产出它的那份档案**：用户在会话中途换了服务商之后，
-  // 它对新服务商就是个陌生字段 —— 而 OpenAI 的 messages 只认
+  // Chain of thought is passed back only to the **profile that produced it**: after the user switches providers mid-conversation,
+  // it becomes an unfamiliar field for the new provider — and OpenAI's messages only recognize
   // role / content / name / tool_calls / tool_call_id / refusal，
-  // 严格的网关会因此拒掉整个请求。宁可少回传，也不能让整个请求失败。
+  // strict gateways would reject the whole request because of it. Better to pass back less than fail the entire request.
   if (message.reasoningContent && message.producedByProfile !== activeProfileId) {
     return { ...message, reasoningContent: undefined };
   }
@@ -197,12 +197,12 @@ function toRequestMessage(message: AiChatMessage, activeProfileId: string): AiCh
 }
 
 /**
- * 组装本次请求的完整消息：**现取的 system 提示** + 历史。
+ * Assembles the full message list for this request: **freshly fetched system prompt** + history.
  *
- * system 刻意不进历史 —— 它依赖"当前模块"和"当前数据"，存下来必然过期。
- * 历史里只保留 user/assistant，于是切模块、重新扫描都不需要清理旧消息。
+ * system is deliberately kept out of history — it depends on "current module" and "current data", so storing it would inevitably go stale.
+ * History keeps only user/assistant, so switching modules or rescanning needs no cleanup of old messages.
  *
- * `activeProfileId` 用来判断每条消息的思维链还该不该回传（见 toRequestMessage）。
+ * `activeProfileId` determines whether each message's chain of thought should still be passed back (see toRequestMessage).
  */
 export function buildRequestMessages(
   history: AiChatMessage[],
@@ -221,7 +221,7 @@ export function buildRequestMessages(
   ];
 }
 
-/** 取模块显示名。未知模块返回空串，界面据此不显示"· xxx"尾巴。 */
+/** Gets a module's display name. Returns an empty string for unknown modules, so the UI omits the "· xxx" suffix. */
 export function getModuleDisplayName(moduleId: string | null): string {
   if (!moduleId) return '';
   return MODULE_INFO[moduleId]?.name ?? '';

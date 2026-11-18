@@ -1,6 +1,6 @@
 // ============================================================================
-// 清理功能 Hook
-// 管理扫描和删除的状态逻辑
+// Cleanup feature hook
+// Manages the state logic for scanning and deletion
 // ============================================================================
 
 import { useState, useCallback, useEffect } from 'react';
@@ -8,46 +8,46 @@ import type { ScanResult, DeleteResult, AppStatus, FileInfo } from '../types';
 import { scanJunkFiles, deleteFiles, getDiskInfo } from '../api/commands';
 import type { DiskInfo } from '../types';
 
-/** Hook 返回值类型 */
+/** Return type of the hook */
 interface UseCleanupReturn {
-  /** 应用状态 */
+  /** App state */
   status: AppStatus;
-  /** 扫描结果 */
+  /** Scan result */
   scanResult: ScanResult | null;
-  /** 删除结果 */
+  /** Deletion result */
   deleteResult: DeleteResult | null;
-  /** 磁盘信息 */
+  /** Disk info */
   diskInfo: DiskInfo | null;
-  /** 选中的文件路径 */
+  /** Selected file paths */
   selectedPaths: Set<string>;
-  /** 错误信息 */
+  /** Error message */
   error: string | null;
-  /** 执行扫描 */
+  /** Run the scan */
   startScan: () => Promise<void>;
-  /** 执行删除 */
+  /** Run the deletion */
   startDelete: () => Promise<void>;
-  /** 切换文件选中状态 */
+  /** Toggle a file's selected state */
   toggleFileSelection: (path: string) => void;
-  /** 切换分类全选 */
+  /** Toggle select-all for a category */
   toggleCategorySelection: (files: FileInfo[], selected: boolean) => void;
-  /** 全选/取消全选 */
+  /** Select all / deselect all */
   toggleAllSelection: (selected: boolean) => void;
-  /** 刷新磁盘信息 */
+  /** Refresh disk info */
   refreshDiskInfo: () => Promise<void>;
-  /** 清除错误 */
+  /** Clear the error */
   clearError: () => void;
-  /** 清除删除结果 */
+  /** Clear the deletion result */
   clearDeleteResult: () => void;
-  /** 重置状态 */
+  /** Reset state */
   reset: () => void;
 }
 
 /**
- * 清理功能 Hook
- * 封装扫描和删除的所有状态管理逻辑
+ * Cleanup feature hook
+ * Encapsulates all state-management logic for scanning and deletion
  */
 export function useCleanup(): UseCleanupReturn {
-  // 状态定义
+  // State definitions
   const [status, setStatus] = useState<AppStatus>('idle');
   const [scanResult, setScanResult] = useState<ScanResult | null>(null);
   const [deleteResult, setDeleteResult] = useState<DeleteResult | null>(null);
@@ -55,7 +55,7 @@ export function useCleanup(): UseCleanupReturn {
   const [selectedPaths, setSelectedPaths] = useState<Set<string>>(new Set());
   const [error, setError] = useState<string | null>(null);
 
-  // 刷新磁盘信息
+  // Refresh disk info
   const refreshDiskInfo = useCallback(async () => {
     try {
       const info = await getDiskInfo();
@@ -66,12 +66,12 @@ export function useCleanup(): UseCleanupReturn {
     }
   }, []);
 
-  // 应用启动时自动获取磁盘信息
+  // Fetch disk info automatically at app startup
   useEffect(() => {
     refreshDiskInfo();
   }, [refreshDiskInfo]);
 
-  // 执行扫描
+  // Run the scan
   const startScan = useCallback(async () => {
     setStatus('scanning');
     setError(null);
@@ -80,14 +80,14 @@ export function useCleanup(): UseCleanupReturn {
     setSelectedPaths(new Set());
 
     try {
-      // 先刷新磁盘信息
+      // Refresh disk info first
       await refreshDiskInfo();
       
-      // 执行扫描
+      // Run the scan
       const result = await scanJunkFiles();
       setScanResult(result);
       
-      // 默认选中所有风险等级 <= 2 的文件
+      // Select all files with risk level <= 2 by default
       const defaultSelected = new Set<string>();
       result.categories.forEach((category) => {
         if (category.risk_level <= 2) {
@@ -105,7 +105,7 @@ export function useCleanup(): UseCleanupReturn {
     }
   }, [refreshDiskInfo]);
 
-  // 执行删除
+  // Run the deletion
   const startDelete = useCallback(async () => {
     if (selectedPaths.size === 0) {
       setError('请先选择要删除的文件');
@@ -121,7 +121,7 @@ export function useCleanup(): UseCleanupReturn {
       const result = await deleteFiles(paths);
       setDeleteResult(result);
       
-      // 删除成功后，从扫描结果中移除已删除的文件
+      // After a successful deletion, remove the deleted files from the scan result
       if (scanResult && result.success_count > 0) {
         const deletedPaths = new Set(
           paths.filter((p) => !result.failed_files.some((f) => f.path === p))
@@ -144,7 +144,7 @@ export function useCleanup(): UseCleanupReturn {
           total_size: updatedCategories.reduce((acc, c) => acc + c.total_size, 0),
         });
 
-        // 清除已删除文件的选中状态
+        // Clear the selected state of deleted files
         setSelectedPaths((prev) => {
           const newSet = new Set(prev);
           deletedPaths.forEach((p) => newSet.delete(p));
@@ -152,7 +152,7 @@ export function useCleanup(): UseCleanupReturn {
         });
       }
 
-      // 刷新磁盘信息（放在finally之前确保执行）
+      // Refresh disk info (placed before finally to ensure it runs)
       await refreshDiskInfo();
     } catch (err) {
       console.error('删除失败:', err);
@@ -162,7 +162,7 @@ export function useCleanup(): UseCleanupReturn {
     }
   }, [selectedPaths, scanResult, refreshDiskInfo]);
 
-  // 切换单个文件选中状态
+  // Toggle a single file's selected state
   const toggleFileSelection = useCallback((path: string) => {
     setSelectedPaths((prev) => {
       const newSet = new Set(prev);
@@ -175,7 +175,7 @@ export function useCleanup(): UseCleanupReturn {
     });
   }, []);
 
-  // 切换分类全选
+  // Toggle select-all for a category
   const toggleCategorySelection = useCallback((files: FileInfo[], selected: boolean) => {
     setSelectedPaths((prev) => {
       const newSet = new Set(prev);
@@ -190,7 +190,7 @@ export function useCleanup(): UseCleanupReturn {
     });
   }, []);
 
-  // 全选/取消全选
+  // Select all / deselect all
   const toggleAllSelection = useCallback(
     (selected: boolean) => {
       if (!scanResult) return;
@@ -212,17 +212,17 @@ export function useCleanup(): UseCleanupReturn {
     [scanResult]
   );
 
-  // 清除错误
+  // Clear the error
   const clearError = useCallback(() => {
     setError(null);
   }, []);
 
-  // 清除删除结果
+  // Clear the deletion result
   const clearDeleteResult = useCallback(() => {
     setDeleteResult(null);
   }, []);
 
-  // 重置状态
+  // Reset state
   const reset = useCallback(() => {
     setStatus('idle');
     setScanResult(null);

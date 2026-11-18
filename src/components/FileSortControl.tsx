@@ -1,22 +1,22 @@
 // ============================================================================
-// 文件列表排序控件（名称 / 大小 / 修改时间）
+// File list sort control (name / size / modification time)
 //
-// 中文说明：垃圾清理的「查看全部文件」弹窗先做了这套排序，社交专清、AI 工具清理的
-// 「全部文件」也需要同样的操作。与其每个弹窗各写一遍按钮、各写一遍升降序切换，
-// 不如收成一个组件 —— 三个入口的视觉、语义（点同一键切方向、点别的键用该项默认方向）
-// 从此只有一份实现。
+// Note: the junk cleanup "View All Files" dialog uses this sorting first, and the social-specific and AI-tool cleanup
+// "All Files" dialogs need the same controls. Rather than writing buttons and direction toggles in each dialog,
+// consolidate into one component - the visuals and semantics of the three entry points (clicking the same key toggles direction, clicking a different key uses that key's default direction)
+// now have a single implementation.
 // ============================================================================
 
 import { ArrowDown, ArrowUp } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { DEFAULT_SORT_DESC, type TreeSort, type TreeSortKey } from '../utils/fileTree';
 
-/** 排序键的默认展示顺序：名称 / 大小 / 修改时间 */
+/** Default display order of sort keys: name / size / modification time */
 export const FILE_SORT_KEYS: TreeSortKey[] = ['name', 'size', 'time'];
 
 /**
- * 点同一个键切换升/降序，点别的键换成那个键的默认方向
- * （大小和时间默认从大到小/从新到旧，名称默认从小到大）。
+ * Clicking the same key toggles ascending/descending; clicking a different key switches to that key's default direction
+ * (size and time default to descending / newest first, name defaults to ascending).
  */
 export function nextSort(previous: TreeSort, key: TreeSortKey): TreeSort {
   return previous.key === key
@@ -26,13 +26,13 @@ export function nextSort(previous: TreeSort, key: TreeSortKey): TreeSort {
 
 export interface FileSortControlProps {
   sort: TreeSort;
-  /** 结算后的目标排序；组件内部已经算好方向，调用方只管接收 */
+  /** The final target sort; the component has already computed the direction, the caller just receives it */
   onSortChange: (next: TreeSort) => void;
   /**
-   * 这批数据真正能用的排序键。
+   * The sort keys actually usable for this batch of data.
    *
-   * 中文说明：数据源没有修改时间时不要摆一个「修改时间」按钮 —— 点了整列都是
-   * 「—」，用户只会以为排序坏了。默认三个都给。
+   * Note: when the data source has no modification time, do not show a "modification time" button - clicking it would fill the whole column with
+   * "—", and users would just think sorting is broken. By default all three are given.
    */
   keys?: TreeSortKey[];
   className?: string;

@@ -1,9 +1,9 @@
-//! 删除与路径校验。
+//! Deletion and path validation.
 //!
-//! 删除不可逆，所以前端传来的路径**一律不可信**，这里全部重新校验：
-//! ① 不含 `.` / `..` 组件 ② 必须精确等于某个目标目录（缓存项），
-//! 或位于某个版本根目录**之下且目录名是版本号**（版本项）
-//! ③ 只读项、以及任何版本根目录本身，一律拒绝。
+//! Deletion is irreversible, so paths from the frontend are **never trusted** and are all revalidated here:
+//! ① no `.` / `..` components ② must exactly equal a target directory (cache entry),
+//! or be **under a version root with a version-number directory name** (version entry)
+//! ③ read-only entries and any version root itself are always rejected.
 
 use std::collections::HashSet;
 use std::path::{Component, Path, PathBuf};
@@ -12,8 +12,8 @@ use super::measure::{display_path, measure};
 use super::targets::{self, Env, VersionPattern};
 use super::types::{DevCacheDeleteFailure, DevCacheDeleteResult, DevRisk};
 
-/// 归一化：去扩展前缀、正斜杠转反斜杠、去尾部分隔符、转小写。
-/// 用来做「字符串层面」的相等判断，避免大小写和分隔符差异导致的漏判。
+/// Normalize: strip extension prefixes, convert forward slashes to backslashes, remove trailing separator, lowercase.
+/// Used for string-level equality checks, avoiding misses caused by case and separator differences.
 fn norm(raw: &str) -> String {
     let mut text = display_path(Path::new(raw));
     while text.ends_with('\\') && text.len() > 3 {
@@ -31,9 +31,9 @@ pub fn delete(paths: &[String]) -> DevCacheDeleteResult {
     let env = Env::detect();
     let specs = targets::targets(&env);
 
-    // 可删集合：只收 Cache / Confirm。Readonly 永远进不来。
+    // Deletable set: only Cache / Confirm. Readonly never gets in.
     let mut deletable: HashSet<String> = HashSet::new();
-    // 只读集合单独留着，命中时要给出「为什么不能删」而不是笼统的「不在范围内」
+    // Keep the read-only set separate so a match gives "why it cannot be deleted" instead of a generic "out of scope"
     let mut readonly: HashSet<String> = HashSet::new();
     for spec in &specs {
         let key = norm(&display_path(&spec.path));
@@ -47,7 +47,7 @@ pub fn delete(paths: &[String]) -> DevCacheDeleteResult {
         }
     }
 
-    // 版本项：允许删，但必须严格是「版本根目录之下的版本号目录」，且不能是当前版本
+    // Version entries: allowed but must strictly be "a version-number directory under a version root", and not the current version
     let mut version_bases: Vec<(String, VersionPattern)> = Vec::new();
     let mut protected_versions: HashSet<String> = HashSet::new();
     for spec in targets::version_specs(&env) {
@@ -112,7 +112,7 @@ pub fn delete(paths: &[String]) -> DevCacheDeleteResult {
             continue;
         }
 
-        // 先量体积再删，删完就量不出来了
+        // Measure the size before deleting; after deletion it cannot be measured
         let (before, _, _) = measure(&path);
         match std::fs::remove_dir_all(super::measure::long_path(&path)) {
             Ok(()) => {
@@ -121,7 +121,7 @@ pub fn delete(paths: &[String]) -> DevCacheDeleteResult {
                 log::info!("已删除开发空间目录: {raw}（{} 字节）", before);
             }
             Err(error) => {
-                // 目录被占用是常见情况（IDE / 构建进程还开着），记录后继续删其它项
+                // A directory being in use is common (IDE / build processes still open); log it and continue with the other entries
                 log::warn!("删除失败 {raw}: {error}");
                 failed.push(DevCacheDeleteFailure {
                     path: raw.clone(),
@@ -138,17 +138,17 @@ pub fn delete(paths: &[String]) -> DevCacheDeleteResult {
     }
 }
 
-/// 判断路径是不是「版本根目录 / 版本号目录」这种形态。
+/// Determine whether a path has the form "version root / version-number directory".
 fn match_version_entry(key: &str, bases: &[(String, VersionPattern)]) -> bool {
     for (base, pattern) in bases {
         let Some(rest) = key.strip_prefix(base.as_str()) else {
             continue;
         };
-        // 必须是 base\ 开头，不能是 base 本身（那是父目录，绝不能删）
+        // Must start with base\, not be base itself (that is the parent directory and must never be deleted)
         let Some(name) = rest.strip_prefix('\\') else {
             continue;
         };
-        // 只允许一层：`base\1.2.3.4`，再深就不认了
+        // Only one level allowed: `base\1.2.3.4`, anything deeper is not recognized
         if name.is_empty() || name.contains('\\') {
             continue;
         }
@@ -159,10 +159,10 @@ fn match_version_entry(key: &str, bases: &[(String, VersionPattern)]) -> bool {
     false
 }
 
-/// 读出某组当前正在使用的版本目录（绝对路径）。
+/// Read the currently active version directory of a group (absolute path).
 ///
-/// 删除时重新算一遍，而不复用扫描结果 —— 两次操作之间用户可能更新过软件。
-/// 列目录和判定当前版本的逻辑与扫描侧**完全共用**，不在这里重写一遍。
+/// Recomputed at deletion time rather than reusing the scan result — the user may have updated the software between the two operations.
+/// Directory listing and current-version determination logic is **fully shared** with the scan side, not rewritten here.
 fn current_version_path(spec: &targets::VersionSpec) -> Option<String> {
     let versions = super::measure::list_versions(spec);
     if versions.is_empty() {

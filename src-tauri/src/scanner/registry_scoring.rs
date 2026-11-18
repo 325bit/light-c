@@ -1,10 +1,10 @@
 // ============================================================================
-// 注册表路径工具 (Registry Path Utilities)
+// Registry path utilities (Registry Path Utilities)
 //
-// 提供两个核心工具：
-//   1. PathCache    — 路径存在性缓存，避免重复文件系统调用
-//   2. PathResolver — 从命令行字符串中提取可执行文件路径、展开环境变量
-//   3. is_definitely_safe_to_delete — 硬过滤条件，确认注册表项可安全删除
+// Provides two core utilities:
+//   1. PathCache    — path existence cache, avoids repeated filesystem calls
+//   2. PathResolver — extracts executable paths from command-line strings, expands environment variables
+//   3. is_definitely_safe_to_delete — hard filter conditions to confirm a registry entry is safe to delete
 // ============================================================================
 
 use regex::Regex;
@@ -12,13 +12,13 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 // ============================================================================
-// 1. 路径存在性缓存 (PathCache)
+// 1. Path existence cache (PathCache)
 // ============================================================================
 
-/// 路径存在性缓存
+/// Path existence cache
 ///
-/// 使用 HashMap 缓存 Path::exists() 的结果，避免重复的文件系统调用。
-/// 在同一轮扫描中，相同的路径会被反复引用（如多个 MUI 值引用同一个 exe）。
+/// Caches the result of Path::exists() in a HashMap, avoiding repeated filesystem calls.
+/// Within one scan, the same path is referenced repeatedly (e.g. multiple MUI values pointing to the same exe).
 pub struct PathCache {
     cache: HashMap<String, bool>,
     hits: u64,
@@ -34,7 +34,7 @@ impl PathCache {
         }
     }
 
-    /// 检查路径是否存在（带缓存）
+    /// Check whether a path exists (with caching)
     pub fn exists(&mut self, path: &str) -> bool {
         if let Some(&exists) = self.cache.get(path) {
             self.hits += 1;
@@ -46,7 +46,7 @@ impl PathCache {
         exists
     }
 
-    /// 获取缓存统计
+    /// Get cache statistics
     pub fn stats(&self) -> (u64, u64) {
         (self.hits, self.misses)
     }
@@ -59,12 +59,12 @@ impl Default for PathCache {
 }
 
 // ============================================================================
-// 2. 路径解析器 (PathResolver)
+// 2. Path resolver (PathResolver)
 // ============================================================================
 
-/// 路径解析器
+/// Path resolver
 ///
-/// 处理命令行字符串中的路径提取和环境变量展开。
+/// Handles path extraction and environment-variable expansion in command-line strings.
 pub struct PathResolver {
     env_var_re: Regex,
 }
@@ -76,16 +76,16 @@ impl PathResolver {
         }
     }
 
-    /// 从命令行字符串中提取并解析可执行文件路径
+    /// Extract and resolve an executable path from a command-line string
     ///
-    /// 支持格式：
+    /// Supported formats:
     /// - `"C:\Program Files\App\app.exe" %1`
     /// - `C:\Program Files\App\app.exe %1`
     /// - `%SystemRoot%\system32\notepad.exe %1`
     /// - `"C:\Program Files\App\app.exe",-123`
     /// - `C:\PROGRA~1\App\app.exe`
     ///
-    /// 返回 Option<(解析后的路径, 是否在系统目录)>
+    /// Returns Option<(resolved path, whether it's in a system directory)>
     pub fn extract_and_resolve(&self, raw_command: &str) -> Option<(PathBuf, bool)> {
         let exe_path = self.extract_exe_path(raw_command)?;
         let resolved = self.expand_env_vars(&exe_path);
@@ -95,7 +95,7 @@ impl PathResolver {
         Some((path, is_system))
     }
 
-    /// 从命令行字符串中提取可执行文件路径
+    /// Extract an executable path from a command-line string
     fn extract_exe_path(&self, command: &str) -> Option<String> {
         let command = command.trim();
 
@@ -103,7 +103,7 @@ impl PathResolver {
             return None;
         }
 
-        // 处理带引号的路径: "C:\path\to\app.exe" args
+        // Handle a quoted path: "C:\path\to\app.exe" args
         if command.starts_with('"') {
             if let Some(end) = command[1..].find('"') {
                 let path = &command[1..end + 1];
@@ -113,7 +113,7 @@ impl PathResolver {
             }
         }
 
-        // 处理不带引号的路径: C:\path\to\app.exe args
+        // Handle an unquoted path: C:\path\to\app.exe args
         let first_token = command.split_whitespace().next()?;
         let cleaned = first_token.trim_end_matches(',');
 
@@ -124,10 +124,10 @@ impl PathResolver {
         }
     }
 
-    /// 检查是否像可执行文件路径（盘符 + exe/dll/sys 扩展名）
+    /// Check whether a string looks like an executable path (drive letter + exe/dll/sys extension)
     fn looks_like_exe_path(&self, s: &str) -> bool {
         let lower = s.to_lowercase();
-        // 环境变量路径在展开前没有盘符，先允许合法的 %VAR% 前缀交给后续解析。
+        // Environment-variable paths have no drive letter before expansion; allow a valid %VAR% prefix here and let later resolution handle it.
         let starts_with_environment_variable = lower.starts_with('%')
             && lower[1..]
                 .find('%')
@@ -137,7 +137,7 @@ impl PathResolver {
             && (lower.chars().nth(1) == Some(':') || starts_with_environment_variable)
     }
 
-    /// 展开环境变量（如 %SystemRoot%）
+    /// Expand environment variables (e.g. %SystemRoot%)
     fn expand_env_vars(&self, s: &str) -> String {
         self.env_var_re
             .replace_all(s, |caps: &regex::Captures| {
@@ -158,7 +158,7 @@ impl PathResolver {
             .to_string()
     }
 
-    /// 检查路径是否在系统目录
+    /// Check whether a path is in a system directory
     pub fn is_system_path(&self, path: &str) -> bool {
         let lower = path.to_lowercase();
         let system_roots = [
@@ -187,30 +187,30 @@ impl Default for PathResolver {
 }
 
 // ============================================================================
-// 3. 硬过滤条件 (Hard Delete Safety Check)
+// 3. Hard delete safety check (Hard Delete Safety Check)
 // ============================================================================
 
-/// 确认注册表项关联的文件路径满足"铁证条件"——可以安全删除
+/// Confirm that the file path associated with a registry entry meets the "ironclad conditions" — safe to delete
 ///
-/// 【铁证条件】
-///   1. 路径非空且能从注册表值中提取到
-///   2. 关联文件在磁盘上不存在 (Path.exists == false)
-///   3. 路径不在系统目录 (Windows / System32 / SysWOW64)
-///   4. 文件名不是系统关键进程 (rundll32.exe / svchost.exe)
+/// [Ironclad conditions]
+///   1. Path is non-empty and can be extracted from the registry value
+///   2. The associated file does not exist on disk (Path.exists == false)
+///   3. Path is not in a system directory (Windows / System32 / SysWOW64)
+///   4. File name is not a critical system process (rundll32.exe / svchost.exe)
 ///
-/// 任何不确定的情况一律返回 false —— 安全优先原则
+/// Any uncertain case returns false — safety first.
 pub fn is_definitely_safe_to_delete(extracted_path: &str, path_cache: &mut PathCache) -> bool {
-    // 条件1：路径非空
+    // Condition 1: path is non-empty
     if extracted_path.is_empty() {
         return false;
     }
 
-    // 条件2：文件必须不存在（存在意味着程序可能仍在使用）
+    // Condition 2: the file must not exist (existing means the program may still be using it)
     if path_cache.exists(extracted_path) {
         return false;
     }
 
-    // 条件3：路径不能在系统目录
+    // Condition 3: path must not be in a system directory
     let lower = extracted_path.to_lowercase();
     let system_dirs = [
         "\\windows\\system32",
@@ -226,7 +226,7 @@ pub fn is_definitely_safe_to_delete(extracted_path: &str, path_cache: &mut PathC
         }
     }
 
-    // 条件4：文件名不能是系统关键进程
+    // Condition 4: file name must not be a critical system process
     let file_name = Path::new(extracted_path)
         .file_name()
         .and_then(|f| f.to_str())
@@ -257,7 +257,7 @@ pub fn is_definitely_safe_to_delete(extracted_path: &str, path_cache: &mut PathC
 }
 
 // ============================================================================
-// 4. 测试
+// 4. Tests
 // ============================================================================
 
 #[cfg(test)]
@@ -292,9 +292,9 @@ mod tests {
     fn test_path_cache() {
         let mut cache = PathCache::new();
 
-        // Windows 目录肯定存在
+        // The Windows directory definitely exists
         assert!(cache.exists(r"C:\Windows"));
-        // 第二次命中缓存
+        // Second call hits the cache
         assert!(cache.exists(r"C:\Windows"));
 
         let (hits, misses) = cache.stats();
@@ -305,12 +305,12 @@ mod tests {
     #[test]
     fn test_is_definitely_safe_system_exe() {
         let mut cache = PathCache::new();
-        // System32 路径不被允许
+        // System32 paths are not allowed
         assert!(!is_definitely_safe_to_delete(
             r"C:\Windows\System32\notepad.exe",
             &mut cache
         ));
-        // rundll32.exe 不被允许
+        // rundll32.exe is not allowed
         assert!(!is_definitely_safe_to_delete(
             r"C:\Program Files\App\rundll32.exe",
             &mut cache

@@ -1,12 +1,12 @@
 // ============================================================================
-// 应用运行环境命令
+// App runtime environment commands
 // ============================================================================
 
 pub use crate::runtime::DistributionChannel;
 
-/// 获取当前发行渠道。
+/// Get the current release channel.
 ///
-/// 发行模式由统一运行时解析器判断，保证更新、完整性校验和数据目录使用同一结果。
+/// The release mode is determined by the unified runtime resolver, ensuring updates, integrity checks, and the data directory use the same result.
 #[tauri::command]
 pub fn get_distribution_channel() -> DistributionChannel {
     std::env::current_exe()

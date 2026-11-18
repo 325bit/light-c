@@ -1,8 +1,8 @@
 /**
- * 图标生成脚本
- * 使用 sharp 库将 SVG 转换为各种尺寸的 PNG
+ * Icon generation script
+ * Uses the sharp library to convert SVG into PNGs of various sizes
  * 
- * 使用方法:
+ * Usage:
  * 1. npm install sharp --save-dev
  * 2. node scripts/generate-icons.js
  */
@@ -18,15 +18,15 @@ const __dirname = path.dirname(__filename);
 const iconsDir = path.join(__dirname, '../src-tauri/icons');
 const svgPath = path.join(iconsDir, 'icon.svg');
 
-// Tauri 需要的图标尺寸
+// Icon sizes required by Tauri
 const sizes = [
   { name: '32x32.png', size: 32 },
-  // Windows 大图标视图会优先使用 48px 资源，缺失时容易出现放大模糊。
+  // Windows large icon view prefers the 48px resource; missing it easily leads to blurry upscaling.
   { name: '48x48.png', size: 48 },
   { name: '128x128.png', size: 128 },
   { name: '128x128@2x.png', size: 256 },
   { name: 'icon.png', size: 512 },
-  // Windows Store 图标
+  // Windows Store icon
   { name: 'Square30x30Logo.png', size: 30 },
   { name: 'Square44x44Logo.png', size: 44 },
   { name: 'Square71x71Logo.png', size: 71 },
@@ -42,7 +42,7 @@ const sizes = [
 async function generateIcons() {
   console.log('开始生成图标...\n');
 
-  // 读取 SVG 文件
+  // Read the SVG file
   const svgBuffer = fs.readFileSync(svgPath);
 
   for (const { name, size } of sizes) {

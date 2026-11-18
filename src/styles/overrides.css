@@ -1,33 +1,33 @@
 /* ============================================================================
-   页面模式下不要卡片外投影
-   根因不在阴影参数，而在外层容器：App.tsx 里带 data-module-id 的那层开了
-   `content-visibility: auto`，这会启用 paint containment —— 子元素的绘制被裁在
-   容器自己的边界内。而页面模式的卡片是 `min-h-full` 铺满内容区的，它的外投影
-   （0 10px 30px）正好在容器边界处被从中间切断，于是底部两个圆角各留一小块暗影
-   （Evan 反馈"每个模块底部两个边角都有残留的阴影"，且"怎么改似乎都有点"）。
-   页面模式下卡片本来就不悬浮、投影没有落点，直接去掉；卡片（手风琴）模式保持原样。
-   选择器写成 .module-card.module-card--page 是为了稳定压过 Tailwind 的 shadow-sm。 */
+   No card outer shadow in page mode
+   The root cause is not the shadow parameters but the outer container: the layer with data-module-id in App.tsx has
+   `content-visibility: auto` enabled, which turns on paint containment — child painting is clipped to
+   the container's own bounds. Page-mode cards are `min-h-full` filling the content area, so their outer shadow
+   (0 10px 30px) is cut in half right at the container boundary, leaving a small dark patch at each of the two bottom corners
+   (Evan reported "every module has leftover shadows at the two bottom corners" and "it seems to remain however I change it").
+   In page mode cards do not float anyway and the shadow has nothing to land on, so remove it; keep it as is in card (accordion) mode.
+   The selector is written as .module-card.module-card--page to reliably override Tailwind's shadow-sm. */
 .module-card.module-card--page {
   box-shadow: none;
 }
 
 html.glass .module-card--page {
-  /* 玻璃态下保留 1px 描边与顶部内高光，同样去掉大扩散的外投影。 */
+  /* In glass mode keep the 1px stroke and top inner highlight, and likewise remove the large diffuse outer shadow. */
   box-shadow: 0 0 0 1px var(--glass-edge), var(--glass-inner);
 }
 
 /* ============================================================================
-   桌面应用规范化 - 禁用文本选中
-   让应用更像原生桌面软件而非网页
+   Desktop app standardization - disable text selection
+   Make the app feel more like native desktop software than a web page
    ============================================================================ */
 
-/* 全局禁用文本选中 */
+/* Globally disable text selection */
 * {
   user-select: none;
   -webkit-user-select: none;
 }
 
-/* 输入框和文本域允许选中 */
+/* Allow selection in inputs and textareas */
 input,
 textarea,
 [contenteditable="true"] {
@@ -35,7 +35,7 @@ textarea,
   -webkit-user-select: text;
 }
 
-/* 代码块允许选中（如果有） */
+/* Allow selection in code blocks (if any) */
 pre,
 code {
   user-select: text;

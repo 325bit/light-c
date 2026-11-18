@@ -1,11 +1,11 @@
 // ============================================================================
-// 社交软件专清命令
+// Social software dedicated-cleanup command
 // ============================================================================
 
 use crate::scanner::{SocialScanResult, SocialScanner};
 use log::info;
 
-/// 扫描社交软件缓存（带风险分级）
+/// Scans social software caches (with risk grading)
 #[tauri::command]
 pub async fn scan_social_cache() -> Result<SocialScanResult, String> {
     info!("开始扫描社交软件缓存（带风险分级）");

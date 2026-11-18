@@ -1,9 +1,9 @@
 // ============================================================================
-// 卸载残留用户白名单
+// Uninstall leftover user whitelist
 // ============================================================================
 //
-// 白名单按完整路径保存，且保护该路径下的全部子项。这样用户可以针对一次
-// 误报精确处理，不会因为应用名称相似而扩大保护范围。
+// Whitelist entries are saved by full path and protect all children under that path. This lets users handle one
+// false positive precisely, without expanding protection because app names are similar.
 
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
@@ -14,7 +14,7 @@ use std::sync::{LazyLock, Mutex};
 const WHITELIST_FILE_NAME: &str = "leftover_whitelist.json";
 const WHITELIST_SCHEMA_VERSION: u32 = 1;
 
-/// 串行化读改写操作，避免连续点击或并发命令互相覆盖白名单内容。
+/// Serialize read-modify-write operations, so consecutive clicks or concurrent commands cannot overwrite each other's whitelist content.
 static WHITELIST_WRITE_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -40,12 +40,12 @@ fn whitelist_file_path() -> PathBuf {
     crate::data_dir::get_data_dir().join(WHITELIST_FILE_NAME)
 }
 
-/// 获取白名单条目，损坏或缺失的文件不会阻断清理主流程。
+/// Get whitelist entries; a corrupted or missing file does not block the main cleanup flow.
 pub fn list_entries() -> Result<Vec<LeftoverWhitelistEntry>, String> {
     load_entries_from(&whitelist_file_path())
 }
 
-/// 添加扫描结果对应的路径。仅接受已存在的绝对路径，避免前端构造无效保护规则。
+/// Add the path corresponding to a scan result. Only existing absolute paths are accepted, preventing the frontend from constructing invalid protection rules.
 pub fn add_entry(path: &str) -> Result<LeftoverWhitelistEntry, String> {
     let _guard = WHITELIST_WRITE_LOCK
         .lock()
@@ -70,7 +70,7 @@ pub fn add_entry(path: &str) -> Result<LeftoverWhitelistEntry, String> {
     Ok(entry)
 }
 
-/// 移除精确白名单项；路径即使已不存在，也允许用户清理过期配置。
+/// Remove an exact whitelist item; even if the path no longer exists, users are allowed to clean up stale config.
 pub fn remove_entry(path: &str) -> Result<(), String> {
     let _guard = WHITELIST_WRITE_LOCK
         .lock()
@@ -78,8 +78,8 @@ pub fn remove_entry(path: &str) -> Result<(), String> {
     let store_path = whitelist_file_path();
     let mut entries = load_entries_from(&store_path)?;
     let previous_len = entries.len();
-    // 与 contains_path 使用同一套比较规则：前端传回的路径可能带 `\\?\` 前缀或大小写不同，
-    // 直接用原始字符串比较会导致"界面上删掉了、文件里还在"。
+    // Use the same comparison rules as contains_path: paths returned by the frontend may carry a `\\?\` prefix or differ in case,
+    // comparing raw strings directly would cause "deleted in the UI but still in the file".
     let target = normalize_string_path_for_compare(path);
     entries.retain(|entry| normalize_string_path_for_compare(&entry.path) != target);
 
@@ -89,7 +89,7 @@ pub fn remove_entry(path: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// 路径匹配使用不区分大小写的目录边界，防止 `App` 误匹配 `AppData`。
+/// Path matching uses case-insensitive directory boundaries, preventing `App` from wrongly matching `AppData`.
 pub fn contains_path(entries: &[LeftoverWhitelistEntry], candidate: &Path) -> bool {
     let candidate_path = normalize_path_for_compare(candidate);
     entries.iter().any(|entry| {
@@ -150,13 +150,13 @@ fn normalize_string_path_for_compare(path: &str) -> String {
     trim_trailing_separator(strip_extended_length_prefix(&path.replace('/', "\\"))).to_lowercase()
 }
 
-/// 去掉 Windows 扩展长度路径前缀（`\\?\` 与 `\\.\`）。
+/// Strip the Windows extended-length path prefix (`\\?\` and `\\.\`).
 ///
-/// 中文说明：白名单入库走 `fs::canonicalize`，Windows 会在绝对路径前加 `\\?\`；
-/// 而扫描结果里的路径没有这个前缀，导致字符串比较永远不相等、白名单实际失效。
-/// 两边统一去掉前缀后再比较，路径本身不变，只是让两者可比。
+/// Explanation: whitelist entries go through `fs::canonicalize`, which on Windows adds a `\\?\` prefix to absolute paths;
+/// but paths in scan results have no such prefix, so string comparison never matches and the whitelist effectively fails.
+/// Strip the prefix on both sides before comparing; the path itself is unchanged, we just make the two comparable.
 fn strip_extended_length_prefix(path: &str) -> String {
-    // UNC 长路径 `\\?\UNC\server\share` 还原成 `\\server\share`。
+    // UNC long path `\\?\UNC\server\share` is restored to `\\server\share`.
     if let Some(rest) = path.strip_prefix(r"\\?\UNC\") {
         return format!(r"\\{}", rest);
     }
@@ -191,7 +191,7 @@ mod tests {
 
     #[test]
     fn strips_extended_length_path_prefix() {
-        // \\?\ 与 \\.\ 前缀必须去掉，否则和扫描结果里的普通路径无法比较。
+        // The \\?\ and \\.\ prefixes must be stripped, otherwise they cannot be compared with plain paths from scan results.
         assert_eq!(
             strip_extended_length_prefix(r"\\?\C:\Users\Test\AppData\Local\App"),
             r"C:\Users\Test\AppData\Local\App"
@@ -200,12 +200,12 @@ mod tests {
             strip_extended_length_prefix(r"\\.\C:\Users\Test"),
             r"C:\Users\Test"
         );
-        // UNC 形式要还原成 \\server\share，而不是变成 server\share。
+        // The UNC form must be restored to \\server\share, not turned into server\share.
         assert_eq!(
             strip_extended_length_prefix(r"\\?\UNC\server\share\App"),
             r"\\server\share\App"
         );
-        // 普通路径保持不变。
+        // Plain paths are left unchanged.
         assert_eq!(
             strip_extended_length_prefix(r"C:\Users\Test"),
             r"C:\Users\Test"
@@ -214,8 +214,8 @@ mod tests {
 
     #[test]
     fn canonicalized_whitelist_entry_matches_scanned_path() {
-        // 这条是本次白名单失效的回归测试：入库路径来自 fs::canonicalize（Windows 会加 \\?\ 前缀），
-        // 扫描路径来自目录遍历（无前缀），两者必须判定为同一路径。
+        // This is a regression test for this whitelist failure: stored paths come from fs::canonicalize (which adds a \\?\ prefix on Windows),
+        // while scan paths come from directory traversal (no prefix); the two must be judged the same path.
         let root = std::env::temp_dir().join(format!(
             "lightc-whitelist-prefix-{}-{}",
             std::process::id(),
@@ -230,7 +230,7 @@ mod tests {
             added_at: "2026-01-01T00:00:00Z".to_string(),
         }];
 
-        // 扫描侧给的是未加前缀的路径，也必须命中白名单。
+        // Paths given by the scan side have no prefix and must also hit the whitelist.
         assert!(
             contains_path(&entries, &scanned_directory),
             "带 \\\\?\\ 前缀的入库路径必须能匹配扫描路径"
@@ -243,8 +243,8 @@ mod tests {
 
     #[test]
     fn comparison_ignores_case_separators_and_prefix() {
-        // 前端传回的路径可能大小写不同、用正斜杠或带 \\?\ 前缀，都必须视为同一条目，
-        // 否则会出现"界面上删掉了、实际上还在"或"保护了但没生效"。
+        // Paths returned by the frontend may differ in case, use forward slashes, or carry a \\?\ prefix, all must be treated as the same entry,
+        // otherwise you get "deleted in the UI but actually still there" or "protected but not effective".
         let stored = r"\\?\C:\Users\Test\AppData\Local\SomeApp";
         let candidates = [
             r"C:\Users\Test\AppData\Local\SomeApp",

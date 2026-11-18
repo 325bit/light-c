@@ -1,8 +1,8 @@
 // ============================================================================
-// C 盘全盘变化分析命令
+// C drive full-disk change analysis command
 //
-// MFT 枚举和文件大小聚合属于长耗时阻塞任务，因此放到 spawn_blocking 中执行，
-// 避免占用 Tauri 异步运行时线程导致前端 IPC 响应变慢。
+// MFT enumeration and file size aggregation are long blocking tasks, so they run in spawn_blocking,
+// avoiding occupying Tauri's async runtime threads and slowing down frontend IPC responses.
 // ============================================================================
 
 use log::info;
@@ -55,8 +55,8 @@ pub async fn get_disk_growth_export_tree(
     .map_err(|error| format!("读取 HTML 导出目录明细失败: {}", error))?
 }
 
-/// 通过系统保存对话框写入磁盘空间变化分析 HTML。
-/// 保存操作放在 Rust 端，复用已注册的对话框插件并统一处理 Windows 路径和扩展名。
+/// Write the disk space change analysis HTML via the system save dialog.
+/// The save operation runs on the Rust side, reusing the registered dialog plugin and handling Windows paths and extensions uniformly.
 #[tauri::command]
 pub async fn save_disk_growth_html(
     app: AppHandle,
@@ -79,7 +79,7 @@ pub async fn save_disk_growth_html(
         .add_filter("HTML 文件", &["html"])
         .blocking_save_file();
     let Some(selected_path) = selected_path else {
-        // 用户取消保存属于正常流程，不应被当作导出失败。
+        // A user cancelling the save is a normal flow and should not be treated as an export failure.
         return Ok(None);
     };
 
@@ -89,7 +89,7 @@ pub async fn save_disk_growth_html(
         .and_then(|extension| extension.to_str())
         .is_some_and(|extension| extension.eq_ignore_ascii_case("html"));
     if !has_html_extension {
-        // 用户可以手动修改文件名，因此这里强制补全 HTML 扩展名。
+        // The user may edit the file name, so the HTML extension is forced here.
         output_path.set_extension("html");
     }
 
@@ -117,7 +117,7 @@ pub async fn scan_disk_growth(
     let result = tokio::task::spawn_blocking(move || {
         crate::disk_growth::scan_and_analyze_drive_with_progress(
             &|progress| {
-                // 扫描发生在阻塞线程里，通过事件把阶段进度送回前端，避免 IPC 长时间“无声”等待。
+                // Scanning happens on a blocking thread; stage progress is sent back to the frontend via events to avoid a long "silent" IPC wait.
                 let _ = app_handle.emit("disk-growth:progress", &progress);
             },
             max_change_entries,

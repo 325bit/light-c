@@ -1,15 +1,15 @@
 // ============================================================================
-// 清理日志模块 - 记录每次文件删除操作
+// Cleanup log module - records every file deletion operation
 // ============================================================================
 //
-// 功能说明：
-// 1. 使用 serde_json 序列化日志数据到 JSON 文件
-// 2. 通过 std::fs::read_dir 统计文件数量，实现日志轮转（默认只保留10份）
-// 3. 异步写入日志，不阻塞主线程
-// 4. 即使日志写入失败，清理逻辑也能继续运行
+// Features:
+// 1. Serialize log data to JSON files with serde_json
+// 2. Count files via std::fs::read_dir to implement log rotation (default: keep 10 files)
+// 3. Write logs asynchronously without blocking the main thread
+// 4. Cleanup logic continues even if log writing fails
 //
-// 日志存储位置：AppData/Roaming/LightC/logs/
-// 文件命名格式：cleanup_YYYYMMDD_HHMMSS.json
+// Log storage location: AppData/Roaming/LightC/logs/
+// File naming format: cleanup_YYYYMMDD_HHMMSS.json
 // ============================================================================
 
 use chrono::Local;
@@ -20,66 +20,66 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-/// 默认最大保留的日志文件数量
+/// Default maximum number of log files to keep
 const DEFAULT_MAX_LOG_FILES: usize = 10;
 const MIN_LOG_FILES: usize = 1;
 const MAX_LOG_FILES_LIMIT: usize = 100;
 
 fn normalize_log_retention(max_log_files: Option<usize>) -> usize {
-    // 日志保留数来自前端本地设置，后端再次收敛边界，防止手动篡改 localStorage 导致无限保留或清空过多日志。
+    // The log retention count comes from frontend local settings; the backend clamps the bounds again to prevent manual localStorage tampering from causing unlimited retention or clearing too many logs.
     max_log_files
         .unwrap_or(DEFAULT_MAX_LOG_FILES)
         .clamp(MIN_LOG_FILES, MAX_LOG_FILES_LIMIT)
 }
 
 // ============================================================================
-// 日志数据结构
+// Log data structures
 // ============================================================================
 
-/// 单条清理记录
+/// A single cleanup record
 ///
-/// 使用 serde 的 Serialize/Deserialize 特性实现 JSON 序列化：
-/// - #[derive(Serialize, Deserialize)] 自动生成序列化代码
-/// - serde_json::to_string_pretty() 将结构体转为格式化的 JSON 字符串
-/// - serde_json::from_str() 将 JSON 字符串解析为结构体
+/// Uses serde's Serialize/Deserialize derives for JSON serialization:
+/// - #[derive(Serialize, Deserialize)] auto-generates serialization code
+/// - serde_json::to_string_pretty() converts the struct into a formatted JSON string
+/// - serde_json::from_str() parses a JSON string into the struct
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CleanupLogEntry {
-    /// 操作时间戳 (ISO 8601 格式)
+    /// Operation timestamp (ISO 8601 format)
     pub timestamp: String,
-    /// 清理模块分类 (如 "微信清理", "注册表残留", "大文件清理")
+    /// Cleanup module category (e.g. "WeChat cleanup", "registry leftovers", "big file cleanup")
     pub category: String,
-    /// 文件/注册表键的绝对路径
+    /// Absolute path of the file / registry key
     pub path: String,
-    /// 释放的空间大小（字节）
+    /// Space freed (bytes)
     pub size: u64,
-    /// 操作结果: "Success" 或 "Failed" 或 "Locked_Pending_Reboot"
+    /// Operation result: "Success", "Failed", or "Locked_Pending_Reboot"
     pub result: String,
-    /// 错误信息（如果有）
+    /// Error message (if any)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error_message: Option<String>,
 }
 
-/// 单次清理会话的完整日志
+/// Complete log for a single cleanup session
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CleanupSession {
-    /// 会话开始时间
+    /// Session start time
     pub session_start: String,
-    /// 会话结束时间
+    /// Session end time
     pub session_end: String,
-    /// 总清理文件数
+    /// Total number of files cleaned
     pub total_files: usize,
-    /// 成功删除数
+    /// Number of successful deletions
     pub success_count: usize,
-    /// 失败数
+    /// Number of failures
     pub failed_count: usize,
-    /// 总释放空间（字节）
+    /// Total space freed (bytes)
     pub total_freed_bytes: u64,
-    /// 详细清理记录
+    /// Detailed cleanup records
     pub entries: Vec<CleanupLogEntry>,
 }
 
 impl CleanupSession {
-    /// 创建新的清理会话
+    /// Create a new cleanup session
     pub fn new() -> Self {
         Self {
             session_start: Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
@@ -92,7 +92,7 @@ impl CleanupSession {
         }
     }
 
-    /// 添加清理记录
+    /// Add a cleanup record
     pub fn add_entry(&mut self, entry: CleanupLogEntry) {
         if entry.result == "Success" {
             self.success_count += 1;
@@ -104,7 +104,7 @@ impl CleanupSession {
         self.entries.push(entry);
     }
 
-    /// 完成会话
+    /// Finish the session
     pub fn finish(&mut self) {
         self.session_end = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
     }
@@ -117,31 +117,31 @@ impl Default for CleanupSession {
 }
 
 // ============================================================================
-// 日志管理器
+// Log manager
 // ============================================================================
 
-/// 清理日志管理器
+/// Cleanup log manager
 ///
-/// 负责：
-/// 1. 将清理记录写入 JSON 文件
-/// 2. 管理日志文件数量（轮转）
-/// 3. 提供异步写入接口
+/// Responsibilities:
+/// 1. Write cleanup records to JSON files
+/// 2. Manage the number of log files (rotation)
+/// 3. Provide an async write interface
 pub struct CleanupLogger {
-    /// 日志存储目录
+    /// Log storage directory
     log_dir: PathBuf,
-    /// 当前会话（使用 Arc<Mutex> 支持异步访问）
+    /// Current session (uses Arc<Mutex> for async access)
     current_session: Arc<Mutex<Option<CleanupSession>>>,
 }
 
 impl CleanupLogger {
-    /// 创建日志管理器
+    /// Create the log manager
     ///
     /// # Arguments
-    /// * `app_data_dir` - 应用数据目录 (AppData/Roaming/LightC)
+    /// * `app_data_dir` - application data directory (AppData/Roaming/LightC)
     pub fn new(app_data_dir: &Path) -> Self {
         let log_dir = app_data_dir.join("logs");
 
-        // 确保日志目录存在
+        // Ensure the log directory exists
         if let Err(e) = fs::create_dir_all(&log_dir) {
             error!("创建日志目录失败: {:?}, 错误: {}", log_dir, e);
         }
@@ -152,26 +152,26 @@ impl CleanupLogger {
         }
     }
 
-    /// 获取日志目录路径
+    /// Get the log directory path
     pub fn get_log_dir(&self) -> &Path {
         &self.log_dir
     }
 
-    /// 开始新的清理会话
+    /// Start a new cleanup session
     pub async fn start_session(&self) {
         let mut session = self.current_session.lock().await;
         *session = Some(CleanupSession::new());
         info!("开始新的清理会话");
     }
 
-    /// 记录单条清理操作
+    /// Record a single cleanup operation
     ///
     /// # Arguments
-    /// * `category` - 清理模块分类
-    /// * `path` - 文件路径
-    /// * `size` - 文件大小
-    /// * `success` - 是否成功
-    /// * `error_msg` - 错误信息（可选）
+    /// * `category` - cleanup module category
+    /// * `path` - file path
+    /// * `size` - file size
+    /// * `success` - whether it succeeded
+    /// * `error_msg` - error message (optional)
     pub async fn log_entry(
         &self,
         category: &str,
@@ -197,39 +197,39 @@ impl CleanupLogger {
         if let Some(ref mut s) = *session {
             s.add_entry(entry);
         } else {
-            // 如果没有活动会话，创建一个临时会话
+            // If there is no active session, create a temporary one
             let mut new_session = CleanupSession::new();
             new_session.add_entry(entry);
             *session = Some(new_session);
         }
     }
 
-    /// 结束当前会话并保存日志
+    /// Finish the current session and save the log
     ///
-    /// 使用 serde_json 序列化日志数据：
-    /// 1. 调用 serde_json::to_string_pretty() 生成格式化的 JSON
-    /// 2. 使用 std::fs::write() 写入文件
-    /// 3. 即使写入失败也不会影响程序运行
+    /// Uses serde_json to serialize log data:
+    /// 1. Call serde_json::to_string_pretty() to generate formatted JSON
+    /// 2. Write to the file with std::fs::write()
+    /// 3. Even if writing fails, the program is unaffected
     pub async fn finish_session(&self) -> Result<PathBuf, String> {
         let mut session_guard = self.current_session.lock().await;
 
         if let Some(ref mut session) = *session_guard {
             session.finish();
 
-            // 生成日志文件名
+            // Generate the log file name
             let filename = format!("cleanup_{}.json", Local::now().format("%Y%m%d_%H%M%S"));
             let log_path = self.log_dir.join(&filename);
 
-            // 使用 serde_json 序列化为格式化的 JSON 字符串
-            // to_string_pretty() 会生成带缩进的可读 JSON
+            // Serialize to a formatted JSON string with serde_json
+            // to_string_pretty() produces readable, indented JSON
             match serde_json::to_string_pretty(session) {
                 Ok(json_content) => {
-                    // 写入文件，使用 Result 处理错误
+                    // Write the file, handling errors with Result
                     match fs::write(&log_path, json_content) {
                         Ok(_) => {
                             info!("清理日志已保存: {:?}", log_path);
 
-                            // 执行日志轮转（在后台线程中执行，不阻塞）
+                            // Perform log rotation (in a background thread, non-blocking)
                             let log_dir = self.log_dir.clone();
                             tokio::spawn(async move {
                                 if let Err(e) = rotate_logs(&log_dir, DEFAULT_MAX_LOG_FILES).await {
@@ -241,7 +241,7 @@ impl CleanupLogger {
                             return Ok(log_path);
                         }
                         Err(e) => {
-                            // 写入失败，记录错误但不崩溃
+                            // Write failed: record the error but do not crash
                             error!("写入日志文件失败: {}", e);
                             *session_guard = None;
                             return Err(format!("写入日志文件失败: {}", e));
@@ -249,7 +249,7 @@ impl CleanupLogger {
                     }
                 }
                 Err(e) => {
-                    // 序列化失败，记录错误但不崩溃
+                    // Serialization failed: record the error but do not crash
                     error!("序列化日志失败: {}", e);
                     *session_guard = None;
                     return Err(format!("序列化日志失败: {}", e));
@@ -260,9 +260,9 @@ impl CleanupLogger {
         Err("没有活动的清理会话".to_string())
     }
 
-    /// 直接保存一批清理记录（不使用会话模式）
+    /// Save a batch of cleanup records directly (without session mode)
     ///
-    /// 用于一次性记录多条清理结果
+    /// Used to record multiple cleanup results at once
     pub async fn save_cleanup_results(
         &self,
         entries: Vec<CleanupLogEntry>,
@@ -278,11 +278,11 @@ impl CleanupLogger {
         }
         session.finish();
 
-        // 生成日志文件名
+        // Generate the log file name
         let filename = format!("cleanup_{}.json", Local::now().format("%Y%m%d_%H%M%S"));
         let log_path = self.log_dir.join(&filename);
 
-        // 序列化并写入
+        // Serialize and write
         let json_content =
             serde_json::to_string_pretty(&session).map_err(|e| format!("序列化失败: {}", e))?;
 
@@ -290,7 +290,7 @@ impl CleanupLogger {
 
         info!("清理日志已保存: {:?}", log_path);
 
-        // 执行日志轮转
+        // Perform log rotation
         let log_dir = self.log_dir.clone();
         tokio::spawn(async move {
             if let Err(e) = rotate_logs(&log_dir, max_log_files).await {
@@ -303,21 +303,21 @@ impl CleanupLogger {
 }
 
 // ============================================================================
-// 日志轮转逻辑
+// Log rotation logic
 // ============================================================================
 
-/// 日志轮转 - 只保留最近 max_log_files 份日志
+/// Log rotation - keep only the most recent max_log_files logs
 ///
-/// 实现逻辑：
-/// 1. 使用 std::fs::read_dir() 遍历日志目录
-/// 2. 过滤出 .json 文件并收集文件信息
-/// 3. 按创建时间排序（最旧的在前）
-/// 4. 如果文件数量超过 max_log_files，删除最旧的文件
+/// Implementation:
+/// 1. Use std::fs::read_dir() to walk the log directory
+/// 2. Filter .json files and collect file info
+/// 3. Sort by creation time (oldest first)
+/// 4. If the file count exceeds max_log_files, delete the oldest files
 async fn rotate_logs(log_dir: &Path, max_log_files: usize) -> Result<(), String> {
     debug!("开始日志轮转检查，目录: {:?}", log_dir);
     let max_log_files = max_log_files.clamp(MIN_LOG_FILES, MAX_LOG_FILES_LIMIT);
 
-    // 使用 read_dir 遍历目录，收集所有 JSON 日志文件
+    // Use read_dir to walk the directory and collect all JSON log files
     let entries: Vec<_> = match fs::read_dir(log_dir) {
         Ok(dir) => dir
             .filter_map(|entry| entry.ok())
@@ -329,7 +329,7 @@ async fn rotate_logs(log_dir: &Path, max_log_files: usize) -> Result<(), String>
                     .unwrap_or(false)
             })
             .filter_map(|entry| {
-                // 获取文件的创建时间（或修改时间作为备选）
+                // Get the file's creation time (or modification time as fallback)
                 let metadata = entry.metadata().ok()?;
                 let created = metadata.created().or_else(|_| metadata.modified()).ok()?;
                 Some((entry.path(), created))
@@ -343,20 +343,20 @@ async fn rotate_logs(log_dir: &Path, max_log_files: usize) -> Result<(), String>
     let file_count = entries.len();
     debug!("当前日志文件数量: {}", file_count);
 
-    // 如果文件数量未超过限制，无需轮转
+    // If the file count does not exceed the limit, no rotation is needed
     if file_count <= max_log_files {
         return Ok(());
     }
 
-    // 按创建时间排序（最旧的在前）
+    // Sort by creation time (oldest first)
     let mut sorted_entries = entries;
     sorted_entries.sort_by(|a, b| a.1.cmp(&b.1));
 
-    // 计算需要删除的文件数量
+    // Compute how many files need to be deleted
     let files_to_delete = file_count - max_log_files;
     info!("日志轮转: 需要删除 {} 个旧文件", files_to_delete);
 
-    // 删除最旧的文件
+    // Delete the oldest files
     for (path, _) in sorted_entries.into_iter().take(files_to_delete) {
         match fs::remove_file(&path) {
             Ok(_) => {
@@ -371,7 +371,7 @@ async fn rotate_logs(log_dir: &Path, max_log_files: usize) -> Result<(), String>
     Ok(())
 }
 
-/// 在应用启动时执行日志轮转检查
+/// Run the log rotation check at application startup
 pub async fn cleanup_old_logs(app_data_dir: &Path) {
     let log_dir = app_data_dir.join("logs");
     if log_dir.exists() {
@@ -382,10 +382,10 @@ pub async fn cleanup_old_logs(app_data_dir: &Path) {
 }
 
 // ============================================================================
-// 日志命令函数（供 commands.rs 薄包装器调用）
+// Log command functions (called by thin wrappers in commands.rs)
 // ============================================================================
 
-/// 清理日志条目（前端传入格式）
+/// Cleanup log entry (format passed in from the frontend)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CleanupLogEntryInput {
     pub category: String,
@@ -395,7 +395,7 @@ pub struct CleanupLogEntryInput {
     pub error_message: Option<String>,
 }
 
-/// 清理历史摘要
+/// Cleanup history summary
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CleanupHistorySummary {
     pub filename: String,
@@ -407,7 +407,7 @@ pub struct CleanupHistorySummary {
     pub total_freed_bytes: u64,
 }
 
-/// 记录清理操作到日志文件
+/// Record a cleanup operation to the log file
 pub async fn record_cleanup_action(
     app_data_dir: &Path,
     entries: Vec<CleanupLogEntryInput>,
@@ -455,7 +455,7 @@ pub async fn record_cleanup_action(
     }
 }
 
-/// 打开日志文件夹（explorer.exe）
+/// Open the log folder (explorer.exe)
 pub fn open_logs_folder(app_data_dir: &Path) -> Result<(), String> {
     use log::info;
 
@@ -483,7 +483,7 @@ pub fn open_logs_folder(app_data_dir: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// 获取清理历史记录列表
+/// Get the cleanup history list
 pub fn get_cleanup_history(app_data_dir: &Path) -> Result<Vec<CleanupHistorySummary>, String> {
     use log::info;
 
@@ -527,20 +527,20 @@ pub fn get_cleanup_history(app_data_dir: &Path) -> Result<Vec<CleanupHistorySumm
 }
 
 // ============================================================================
-// 全局日志管理器实例
+// Global log manager instance
 // ============================================================================
 
 use once_cell::sync::OnceCell;
 
 static CLEANUP_LOGGER: OnceCell<CleanupLogger> = OnceCell::new();
 
-/// 初始化全局日志管理器
+/// Initialize the global log manager
 pub fn init_logger(app_data_dir: &Path) {
     let _ = CLEANUP_LOGGER.set(CleanupLogger::new(app_data_dir));
     info!("清理日志系统已初始化");
 }
 
-/// 获取全局日志管理器
+/// Get the global log manager
 pub fn get_logger() -> Option<&'static CleanupLogger> {
     CLEANUP_LOGGER.get()
 }

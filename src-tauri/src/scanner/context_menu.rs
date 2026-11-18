@@ -1,34 +1,34 @@
 // ============================================================================
-// 右键菜单扫描模块
-// 扫描 Windows 注册表中注册的右键菜单项，识别指向不存在可执行文件的无效条目
+// Context menu scan module
+// Scans context menu entries registered in the Windows registry, identifying invalid entries that point to non-existent executables
 // ============================================================================
 //
-// 【扫描路径】
-// 以下路径同时覆盖 HKEY_LOCAL_MACHINE 和 HKEY_CURRENT_USER 两棵树，
-// 每个位置都有 `shell\<键名>`（传统写法）和 `shellex\ContextMenuHandlers\<键名>`（COM 处理器）两种：
+// [Scan paths]
+// The following paths cover both the HKEY_LOCAL_MACHINE and HKEY_CURRENT_USER trees,
+// Each location has both `shell\<key name>` (traditional form) and `shellex\ContextMenuHandlers\<key name>` (COM handler) forms:
 //
-//   *\shell                        — 右键点任意文件
-//   Directory\shell                — 右键点文件夹图标
-//   Directory\Background\shell     — 右键点**文件夹窗口里的空白处**（桌面壁纸那一处是
-//                                    DesktopBackground 类，不是这里）
-//   Drive\shell                    — 右键点磁盘驱动器
-//   LibraryFolder\Background\shell — 右键点"库"里的空白
-//   Folder\shellex\...             — 文件夹类 COM 处理器
-//   AllFilesystemObjects\shellex\… — 文件和文件夹通用的 COM 处理器
+//   *\shell                        — right-click any file
+//   Directory\shell                — right-click a folder icon
+//   Directory\Background\shell     — right-click blank space **inside a folder window** (the desktop wallpaper case is
+//                                    the DesktopBackground class, not here)
+//   Drive\shell                    — right-click a disk drive
+//   LibraryFolder\Background\shell — right-click blank space in a "Library"
+//   Folder\shellex\...             — COM handler for folders
+//   AllFilesystemObjects\shellex\… — COM handler common to files and folders
 //
-// 【核心逻辑】
-// 对每个 shell 子键，读取：
-//   1. (Default) 或 MUIVerb 值作为菜单显示名称
-//   2. Icon 值作为图标路径
-//   3. command 子键的 (Default) 值作为可执行命令
-// 然后从命令字符串中提取 exe 路径，检查文件是否存在
+// [Core logic]
+// For each shell subkey, read:
+//   1. (Default) or MUIVerb value as the menu display name
+//   2. Icon value as the icon path
+//   3. command subkey's (Default) value as the executable command
+// Then extract the exe path from the command string and check whether the file exists
 //
-// 【安全措施】
-// - 扫描阶段只读，绝不修改注册表
-// - 删除前需用户明确确认，每条删之前单独导出 .reg 备份
-// - 只有"路径能提出来、文件确实不在"的条目标为失效并默认勾选；
-//   COM 处理器（shellex\ContextMenuHandlers）一律只读展示，前端禁选、后端再拦一道
-// - HKLM 条目标记为需要管理员权限，前端会给出提权提示
+// [Safety measures]
+// - The scan phase is read-only and never modifies the registry
+// - Deletion requires explicit user confirmation; export a separate .reg backup before deleting each entry
+// - Only entries where "a path can be extracted and the file is genuinely absent" are marked invalid and checked by default;
+//   COM handlers (shellex\ContextMenuHandlers) are display-only: the frontend disables selection and the backend blocks them again
+// - HKLM entries are marked as requiring admin privileges; the frontend shows an elevation hint
 // ============================================================================
 
 use serde::{Deserialize, Serialize};
@@ -39,7 +39,7 @@ use winreg::enums::*;
 use winreg::RegKey;
 
 // ============================================================================
-// Windows API FFI（用于解析 MUIVerb 间接字符串 @path,-id）
+// Windows API FFI (for resolving MUIVerb indirect strings @path,-id)
 // ============================================================================
 
 #[link(name = "shlwapi")]
@@ -53,19 +53,19 @@ extern "system" {
     ) -> i32;
 }
 
-/// 调用 SHLoadIndirectString 解析 @path,-id 格式的间接字符串
-/// 失败时返回原始字符串
+/// Calls SHLoadIndirectString to resolve indirect strings in @path,-id form
+/// Returns the original string on failure
 fn resolve_indirect_string(raw: &str) -> String {
     if !raw.starts_with('@') {
         return raw.to_string();
     }
 
-    // 先展开环境变量（如 @%SystemRoot%\system32\shell32.dll,-21769）
+    // Expand environment variables first (e.g. @%SystemRoot%\system32\shell32.dll,-21769)
     let expanded = expand_env_vars(raw);
 
-    // 转换为 UTF-16 宽字符
+    // Convert to UTF-16 wide characters
     let source_wide: Vec<u16> = expanded.encode_utf16().chain(std::iter::once(0)).collect();
-    let mut out_buf: Vec<u16> = vec![0u16; 512]; // 512 字符足够容纳菜单文字
+    let mut out_buf: Vec<u16> = vec![0u16; 512]; // 512 characters are enough for the menu text
 
     let hr = unsafe {
         SHLoadIndirectString(
@@ -77,7 +77,7 @@ fn resolve_indirect_string(raw: &str) -> String {
     };
 
     if hr == 0 {
-        // S_OK — 成功，截取到 null
+        // S_OK — success, truncate at null
         if let Some(null_pos) = out_buf.iter().position(|&c| c == 0) {
             let resolved_wide = &out_buf[..null_pos];
             return OsString::from_wide(resolved_wide)
@@ -86,15 +86,15 @@ fn resolve_indirect_string(raw: &str) -> String {
         }
     }
 
-    // 解析失败，回退到原始值
+    // Resolution failed; fall back to the original value
     raw.to_string()
 }
 
-/// 展开命令里的 `%NAME%` 环境变量。
+/// Expands `%NAME%` environment variables in a command.
 ///
-/// 不用固定名单：右键命令里常见的不止 `%SystemRoot%`，用户级安装的软件写的是
-/// `%LOCALAPPDATA%\Programs\...`，一律按系统实际值展开。变量不存在时原样保留，
-/// 这样界面还能看出命令原本长什么样，调用方也会因为解不出绝对路径而判 Unknown。
+/// No fixed list: context menu commands commonly use more than `%SystemRoot%`; per-user installs write
+/// `%LOCALAPPDATA%\Programs\...`, so expand using the system's actual values. Unknown variables are left as-is,
+/// so the UI still shows what the command originally looked like, and the caller reports Unknown when no absolute path can be resolved.
 fn expand_env_vars(path: &str) -> String {
     let mut result = String::with_capacity(path.len());
     let mut rest = path;
@@ -103,7 +103,7 @@ fn expand_env_vars(path: &str) -> String {
         result.push_str(&rest[..start]);
         let after = &rest[start + 1..];
         match after.find('%') {
-            // 找到配对的 %：看看中间是不是个真实存在的变量名
+            // Found a matching %: check whether the text between is a real variable name
             Some(end) if end > 0 => {
                 let name = &after[..end];
                 match std::env::var(name) {
@@ -116,7 +116,7 @@ fn expand_env_vars(path: &str) -> String {
                 }
                 rest = &after[end + 1..];
             }
-            // 落单的 %：按普通字符处理，别把后面的内容吞掉
+            // Unpaired %: treat as an ordinary character; don't swallow what follows
             _ => {
                 result.push('%');
                 rest = after;
@@ -127,8 +127,8 @@ fn expand_env_vars(path: &str) -> String {
     result
 }
 
-/// 排序权重：失效的最前面；正常项其次（列表一打开就是"没什么问题"的样子）；
-/// 判定不了的垫底 —— 它们既不需要处理也不该占住第一屏。
+/// Sort rank: invalid entries first, normal ones next (so the list opens looking "nothing's wrong");
+/// undetermined ones last — they need no action and shouldn't take up the first screen.
 fn status_rank(status: ExeStatus) -> u8 {
     match status {
         ExeStatus::Missing => 0,
@@ -137,10 +137,10 @@ fn status_rank(status: ExeStatus) -> u8 {
     }
 }
 
-/// 目标程序三态判定。
+/// Three-state classification of the target executable.
 ///
-/// 只有"提到了路径、文件却不在"才算失效。提不出路径（COM 处理器、级联菜单、
-/// 委托执行器）一律 Unknown —— 不参与无效统计、不默认勾选。
+/// Only "a path is mentioned but the file is absent" counts as invalid. Paths that can't be extracted (COM handlers, cascading menus,
+/// delegate executors) are always Unknown — not counted as invalid and not checked by default.
 fn classify_exe_status(exe_path: Option<&str>) -> ExeStatus {
     match exe_path {
         Some(path) if Path::new(path).exists() => ExeStatus::Ok,
@@ -149,21 +149,21 @@ fn classify_exe_status(exe_path: Option<&str>) -> ExeStatus {
     }
 }
 
-/// 是否形如 `{90AA3A4E-1CBA-4233-B8BB-535773D48449}` 的 CLSID
+/// Whether it looks like a CLSID of the form `{90AA3A4E-1CBA-4233-B8BB-535773D48449}`
 fn looks_like_clsid(value: &str) -> bool {
     let value = value.trim();
     value.len() == 38 && value.starts_with('{') && value.ends_with('}')
 }
 
-/// 解析 `shellex\ContextMenuHandlers\<键名>` 这个 COM 处理器实际加载的 DLL。
+/// Resolves the DLL actually loaded by the COM handler `shellex\ContextMenuHandlers\<key name>`.
 ///
-/// 注册表里两种写法都要认：
-/// 1. 键名本身就是 CLSID（`{90AA3A4E-...}`）；
-/// 2. 键名是友好名（`TortoiseSVN`），`(Default)` 值才是 CLSID。
+/// Both registry forms must be recognized:
+/// 1. The key name itself is a CLSID（`{90AA3A4E-...}`）；
+/// 2. The key name is a friendly name（`TortoiseSVN`），`(Default)` value is the CLSID.
 ///
-/// 拿到 CLSID 再去 `Classes\CLSID\<guid>\InprocServer32` 取 DLL 路径。
-/// 先查 HKCU 再查 HKLM —— 与 Windows 的覆盖顺序一致。
-/// 解析不出来返回 `None`，调用方据此判 `Unknown`（不是"失效"）。
+/// With the CLSID, get the DLL path from `Classes\CLSID\<guid>\InprocServer32`.
+/// Check HKCU first, then HKLM — matching Windows' override order.
+/// Returns `None` if it cannot be resolved, so the caller reports `Unknown` (not "invalid").
 fn resolve_handler_dll(entry_key: &RegKey, key_name: &str) -> Option<String> {
     let clsid = if looks_like_clsid(key_name) {
         key_name.trim().to_string()
@@ -187,26 +187,26 @@ fn resolve_handler_dll(entry_key: &RegKey, key_name: &str) -> Option<String> {
         let Ok(dll) = key.get_value::<String, _>("") else {
             continue;
         };
-        // DLL 路径常写成 REG_EXPAND_SZ（`%SystemRoot%\system32\foo.dll`）
+        // DLL paths are often stored as REG_EXPAND_SZ（`%SystemRoot%\system32\foo.dll`）
         let expanded = expand_env_vars(dll.trim());
         if expanded.is_empty() {
             continue;
         }
-        // 托管扩展的 InprocServer32 只写裸文件名（`mscoree.dll`）。
-        // 拿裸名去 exists() 是按当前工作目录找，必然 false —— 会在界面上变成
-        // "文件不存在"的误报，而且这类条目是可删的，等于给用户一把误删的刀。
+        // Managed extensions' InprocServer32 often contain only a bare file name（`mscoree.dll`）。
+        // Calling exists() on a bare name searches the current working directory, so it's always false — showing up in the UI as
+        // a false "file does not exist" report, and these entries are deletable — handing the user a way to delete by mistake.
         if let Some(resolved) = resolve_bare_module(&expanded) {
             return Some(resolved);
         }
-        // 这一层解析不出来就继续看下一层（HKCU 里写坏了不代表 HKLM 那份也不行）
+        // If resolution fails at this level, continue to the next (a broken HKCU entry doesn't mean the HKLM one is bad too)
     }
     None
 }
 
-/// 把裸文件名（`mscoree.dll`）补全成真实路径。
+/// Completes a bare file name (`mscoree.dll`) into a real path.
 ///
-/// 依次查 System32 / SysWOW64 / 系统根 / `PATH`；都没有就返回 `None`，
-/// 让调用方判 `Unknown` 而不是"文件已不存在"。
+/// Searches System32 / SysWOW64 / system root / `PATH` in order; returns `None` if none match,
+/// so the caller reports `Unknown` rather than "file no longer exists".
 fn resolve_bare_module(name: &str) -> Option<String> {
     if name.contains('\\') || name.contains('/') {
         return Some(name.to_string());
@@ -231,17 +231,17 @@ fn resolve_bare_module(name: &str) -> Option<String> {
         .map(|candidate| candidate.to_string_lossy().to_string())
 }
 
-/// 取命令行里的第一个 token（按空白切分）
+/// Takes the first token of a command line (split on whitespace)
 fn first_token(command: &str) -> &str {
     command.split_whitespace().next().unwrap_or(command)
 }
 
-/// 是否够格当 exe 路径（只认 `.exe` 结尾，避免把目录当成程序）
+/// Whether it qualifies as an exe path (only `.exe` endings count, to avoid treating a directory as a program)
 fn is_exe_path(candidate: &str) -> bool {
     candidate.len() > 4 && candidate.to_ascii_lowercase().ends_with(".exe")
 }
 
-/// 是否绝对路径（盘符开头或 UNC `\\server\share`）
+/// Whether it is an absolute path (starts with a drive letter or UNC `\\server\share`)
 fn is_absolute_path(token: &str) -> bool {
     let mut chars = token.chars();
     match (chars.next(), chars.next(), chars.next()) {
@@ -250,7 +250,7 @@ fn is_absolute_path(token: &str) -> bool {
     }
 }
 
-/// 是否是"委托执行器"：命令本身不是真正的目标，真目标在参数里
+/// Whether it is a "delegate executor": the command itself is not the real target; the real target is in the arguments
 fn is_delegate_executor(token: &str) -> bool {
     let lower = token.to_lowercase();
     ["rundll32", "msiexec", "regsvr32", "wscript", "cscript"]
@@ -258,10 +258,10 @@ fn is_delegate_executor(token: &str) -> bool {
         .any(|name| lower.contains(name))
 }
 
-/// 在"路径带空格又没加引号"的命令里，按空白逐段拼回真正的 exe。
+/// In commands where "the path has spaces but no quotes", rebuild the real exe segment by segment on whitespace.
 ///
-/// 只看"以 .exe 结尾且文件真实存在"的候选，找不到就返回 None 交回调用方 ——
-/// 不猜、不拼，猜错就是一次误报级的误删。
+/// Only consider candidates that "end in .exe and whose file really exists"; if none is found, return None to the caller —
+/// Don't guess, don't fabricate; a wrong guess means a false-positive-level mistaken deletion.
 fn find_existing_exe_prefix(command: &str) -> Option<String> {
     let mut candidate = String::new();
     for part in command.split_whitespace() {
@@ -276,11 +276,11 @@ fn find_existing_exe_prefix(command: &str) -> Option<String> {
     None
 }
 
-/// 命令里的裸 exe 名（`cmd.exe`、`explorer.exe`）解析成真实路径。
+/// Resolves bare exe names in a command (`cmd.exe`, `explorer.exe`) into real paths.
 ///
-/// 只接受 `.exe` 结尾、且不带路径分隔符的写法，再交给 `resolve_bare_module`。
-/// 找不到返回 `None`（Unknown）—— **绝不返回拼出来的路径**，靠 PATH 解析的
-/// 第三方命令会被误判成"文件已不存在"。
+/// Only accepts `.exe` endings with no path separators, then delegates to `resolve_bare_module`.
+/// Returns `None` (Unknown) when not found — **never return a fabricated path**; commands resolved via PATH
+/// would otherwise be misjudged as "file no longer exists".
 fn resolve_system_executable(token: &str) -> Option<String> {
     if !is_exe_path(token) || token.contains('\\') || token.contains('/') {
         return None;
@@ -289,138 +289,138 @@ fn resolve_system_executable(token: &str) -> Option<String> {
 }
 
 // ============================================================================
-// 数据结构
+// Data structures
 // ============================================================================
 
-/// 右键菜单扫描结果
+/// Context menu scan result
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ContextMenuScanResult {
-    /// 扫描到的所有菜单条目
+    /// All menu entries found during the scan
     pub entries: Vec<ContextMenuEntry>,
-    /// 其中无效（exe 不存在）的条目数
+    /// Number of invalid entries among them (exe missing)
     pub invalid_count: usize,
-    /// 扫描耗时（毫秒）
+    /// Scan duration in milliseconds
     pub scan_duration_ms: u64,
 }
 
-/// 目标程序（exe）的存在性判定结果。
+/// Result of the existence check for the target executable.
 ///
-/// 刻意分成三态而不是一个 `bool`：从命令里提不出路径和"路径存在但文件没了"是两件事。
-/// 前者（`rundll32 shell32.dll,...`、`explorer.exe`、走了未知环境变量的写法）目标其实
-/// 藏在参数里或另一个位置，判成"失效"会让用户把正常菜单一起删掉。
+/// Deliberately three states rather than a `bool`: being unable to extract a path from the command and "path exists but the file is gone" are two different things.
+/// In the former case (`rundll32 shell32.dll,...`, `explorer.exe`, forms using unknown env vars) the target is actually
+/// hidden in the arguments or elsewhere; marking it "invalid" would make the user delete normal menus too.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ExeStatus {
-    /// 提到了路径，文件也在
+    /// A path was mentioned and the file exists
     Ok,
-    /// 提到了路径，但文件已经不在磁盘上 —— 只有这一种算"无效条目"
+    /// A path was mentioned but the file is no longer on disk — only this counts as an "invalid entry"
     Missing,
-    /// 提不出可判定的路径，无从判断
+    /// No determinable path could be extracted; cannot be judged
     Unknown,
 }
 
-/// 单个右键菜单条目
+/// A single context menu entry
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ContextMenuEntry {
-    /// 唯一 ID，用于删除时定位（reg_root + "||" + reg_subpath）
+    /// Unique ID used to locate the entry for deletion (reg_root + "||" + reg_subpath)
     pub id: String,
-    /// 菜单显示名称（已解析 MUIVerb 间接字符串）
+    /// Menu display name (MUIVerb indirect string already resolved)
     pub display_name: String,
-    /// 注册表子键名（shell 下的子键名，如 "VSCode"）
+    /// Registry subkey name (the subkey under shell, e.g. "VSCode")
     pub key_name: String,
-    /// 完整注册表路径（用于 UI 展示）
+    /// Full registry path (for UI display)
     pub registry_path: String,
-    /// 注册表根（"HKCU" | "HKLM"）
+    /// Registry root ("HKCU" | "HKLM")
     pub reg_root: String,
-    /// 相对于根的子路径（如 "SOFTWARE\\Classes\\*\\shell\\MyApp"）
+    /// Subpath relative to the root (e.g. "SOFTWARE\\Classes\\*\\shell\\MyApp")
     pub reg_subpath: String,
-    /// 右键菜单的作用范围，稳定英文 id：
-    /// `file`（任意文件）/ `folder`（文件夹）/ `background`（文件夹窗口空白处）/
-    /// `drive`（磁盘驱动器）/ `library`（库文件夹）。界面文案由前端翻译。
+    /// Scope of the context menu entry, stable English id:
+    /// `file`（any file）/ `folder`（folder）/ `background`（blank space in a folder window）/
+    /// `drive`（disk drive）/ `library`（library folder）。UI text is translated by the frontend.
     pub scope: String,
-    /// 图标路径（原始值，可能含 index 后缀如 "C:\foo.exe,0"）
+    /// Icon path (raw value, may include an index suffix such as "C:\foo.exe,0")
     pub icon_path: Option<String>,
-    /// 原始命令字符串（来自 command 子键）
+    /// Original command string (from the command subkey)
     pub command: Option<String>,
-    /// 从命令中提取的可执行文件路径（去掉参数后的纯路径）
+    /// Executable path extracted from the command (the pure path with arguments removed)
     pub exe_path: Option<String>,
-    /// 目标程序是否还在磁盘（三态，见 `ExeStatus`）
+    /// Whether the target executable is still on disk (three states, see `ExeStatus`)
     pub exe_status: ExeStatus,
-    /// 删除此条目是否需要管理员权限（HKLM 条目需要）
+    /// Whether deleting this entry requires admin privileges (HKLM entries do)
     pub needs_admin: bool,
-    /// 是否为系统保护条目（不可选中删除）。
+    /// Whether this is a system-protected entry (cannot be selected for deletion).
     ///
-    /// COM 处理器默认只读；处理器 DLL 已经不在了的不算保护 —— 那是残留，可以清。
+    /// COM handlers are read-only by default; those whose handler DLL is already gone don't count as protected — they are leftovers and can be cleaned.
     pub is_system_protected: bool,
-    /// 风险等级（"safe" | "caution" | "danger"）
+    /// Risk level ("safe" | "caution" | "danger")
     pub risk_level: String,
 }
 
-/// 右键菜单条目删除请求
+/// Context menu entry deletion request
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ContextMenuDeleteRequest {
-    /// 条目唯一 ID
+    /// Entry's unique ID
     pub id: String,
-    /// 注册表根（"HKCU" | "HKLM"）
+    /// Registry root ("HKCU" | "HKLM")
     pub reg_root: String,
-    /// 相对于根的子路径
+    /// Subpath relative to the root
     pub reg_subpath: String,
 }
 
-/// 右键菜单删除结果
+/// Context menu deletion result
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ContextMenuDeleteResult {
-    /// 成功删除的条目数
+    /// Number of entries successfully deleted
     pub deleted_count: usize,
-    /// 删除失败的条目数
+    /// Number of entries that failed to delete
     pub failed_count: usize,
-    /// 每个条目的详细结果
+    /// Detailed result for each entry
     pub details: Vec<ContextMenuDeleteDetail>,
 }
 
-/// 单个条目的删除详情
+/// Deletion details for a single entry
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ContextMenuDeleteDetail {
-    /// 条目 ID
+    /// Entry ID
     pub id: String,
-    /// 是否成功
+    /// Whether it succeeded
     pub success: bool,
-    /// 失败原因（成功时为 None）
+    /// Failure reason (None on success)
     pub error: Option<String>,
 }
 
 // ============================================================================
-// 关于白名单
+// About the whitelist
 //
-// 这里曾经有一份"跳过 VSCode / 7-Zip / WinRAR / cmd ……"的键名白名单。
-// 它把"已知的正常软件"整条跳过，代价是**卸载残留反过来扫不到**——软件卸掉后
-// 注册项还留在这些键名下，而那正是这个模块最该抓的东西（`HKCU\...\*\shell\VSCode`
-// 在本机实测就被整条吞掉）。
+// There used to be a key-name whitelist here that skipped "VSCode / 7-Zip / WinRAR / cmd ...".
+// It skipped entire entries for "known good software", at the cost of **missing uninstall leftovers** — after the software was uninstalled,
+// the registry entries remained under those key names, which is exactly what this module should catch (`HKCU\...\*\shell\VSCode`
+// was swallowed whole in local testing).
 //
-// 现在不按键名预判，全部交给目标程序是否存在来说话：文件在就是正常条目（默认
-// 不勾选），文件没了就是残留。系统内置动词（open / print / properties 等）本来
-// 就不在这些 `shell` 子键下，不需要名单挡。
+// Now there is no pre-judgment by key name; everything is decided by whether the target executable exists: if the file is there, it is a normal entry (not
+// checked by default); if the file is gone, it is a leftover. Built-in system verbs (open / print / properties, etc.) were never
+// under these `shell` subkeys in the first place, so no whitelist is needed.
 // ============================================================================
 
 // ============================================================================
-// 右键菜单扫描器
+// Context menu scanner
 // ============================================================================
 
-/// 右键菜单扫描器
+/// Context menu scanner
 pub struct ContextMenuScanner;
 
 impl ContextMenuScanner {
-    /// 创建新扫描器实例
+    /// Creates a new scanner instance
     pub fn new() -> Self {
         ContextMenuScanner
     }
 
-    /// 执行完整扫描，返回所有找到的右键菜单条目
+    /// Performs a full scan and returns all context menu entries found
     pub fn scan(&self) -> Result<ContextMenuScanResult, String> {
         let start = std::time::Instant::now();
         let mut entries: Vec<ContextMenuEntry> = Vec::new();
 
-        // 扫描 HKEY_LOCAL_MACHINE（需要管理员才能删除）
+        // Scan HKEY_LOCAL_MACHINE (admin rights required to delete)
         self.scan_hive(
             RegKey::predef(HKEY_LOCAL_MACHINE),
             "HKLM",
@@ -429,7 +429,7 @@ impl ContextMenuScanner {
             &mut entries,
         );
 
-        // 扫描 HKEY_CURRENT_USER（当前用户级别，无需管理员）
+        // Scan HKEY_CURRENT_USER (current-user level, no admin needed)
         self.scan_hive(
             RegKey::predef(HKEY_CURRENT_USER),
             "HKCU",
@@ -438,10 +438,10 @@ impl ContextMenuScanner {
             &mut entries,
         );
 
-        // 对相同显示名称去重：优先保留 HKCU 条目（用户级优先）
+        // Deduplicate by display name, preferring HKCU entries (user level takes priority)
         entries = Self::deduplicate(entries);
 
-        // 排序：失效的最前面，无法判定的居中，正常的垫底；同组内按显示名排
+        // Sort: invalid first, undetermined in the middle, normal last; within each group, sort by display name
         entries.sort_by(|a, b| {
             status_rank(a.exe_status)
                 .cmp(&status_rank(b.exe_status))
@@ -472,7 +472,7 @@ impl ContextMenuScanner {
         })
     }
 
-    /// 扫描指定注册表 Hive 下的所有右键菜单路径
+    /// Scans all context menu paths under a given registry hive
     fn scan_hive(
         &self,
         hive: RegKey,
@@ -481,26 +481,26 @@ impl ContextMenuScanner {
         needs_admin: bool,
         entries: &mut Vec<ContextMenuEntry>,
     ) {
-        // 定义要扫描的 (scope_id, relative_path_from_classes)
+        // Define the (scope_id, relative_path_from_classes) to scan
         //
-        // scope 只放**稳定的英文 id**，界面文案由前端按语言渲染。
-        // 这里曾经写的是中文（"任意文件" / "桌面背景"），结果是双份 bug：
-        //   · 非中文界面原样漏出中文标签；
-        //   · 同一个 id 在两处写死，改一个漏一个。
+        // scope holds only **stable English ids**; the frontend renders UI text per language.
+        // This used to contain Chinese ("any file" / "desktop background"), resulting in a double bug:
+        //   · Non-Chinese UIs leaked the Chinese labels verbatim;
+        //   · The same id was hard-coded in two places, so updating one missed the other.
         //
-        // 两种注册方式都要扫：
-        //   * `...\shell\<键名>`            — 传统写法，命令写在 command 子键里
-        //   * `...\shellex\ContextMenuHandlers\<键名>` — COM 处理器，命令是 CLSID 指向的 DLL
-        // 后者是卸载残留最常见的藏身处（软件删了、CLSID 注册还在）。
+        // Both registration forms must be scanned:
+        //   * `...\shell\<key name>`            — traditional form, command stored in the command subkey
+        //   * `...\shellex\ContextMenuHandlers\<key name>` — COM handler, command is the DLL pointed to by the CLSID
+        // The latter is the most common hiding place for uninstall leftovers (software deleted but CLSID registration remains).
         let scan_targets: &[(&str, &str)] = &[
             ("file", r"*\shell"),
             ("folder", r"Directory\shell"),
-            // Directory\Background 是**文件夹窗口里的空白处**，不是桌面壁纸那一处
-            // （那是 DesktopBackground 类）。旧标签叫"桌面背景"是起错了
+            // Directory\Background is **blank space inside a folder window**, not the desktop wallpaper case
+            // (that is the DesktopBackground class). The old label "desktop background" was simply wrong
             ("background", r"Directory\Background\shell"),
             ("drive", r"Drive\shell"),
             ("library", r"LibraryFolder\Background\shell"),
-            // COM 处理器：scope 沿用"右键点在哪"，不单独造一个 scope
+            // COM handlers: scope follows "where you right-click"; no separate scope is created
             ("file", r"*\shellex\ContextMenuHandlers"),
             ("folder", r"Directory\shellex\ContextMenuHandlers"),
             (
@@ -528,13 +528,13 @@ impl ContextMenuScanner {
                     );
                 }
                 Err(_) => {
-                    // 该路径不存在，静默跳过
+                    // Path does not exist; skip silently
                 }
             }
         }
     }
 
-    /// 扫描单个 shell 键下的所有子键（每个子键对应一个菜单项）
+    /// Scans all subkeys under a single shell key (each subkey corresponds to one menu item)
     fn scan_shell_key(
         &self,
         shell_key: &RegKey,
@@ -568,7 +568,7 @@ impl ContextMenuScanner {
         }
     }
 
-    /// 从注册表键构建 ContextMenuEntry
+    /// Builds a ContextMenuEntry from a registry key
     fn build_entry(
         &self,
         entry_key: &RegKey,
@@ -579,13 +579,13 @@ impl ContextMenuScanner {
         scope: &str,
         needs_admin: bool,
     ) -> Option<ContextMenuEntry> {
-        // 读取菜单显示名称（优先 MUIVerb，其次 (Default)，最后用键名）
+        // Read the menu display name (MUIVerb first, then (Default), then fall back to the key name)
         let display_name_raw: String = entry_key
             .get_value::<String, _>("MUIVerb")
             .or_else(|_| entry_key.get_value::<String, _>(""))
             .unwrap_or_else(|_| key_name.to_string());
 
-        // 过滤掉名称为空或纯空白的条目
+        // Filter out entries with an empty or whitespace-only name
         let display_name_raw = display_name_raw.trim().to_string();
         if display_name_raw.is_empty() && key_name.trim().is_empty() {
             return None;
@@ -596,25 +596,25 @@ impl ContextMenuScanner {
             display_name_raw
         };
 
-        // 解析 MUIVerb 间接字符串（@path,-id → 人类可读文字）
+        // Resolve the MUIVerb indirect string (@path,-id → human-readable text)
         let display_name = resolve_indirect_string(&display_name_raw);
 
-        // 读取图标路径
+        // Read the icon path
         let icon_path: Option<String> = entry_key.get_value::<String, _>("Icon").ok();
 
-        // COM 处理器不是靠 command 子键驱动的，命令是 CLSID 指向的 DLL。
-        // 不解析它，这一整类条目就永远是"无法判定"，补再多扫描位置也没用。
+        // COM handlers are not driven by the command subkey; their command is the DLL pointed to by the CLSID.
+        // Without resolving it, this whole class of entries stays "undetermined" no matter how many scan locations are added.
         let is_com_handler = reg_subpath
             .to_lowercase()
             .contains(r"shellex\contextmenuhandlers");
 
-        // 读取命令字符串（来自 command 子键的默认值）
+        // Read the command string (from the default value of the command subkey)
         let command: Option<String> = entry_key
             .open_subkey_with_flags("command", KEY_READ)
             .ok()
             .and_then(|cmd_key| cmd_key.get_value::<String, _>("").ok());
 
-        // 从命令字符串中提取 exe 路径；COM 处理器改从 CLSID 解析出处理器 DLL
+        // Extract the exe path from the command string; for COM handlers, resolve the handler DLL from the CLSID instead
         let exe_path: Option<String> = if is_com_handler {
             resolve_handler_dll(entry_key, key_name)
         } else {
@@ -623,16 +623,16 @@ impl ContextMenuScanner {
                 .and_then(|cmd| Self::extract_exe_path(cmd))
         };
 
-        // 目标程序三态判定：只有"提到了路径、文件却不在"才算无效。
-        // 提不出路径（级联菜单、委托执行器、解析不了的 CLSID）一律 Unknown，
-        // 不参与无效统计、不默认勾选 —— 宁可漏报也不给用户一个误删的机会。
+        // Three-state classification of the target executable: only "a path is mentioned but the file is absent" counts as invalid.
+        // Paths that cannot be extracted (cascading menus, delegate executors, unresolvable CLSIDs) are always Unknown,
+        // not counted as invalid and not checked by default — better to miss one than give the user a chance to delete by mistake.
         let exe_status = classify_exe_status(exe_path.as_deref());
 
-        // 系统保护判定：COM 处理器默认只读，但**处理器 DLL 已经不在了**的不算 ——
-        // 那正是卸载残留，留着只会让资源管理器每次右键都去找一个不存在的 DLL。
+        // System-protection check: COM handlers are read-only by default, but those whose **handler DLL is already gone** do not count —
+        // that is exactly an uninstall leftover, and keeping it only makes Explorer look for a non-existent DLL on every right-click.
         let is_system_protected = is_com_handler && exe_status != ExeStatus::Missing;
 
-        // 风险分级
+        // Risk classification
         let risk_level = if is_system_protected {
             "danger".to_string()
         } else if needs_admin {
@@ -661,33 +661,33 @@ impl ContextMenuScanner {
         })
     }
 
-    /// 从命令字符串中提取可执行文件路径
+    /// Extracts the executable path from a command string
     ///
-    /// 处理以下常见格式：
-    /// - `"C:\Program Files\App\app.exe" "%1"`（常规写法）
-    /// - `C:\Program Files\App\app.exe %1`（路径带空格却没加引号，老安装器常见）
+    /// Handles the following common formats:
+    /// - `"C:\Program Files\App\app.exe" "%1"` (standard form)
+    /// - `C:\Program Files\App\app.exe %1` (path has spaces but no quotes, common in old installers)
     /// - `%SystemRoot%\system32\cmd.exe /c ...`、`%LOCALAPPDATA%\Programs\App\App.exe`
-    /// - `cmd.exe /c ...`（只有裸文件名，靠系统目录解析）
+    /// - `cmd.exe /c ...` (bare file name only, resolved via system directories)
     ///
-    /// 返回 `None` 表示**无法判定**，调用方据此给 `ExeStatus::Unknown`。
-    /// 不要把 `None` 当成"文件不存在" —— 那会制造一整类误报。
+    /// Returning `None` means **undetermined**; the caller then assigns `ExeStatus::Unknown`.
+    /// Do not treat `None` as "file does not exist" — that would create a whole class of false positives.
     fn extract_exe_path(cmd: &str) -> Option<String> {
         let raw = cmd.trim();
         if raw.is_empty() {
             return None;
         }
 
-        // 环境变量先展开：用户级安装的软件（Chrome / VSCode / 各类 Electron 应用）
-        // 写的多是 %LOCALAPPDATA%，只认 %SystemRoot% 那六个变量会整类漏掉
+        // Expand environment variables first: per-user installed software (Chrome / VSCode / various Electron apps)
+        // mostly writes %LOCALAPPDATA%; recognizing only the %SystemRoot%-style variables would miss the whole class
         let expanded = expand_env_vars(raw);
 
-        // 委托执行器（rundll32 / msiexec / regsvr32 / wscript / cscript）本身一定存在，
-        // 真正被调起来的东西在参数里（.dll / .msi / .vbs），单看 exe 判不出有效性
+        // Delegate executors (rundll32 / msiexec / regsvr32 / wscript / cscript) always exist themselves,
+        // the thing actually invoked is in the arguments (.dll / .msi / .vbs), so validity cannot be judged from the exe alone
         if is_delegate_executor(first_token(&expanded)) {
             return None;
         }
 
-        // 带引号：取第一对引号里的内容
+        // With quotes: take the content of the first pair of quotes
         if let Some(rest) = expanded.strip_prefix('"') {
             if let Some(end) = rest.find('"') {
                 let path = rest[..end].trim();
@@ -695,11 +695,11 @@ impl ContextMenuScanner {
                     return Some(path.to_string());
                 }
             }
-            // 只有开引号（注册表写坏了），退回去按裸路径处理
+            // Only an opening quote (broken registry entry); fall back to treating it as a bare path
         }
 
-        // 不带引号但路径里有空格：取最早一个"以 .exe 结尾且文件真实存在"的前缀。
-        // 按空白切第一段会切出 `C:\Program`，那是误报的主要来源之一
+        // No quotes but spaces in the path: take the earliest prefix that "ends in .exe and whose file really exists".
+        // Splitting on the first whitespace yields `C:\Program`, one of the main sources of false positives
         if let Some(found) = find_existing_exe_prefix(&expanded) {
             return Some(found);
         }
@@ -709,23 +709,23 @@ impl ContextMenuScanner {
             return Some(token.to_string());
         }
 
-        // 裸文件名：只在系统目录里确实存在时才算数
+        // Bare file name: only counts if it really exists in a system directory
         resolve_system_executable(token)
     }
 
-    /// 对条目去重：同一条注册表路径在 HKCU / HKLM 各有一份时只保留一条。
+    /// Deduplicates entries: when the same registry path exists in both HKCU and HKLM, keep only one.
     ///
-    /// 去重键用**去掉 hive 的完整子路径**，不再用 `(scope, key_name)`：
-    /// 现在同一个 scope 下有 `shell` 和 `shellex\ContextMenuHandlers` 两种父路径，
-    /// 按名字去重会把不同位置的两条误判成同一条。
+    /// The dedup key uses the **full subpath without the hive**, no longer `(scope, key_name)`:
+    /// Now each scope has two parent paths, `shell` and `shellex\ContextMenuHandlers`,
+    /// deduping by name would mistake two entries in different locations for the same one.
     ///
-    /// 保留谁：失效的那条优先。HKCU 有一条能用的、HKLM 有一条同名的残留时，
-    /// 只留 HKCU 会让那条残留永远显示不出来 —— 而它才是这个模块要找的东西。
+    /// Which one to keep: prefer the invalid one. When HKCU has a working entry and HKLM has a leftover with the same name,
+    /// keeping only HKCU would hide that leftover forever — and it is exactly what this module is looking for.
     fn deduplicate(entries: Vec<ContextMenuEntry>) -> Vec<ContextMenuEntry> {
         use std::collections::HashMap;
 
         let mut best: HashMap<String, ContextMenuEntry> = HashMap::new();
-        // 单独记顺序：HashMap 无序，直接遍历会让列表顺序每次扫描都不一样
+        // Track order separately: HashMap is unordered, so iterating directly would make the list order differ on every scan
         let mut order: Vec<String> = Vec::new();
 
         for entry in entries {
@@ -737,11 +737,11 @@ impl ContextMenuScanner {
                 }
                 Some(existing) => {
                     let replace = match (existing.exe_status, entry.exe_status) {
-                        // 已经留下的是失效项，不换
+                        // The one already kept is invalid; do not replace
                         (ExeStatus::Missing, _) => false,
-                        // 新来的是失效项，换掉那条"看起来正常"的
+                        // The new one is invalid; replace the "apparently normal" one
                         (_, ExeStatus::Missing) => true,
-                        // 都不是失效项：沿用 HKCU 覆盖 HKLM 的规则
+                        // Neither is invalid: follow the rule that HKCU overrides HKLM
                         _ => existing.reg_root == "HKLM" && entry.reg_root == "HKCU",
                     };
                     if replace {
@@ -759,10 +759,10 @@ impl ContextMenuScanner {
 }
 
 // ============================================================================
-// 右键菜单删除器
+// Context menu deleter
 // ============================================================================
 
-/// 执行右键菜单条目的删除操作
+/// Performs deletion of context menu entries
 pub fn delete_context_menu_entries(
     requests: &[ContextMenuDeleteRequest],
 ) -> ContextMenuDeleteResult {
@@ -801,9 +801,9 @@ pub fn delete_context_menu_entries(
         });
     }
 
-    // 删完通知外壳刷新。不做这一步，用户回到桌面右键会发现菜单还在 ——
-    // 资源管理器缓存了菜单，要注销或重启才看得到变化，看起来像"删了没生效"。
-    // 只发变更通知，不结束 explorer.exe（那会连带任务栏扩展一起重启）。
+    // Notify the shell to refresh after deletion. Without this, the user right-clicking on the desktop would find the menu still there —
+    // Explorer caches menus, so the change only shows after logout or restart, looking like "the deletion did not take effect".
+    // Only send a change notification; do not kill explorer.exe (that would also restart taskbar extensions).
     if deleted_count > 0 {
         if let Err(error) = crate::scanner::shell_icons::restart_explorer() {
             log::warn!("通知外壳刷新失败: {}", error);
@@ -817,15 +817,15 @@ pub fn delete_context_menu_entries(
     }
 }
 
-/// 删除单个注册表条目（递归删除整个 shell 子键）
-/// 删除前自动导出 .reg 备份文件至数据目录
+/// Deletes a single registry entry (recursively deletes the entire shell subkey)
+/// Automatically exports a .reg backup to the data directory before deletion
 fn delete_single_entry(req: &ContextMenuDeleteRequest) -> Result<(), String> {
     let subpath = req.reg_subpath.as_str();
     let lower_subpath = subpath.to_lowercase();
 
-    // 安全阀一：路径必须落在允许清理的右键菜单位置内。
-    // 前端只回传 id/root/subpath 三个字段，这条命令本身对调用方完全开放 ——
-    // 不校验的话，一次错误调用就能删掉注册表里任意一个键。
+    // Safety valve one: the path must fall within an allowed context menu cleanup location.
+    // The frontend only sends back the three fields id/root/subpath, and this command is completely open to callers —
+    // without validation, a single bad call could delete any key in the registry.
     if !is_deletable_subpath(&lower_subpath) {
         return Err(format!(
             "不在允许清理的右键菜单位置内，已拒绝删除: {}",
@@ -833,15 +833,15 @@ fn delete_single_entry(req: &ContextMenuDeleteRequest) -> Result<(), String> {
         ));
     }
 
-    // 根据 reg_root 选择根 hive
+    // Select the root hive based on reg_root
     let hive = match req.reg_root.as_str() {
         "HKCU" => RegKey::predef(HKEY_CURRENT_USER),
         "HKLM" => RegKey::predef(HKEY_LOCAL_MACHINE),
         other => return Err(format!("不支持的注册表根: {}", other)),
     };
 
-    // reg_subpath 是形如 "SOFTWARE\Classes\*\shell\MyApp" 的完整子路径
-    // 需要拆分为父路径和最后一级键名
+    // reg_subpath is a full subpath of the form "SOFTWARE\Classes\*\shell\MyApp"
+    // It needs to be split into the parent path and the final key name
     let (parent_path, key_name) = match subpath.rfind('\\') {
         Some(pos) => (&subpath[..pos], &subpath[pos + 1..]),
         None => {
@@ -849,15 +849,15 @@ fn delete_single_entry(req: &ContextMenuDeleteRequest) -> Result<(), String> {
         }
     };
 
-    // 安全阀二：COM 处理器只放行"处理器 DLL 已经不在了"的那些。
-    // 这一步必须重新解析一次，不能信扫描结果 —— 扫描到删除之间用户可能重装过软件，
-    // 也可能有人绕过界面直接调命令。判不准就不删。
+    // Safety valve two: for COM handlers, only allow those "whose handler DLL is already gone".
+    // This must be resolved again; do not trust the scan result — the user may have reinstalled the software between scan and deletion,
+    // or someone may have called the command directly, bypassing the UI. If it cannot be determined, do not delete.
     if lower_subpath.contains(r"shellex\contextmenuhandlers") {
         let entry_key = hive
             .open_subkey_with_flags(subpath, KEY_READ)
             .map_err(|error| format!("无法读取条目 {}: {}", subpath, error))?;
         match resolve_handler_dll(&entry_key, key_name) {
-            Some(dll) if !Path::new(&dll).exists() => { /* DLL 已经不在了，属于残留，放行 */ }
+            Some(dll) if !Path::new(&dll).exists() => { /* DLL is gone, so it's a leftover — allow deletion */ }
             Some(dll) => {
                 return Err(format!("处理器程序仍然存在（{}），不允许删除", dll));
             }
@@ -867,15 +867,15 @@ fn delete_single_entry(req: &ContextMenuDeleteRequest) -> Result<(), String> {
         }
     }
 
-    // 删除前导出 .reg 备份
+    // Export a .reg backup before deletion
     export_reg_backup(req.reg_root.as_str(), subpath);
 
-    // 打开父键（需要写权限）
+    // Open the parent key (write access required)
     let parent_key = hive
         .open_subkey_with_flags(parent_path, KEY_READ | KEY_WRITE)
         .map_err(|e| format!("无法打开父键 {}: {}", parent_path, e))?;
 
-    // 递归删除该子键及其所有子内容
+    // Recursively delete the subkey and all its contents
     parent_key
         .delete_subkey_all(key_name)
         .map_err(|e| format!("删除键 {} 失败: {}", key_name, e))?;
@@ -883,9 +883,9 @@ fn delete_single_entry(req: &ContextMenuDeleteRequest) -> Result<(), String> {
     Ok(())
 }
 
-/// 允许删除的父路径（不含 hive，统一小写）。必须命中其中之一，且后面只跟一个键名。
+/// Parent paths allowed for deletion (hive excluded, all lowercase). Must match one of them, followed by exactly one key name.
 ///
-/// 与扫描位置一一对应。改了 `scan_targets` 就要同步这里，否则新位置扫得到、删不掉。
+/// One-to-one with the scan locations. If `scan_targets` changes, update this too, or new locations will be scannable but not deletable.
 const DELETABLE_PARENTS: &[&str] = &[
     r"software\classes\*\shell\",
     r"software\classes\directory\shell\",
@@ -900,7 +900,7 @@ const DELETABLE_PARENTS: &[&str] = &[
     r"software\classes\allfilesystemobjects\shellex\contextmenuhandlers\",
 ];
 
-/// 子路径是否落在允许清理的位置内（入参需已小写）
+/// Whether a subpath falls within an allowed cleanup location (input must already be lowercase)
 fn is_deletable_subpath(lower_subpath: &str) -> bool {
     DELETABLE_PARENTS.iter().any(|parent| {
         lower_subpath
@@ -909,16 +909,16 @@ fn is_deletable_subpath(lower_subpath: &str) -> bool {
     })
 }
 
-/// 右键菜单条目的 `.reg` 备份目录。
+/// Backup directory for context menu entries' `.reg` files.
 ///
-/// 与注册表冗余模块的 `RegistryBackups` 不是同一个目录 —— 两边文件名格式也不同，
-/// 混在一起用户分不清哪份是哪个模块导出的。
+/// Not the same directory as the registry redundancy module's `RegistryBackups` — the two also use different filename formats,
+/// mixing them would leave users unable to tell which backup came from which module.
 pub fn context_menu_backup_dir() -> std::path::PathBuf {
     crate::data_dir::get_data_dir().join("reg_backups")
 }
 
-/// 导出注册表键的 .reg 备份（用于误删恢复）
-/// 使用 reg.exe export 命令，备份文件存放在数据目录的 reg_backups/ 下
+/// Exports a .reg backup of a registry key (for recovering from mistaken deletion)
+/// Uses the reg.exe export command; backups are stored under reg_backups/ in the data directory
 fn export_reg_backup(reg_root: &str, subpath: &str) {
     let backup_dir = context_menu_backup_dir();
     if let Err(e) = std::fs::create_dir_all(&backup_dir) {
@@ -926,7 +926,7 @@ fn export_reg_backup(reg_root: &str, subpath: &str) {
         return;
     }
 
-    // 生成唯一文件名：reg_root_subpath_时间戳.reg
+    // Generate a unique filename: reg_root_subpath_timestamp.reg
     let safe_name = format!(
         "{}_{}",
         reg_root,
@@ -936,11 +936,11 @@ fn export_reg_backup(reg_root: &str, subpath: &str) {
     let file_name = format!("{}_{}.reg", safe_name, timestamp);
     let backup_path = backup_dir.join(&file_name);
 
-    // 调用 reg.exe export 导出
+    // Call reg.exe export to export
     match std::process::Command::new("reg.exe")
         .args(["export", &format!("{}\\{}", reg_root, subpath)])
         .arg(&backup_path)
-        .arg("/y") // 覆盖已有文件
+        .arg("/y") // overwrite existing file
         .output()
     {
         Ok(output) => {
@@ -958,10 +958,10 @@ fn export_reg_backup(reg_root: &str, subpath: &str) {
 }
 
 // ============================================================================
-// 单元测试
+// Unit tests
 //
-// 这个模块的错误代价很高（误判"失效"→ 用户全选 → 删掉正常菜单），
-// 所以纯函数部分必须有用例兜住：路径提取、变量展开、三态判定。
+// Mistakes here are costly (misjudging as "invalid" → user selects all → normal menus get deleted),
+// so the pure-function parts must be covered by tests: path extraction, variable expansion, and three-state classification.
 // ============================================================================
 
 #[cfg(test)]
@@ -975,12 +975,12 @@ mod tests {
             expand_env_vars(r"%SystemRoot%\System32\cmd.exe"),
             format!(r"{}\System32\cmd.exe", system_root)
         );
-        // 未定义的变量原样保留，界面才能看出命令本来的样子
+        // Undefined variables are kept as-is so the UI still shows the command's original form
         assert_eq!(
             expand_env_vars(r"%LIGHTC_NOT_A_REAL_VAR%\app.exe"),
             r"%LIGHTC_NOT_A_REAL_VAR%\app.exe"
         );
-        // 落单的 % 不能被吞
+        // An unpaired % must not be swallowed
         assert_eq!(expand_env_vars(r"app.exe %1"), r"app.exe %1");
     }
 
@@ -994,7 +994,7 @@ mod tests {
 
     #[test]
     fn extracts_unquoted_path_with_spaces() {
-        // 造一个带空格的临时目录，模拟"路径有空格但没加引号"的老式写法
+        // Create a temp directory with spaces to simulate the old-style "path with spaces but no quotes"
         let dir = std::env::temp_dir().join("lightc ctx menu test");
         std::fs::create_dir_all(&dir).expect("创建临时目录失败");
         let exe = dir.join("app.exe");
@@ -1009,7 +1009,7 @@ mod tests {
 
     #[test]
     fn leaves_delegate_executors_unknown() {
-        // 真目标在参数里（.dll / .msi / .vbs），判不了，也不能判成失效
+        // The real target is in the arguments (.dll / .msi / .vbs), which cannot be determined and must not be marked invalid
         for command in [
             r"rundll32.exe shell32.dll,OpenAs_RunDLL %1",
             r"C:\Windows\System32\msiexec.exe /i foo.msi",
@@ -1026,7 +1026,7 @@ mod tests {
 
     #[test]
     fn resolves_bare_system_executable() {
-        // `cmd.exe /c ...` 这种靠系统目录解析，解出来就是 Ok，不该标成未知
+        // `cmd.exe /c ...` is resolved via system directories; once resolved it is Ok, not Unknown
         let extracted = ContextMenuScanner::extract_exe_path(r"cmd.exe /c dir");
         let path = extracted.expect("cmd.exe 应该能落到系统目录");
         assert!(Path::new(&path).exists(), "解析出的路径应真实存在: {}", path);
@@ -1034,7 +1034,7 @@ mod tests {
 
     #[test]
     fn never_fabricates_path_for_unknown_bare_command() {
-        // 裸文件名找不到就必须承认找不到，不能拼一个"像是路径"的东西出来
+        // If a bare file name cannot be found, admit it — do not fabricate something that "looks like a path"
         assert_eq!(
             ContextMenuScanner::extract_exe_path("lightc_no_such_command.exe /silent"),
             None
@@ -1045,7 +1045,7 @@ mod tests {
     fn recognizes_clsid_shapes() {
         assert!(looks_like_clsid("{90AA3A4E-1CBA-4233-B8BB-535773D48449}"));
         assert!(looks_like_clsid("  {f81e9010-6ea4-11ce-a7ff-00aa003ca9f6}  "));
-        // 友好名、空串、长度不对的都不算
+        // Friendly names, empty strings, and wrong lengths do not count
         assert!(!looks_like_clsid("TortoiseSVN"));
         assert!(!looks_like_clsid("{90AA3A4E-1CBA}"));
         assert!(!looks_like_clsid(""));
@@ -1053,11 +1053,11 @@ mod tests {
 
     #[test]
     fn completes_bare_module_names_against_system_dirs() {
-        // 托管扩展的 InprocServer32 就是裸名（mscoree.dll），不补全就会误判成"文件不存在"
+        // A managed extension's InprocServer32 is a bare name (mscoree.dll); without completion it would be misjudged as "file does not exist"
         let resolved = resolve_bare_module("kernel32.dll").expect("kernel32.dll 一定在系统目录");
         assert!(Path::new(&resolved).exists());
         assert_eq!(resolve_bare_module("lightc_no_such_module.dll"), None);
-        // 带路径的原样返回，不去瞎猜
+        // Names with a path are returned as-is, no guessing
         assert_eq!(
             resolve_bare_module(r"C:\x\y.dll").as_deref(),
             Some(r"C:\x\y.dll")
@@ -1066,36 +1066,36 @@ mod tests {
 
     #[test]
     fn only_deletes_paths_inside_known_context_menu_locations() {
-        // 允许：扫描位置 + 一个键名
+        // Allowed: scan location + one key name
         assert!(is_deletable_subpath(
             r"software\classes\*\shell\myapp"
         ));
         assert!(is_deletable_subpath(
             r"software\classes\directory\shellex\contextmenuhandlers\tortoisesvn"
         ));
-        // 拒绝：位置之外
+        // Rejected: outside allowed locations
         assert!(!is_deletable_subpath(
             r"software\microsoft\windows\currentversion\run\evil"
         ));
         assert!(!is_deletable_subpath(r"software\classes\*\shell"));
-        // 拒绝：想借前缀再往下钻一层
+        // Rejected: trying to go one level deeper by abusing the prefix
         assert!(!is_deletable_subpath(
             r"software\classes\*\shell\myapp\command"
         ));
-        // 拒绝：父级本身就是目标（没有键名）
+        // Rejected: the parent itself is the target (no key name)
         assert!(!is_deletable_subpath(r"software\classes\directory\shell\"));
     }
 
     #[test]
     fn classifies_only_known_missing_paths_as_invalid() {
-        // 说了路径但文件不在 → 失效
+        // Path given but file absent → invalid
         assert_eq!(
             classify_exe_status(Some(r"C:\lightc_no_such_dir\app.exe")),
             ExeStatus::Missing
         );
-        // 提不出路径 → 未知，不算失效
+        // No path extractable → Unknown, not invalid
         assert_eq!(classify_exe_status(None), ExeStatus::Unknown);
-        // 路径真实存在 → 正常
+        // Path exists → normal
         let system_root = std::env::var("SystemRoot").expect("Windows 一定有 SystemRoot");
         let existing = format!(r"{}\System32\cmd.exe", system_root);
         assert_eq!(classify_exe_status(Some(&existing)), ExeStatus::Ok);

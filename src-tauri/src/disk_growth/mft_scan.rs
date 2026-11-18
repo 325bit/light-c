@@ -1,8 +1,8 @@
 // ============================================================================
-// 独立 MFT 全盘目录扫描器
+// Standalone MFT full-disk directory scanner
 //
-// 使用 FSCTL_ENUM_USN_DATA 枚举 NTFS 文件记录来重建路径，再并行读取文件
-// metadata 获取大小。这样避免传统递归遍历反复进入目录，适合全盘变化分析。
+// Use FSCTL_ENUM_USN_DATA to enumerate NTFS file records and rebuild paths, then read file
+// metadata in parallel to obtain sizes. This avoids the repeated directory re-entry of traditional recursive traversal and suits full-disk change analysis.
 // ============================================================================
 
 #![cfg(target_os = "windows")]
@@ -23,7 +23,7 @@ use crate::scanner::big_files_engine::mft_core;
 
 const DEFAULT_MAX_DEPTH: u8 = 4;
 const METADATA_PROGRESS_STEP: usize = 10_000;
-/// 卷根目录在 NTFS 里的固定记录号：MFT 前 16 条记录都是元文件，`$Root` 就是 5。
+/// Fixed record number of the volume root directory in NTFS: the first 16 MFT records are metafiles, and `$Root` is record 5.
 const ROOT_MFT_ID: u64 = 5;
 
 static DISK_GROWTH_SCAN_CANCELLED: AtomicBool = AtomicBool::new(false);
@@ -49,8 +49,8 @@ fn ensure_not_cancelled() -> Result<(), String> {
     }
 }
 
-/// 单条 MFT 记录。这里直接用 `mft_core` 的解析结果 —— 它一次顺序读就同时给出
-/// 名字、父子关系、大小和时间，不必再单独枚举一遍或按需 seek 读 FILE record。
+/// A single MFT record. This directly uses the parse result from `mft_core` - one sequential read yields
+/// the name, parent-child relationship, size, and time; no separate enumeration or on-demand seek of FILE records is needed.
 type RawEntry = mft_core::MftRecordInfo;
 
 #[derive(Debug, Clone)]
@@ -123,7 +123,7 @@ pub struct DiskGrowthScanProgress {
 #[derive(Debug, Clone)]
 pub struct FullDiskScanResult {
     pub entries: Vec<DirSizeEntry>,
-    // 文件级明细只在后端写快照分片时使用，不进入前端响应，避免超大盘下复制出第二份路径列表。
+    // File-level details are only used when the backend writes snapshot parts; they do not enter the frontend response, avoiding a second copy of the path list on huge disks.
     pub(crate) file_records: Vec<FileSizeRecord>,
     pub total_size: u64,
     pub total_files_scanned: usize,
@@ -133,7 +133,7 @@ pub struct FullDiskScanResult {
     pub phase_durations: Vec<DiskGrowthPhaseDuration>,
     pub mft_size_count: usize,
     pub metadata_fallback_count: usize,
-    /// `$MFT` 的 data run 段数、读盘耗时、解析耗时：判断瓶颈在盘还是 CPU。
+    /// The number of `$MFT` data runs, disk read time, and parse time: used to determine whether the bottleneck is the disk or the CPU.
     pub mft_fragments: usize,
     pub mft_io_ms: u64,
     pub mft_parse_ms: u64,
@@ -172,9 +172,9 @@ where
 
     emit_progress(progress, &start, "mft", "正在读取 NTFS 主文件表", 0, None);
     let phase_start = Instant::now();
-    // 一次顺序读 $MFT 就同时拿到名字（$FILE_NAME）、父子关系、大小（$DATA）和修改时间。
-    // 原先先走 USN 枚举拿名字、再另开一个读取器按 mft_id 随机 seek 拿大小 ——
-    // 同一份数据过两遍，而实测枚举单独就要 36.9 秒、单遍读整张表只要 3.9 秒。
+    // One sequential read of $MFT yields names ($FILE_NAME), parent-child relationships, sizes ($DATA), and modification times.
+    // Previously, USN enumeration got names first, then another reader randomly sought by mft_id for sizes -
+    // the same data was processed twice, while measurements showed enumeration alone took 36.9s and a single full-table read only 3.9s.
     let metadata_reader = mft_core::NtfsFileMetadataReader::open(drive_letter)?;
     let (raw_entries, mft_stats) = metadata_reader.read_all_records(&|processed| {
         if is_disk_growth_cancelled() {
@@ -204,9 +204,9 @@ where
         None,
     );
     let phase_start = Instant::now();
-    // 目录索引一次建完：路径在 BFS 里直接拼成最终形式（正斜杠 + 小写），
-    // 文件路径再拿父目录路径补一个文件名 —— 原实现给目录和文件各建一遍再规范化，
-    // 71 万条记录要付近三百万次字符串分配。
+    // Build the directory index in one pass: paths are assembled into their final form directly during BFS (forward slashes + lowercase),
+    // and file paths just append a filename to the parent path - the original built paths for directories and files separately then normalized,
+    // costing nearly three million string allocations for 710k records.
     let directory_index = build_directory_index(&raw_entries, &drive_root);
     ensure_not_cancelled()?;
     let file_records = collect_file_records(&raw_entries, &directory_index);
@@ -278,20 +278,20 @@ fn normalize_drive_letter(value: &str) -> Result<char, String> {
     else {
         return Err("无效的磁盘盘符".to_string());
     };
-    // 前端可能传入 D、D: 或 D:\，这里只保留盘符，保证同一磁盘只对应一组快照。
+    // The frontend may pass D, D:, or D:\; keep only the drive letter here to ensure one disk maps to only one set of snapshots.
     Ok(letter.to_ascii_uppercase())
 }
 
-/// 一次遍历建出目录索引：BFS 往下走的同时把路径拼成**最终形式**（正斜杠 + 小写）。
+/// Build the directory index in a single traversal: while BFS descends, paths are assembled in **final form** (forward slashes + lowercase).
 ///
-/// 原实现分三步：给每个目录建一份反斜杠路径 → 再 clone 出来整体规范化 → 再为每个文件
-/// 单独建一条路径。现在目录路径只分配一次，深度顺着 BFS 累加（不再拿字符串去数分隔符），
-/// 环检测直接用「索引里有没有这条路径」代替额外的 `HashSet`。
+/// The original took three steps: build a backslash path for each directory -> clone it and normalize the whole thing -> then build a separate path for each file.
+/// Now directory paths are allocated only once and depth accumulates along BFS (no longer counting separators in strings),
+/// and cycle detection uses "whether this path is in the index" instead of an extra `HashSet`.
 fn build_directory_index(entries: &[RawEntry], drive_root: &str) -> HashMap<u64, DirectoryInfo> {
-    // 目录大约占全部有效记录的六分之一
+    // Directories make up roughly one sixth of all valid records
     let mut children: HashMap<u64, Vec<u32>> = HashMap::with_capacity(entries.len() / 6);
     for (index, entry) in entries.iter().enumerate() {
-        // 文件没有子节点，放进 children 只会让 BFS 白跑一遍
+        // Files have no children; putting them in children would only make BFS do a wasted pass
         if entry.mft_id == 0 || !entry.is_dir {
             continue;
         }
@@ -315,17 +315,17 @@ fn build_directory_index(entries: &[RawEntry], drive_root: &str) -> HashMap<u64,
 
     while let Some(index) = queue.pop_front() {
         let entry = &entries[index as usize];
-        // 已经建过路径的目录直接跳过：这也挡住了异常父链造成的死循环
+        // Skip directories that already have a path built: this also blocks infinite loops caused by abnormal parent chains
         if entry.mft_id == 0 || directories.contains_key(&entry.mft_id) {
             continue;
         }
-        // 父目录不在索引里，说明这条链断在从根不可达的位置，整支都建不出来
+        // If the parent is not in the index, the chain breaks at a location unreachable from the root, so the whole branch cannot be built
         let Some(parent) = directories.get(&entry.parent_id) else {
             continue;
         };
         let depth = parent.depth.saturating_add(1);
         let path = join_normalized_path(&parent.path, &entry.name);
-        // 上面对 directories 的不可变借用到此结束，可以插入了
+        // The immutable borrow of directories above ends here, so insertion is safe
         directories.insert(
             entry.mft_id,
             DirectoryInfo {
@@ -347,20 +347,20 @@ fn collect_file_records(
     entries: &[RawEntry],
     directory_index: &HashMap<u64, DirectoryInfo>,
 ) -> Vec<FileRecord> {
-    // 提前按记录总数预留：靠 collect 自动扩容会把几十 MB 的数组反复搬几遍
+    // Reserve capacity up front by record count: relying on collect's automatic growth would repeatedly move a tens-of-MB array several times
     let mut records = Vec::with_capacity(entries.len());
     for entry in entries {
         if entry.is_dir || entry.mft_id == 0 {
             continue;
         }
-        // 父目录路径在目录索引里**已经是规范化形式**（小写 + 正斜杠）
+        // The parent path in the directory index is **already in normalized form** (lowercase + forward slashes)
         let Some(parent) = directory_index.get(&entry.parent_id) else {
             continue;
         };
         records.push(FileRecord {
             path: join_normalized_path(&parent.path, &entry.name),
             parent_id: entry.parent_id,
-            // 大小和时间在顺序读 $MFT 时已经拿到了，这里直接带下去
+            // Size and time were already obtained during the sequential $MFT read, just carry them through here
             size: entry.size,
             modified: entry.modified,
             has_data_stream: entry.has_data_stream,
@@ -369,16 +369,16 @@ fn collect_file_records(
     records
 }
 
-/// 拼出文件的完整路径，并顺手规范化成 `normalize_path` 的形式：**正斜杠 + 小写**。
+/// Assemble the full file path and normalize it to `normalize_path`'s form: **forward slashes + lowercase**.
 ///
-/// 父路径取自目录索引，已经是规范化形式；所以这里只需要补一个分隔符、把文件名接上，
-/// 再原地小写。这样一条文件路径只分配一次 —— 原实现是「建全量路径 → clone → 再规范化」三次。
+/// The parent path comes from the directory index and is already normalized; so here only add a separator, append the filename,
+/// then lowercase in place. This allocates a file path only once - the original did it three times ("build full path -> clone -> normalize").
 ///
-/// 小写分两步：先 `make_ascii_lowercase`（原地、零分配），只有剩下非 ASCII 的大写字母时
-/// 才退回 `to_lowercase()`。这样和旧实现（直接 `to_lowercase()`）的结果逐字一致，
-/// 中文、日文文件名不会多付一次分配。
+/// Lowercasing happens in two steps: first `make_ascii_lowercase` (in place, zero allocation); only when non-ASCII uppercase letters remain
+/// does it fall back to `to_lowercase()`. This keeps the result byte-for-byte identical to the old implementation (direct `to_lowercase()`),
+/// with no extra allocation for Chinese or Japanese filenames.
 fn join_normalized_path(parent: &str, name: &str) -> String {
-    // 调用方只传目录索引里的路径，那已经是规范化形式；传原始路径进来会拼出混合分隔符
+    // Callers pass only paths from the directory index, which are already normalized; passing a raw path would produce mixed separators
     debug_assert!(!parent.contains('\\'), "父路径应先规范化: {parent}");
     let mut path = String::with_capacity(parent.len() + 1 + name.len());
     path.push_str(parent);
@@ -388,7 +388,7 @@ fn join_normalized_path(parent: &str, name: &str) -> String {
     path.push_str(name);
     path.make_ascii_lowercase();
     if path.chars().any(char::is_uppercase) {
-        // 只有非 ASCII 大写（如 Ö、Д）才会走到这里
+        // Only non-ASCII uppercase letters (such as Ö, Д) reach here
         path = path.to_lowercase();
     }
     path
@@ -426,9 +426,9 @@ where
                     );
                 }
 
-                // 大小和时间在顺序读 $MFT 时已经解析好了，这里**不再读盘**，
-                // 只是把记录搬进聚合需要的结构里（原实现要为此再扫一遍 $MFT）。
-                // 只有 `$DATA` 没解析出来的记录才回退一次 stat，保证数字和以前一致。
+                // Size and time were already parsed during the sequential $MFT read; here we **do not read the disk again**,
+                // just move the record into the structure needed for aggregation (the original rescanned $MFT for this).
+                // Only records whose `$DATA` was not parsed fall back to one stat, keeping the numbers consistent with before.
                 let (metadata, from_mft) = if record.has_data_stream {
                     (
                         FileRecordMetadata {
@@ -453,7 +453,7 @@ where
                         false,
                     )
                 };
-                // 空文件（含目录占位）不进入结果，也就不该计入"大小来源"的统计
+                // Empty files (including directory placeholders) are not included in results, so they should not count toward "size source" statistics
                 if metadata.size == 0 {
                     return None;
                 }
@@ -464,7 +464,7 @@ where
                 }
                 Some(FileSizeRecord {
                     parent_id: record.parent_id,
-                    // collect_file_records 已经产出规范化路径，这里不再重复处理
+                    // collect_file_records already produced normalized paths; no need to process again here
                     path: record.path,
                     size: metadata.size,
                     modified: metadata.modified,
@@ -500,7 +500,7 @@ fn aggregate_directories(
         while let Some(directory) = directory_index.get(&current_id) {
             if directory.depth <= max_depth {
                 *size_by_dir.entry(current_id).or_insert(0) += record.size;
-                // 目录本身的 mtime 在 Windows 上不一定反映子文件变化；这里聚合子树内最新文件修改时间，更贴近用户关心的“变化时间”。
+                // A directory's own mtime on Windows does not necessarily reflect child file changes; aggregate the newest file modification time within the subtree instead, closer to the "change time" users care about.
                 let modified = modified_by_dir.entry(current_id).or_insert(0);
                 if record.modified > *modified {
                     *modified = record.modified;
@@ -514,7 +514,7 @@ fn aggregate_directories(
             current_id = directory.parent_id;
             guard += 1;
             if guard > 128 {
-                // 极端异常的 MFT 父链可能成环或过深，直接截断以保证整次扫描可结束。
+                // Extremely abnormal MFT parent chains may cycle or be too deep; truncate directly to ensure the whole scan can finish.
                 break;
             }
         }
@@ -547,7 +547,7 @@ pub fn normalize_path(path: &str) -> String {
 }
 
 fn metadata_thread_count() -> usize {
-    // metadata 读取是随机 IO，线程过多会让 SSD、Defender 和文件系统过滤驱动互相抢资源。
+    // metadata reads are random IO; too many threads make the SSD, Defender, and filesystem filter drivers compete for resources.
     num_cpus::get().clamp(4, 8)
 }
 
@@ -590,9 +590,9 @@ mod tests {
         assert_eq!(normalize_path("C:\\Users\\Evan"), "c:/users/evan");
     }
 
-    /// 大小来源的判断：有 `$DATA` 的直接用记录里的大小；没有 `$DATA` 的才回退 stat。
-    /// 真空文件（有 `$DATA` 但大小为 0）必须直接丢弃 —— 不能因为 `size == 0` 就去 stat，
-    /// 那会把几万个空文件各 stat 一遍。
+    /// Determining the size source: records with `$DATA` use the size in the record; only those without `$DATA` fall back to stat.
+    /// Truly empty files (with `$DATA` but size 0) must be discarded directly - do not stat just because `size == 0`,
+    /// which would stat tens of thousands of empty files one by one.
     #[test]
     fn collect_file_sizes_only_stats_records_without_data_stream() {
         let dir = std::env::temp_dir().join("lightc-disk-growth-sizes");
@@ -602,7 +602,7 @@ mod tests {
         std::fs::write(&real_file, vec![7u8; 128]).unwrap();
 
         let records = vec![
-            // 记录里就有大小：不碰磁盘
+            // Size is right in the record: do not touch the disk
             FileRecord {
                 path: "C:////fake////from-mft.bin".to_string(),
                 parent_id: 26,
@@ -610,7 +610,7 @@ mod tests {
                 modified: 100,
                 has_data_stream: true,
             },
-            // 没有 $DATA：回退 stat，拿到真实大小
+            // No $DATA: fall back to stat to get the real size
             FileRecord {
                 path: real_file.to_string_lossy().to_string(),
                 parent_id: 26,
@@ -618,7 +618,7 @@ mod tests {
                 modified: 0,
                 has_data_stream: false,
             },
-            // 真空文件：有 $DATA、大小为 0，直接丢掉，不 stat
+            // Truly empty file: has $DATA, size 0; discard directly, no stat
             FileRecord {
                 path: "C:////fake////empty.bin".to_string(),
                 parent_id: 26,
@@ -640,10 +640,10 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// 一步式拼接必须和「先拼路径、再整体规范化」完全一致。
+    /// One-step assembly must be exactly identical to "assemble the path first, then normalize the whole thing".
     ///
-    /// 这是把三次路径构建合成一次的等价性依据：路径会直接显示给用户、
-    /// 也会拿去 stat 回退，差一个字符就会变成"文件不存在"。
+    /// This is the equivalence basis for merging three path constructions into one: paths are shown directly to the user
+    /// and are also used for stat fallback; a single wrong character would turn into "file does not exist".
     #[test]
     fn join_normalized_path_matches_the_two_step_version() {
         let cases = [
@@ -654,14 +654,14 @@ mod tests {
             ("c:\\users\\Ömer", "Ärger.TXT"),
         ];
         for (raw_parent, name) in cases {
-            // 旧链路：原始父路径 + 名字 → 拼接 → 整体规范化
+            // Old chain: raw parent path + name -> assemble -> normalize the whole thing
             let joined = if raw_parent.ends_with('\\') {
                 format!("{raw_parent}{name}")
             } else {
                 format!("{raw_parent}\\{name}")
             };
             let legacy = normalize_path(&joined);
-            // 新链路：父路径先规范化（目录索引里存的就是这个）→ 拼接时就地规范化
+            // New chain: normalize the parent path first (that is what the directory index stores) -> normalize in place while assembling
             let normalized_parent = normalize_path(raw_parent);
             assert_eq!(
                 join_normalized_path(&normalized_parent, name),
@@ -671,9 +671,9 @@ mod tests {
         }
     }
 
-    /// 目录索引的路径与深度：深度改成顺着 BFS 逐层累加（不再拿字符串数分隔符），
-    /// 所以必须验证它和「路径里有几段」完全一致 —— 前端按 depth 分层聚合，
-    /// 差一层就会把某个目录的占用统计挂到父目录头上。
+    /// Directory index paths and depth: depth now accumulates level by level along BFS (no longer counting separators in strings),
+    /// so it must be verified to match "how many segments are in the path" exactly - the frontend aggregates by depth level,
+    /// and one level off would attribute a directory's usage to its parent.
     #[test]
     fn build_directory_index_matches_path_segments() {
         let entry = |mft_id: u64, parent_id: u64, name: &str, is_dir: bool| RawEntry {
@@ -691,7 +691,7 @@ mod tests {
             entry(30, 26, "Evan", true),
             entry(31, 30, "Desktop", true),
             entry(40, 31, "report.txt", false),
-            // 父目录不在表里（从根不可达）：整支都建不出路径
+            // Parent not in the table (unreachable from root): no path can be built for the whole branch
             entry(50, 999, "orphan", true),
             entry(51, 50, "inside", true),
         ];
@@ -707,7 +707,7 @@ mod tests {
             "不可达目录不该进索引"
         );
 
-        // 文件路径由「父目录路径 + 文件名」拼出，父目录已经在索引里
+        // File paths are assembled from "parent path + filename"; the parent is already in the index
         let files = collect_file_records(&entries, &index);
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].path, "c:/users/evan/desktop/report.txt");

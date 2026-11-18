@@ -1,9 +1,9 @@
 // ============================================================================
-// 社交软件路径适配器
+// Social app path adapters
 // ============================================================================
 //
-// 每个适配器只负责发现软件数据目录，实际遍历和分类由 core.rs 统一处理。
-// 这样可以在增强单个软件路径时避免复制扫描、去重和风险分级逻辑。
+// Each adapter only discovers the app's data directories; actual traversal and classification are handled uniformly by core.rs.
+// This way, enhancing one app's paths avoids duplicating the scan, dedupe and risk-grading logic.
 // ============================================================================
 
 use super::core::{FileCategory, SocialAppPath, SocialScanner};
@@ -11,14 +11,14 @@ use log::info;
 use std::path::PathBuf;
 
 impl SocialScanner {
-    // 企业微信路径检测
+    // WeCom (Enterprise WeChat) path detection
     // ========================================================================
 
-    /// 检测企业微信路径
+    /// Detect WeCom paths
     pub(super) fn detect_wxwork_paths(&self) -> Option<Vec<SocialAppPath>> {
         let mut paths = Vec::new();
 
-        // 企业微信可能将数据存储在文档目录或 AppData 中
+        // WeCom may store data in the Documents directory or in AppData
         let base_paths = vec![
             PathBuf::from(format!("{}\\WXWork", self.documents_dir)),
             PathBuf::from(format!("{}\\WXWork", self.default_documents)),
@@ -45,7 +45,7 @@ impl SocialScanner {
                     let cache_dir = user_dir.join("Cache");
 
                     if cache_dir.is_dir() {
-                        // 图片视频
+                        // Images and videos
                         for dir_name in &["Image", "Video"] {
                             let dir = cache_dir.join(dir_name);
                             if dir.exists() {
@@ -59,7 +59,7 @@ impl SocialScanner {
                             }
                         }
 
-                        // 文件
+                        // Files
                         let file_dir = cache_dir.join("File");
                         if file_dir.exists() {
                             Self::add_scan_path(
@@ -72,7 +72,7 @@ impl SocialScanner {
                         }
                     }
 
-                    // 新版企业微信会直接把缓存放到用户目录下，不能只依赖 Cache 子目录。
+                    // Newer WeCom puts caches directly under the user directory, so don't rely only on the Cache subdirectory.
                     self.add_named_subdirectories(
                         &user_dir,
                         &["Image", "Video", "Media"],
@@ -98,7 +98,7 @@ impl SocialScanner {
                         &mut paths,
                     );
 
-                    // 消息数据库
+                    // Message databases
                     let msg_dir = user_dir.join("Msg");
                     Self::add_scan_path(
                         &mut paths,

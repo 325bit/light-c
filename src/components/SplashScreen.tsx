@@ -1,6 +1,6 @@
 // ============================================================================
-// 单窗口启动屏
-// 只保留品牌 Logo、轻量渐变背景和作者平台信息，避免启动阶段创建第二个 WebView。
+// Single-window splash screen
+// Keeps only the brand logo, a lightweight gradient background, and author platform info, avoiding creating a second WebView during startup.
 // ============================================================================
 
 import { useEffect, useState } from 'react';
@@ -15,11 +15,11 @@ interface SplashScreenProps {
 }
 
 /**
- * 读取启动屏当前主题。
+ * Reads the splash screen's current theme.
  *
- * 中文说明：index.html 的静态启动屏会在 React 接管前先按用户主题写好
- * `splash-screen--light|dark`，这里优先读取 DOM 上的既有值，保证首帧渲染与静态节点完全一致，
- * 否则 hydrateRoot 会报 "Hydration failed"。只有拿不到 DOM 信息时才回退到主题上下文。
+ * Chinese note: the static splash screen in index.html writes `splash-screen--light|dark` according to the user's theme before React takes over;
+ * here we first read the existing value on the DOM, ensuring the first-frame render matches the static node exactly,
+ * otherwise hydrateRoot reports "Hydration failed". Only when DOM info is unavailable do we fall back to the theme context.
  */
 function readPrerenderedSplashTheme(fallback: string): string {
   const classList = document.getElementById('initial-splash')?.classList;
@@ -45,7 +45,7 @@ export function SplashScreen({ onComplete }: SplashScreenProps) {
       onComplete?.();
     }, completeDelay);
 
-    // 同时清理两个计时器，避免组件卸载后仍触发页面切换。
+    // Clear both timers at the same time, to avoid triggering a page switch after the component unmounts.
     return () => {
       window.clearTimeout(exitTimer);
       window.clearTimeout(completeTimer);
@@ -66,7 +66,7 @@ export function SplashScreen({ onComplete }: SplashScreenProps) {
         <img className="splash-screen__logo" src="/logo.svg" alt="LightC" />
         <p id="splash-slogan" className="splash-screen__slogan">{t('splashSlogan')}</p>
         <div className="splash-screen__platform" aria-label="Evan的像素空间">
-          {/* <span className="splash-screen__author">Evan的像素空间</span> */}
+          {/* <span className="splash-screen__author">Evan's Pixel Space</span> */}
           <span className="splash-screen__channel">Bilibili · @Evan的像素空间</span>
         </div>
       </div>

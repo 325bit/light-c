@@ -1,8 +1,8 @@
 // ============================================================================
-// MFT 大文件扫描器 — 一遍顺序读 $MFT + Top-N
+// MFT big-file scanner — one sequential pass over $MFT + Top-N
 //
-// 原来是 USN 枚举拿名字、再整表读一遍 $MFT 拿大小（同一份数据过两遍），
-// 而 USN 枚举是内核遍历整张表，是两遍里慢的那一遍。
+// Previously USN enumeration got the names, then the whole $MFT was read again for sizes (the same data passed through twice),
+// and USN enumeration is a kernel traversal of the entire table, the slower of the two passes.
 // ============================================================================
 
 #![cfg(target_os = "windows")]
@@ -24,14 +24,14 @@ pub struct MftBigFileProgress {
     pub processed: usize,
     pub found_count: usize,
     pub elapsed_ms: u64,
-    /// 该阶段的关键数字（分段/读盘/解析、记录数、候选数…），前端直接展示
+    /// Key numbers for this stage (segmentation / disk read / parse, record count, candidate count…), shown directly by the frontend
     pub detail: String,
 }
 
-/// 候选池倍数：先取 TopN 的这么多倍，再做系统目录过滤，避免系统文件挤掉用户文件
+/// Candidate pool multiplier: take this many times TopN first, then filter system directories, so system files don't crowd out user files
 const CANDIDATE_MULTIPLIER: usize = 20;
 const CANDIDATE_MINIMUM: usize = 1000;
-/// 进度事件间隔：发太密会挤占扫描线程
+/// Progress event interval: sending too densely would hog the scan thread
 const PROGRESS_STEP: usize = 100_000;
 
 const SKIP_PATH_SEGMENTS: &[&str] = &[
@@ -53,7 +53,7 @@ pub fn scan_top_files_via_mft(
     progress_cb: impl Fn(MftBigFileProgress) + Sync,
 ) -> Result<Vec<LargeFileEntry>, String> {
     let t0 = Instant::now();
-    // 大文件模块支持多盘选择，MFT 直读必须显式使用用户选择的盘符，不能再隐式绑定系统盘。
+    // The big-file module supports multi-drive selection; MFT direct read must explicitly use the user-selected drive letter, no longer implicitly binding to the system drive.
     let drive_letter = drive_letter.to_ascii_uppercase();
 
     info!(
@@ -77,11 +77,11 @@ pub fn scan_top_files_via_mft(
         });
     };
 
-    // ---------- Step 1: 一遍读完 $MFT（名字 / 父子 / 大小 / 时间） ----------
+    // ---------- Step 1: read $MFT in one pass (names / parent-child / size / time) ----------
     let mft_started = Instant::now();
     let reader = mft_core::NtfsFileMetadataReader::open(drive_letter)?;
     let (records, mft_stats) = reader.read_all_records(&|processed| {
-        // 读盘期间也要响应取消，否则用户点了停止要等整张表读完
+        // Respond to cancellation during disk reading too, otherwise after clicking stop the user must wait for the whole table to be read
         if processed % PROGRESS_STEP == 0 {
             progress("mft", "正在读取 NTFS 主文件表", processed, 0, String::new());
         }
@@ -111,7 +111,7 @@ pub fn scan_top_files_via_mft(
         return Err("MFT 空".into());
     }
 
-    // ---------- Step 2: 候选池（按大小留 TopN × 20） ----------
+    // ---------- Step 2: candidate pool (keep TopN × 20 by size) ----------
     let candidate_limit = top_n
         .saturating_mul(CANDIDATE_MULTIPLIER)
         .max(CANDIDATE_MINIMUM);
@@ -121,7 +121,7 @@ pub fn scan_top_files_via_mft(
         if is_cancelled() {
             return Err("扫描已取消".into());
         }
-        // 目录的记录大小恒为 0；没有 $DATA 的文件也拿不到大小，一并跳过
+        // Directory records always have size 0; files without $DATA also have no size, skip them too
         if record.is_dir || record.size == 0 {
             continue;
         }
@@ -131,7 +131,7 @@ pub fn scan_top_files_via_mft(
         }
     }
 
-    // (大小, 记录号, 修改时间)，按大小从大到小
+    // (size, record number, modified time), ordered by size descending
     let mut candidates: Vec<(u64, u64, i64)> = pool
         .into_iter()
         .map(|Reverse(found)| found)
@@ -151,7 +151,7 @@ pub fn scan_top_files_via_mft(
         ),
     );
 
-    // ---------- Step 3: 只给候选重建路径 ----------
+    // ---------- Step 3: rebuild paths only for candidates ----------
     let paths_started = Instant::now();
     let paths = mft_core::rebuild_paths_for_records(&records, drive_letter, &candidate_ids);
     let paths_elapsed = paths_started.elapsed();
@@ -163,11 +163,11 @@ pub fn scan_top_files_via_mft(
         format!("候选 {} 个，解析出 {} 条路径", candidate_ids.len(), paths.len()),
     );
 
-    // 路径拿到之后记录就没用了，提前释放（120 万条记录带着名字，占上百 MB）
+    // Once paths are obtained the records are no longer needed; release them early (1.2M records with names take hundreds of MB)
     let record_count = records.len();
     drop(records);
 
-    // ---------- Step 4: 系统目录过滤 + TopN ----------
+    // ---------- Step 4: system-directory filter + TopN ----------
     let mut top: BinaryHeap<Reverse<(u64, u64)>> = BinaryHeap::with_capacity(top_n + 1);
     for (size, mft_id, _) in &candidates {
         let Some(path) = paths.get(mft_id) else {
@@ -182,7 +182,7 @@ pub fn scan_top_files_via_mft(
         }
     }
 
-    // ---------- Step 5: 结果 ----------
+    // ---------- Step 5: results ----------
     let details_by_id: HashMap<u64, (u64, i64)> = candidates
         .iter()
         .map(|(size, mft_id, modified)| (*mft_id, (*size, *modified)))

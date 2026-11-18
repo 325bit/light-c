@@ -1,5 +1,5 @@
 // ============================================================================
-// MFT 核心 — $MFT 顺序读取与记录解析（垃圾清理 / 磁盘变化 / 大目录 / 大文件共用）
+// MFT core — sequential $MFT reading and record parsing (shared by junk cleanup / disk changes / big directories / big files)
 // ============================================================================
 
 #![cfg(target_os = "windows")]
@@ -34,55 +34,55 @@ extern "system" {
 
 const MFT_METADATA_MAX: u64 = 25;
 const MFT_READ_CHUNK: usize = 16 * 1024 * 1024;
-/// 读盘与解析流水线里最多同时存在几块缓冲（16MB × 3 = 48MB）。
+/// Maximum number of buffers that can coexist in the read-and-parse pipeline (16MB × 3 = 48MB).
 ///
-/// 盘缓存命中时读比解析快得多，不封顶就会一直新分配，一张大 `$MFT` 能吃光内存。
+/// On a disk-cache hit, reading is much faster than parsing; without a cap, new buffers keep being allocated and one large `$MFT` can eat all memory.
 const MAX_PIPELINE_BUFFERS: usize = 3;
-/// 顺序扫描标志：告诉系统这批读取是连续向前的，让它提前预读后续数据。
+/// Sequential-scan flag: tells the system these reads are consecutively forward so it can pre-read subsequent data.
 ///
-/// 不加这个标志时，每次 seek_read 都要等上一块读完才发下一个请求，
-/// I/O 队列深度只有 1，多盘冷读会慢一倍以上（实测四个盘 5.78GB 从 35 秒降到正常水平）。
+/// Without this flag, each seek_read waits for the previous chunk to finish before issuing the next request,
+/// giving an I/O queue depth of only 1; cold reads across multiple disks are over twice as slow (measured 5.78GB across four disks dropped from 35 seconds to normal).
 const FILE_FLAG_SEQUENTIAL_SCAN: u32 = 0x0800_0000;
 const WINDOWS_TO_UNIX_SECONDS: i64 = 11_644_473_600;
 const FILE_RECORD_FLAG_IN_USE: u16 = 0x0001;
 const FILE_RECORD_FLAG_DIRECTORY: u16 = 0x0002;
-/// `$FILE_NAME` 的命名空间标记，2 表示 DOS 8.3 短名 —— 优先取长名。
+/// Namespace flag of `$FILE_NAME`; 2 means DOS 8.3 short name — prefer the long name.
 const FILE_NAME_NAMESPACE_DOS: u8 = 2;
-/// 重解析点（junction / 符号链接）在 `$STANDARD_INFORMATION` 里的属性位。
+/// Attribute bit in `$STANDARD_INFORMATION` for reparse points (junction / symlink).
 const FILE_ATTRIBUTE_REPARSE_POINT_BIT: u32 = 0x0000_0400;
 
-/// 一条 `$MFT` 记录里能一次拿到的全部信息。
+/// All information that can be obtained at once from one `$MFT` record.
 ///
-/// 名字来自 `$FILE_NAME` 属性，大小来自 `$DATA` 属性，两者在同一条记录里，
-/// 所以顺序读一遍就能同时得到 —— 不必再走一次 USN 枚举（那是内核遍历整张 MFT，
-/// 实测比用户态顺序读慢 6 倍）。
+/// The name comes from the `$FILE_NAME` attribute and the size from `$DATA`; both are in the same record,
+/// so one sequential pass yields both — no need for another USN enumeration (which walks the entire MFT in kernel mode,
+/// measured 6 times slower than sequential reads in user mode).
 #[derive(Clone)]
 pub struct MftRecordInfo {
     pub mft_id: u64,
     pub parent_id: u64,
     pub name: String,
     pub is_dir: bool,
-    /// 目录恒为 0。
+    /// Always 0 for directories.
     pub size: u64,
     pub modified: i64,
-    /// 是否解析出了未命名的 `$DATA` 流。
+    /// Whether an unnamed `$DATA` stream was parsed out.
     ///
-    /// `size` 为 0 有两种来源：真的是空文件，或者 `$DATA` 没解析出来。
-    /// 需要区分时（比如要决定是否回退去 stat）看这个标记，别只看 size。
+    /// `size` of 0 has two sources: a genuinely empty file, or `$DATA` not parsed.
+    /// When you need to distinguish (e.g. deciding whether to fall back to stat), check this flag, not just size.
     pub has_data_stream: bool,
 }
 
-/// 一次全量读取的统计。
+/// Statistics for one full read.
 ///
-/// `io_ms` 和 `parse_ms` 是分开计的：只有拆开才知道慢在磁盘还是 CPU，
-/// 之前只看总耗时，改了两轮都是盲改。
+/// `io_ms` and `parse_ms` are timed separately: only by splitting them can we tell whether the bottleneck is disk or CPU;
+/// previously we looked only at total time and two rounds of changes were blind guesses.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct MftReadStats {
-    /// `$MFT` 的 data run 个数
+    /// Number of data runs in `$MFT`
     pub fragments: usize,
-    /// 等待磁盘返回数据的时间
+    /// Time spent waiting for the disk to return data
     pub io_ms: u64,
-    /// 解析记录（fixup + 属性）的时间
+    /// Time spent parsing records (fixup + attributes)
     pub parse_ms: u64,
 }
 
@@ -92,19 +92,19 @@ struct DataRun {
     cluster_count: u64,
 }
 
-/// 一次 `$MFT` 读取任务：从卷内 `offset` 读 `len` 字节，这批记录从 `base_record_id` 开始编号。
+/// One `$MFT` read task: read `len` bytes from `offset` within the volume; these records are numbered starting from `base_record_id`.
 ///
-/// 单独抽出来是为了让读线程只认「偏移 + 长度」，不必关心 data run 的划分。
+/// Extracted separately so the read thread only deals with "offset + length" and need not know about data-run division.
 struct MftReadChunk {
     offset: u64,
     len: usize,
     base_record_id: u64,
 }
 
-/// 把 `$MFT` 的 data run 切成固定大小的读取任务。
+/// Split `$MFT` data runs into fixed-size read tasks.
 ///
-/// 记录号是**跨段连续**的逻辑编号，所以每段的起点接着上一段的记录数往下数；
-/// 段内按 `MFT_READ_CHUNK` 切块，块尾向下对齐到整条记录 —— 半条记录没法解析。
+/// Record numbers are **continuous across segments**, so each segment starts counting from where the previous one left off;
+/// within a segment, chunk by `MFT_READ_CHUNK` and align chunk ends down to a whole record — half a record cannot be parsed.
 fn plan_read_chunks(
     runs: &[DataRun],
     cluster_size: u64,
@@ -131,7 +131,7 @@ fn plan_read_chunks(
         while read_in_run < run_bytes {
             let remaining = (run_bytes - read_in_run) as usize;
             let read_len = remaining.min(MFT_READ_CHUNK);
-            // 半条记录没法解析，块尾向下对齐到整条记录
+            // Half a record cannot be parsed, so align the chunk end down to a whole record
             let aligned_len = read_len - read_len % file_record_size;
             if aligned_len == 0 {
                 break;
@@ -158,10 +158,10 @@ pub struct NtfsFileMetadataReader {
     mft_runs: Vec<DataRun>,
 }
 
-/// 只为 `target_ids` 里的记录重建完整路径（含祖先目录）。
+/// Rebuild full paths (including ancestor directories) only for records in `target_ids`.
 ///
-/// 调用方通常是「大文件 / AI 模型候选」这种**少量**目标：全盘 120 万条记录里
-/// 只给几十上百个建路径，避免上百万次字符串分配。
+/// Callers are typically **small** target sets like "big files / AI model candidates": among 1.2 million records on a disk
+/// we build paths for only tens or hundreds, avoiding millions of string allocations.
 pub fn rebuild_paths_for_records(
     records: &[MftRecordInfo],
     drive_letter: char,
@@ -178,7 +178,7 @@ pub fn rebuild_paths_for_records(
 
     for target_id in target_ids {
         let mut visiting = HashSet::new();
-        // 只为候选路径做懒解析，避免全盘文件都分配完整路径字符串。
+        // Lazily parse only candidate paths, avoiding full-path string allocation for every file on the disk.
         let _ = resolve_path(*target_id, &record_by_id, &mut paths, &mut visiting);
     }
 
@@ -192,7 +192,7 @@ fn resolve_path(
     visiting: &mut HashSet<u64>,
 ) -> Option<()> {
     if paths.contains_key(&mft_id) {
-        // 命中缓存时不再克隆完整路径，候选文件共享同一条已构建的父路径。
+        // On a cache hit, do not clone the full path again; candidate files share the same already-built parent path.
         return Some(());
     }
     if !visiting.insert(mft_id) {
@@ -264,7 +264,7 @@ impl NtfsFileMetadataReader {
         let volume = fs::OpenOptions::new()
             .read(true)
             .share_mode((FILE_SHARE_READ | FILE_SHARE_WRITE) as u32)
-            // $MFT 是按 run 顺序整段读的，交给系统预读能把磁盘的并发能力用起来
+            // $MFT is read in whole runs in order; letting the system pre-read makes use of the disk's parallel capability
             .custom_flags(FILE_FLAG_SEQUENTIAL_SCAN)
             .open(&volume_path)
             .map_err(|error| format!("打开 NTFS 卷失败: {}", error))?;
@@ -297,7 +297,7 @@ impl NtfsFileMetadataReader {
             bytes_per_sector,
             cluster_size,
             file_record_size,
-            // 先用 boot sector 里的 $MFT 起点读取自身记录，再解析真正 data runs。
+            // First read its own record using the $MFT start from the boot sector, then parse the real data runs.
             mft_runs: vec![DataRun {
                 start_lcn: mft_lcn,
                 cluster_count: 24,
@@ -311,16 +311,16 @@ impl NtfsFileMetadataReader {
         Ok(reader)
     }
 
-    /// 读完整张 `$MFT`，每条有效记录解析出名字、父子关系、大小与修改时间。
+    /// Read the entire `$MFT`, parsing each valid record for name, parent-child relations, size and modification time.
     ///
-    /// 返回记录和统计。**读盘与解析分别计时**：只有拆开才能判断瓶颈在磁盘还是 CPU，
-    /// 否则只能靠猜（前两轮改动就是没拆开，方向都选偏了）。
+    /// Return records and statistics. **Reading and parsing are timed separately**: only by splitting them can we judge whether the bottleneck is disk or CPU,
+    /// otherwise we can only guess (the first two rounds of changes did not split them and picked the wrong direction).
     pub fn read_all_records(
         &self,
         progress_cb: &(impl Fn(usize) -> bool + Sync),
     ) -> Result<(Vec<MftRecordInfo>, MftReadStats), String> {
         let chunks = self.plan_read_chunks()?;
-        // 整张表的记录号约等于「最后一块的起点 + 这一块的记录数」，其中空闲记录约占一半
+        // The record count of the whole table is roughly "start of last chunk + number of records in that chunk", with free records making up about half
         let capacity_hint = chunks
             .last()
             .map(|chunk| chunk.base_record_id + chunk.len as u64 / self.file_record_size as u64)
@@ -340,20 +340,20 @@ impl NtfsFileMetadataReader {
         ))
     }
 
-    /// 把整张 `$MFT` 切成固定大小的读取任务。
+    /// Split the entire `$MFT` into fixed-size read tasks.
     ///
-    /// 先算出任务列表（而不是边读边算），读线程才能只管按任务取数据；
-    /// 记录号也在这里一次算好，避免每块都重复推导段起始位置。
+    /// Compute the task list up front (rather than while reading) so the read thread only fetches data per task;
+    /// record numbers are also computed here once, avoiding repeated derivation of segment starts for every chunk.
     fn plan_read_chunks(&self) -> Result<Vec<MftReadChunk>, String> {
         plan_read_chunks(&self.mft_runs, self.cluster_size, self.file_record_size)
     }
 
-    /// 读盘和解析分两个线程同时跑：读线程按任务把数据读进缓冲，
-    /// 解析线程解析完把缓冲还回来复用。
+    /// Run reading and parsing in two threads simultaneously: the read thread loads data into buffers per task,
+    /// and the parse thread returns buffers for reuse when done.
     ///
-    /// 原来是「读一块 → 解析一块」串行，实测读 1.9 秒、解析 0.9 秒，串起来 2.8 秒；
-    /// 这两件事之间没有数据依赖，重叠之后这一段只花读盘那 1.9 秒。
-    /// 缓冲只留两块（16MB × 2），再多只是白占内存。
+    /// Previously it was serial "read a chunk → parse a chunk": measured 1.9 s reading, 0.9 s parsing, 2.8 s combined;
+    /// there is no data dependency between the two, so overlapping them makes this section take only the 1.9 s of reading.
+    /// Keep only two buffers (16MB × 2); more just wastes memory.
     fn read_and_parse_pipelined(
         &self,
         chunks: &[MftReadChunk],
@@ -366,14 +366,14 @@ impl NtfsFileMetadataReader {
         std::thread::scope(|scope| {
             let reader = scope.spawn(move || -> Result<u128, String> {
                 let mut io_nanos = 0u128;
-                // 缓冲上限：盘缓存命中时读得比解析快得多，不限住会一直新分配，
-                // 一张 900MB 的 $MFT 能吃掉整块内存
+                // Buffer cap: on a disk-cache hit reading is much faster than parsing; without a cap, new buffers keep being allocated,
+                // and a 900MB $MFT can consume the whole memory block
                 let mut buffers_alive = 0usize;
 
                 for chunk in chunks {
-                    // 解析线程还回来的缓冲直接复用，省下每块 16MB 的新分配
+                    // Buffers returned by the parse thread are reused directly, saving a fresh 16MB allocation per chunk
                     let mut buffer = if buffers_alive >= MAX_PIPELINE_BUFFERS {
-                        // 缓冲都占着说明解析落后了，这里等一下，形成背压
+                        // All buffers occupied means parsing has fallen behind; wait here to apply backpressure
                         recycle_rx
                             .recv()
                             .map_err(|_| "解析线程提前退出".to_string())?
@@ -396,7 +396,7 @@ impl NtfsFileMetadataReader {
                         .map_err(|error| format!("读取 $MFT data run 失败: {}", error))?;
                     io_nanos += read_started.elapsed().as_nanos();
 
-                    // 解析线程已退出（取消）就别再读了
+                    // If the parse thread has exited (cancelled), stop reading
                     if ready_tx.send((buffer, chunk)).is_err() {
                         break;
                     }
@@ -411,14 +411,14 @@ impl NtfsFileMetadataReader {
 
                 while let Ok((mut buffer, chunk)) = ready_rx.recv() {
                     let parse_started = Instant::now();
-                    // 直接在读进来的缓冲上做 fixup：原来先把每条记录拷进 scratch 再修，
-                    // 71 万条记录就是 700MB 的无谓拷贝
+                    // Apply fixup directly on the buffer as read: previously each record was copied into scratch before fixing,
+                    // which meant 700MB of needless copying for 710,000 records
                     for (record_index, record) in buffer[..chunk.len]
                         .chunks_exact_mut(self.file_record_size)
                         .enumerate()
                     {
                         let record_id = chunk.base_record_id + record_index as u64;
-                        // 先用头部 flags 粗筛：空闲记录和系统元数据记录占多数，不值得做 fixup
+                        // Coarse-filter by header flags first: free records and system metadata records are the majority and not worth fixup
                         if record_id > MFT_METADATA_MAX
                             && looks_like_active_record(record)
                             && self.apply_fixup(record).is_some()
@@ -435,7 +435,7 @@ impl NtfsFileMetadataReader {
                     }
                     parse_nanos += parse_started.elapsed().as_nanos();
 
-                    // 缓冲还给读线程；读线程已结束（出错或已读完）就丢掉
+                    // Return the buffer to the read thread; if the reader has ended (error or finished reading), discard it
                     let _ = recycle_tx.send(buffer);
                 }
 
@@ -449,7 +449,7 @@ impl NtfsFileMetadataReader {
                 .join()
                 .map_err(|_| "解析 $MFT 线程异常退出".to_string())?;
 
-            // 解析线程的错更接近根因（取消就是从这里返回的），优先报它
+            // Errors from the parse thread are closer to the root cause (cancellation returns from here), so report them first
             let (records, parse_nanos) = match parse_result {
                 Ok(parsed) => parsed,
                 Err(error) => return Err(error),
@@ -499,7 +499,7 @@ impl NtfsFileMetadataReader {
     }
 }
 
-/// 只看头部 flags 判断记录是否在用，不区分文件与目录。
+/// Judge whether a record is in use from header flags only, without distinguishing files from directories.
 fn looks_like_active_record(record: &[u8]) -> bool {
     if record.len() < 24 || &record[0..4] != b"FILE" {
         return false;
@@ -510,10 +510,10 @@ fn looks_like_active_record(record: &[u8]) -> bool {
     }
 }
 
-/// 解析一条已做过 fixup 的记录，取出名字、父目录、大小与时间。
+/// Parse a record that has already been fixed up, extracting name, parent directory, size and timestamps.
 ///
-/// 与 `parse_active_file_record_metadata` 的区别：那个只关心文件大小，
-/// 这里还要拿 `$FILE_NAME`，所以目录记录也要解析。
+/// Difference from `parse_active_file_record_metadata`: that one only cares about file size,
+/// while here we also need `$FILE_NAME`, so directory records must be parsed too.
 fn parse_record_info(record: &[u8], mft_id: u64) -> Option<MftRecordInfo> {
     let flags = read_u16(record, 22)?;
     if (flags & FILE_RECORD_FLAG_IN_USE) == 0 {
@@ -539,7 +539,7 @@ fn parse_record_info(record: &[u8], mft_id: u64) -> Option<MftRecordInfo> {
         }
 
         match attribute_type {
-            // $STANDARD_INFORMATION：修改时间 + 文件属性位（用来看是否重解析点）
+            // $STANDARD_INFORMATION: modification time + file attribute bits (to check for reparse point)
             0x10 => {
                 if let Some((standard_modified, standard_attributes)) =
                     parse_standard_info(record, offset)
@@ -548,7 +548,7 @@ fn parse_record_info(record: &[u8], mft_id: u64) -> Option<MftRecordInfo> {
                     file_attributes = standard_attributes;
                 }
             }
-            // $FILE_NAME：父目录引用 + 文件名。硬链接会有多条，8.3 短名需要跳过
+            // $FILE_NAME: parent directory reference + file name. Hard links produce multiple entries; skip 8.3 short names
             0x30 => {
                 if let Some((parent_id, name, namespace)) = parse_file_name_attribute(record, offset)
                 {
@@ -564,7 +564,7 @@ fn parse_record_info(record: &[u8], mft_id: u64) -> Option<MftRecordInfo> {
                     }
                 }
             }
-            // $DATA：只认未命名数据流，命名流属于备用数据流（ADS），不能拿来当文件大小
+            // $DATA: only unnamed data stream; named streams are alternate data streams (ADS) and must not be used as file size
             0x80 => {
                 if *record.get(offset + 9)? == 0 && data_size.is_none() {
                     data_size = parse_data_attribute_size(record, offset);
@@ -576,7 +576,7 @@ fn parse_record_info(record: &[u8], mft_id: u64) -> Option<MftRecordInfo> {
         offset += attribute_length;
     }
 
-    // 重解析点（junction / 符号链接）不是本地真实文件，与 USN 枚举阶段的过滤保持一致
+    // Reparse points (junction / symlink) are not real local files; keep consistent with filtering in the USN enumeration stage
     if file_attributes & FILE_ATTRIBUTE_REPARSE_POINT_BIT != 0 {
         return None;
     }
@@ -593,7 +593,7 @@ fn parse_record_info(record: &[u8], mft_id: u64) -> Option<MftRecordInfo> {
     })
 }
 
-/// 解析 `$FILE_NAME` 属性：返回(父目录引用, 文件名, 命名空间)。
+/// Parse the `$FILE_NAME` attribute: return (parent directory reference, file name, namespace).
 fn parse_file_name_attribute(record: &[u8], attribute_offset: usize) -> Option<(u64, String, u8)> {
     let value_offset = read_u16(record, attribute_offset + 20)? as usize;
     let value_start = attribute_offset + value_offset;
@@ -608,7 +608,7 @@ fn parse_file_name_attribute(record: &[u8], attribute_offset: usize) -> Option<(
     if name_end > record.len() {
         return None;
     }
-    // 文件名是 UTF-16LE，直接按 u16 切片解码，不额外拷贝
+    // The file name is UTF-16LE; decode by slicing u16 directly, without extra copying
     let units: Vec<u16> = record[name_start..name_end]
         .chunks_exact(2)
         .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
@@ -776,17 +776,17 @@ fn read_signed_le(bytes: &[u8]) -> i64 {
 mod tests {
     use super::*;
 
-    /// 读取任务的切分必须**无缝、无重叠、记录号连续**。
+    /// Read-task splitting must be **seamless, non-overlapping, and continuous in record numbers**.
     ///
-    /// 流水线把「读」和「解析」拆到两个线程，一旦块边界算错，丢的是整块记录或
-    /// 一整条记录的半截 —— 表现就是扫描结果比真实文件数少几百个，很难察觉。
+    /// The pipeline splits "read" and "parse" into two threads; if a chunk boundary is computed wrong, what is lost is a whole chunk of records or
+    /// half of a single record — showing up as a scan result with a few hundred fewer entries than real files, hard to notice.
     #[test]
     fn plan_read_chunks_tiles_every_run_without_gaps() {
-        // 32MB 的第一段（会切成两块）+ 一段不足一块的尾巴，记录大小 1KB
+        // First segment of 32MB (split into two chunks) plus a tail shorter than one chunk, record size 1KB
         let runs = vec![
             DataRun {
                 start_lcn: 2,
-                cluster_count: 8192, // 4096 字节簇 → 32MB
+                cluster_count: 8192, // 4096-byte cluster → 32MB
             },
             DataRun {
                 start_lcn: 100_000,
@@ -803,13 +803,13 @@ mod tests {
         let total_chunk_bytes: u64 = chunks.iter().map(|chunk| chunk.len as u64).sum();
         assert_eq!(total_chunk_bytes, total_run_bytes, "块总长必须覆盖整张表");
 
-        // 每块都从整条记录上开始，且长度是记录大小的整数倍
+        // Every chunk starts on a whole record and its length is an integer multiple of the record size
         for chunk in &chunks {
             assert_eq!(chunk.offset % 1024, 0);
             assert_eq!(chunk.len % 1024, 0);
         }
 
-        // 相邻两块：记录号必须接着上一块的记录数往下数，换 data run 也不能从 0 重来
+        // Adjacent chunks: record numbers must continue from the previous chunk's count; switching data run must not restart from 0
         for pair in chunks.windows(2) {
             let (previous, current) = (&pair[0], &pair[1]);
             let records_in_previous = previous.len as u64 / 1024;
@@ -823,7 +823,7 @@ mod tests {
         assert_eq!(chunks.first().unwrap().offset, 2 * cluster_size);
     }
 
-    /// 写一个 resident 属性头。value_offset 指向属性值在记录里的位置。
+    /// Write a resident attribute header. value_offset points to where the attribute value sits in the record.
     fn write_attribute_header(
         record: &mut [u8],
         offset: usize,
@@ -834,19 +834,19 @@ mod tests {
         record[offset..offset + 4].copy_from_slice(&attribute_type.to_le_bytes());
         record[offset + 4..offset + 8].copy_from_slice(&(length as u32).to_le_bytes());
         record[offset + 8] = 0; // resident
-        record[offset + 9] = 0; // 没有属性名
+        record[offset + 9] = 0; // no attribute name
         record[offset + 20..offset + 22].copy_from_slice(&value_offset.to_le_bytes());
     }
 
-    /// 把 "报表.log" 这样的普通文件拼成一条最小的 $MFT 记录。
+    /// Assemble an ordinary file like "report.log" into a minimal $MFT record.
     fn build_file_record(name: &str, size: u32, parent_id: u64, file_attributes: u32) -> Vec<u8> {
         let mut record = vec![0u8; 1024];
         record[0..4].copy_from_slice(b"FILE");
         record[20..22].copy_from_slice(&56u16.to_le_bytes());
-        // 在用、不是目录
+        // in use, not a directory
         record[22..24].copy_from_slice(&FILE_RECORD_FLAG_IN_USE.to_le_bytes());
 
-        // $STANDARD_INFORMATION：修改时间 + 文件属性位
+        // $STANDARD_INFORMATION: modification time + file attribute bits
         let standard_info = 56;
         write_attribute_header(&mut record, standard_info, 0x10, 96, 24);
         let filetime = ((1_700_000_000i64 + WINDOWS_TO_UNIX_SECONDS) * 10_000_000) as u64;
@@ -855,7 +855,7 @@ mod tests {
         record[standard_info + 24 + 32..standard_info + 24 + 36]
             .copy_from_slice(&file_attributes.to_le_bytes());
 
-        // $FILE_NAME：父目录引用 + 文件名（Win32 长名）
+        // $FILE_NAME: parent directory reference + file name (Win32 long name)
         let file_name = standard_info + 96;
         let name_units: Vec<u16> = name.encode_utf16().collect();
         let file_name_length = (24 + 66 + name_units.len() * 2 + 7) / 8 * 8;
@@ -868,17 +868,17 @@ mod tests {
             record[at..at + 2].copy_from_slice(&unit.to_le_bytes());
         }
 
-        // $DATA：未命名数据流，大小在属性头里
+        // $DATA: unnamed data stream, size in the attribute header
         let data = file_name + file_name_length;
         write_attribute_header(&mut record, data, 0x80, 24, 24);
         record[data + 16..data + 20].copy_from_slice(&size.to_le_bytes());
 
-        // 属性列表结束标记
+        // End-of-attribute-list marker
         record[data + 24..data + 28].copy_from_slice(&0xFFFF_FFFFu32.to_le_bytes());
         record
     }
 
-    /// 一条记录就能同时拿到名字、父目录和大小 —— 这是单遍读取的前提。
+    /// One record yields name, parent directory and size at once — the prerequisite for a single-pass read.
     #[test]
     fn parse_record_info_reads_name_parent_and_size() {
         let record = build_file_record("报表.log", 1024, 1234, 0);
@@ -892,21 +892,21 @@ mod tests {
         assert_eq!(info.modified, 1_700_000_000);
     }
 
-    /// 重解析点（junction / 符号链接）必须被跳过，否则会把链接当成真实文件。
+    /// Reparse points (junction / symlink) must be skipped, otherwise links are treated as real files.
     #[test]
     fn reparse_point_is_skipped() {
         let record = build_file_record("link", 0, 1234, FILE_ATTRIBUTE_REPARSE_POINT_BIT);
         assert!(parse_record_info(&record, 42).is_none());
     }
 
-    /// 头部没写 "FILE" 的（空闲记录、损坏记录）直接丢弃，不 panic。
+    /// Records without "FILE" in the header (free or corrupted) are discarded directly, without panic.
     #[test]
     fn invalid_record_is_ignored() {
         let mut record = build_file_record("x.txt", 10, 1234, 0);
         record[0..4].copy_from_slice(b"BAAD");
         assert!(!looks_like_active_record(&record));
         record[0..4].copy_from_slice(b"FILE");
-        // 抹掉"在用"标记
+        // Clear the "in use" flag
         record[22..24].copy_from_slice(&0u16.to_le_bytes());
         assert!(!looks_like_active_record(&record));
     }

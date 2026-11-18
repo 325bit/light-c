@@ -1,9 +1,9 @@
 // ============================================================================
-// 社交软件路径适配器
+// Social app path adapters
 // ============================================================================
 //
-// 每个适配器只负责发现软件数据目录，实际遍历和分类由 core.rs 统一处理。
-// 这样可以在增强单个软件路径时避免复制扫描、去重和风险分级逻辑。
+// Each adapter is only responsible for discovering the app's data directory; actual traversal and classification are handled uniformly by core.rs.
+// This avoids duplicating scanning, deduplication, and risk-grading logic when enhancing a single app's paths.
 // ============================================================================
 
 use super::core::{FileCategory, RegistryPathResult, SocialAppPath, SocialScanner};
@@ -11,54 +11,54 @@ use log::{debug, info};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
-/// 微信数据根目录名：旧版 3.x 用 "WeChat Files"，新版 4.x 改用 "xwechat_files"。
-/// 只按旧名字搜索会直接漏掉新版客户端，这是"扫不到微信"投诉的主要来源。
+/// WeChat data root directory names: legacy 3.x uses "WeChat Files", new 4.x uses "xwechat_files".
+/// Searching only by the old name misses new clients entirely, the main source of "WeChat not found" complaints.
 const WECHAT_DATA_DIR_NAMES: [&str; 2] = ["WeChat Files", "xwechat_files"];
-/// 已按账户名精确搜索过数据目录的盘符，避免重复枚举。
+/// Drives whose data directories have already been searched by exact account name, to avoid re-enumeration.
 fn visited_roots(visited: &HashSet<String>, root: &Path) -> bool {
     visited.contains(&SocialScanner::normalize_path_key(root))
 }
 
-/// 微信账号目录的结构版本：新旧客户端的目录布局完全不同，需要分别解析。
+/// Structure version of WeChat account directories: new and old clients have completely different layouts, so they must be parsed separately.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum WechatAccountKind {
-    /// 旧版 3.x：Msg + FileStorage
+    /// Legacy 3.x: Msg + FileStorage
     Legacy,
-    /// 新版 4.x：db_storage + msg
+    /// New 4.x: db_storage + msg
     V4,
 }
 
 impl SocialScanner {
-    // 微信路径检测
+    // WeChat path detection
     // ========================================================================
 
-    /// 检测微信路径
+    /// Detect WeChat paths
     ///
-    /// 路径溯源优先级：
-    /// 1. 注册表自定义路径
-    ///    - 旧版 3.x：HKCU\Software\Tencent\WeChat\FileSavePath
-    ///    - 新版 4.x：HKCU\Software\Tencent\Weixin（FileSavePath / InstallPath 同级目录）
-    ///    - 值为 "MyDocument:" 时使用系统文档目录
-    /// 2. 文档目录下的 "WeChat Files" / "xwechat_files"
-    /// 3. 各盘常见目录浅层搜索（含盘符根目录），作为保底方案
+    /// Path tracing priority:
+    /// 1. Custom path from the registry
+    ///    - Legacy 3.x: HKCU\Software\Tencent\WeChat\FileSavePath
+    ///    - New 4.x: HKCU\Software\Tencent\Weixin (FileSavePath / InstallPath at the same level)
+    ///    - When the value is "MyDocument:", use the system documents directory
+    /// 2. "WeChat Files" / "xwechat_files" under the documents directory
+    /// 3. Shallow search of common directories on each drive (including drive roots), as a fallback
     pub(super) fn detect_wechat_paths(&self) -> Option<Vec<SocialAppPath>> {
         let mut paths = Vec::new();
         let mut found_base_paths: Vec<PathBuf> = Vec::new();
 
         // ----------------------------------------------------------------
-        // 步骤 1: 从注册表读取微信自定义路径
+        // Step 1: read the custom WeChat path from the registry
         // ----------------------------------------------------------------
         let registry_result = self.read_wechat_registry_path();
 
         match &registry_result {
             Some(RegistryPathResult::AbsolutePath(abs_path)) => {
-                // 新版微信和多开版本可能把注册表直接写成账号目录，不能强制再拼接一层。
+                // New WeChat and multi-instance versions may write the account directory directly into the registry, so do not force another level of appending.
                 info!("微信注册表路径(绝对): {}", abs_path);
                 let path = PathBuf::from(abs_path);
                 self.add_wechat_path_candidates(&path, &mut found_base_paths);
             }
             Some(RegistryPathResult::MyDocument) => {
-                // 注册表返回 MyDocument:，使用文档目录
+                // The registry returned MyDocument:, use the documents directory
                 info!("微信注册表路径: MyDocument: -> {}", self.documents_dir);
                 for dir_name in WECHAT_DATA_DIR_NAMES {
                     Self::add_candidate(
@@ -73,17 +73,17 @@ impl SocialScanner {
         }
 
         // ----------------------------------------------------------------
-        // 步骤 2: 添加默认路径（如果注册表路径不存在或未找到）
+        // Step 2: add default paths (if the registry path does not exist or was not found)
         // ----------------------------------------------------------------
         if found_base_paths.is_empty() {
             for dir_name in WECHAT_DATA_DIR_NAMES {
-                // 尝试文档目录
+                // Try the documents directory
                 Self::add_candidate(
                     &mut found_base_paths,
                     PathBuf::from(format!("{}\\{}", self.documents_dir, dir_name)),
                 );
 
-                // 尝试默认文档目录（如果不同）
+                // Try the default documents directory (if different)
                 if self.documents_dir != self.default_documents {
                     Self::add_candidate(
                         &mut found_base_paths,
@@ -94,13 +94,13 @@ impl SocialScanner {
         }
 
         // ----------------------------------------------------------------
-        // 步骤 3: 全盘搜索备选（无条件执行）
+        // Step 3: full-disk search fallback (always executed)
         // ----------------------------------------------------------------
-        // ⚠️ 这里**不能**再拿"默认路径都不存在"当条件（Issue #89）：
-        // 微信搬家后旧目录常常还留在「文档\xwechat_files」（可能已经空了），
-        // 而 add_candidate 只判断目录是否存在 → 旧目录占住位置 → 搜索被整个跳过 →
-        // 真正在 D:\xwechat_files 上的数据永远扫不到。
-        // 现在无条件搜索；下钻只做一层，成本可控（每盘一次根目录 readdir + 每个非系统目录一层）。
+        // ⚠️ Here we **must not** use "all default paths are missing" as a condition again (Issue #89):
+        // After WeChat is moved, the old directory often remains at "Documents\xwechat_files" (possibly already empty),
+        // and add_candidate only checks directory existence -> the old directory takes the slot -> the whole search is skipped ->
+        // the real data on D:\xwechat_files is never scanned.
+        // Now search unconditionally; drill down only one level, with controllable cost (one root readdir per drive + one level per non-system directory).
         info!("搜索各磁盘根目录与常见位置下的微信数据目录...");
         if let Some(search_paths) = self.search_wechat_files_on_all_drives() {
             for path in search_paths {
@@ -109,14 +109,14 @@ impl SocialScanner {
         }
 
         // ----------------------------------------------------------------
-        // 步骤 4: 扫描找到的所有基础路径
+        // Step 4: scan all found base paths
         // ----------------------------------------------------------------
         let is_custom = registry_result.is_some();
 
         for base_path in found_base_paths {
             info!("发现微信目录: {}", base_path.display());
             if Self::looks_like_wechat4_account(&base_path) {
-                // 注册表/搜索可能直接指向新版账号目录
+                // The registry/search may point directly to a new-format account directory
                 self.scan_wechat4_account_directory(&base_path, is_custom, &mut paths);
             } else {
                 self.scan_wechat_base_directory(&base_path, is_custom, &mut paths);
@@ -130,7 +130,7 @@ impl SocialScanner {
         }
     }
 
-    /// 将微信根目录、账号目录和多开目录统一归一为“可扫描账号根”。
+    /// Normalize the WeChat root, account directories, and multi-instance directories into a single "scannable account root".
     fn add_wechat_path_candidates(&self, path: &Path, candidates: &mut Vec<PathBuf>) {
         if !path.is_dir() {
             return;
@@ -141,8 +141,8 @@ impl SocialScanner {
             return;
         }
 
-        // 旧版数据目录固定叫 WeChat Files；新版 4.x 数据目录本身叫 xwechat_files，
-        // 再拼一层会找不到，因此先判自身是否就是数据目录。
+        // The legacy data directory is always named WeChat Files; in new 4.x the data directory itself is named xwechat_files,
+        // so appending another level would find nothing - first check whether the path itself is the data directory.
         if path
             .file_name()
             .and_then(|name| name.to_str())
@@ -160,33 +160,33 @@ impl SocialScanner {
             }
         }
 
-        // 根目录通常包含多个数字账号目录，保留根目录让后续函数统一枚举。
+        // The root usually contains several numeric account directories; keep the root so later functions enumerate uniformly.
         Self::add_candidate(candidates, path.to_path_buf());
     }
 
-    /// 是否为微信数据根目录名（不区分大小写）。
+    /// Whether the name is a WeChat data root directory name (case-insensitive).
     fn is_wechat_data_dir_name(name: &str) -> bool {
         WECHAT_DATA_DIR_NAMES
             .iter()
             .any(|candidate| name.eq_ignore_ascii_case(candidate))
     }
 
-    /// 判断路径是否已经是微信账号目录，避免把账号目录误当作账号集合目录。
+    /// Determine whether the path is already a WeChat account directory, to avoid mistaking an account directory for a collection directory.
     ///
-    /// 只用旧版 3.x 的权威特征，且区分大小写：
-    /// 4.x 账号里的 `msg` / `file` 等小写目录若被当成 3.x 特征，
-    /// 会把新版账号路由到旧版解析逻辑，导致整块数据漏扫。
+    /// Use only the authoritative legacy 3.x markers, case-sensitively:
+    /// if lowercase directories such as `msg` / `file` in a 4.x account were treated as 3.x markers,
+    /// new accounts would be routed to the legacy parsing logic, causing whole blocks of data to be missed.
     pub(super) fn looks_like_wechat_account(path: &Path) -> bool {
         ["Msg", "FileStorage", "MicroMsg", "Image"]
             .iter()
             .any(|name| path.join(name).exists())
     }
 
-    /// 微信账号目录结构版本。
+    /// WeChat account directory structure version.
     fn wechat_account_kind(path: &Path) -> Option<WechatAccountKind> {
-        // 先判新版：db_storage 只存在于 4.x，是区分两代结构最可靠的标记。
-        // 注意必须逐个比较目录名而不是用 path.join(name).is_dir()：
-        // Windows 文件系统不区分大小写，"msg" 会命中旧版的 "Msg"，把 3.x 账号误判为 4.x。
+        // Check the new version first: db_storage exists only in 4.x and is the most reliable marker for distinguishing the two structures.
+        // Note: directory names must be compared individually rather than using path.join(name).is_dir():
+        // The Windows filesystem is case-insensitive, so "msg" would match the legacy "Msg" and misclassify a 3.x account as 4.x.
         if Self::contains_exact_directory(path, &["db_storage", "msg"]) {
             return Some(WechatAccountKind::V4);
         }
@@ -198,7 +198,7 @@ impl SocialScanner {
         None
     }
 
-    /// 判断目录下是否存在名字完全匹配（区分大小写）的子目录。
+    /// Determine whether a subdirectory with an exact (case-sensitive) name exists under a directory.
     fn contains_exact_directory(path: &Path, names: &[&str]) -> bool {
         let Ok(entries) = std::fs::read_dir(path) else {
             return false;
@@ -216,7 +216,7 @@ impl SocialScanner {
             })
     }
 
-    /// 新版微信 4.x 账号目录特征：数据库在 db_storage，消息与媒体在 msg。
+    /// New WeChat 4.x account directory signature: database in db_storage, messages and media in msg.
     pub(super) fn looks_like_wechat4_account(path: &Path) -> bool {
         matches!(
             Self::wechat_account_kind(path),
@@ -224,13 +224,13 @@ impl SocialScanner {
         )
     }
 
-    /// 判断子目录是否为可扫描的微信账号目录，过滤新建与迁移过程中的空目录。
+    /// Determine whether a subdirectory is a scannable WeChat account directory, filtering out empty directories from newly created or migrating accounts.
     fn is_wechat_account_dir(path: &Path) -> bool {
         if Self::wechat_account_kind(path).is_some() {
             return true;
         }
 
-        // 账号特征不明确时，退回按目录名判断，兼容尚未产生数据的账号目录
+        // When account markers are unclear, fall back to judging by directory name, to stay compatible with account directories that have no data yet
         path.file_name()
             .unwrap_or_default()
             .to_string_lossy()
@@ -238,17 +238,17 @@ impl SocialScanner {
             .starts_with("wxid_")
     }
 
-    /// 扫描新版微信 4.x 的单个账号目录。
+    /// Scan a single account directory of new WeChat 4.x.
     ///
-    /// 目录结构与 3.x 完全不同：聊天数据库从 Msg 迁移到 db_storage，
-    /// 图片/视频/文件统一收到 msg 下，另外多了 cache / business / temp 等缓存目录。
+    /// The directory structure is completely different from 3.x: the chat database moved from Msg to db_storage,
+    /// images/videos/files are all collected under msg, plus additional cache directories such as cache / business / temp.
     fn scan_wechat4_account_directory(
         &self,
         account_dir: &Path,
         is_custom: bool,
         paths: &mut Vec<SocialAppPath>,
     ) {
-        // 聊天记录数据库 (CRITICAL)
+        // Chat record database (CRITICAL)
         let db_storage = account_dir.join("db_storage");
         if db_storage.is_dir() {
             Self::add_scan_path(
@@ -260,7 +260,7 @@ impl SocialScanner {
             );
         }
 
-        // 消息目录：file / attach 是收到的文件，video 是视频，migrate 是迁移中间数据
+        // Message directory: file / attach are received files, video holds videos, migrate holds intermediate migration data
         self.add_named_subdirectories(
             &account_dir.join("msg"),
             &["file", "attach"],
@@ -286,11 +286,11 @@ impl SocialScanner {
             paths,
         );
 
-        // 4.x 的 `temp\RWTemp` 不是运行缓存，而是聊天里刚收发内容的明文副本
-        // （`temp\RWTemp\2026-11\xxx.jpg`、用户转存的文档都在这里）。
-        // 归到「图片视频」，用户才能在对应分类里看到；文档类由 classify_file 的
-        // 扩展名规则认领到「传输文件」。必须在父目录 `temp` 之前登记成更深路径，
-        // 扫描时按层级从深到浅，子路径先拿到自己的分类，父路径再跳过重复文件。
+        // In 4.x, `temp\RWTemp` is not a runtime cache but a plaintext copy of recently sent/received chat content
+        // (`temp\RWTemp\2026-11\xxx.jpg` and user-saved documents are all here).
+        // Classify as "image/video" so the user can see them in that category; document types are claimed by classify_file's
+        // extension rule as "transferred files". Must be registered as a deeper path before the parent `temp` directory,
+        // so during scanning (deep to shallow by level), child paths get their own category first and parent paths then skip duplicate files.
         Self::add_scan_path(
             paths,
             "微信",
@@ -299,7 +299,7 @@ impl SocialScanner {
             is_custom,
         );
 
-        // 临时缓存 (NONE)
+        // Temporary cache (NONE)
         self.add_named_subdirectories(
             account_dir,
             &["cache", "temp", "apm_record", "resource"],
@@ -309,7 +309,7 @@ impl SocialScanner {
             paths,
         );
 
-        // 小程序、收藏、表情等业务缓存 (NONE)
+        // Business cache for mini programs, favorites, emoji, etc. (NONE)
         self.add_named_subdirectories(
             &account_dir.join("business"),
             &["emoticon", "favorite", "xweb", "xeditor", "InputTemp", "migrate"],
@@ -319,7 +319,7 @@ impl SocialScanner {
             paths,
         );
 
-        // 朋友圈缓存 (NONE)
+        // Moments cache (NONE)
         self.add_named_subdirectories(
             &account_dir.join("business"),
             &["sns"],
@@ -330,7 +330,7 @@ impl SocialScanner {
         );
     }
 
-    /// 扫描微信基础目录，提取所有用户的缓存路径
+    /// Scan the WeChat base directory and extract cache paths for all users
     fn scan_wechat_base_directory(
         &self,
         base_path: &Path,
@@ -363,12 +363,12 @@ impl SocialScanner {
                 .to_string_lossy()
                 .to_string();
 
-            // 跳过系统目录与备份目录：备份属于用户的主动备份，不应混进"缓存清理"里
+            // Skip system and backup directories: backups are user-initiated and should not be mixed into "cache cleanup"
             if Self::is_wechat_non_account_dir(&user_name) {
                 continue;
             }
 
-            // 3.x 与 4.x 的账号目录结构不同，按特征分派到对应的解析函数
+            // 3.x and 4.x account directories have different structures; dispatch by markers to the appropriate parsing function
             match Self::wechat_account_kind(&user_dir) {
                 Some(WechatAccountKind::V4) => {
                     info!("  微信4.x用户: {}", user_name);
@@ -379,13 +379,13 @@ impl SocialScanner {
                     self.scan_wechat_account_directory(&user_dir, is_custom, paths);
                 }
                 None => {
-                    // 目录名像账号但还没有任何数据，无需扫描
+                    // The directory name looks like an account but has no data yet, no need to scan
                 }
             }
         }
     }
 
-    /// 微信数据根目录下的非账号目录：系统共享目录与备份目录。
+    /// Non-account directories under the WeChat data root: system shared directories and backup directories.
     fn is_wechat_non_account_dir(dir_name: &str) -> bool {
         ["all_users", "backup", "applet", "wmpf", "all users"]
             .iter()
@@ -393,7 +393,7 @@ impl SocialScanner {
             || dir_name.starts_with('.')
     }
 
-    /// 扫描单个微信账号目录，兼容旧版、新版和多开目录。
+    /// Scan a single WeChat account directory, compatible with legacy, new, and multi-instance directories.
     fn scan_wechat_account_directory(
         &self,
         user_dir: &Path,
@@ -401,13 +401,13 @@ impl SocialScanner {
         paths: &mut Vec<SocialAppPath>,
     ) {
         // --------------------------------------------------------
-        // 聊天记录数据库 (CRITICAL)
-        // 特征：Msg 目录下的 .db 文件
-        // 微信数据库结构：
+        // Chat record database (CRITICAL)
+        // Marker: .db files under the Msg directory
+        // WeChat database structure:
         //   Msg/
-        //     MicroMsg.db      - 主消息数据库
-        //     MediaMSG*.db     - 媒体消息数据库
-        //     Multi/           - 多开消息
+        //     MicroMsg.db      - main message database
+        //     MediaMSG*.db     - media message database
+        //     Multi/           - multi-instance messages
         //       MSG*.db
         // --------------------------------------------------------
         let msg_dir = user_dir.join("Msg");
@@ -420,7 +420,7 @@ impl SocialScanner {
                 is_custom,
             );
 
-            // Msg\Multi 目录（多开消息）
+            // Msg\Multi directory (multi-instance messages)
             let multi_dir = msg_dir.join("Multi");
             if multi_dir.exists() {
                 Self::add_scan_path(
@@ -433,13 +433,13 @@ impl SocialScanner {
             }
         }
 
-        // FileStorage 子目录
+        // FileStorage subdirectories
         let file_storage = user_dir.join("FileStorage");
         if file_storage.exists() {
             // --------------------------------------------------------
-            // 图片视频 (LOW)
-            // 特征：Image, Video 目录下的文件
-            // 微信加密图片：Image 目录下的 .dat 文件
+            // Images and videos (LOW)
+            // Marker: files in the Image, Video directories
+            // WeChat encrypted images: .dat files in the Image directory
             // --------------------------------------------------------
             for dir_name in &["Image", "Video"] {
                 let dir = file_storage.join(dir_name);
@@ -449,8 +449,8 @@ impl SocialScanner {
             }
 
             // --------------------------------------------------------
-            // 传输文件 (MEDIUM)
-            // 特征：File, MsgAttach 目录
+            // Transferred files (MEDIUM)
+            // Marker: File, MsgAttach directories
             // --------------------------------------------------------
             for dir_name in &["File", "MsgAttach"] {
                 let dir = file_storage.join(dir_name);
@@ -460,8 +460,8 @@ impl SocialScanner {
             }
 
             // --------------------------------------------------------
-            // 朋友圈/缓存 (NONE)
-            // 特征：Sns 是动态缓存，其余多为运行缓存、缩略图和小程序缓存。
+            // Moments/cache (NONE)
+            // Marker: Sns is feed cache; the rest are mostly runtime cache, thumbnails, and mini-program cache.
             // --------------------------------------------------------
             for dir_name in &[
                 "Sns",
@@ -491,7 +491,7 @@ impl SocialScanner {
             }
         }
 
-        // 新版微信会把 WebView、小程序和部分临时缓存放在账号根目录，单靠 FileStorage 会漏掉。
+        // New WeChat puts WebView, mini programs, and some temporary cache in the account root; relying on FileStorage alone would miss them.
         for dir_name in &[
             "Sns",
             "Moments",
@@ -521,16 +521,16 @@ impl SocialScanner {
         }
     }
 
-    /// 全盘搜索微信数据目录（旧版 WeChat Files 与新版 xwechat_files）
-    /// 当注册表和默认路径都失败时，作为保底方案
+    /// Full-disk search for WeChat data directories (legacy WeChat Files and new xwechat_files)
+    /// Used as a fallback when both registry and default paths fail
     pub(super) fn search_wechat_files_on_all_drives(&self) -> Option<Vec<PathBuf>> {
         let mut found_paths = Vec::new();
-        // 记录已枚举过内容的目录：新版按名字全递归查一遍后，就不必再枚举它的子目录
+        // Record directories whose contents have been enumerated: after the new version's full name-based recursive search, its subdirectories need not be enumerated again
         let mut enumerated_roots: HashSet<String> = HashSet::new();
 
-        // 常见存放位置（含盘符根目录，覆盖把数据直接放在 D:\、E:\ 这类情况）。
-        // 这里刻意不把整个盘符根目录当作深搜起点：在 C:\ 上按名字下钻会走进 Windows 等系统目录，
-        // 既慢又无意义；自定义数据目录基本都是"盘符根 → 一个用户自建目录 → 微信数据目录"的结构。
+        // Common storage locations (including drive roots, covering cases where data is placed directly on D: or E:).
+        // Deliberately do not use the whole drive root as a deep-search starting point: drilling down by name on C: would enter system directories such as Windows,
+        // which is slow and pointless; custom data directories are basically structured as "drive root -> a user-created directory -> WeChat data directory".
         let common_locations = ["", "Users", "Data", "Documents", "data", "software", "Programs", "downloads"];
 
         for drive in &self.available_drives {
@@ -544,7 +544,7 @@ impl SocialScanner {
                     continue;
                 }
 
-                // 只搜索一层深度，避免耗时过长
+                // Search only one level deep to avoid long runtimes
                 let Ok(entries) = std::fs::read_dir(&search_base) else {
                     continue;
                 };
@@ -555,7 +555,7 @@ impl SocialScanner {
                         continue;
                     }
 
-                    // 前提一：目录本身就叫 WeChat Files / xwechat_files
+                    // Condition 1: the directory itself is named WeChat Files / xwechat_files
                     if path
                         .file_name()
                         .and_then(|name| name.to_str())
@@ -566,12 +566,12 @@ impl SocialScanner {
                         continue;
                     }
 
-                    // 前提二：目录内部（含深层）存在微信数据目录名。
-                    // 盘符根目录下的**系统目录**跳过（Windows / Program Files / $Recycle.Bin…），
-                    // 其余顶层目录照常下钻 —— 这是 Issue #87 的修复点：
-                    // 用户把微信数据放到 `D:\weixin\xwechat_files` 这类自建目录时，
-                    // 顶层目录名本身不是数据目录名，只有下钻才找得到。原先这里直接 continue，
-                    // 等于对所有盘符根下的自建目录视而不见。
+                    // Condition 2: a WeChat data directory name exists inside the directory (including deeper levels).
+                    // Skip **system directories** under the drive root (Windows / Program Files / $Recycle.Bin...),
+                    // but drill into other top-level directories as usual - this is the fix for Issue #87:
+                    // when a user puts WeChat data in a self-created directory like `D:\weixin\xwechat_files`,
+                    // the top-level directory name itself is not the data directory name, so only drilling down finds it. Originally this just continued,
+                    // effectively ignoring all self-created directories under every drive root.
                     if location.is_empty() && Self::is_system_top_level_dir(&path) {
                         continue;
                     }
@@ -580,10 +580,10 @@ impl SocialScanner {
                     }
                     enumerated_roots.insert(SocialScanner::normalize_path_key(&path));
                     for data_dir_name in WECHAT_DATA_DIR_NAMES {
-                        // 深度取 2（与 QQ 侧一致）：用户常把数据放进自己建的分类目录，
-                        // 例如 issue #97 的 `D:\聊天记录\微信\xwechat_files` ——
-                        // 从盘符根算是"分类 → 软件 → 数据"，只下钻一层够不到。
-                        // 多一层 readdir，内部有 20000 目录上限，不会在超大目录里卡住。
+                        // Use depth 2 (consistent with the QQ side): users often put data in self-created category directories,
+                        // e.g., issue #97's `D:\chat-records\WeChat\xwechat_files` -
+                        // counted from the drive root that is "category -> app -> data", and one level of drilling is not enough.
+                        // One extra readdir, with an internal 20,000-directory cap, will not get stuck in huge directories.
                         if let Some(found) = self.find_directory_by_name(&path, data_dir_name, 2) {
                             info!("全盘搜索发现: {}", found.display());
                             found_paths.push(found);
@@ -600,11 +600,11 @@ impl SocialScanner {
         }
     }
 
-    /// 在指定目录内按名字查找子目录，限制递归深度与检查数量以控制耗时。
+    /// Find a subdirectory by name within a given directory, limiting recursion depth and check count to control runtime.
     ///
-    /// ⚠️ 遍历走 `read_subdirectories_cached` 而不是 `walkdir`：
-    /// 微信和 QQ 的兜底搜索范围完全重叠，第二次搜索时这些目录已经在缓存里，
-    /// 基本不产生 IO。深度语义与 walkdir 的 `max_depth` 一致（base 为 0 层）。
+    /// ⚠️ Traversal goes through `read_subdirectories_cached` rather than `walkdir`:
+    /// WeChat's and QQ's fallback searches overlap completely, so on the second search these directories are already cached,
+    /// producing almost no IO. Depth semantics match walkdir's `max_depth` (base is level 0).
     pub(super) fn find_directory_by_name(&self, base: &Path, name: &str, max_depth: usize) -> Option<PathBuf> {
         const MAX_CHECKED_DIRS: usize = 20_000;
         let mut checked = 0usize;
@@ -612,7 +612,7 @@ impl SocialScanner {
 
         while let Some((dir, depth)) = frontier.pop() {
             checked += 1;
-            // 目录索引本身也有成本，限定检查数量防止在超大目录里长时间停留
+            // Directory indexing itself has a cost; limiting the check count prevents long stalls in huge directories
             if checked > MAX_CHECKED_DIRS {
                 debug!("目录检查数量超限，停止在 {} 内查找 {}", base.display(), name);
                 return None;
@@ -636,15 +636,15 @@ impl SocialScanner {
         None
     }
 
-    /// 从注册表读取微信自定义路径
+    /// Read the custom WeChat path from the registry
     ///
-    /// 注册表路径：
-    /// - 旧版 3.x：HKEY_CURRENT_USER\Software\Tencent\WeChat -> FileSavePath
-    /// - 新版 4.x：HKEY_CURRENT_USER\Software\Tencent\Weixin  -> FileSavePath
+    /// Registry paths:
+    /// - Legacy 3.x: HKEY_CURRENT_USER\Software\Tencent\WeChat -> FileSavePath
+    /// - New 4.x: HKEY_CURRENT_USER\Software\Tencent\Weixin  -> FileSavePath
     ///
-    /// 返回值说明：
-    /// - `MyDocument:` -> 使用系统文档目录
-    /// - 绝对路径（如 `E:\data\xwechat_files`）-> 直接使用
+    /// Return value meaning:
+    /// - `MyDocument:` -> use the system documents directory
+    /// - Absolute path (e.g., `E:\data\xwechat_files`) -> use directly
     #[cfg(target_os = "windows")]
     pub(super) fn read_wechat_registry_path(&self) -> Option<RegistryPathResult> {
         use winreg::enums::*;
@@ -652,7 +652,7 @@ impl SocialScanner {
 
         let hkcu = RegKey::predef(HKEY_CURRENT_USER);
 
-        // 新版 4.x 客户端注册在 Weixin 下，旧版注册在 WeChat 下；优先读新版
+        // New 4.x clients register under Weixin, legacy ones under WeChat; read the new version first
         for key_path in ["Software\\Tencent\\Weixin", "Software\\Tencent\\WeChat"] {
             let Ok(wechat_key) = hkcu.open_subkey(key_path) else {
                 debug!("打开微信注册表键失败: {}", key_path);
@@ -666,13 +666,13 @@ impl SocialScanner {
                         continue;
                     }
 
-                    // 检查是否为 MyDocument: 特殊值
+                    // Check whether it is the special value MyDocument:
                     if path.trim().eq_ignore_ascii_case("MyDocument:") {
                         info!("微信 FileSavePath = MyDocument: ({})", key_path);
                         return Some(RegistryPathResult::MyDocument);
                     }
 
-                    // 绝对路径
+                    // Absolute path
                     info!("微信 FileSavePath = {} ({})", path, key_path);
                     return Some(RegistryPathResult::AbsolutePath(path));
                 }
@@ -681,8 +681,8 @@ impl SocialScanner {
                 }
             }
 
-            // 新版客户端不一定写 FileSavePath，退回用安装目录推断数据目录：
-            // 自定义数据目录常放在安装目录同级，例如 D:\software\wechat\Weixin + D:\software\wechat\xwechat_files
+            // New clients do not always write FileSavePath; fall back to inferring the data directory from the install directory:
+            // Custom data directories are often at the same level as the install directory, e.g. D:\software\wechat\Weixin + D:\software\wechat\xwechat_files
             if let Ok(install_path) = wechat_key.get_value::<String, _>("InstallPath") {
                 if let Some(data_root) = Self::wechat_data_root_near_install(&install_path) {
                     info!("微信安装目录推断数据目录: {}", data_root.display());
@@ -696,11 +696,11 @@ impl SocialScanner {
         None
     }
 
-    /// 从安装目录推断数据目录：先看安装目录本身，再看同级目录。
+    /// Infer the data directory from the install directory: check the install directory itself first, then sibling directories.
     ///
-    /// 新版微信把程序放在 `...\Weixin`，数据放在 `...\xwechat_files`（同级），
-    /// 仅靠注册表里的 FileSavePath 在部分机器上是读不到的。
-    /// 候选顺序固定为"旧的 WeChat Files 优先"，保证新旧客户端并存时行为与升级前一致。
+    /// New WeChat puts the program in `...\Weixin` and the data in `...\xwechat_files` (at the same level),
+    /// and on some machines the FileSavePath in the registry cannot be read at all.
+    /// The candidate order is fixed as "legacy WeChat Files first" to keep behavior unchanged when new and old clients coexist.
     #[cfg(target_os = "windows")]
     pub(super) fn wechat_data_root_near_install(install_path: &str) -> Option<PathBuf> {
         let install_dir = Path::new(install_path);
@@ -732,7 +732,7 @@ impl SocialScanner {
 }
 
 // ============================================================================
-// 单元测试
+// Unit tests
 // ============================================================================
 
 #[cfg(test)]
@@ -740,10 +740,10 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    /// 同一进程内并发跑用例时会重名，加序号保证每个 fixture 独占路径。
+    /// Concurrent test cases in one process would collide on names; a sequence number gives each fixture its own path.
     static FIXTURE_SEQUENCE: AtomicUsize = AtomicUsize::new(0);
 
-    /// 构造一个临时目录，测试结束后由调用方清理。
+    /// Build a temporary directory; the caller cleans it up after the test.
     fn fixture(name: &str) -> PathBuf {
         let sequence = FIXTURE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
         let dir = std::env::temp_dir().join(format!(
@@ -759,7 +759,7 @@ mod tests {
 
     #[test]
     fn detects_new_wechat_data_directory_name() {
-        // 新版 4.x 的数据目录叫 xwechat_files，不应被当成"父目录"再拼一层
+        // The new 4.x data directory is named xwechat_files and should not be treated as a "parent directory" with another level appended
         assert!(SocialScanner::is_wechat_data_dir_name("xwechat_files"));
         assert!(SocialScanner::is_wechat_data_dir_name("WeChat Files"));
         assert!(SocialScanner::is_wechat_data_dir_name("XWECHAT_FILES"));
@@ -772,13 +772,13 @@ mod tests {
         let account = root.join("wxid_abc123_4f4c");
         std::fs::create_dir_all(account.join("db_storage")).unwrap();
         std::fs::create_dir_all(account.join("msg/attach")).unwrap();
-        // 旧版账号目录不应被判成 4.x
+        // A legacy account directory should not be classified as 4.x
         let legacy = root.join("wxid_legacy");
         std::fs::create_dir_all(legacy.join("Msg")).unwrap();
         std::fs::create_dir_all(legacy.join("FileStorage/Image")).unwrap();
 
         assert!(SocialScanner::looks_like_wechat4_account(&account));
-        // 旧版账号目录不应被判成 4.x
+        // A legacy account directory should not be classified as 4.x
         {
             let dump = format!(
                 "account={}\naccount_kind={:?}\nlegacy={}\nlegacy_kind={:?}\nlegacy_db_storage_exists={}\nlegacy_msg_exists={}\nlegacy_children={:?}\n",
@@ -808,10 +808,10 @@ mod tests {
         std::fs::create_dir_all(account.join("msg/file")).unwrap();
         std::fs::create_dir_all(account.join("msg/video")).unwrap();
         std::fs::create_dir_all(account.join("cache")).unwrap();
-        // 4.x 的 temp\RWTemp 是聊天收发明文副本，按内容归类而不是当缓存
+        // In 4.x, temp\RWTemp is a plaintext copy of chat messages; classify by content rather than as cache
         std::fs::create_dir_all(account.join("temp/RWTemp/2026-11")).unwrap();
         std::fs::create_dir_all(account.join("business/sns")).unwrap();
-        // 备份目录不应被当成账号目录扫描
+        // Backup directories should not be scanned as account directories
         std::fs::create_dir_all(root.join("Backup/wxid_abc123")).unwrap();
 
         let scanner = SocialScanner::new();
@@ -851,9 +851,9 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// Issue #97：用户把聊天数据放进自己建的分类目录，
-    /// 从盘符根算是「分类 → 软件 → 数据」三层（D://聊天记录//QQ//Tencent Files）。
-    /// 全盘搜索只下钻 1 层时永远够不到，改成 2 层才覆盖得住。
+    /// Issue #97: a user puts chat data in a self-created category directory,
+    /// counted from the drive root that is three levels ("category -> app -> data") (D://chat-records//QQ//Tencent Files).
+    /// A full-disk search that drills down only 1 level can never reach it; changing to 2 levels covers it.
     #[test]
     fn finds_data_dir_under_a_named_category_folder() {
         let scanner = SocialScanner::new();
@@ -870,7 +870,7 @@ mod tests {
             scanner.find_directory_by_name(&category, "xwechat_files", 2).is_some(),
             "分类目录下的 xwechat_files 应能找到"
         );
-        // 只下钻 1 层确实找不到 —— 证明这条用例真的在守深度，而不是碰巧通过
+        // Drilling only 1 level truly cannot find it - proving this test really guards the depth rather than passing by chance
         assert!(
             scanner.find_directory_by_name(&category, "Tencent Files", 1).is_none(),
             "深度 1 不应命中，否则用例失去意义"

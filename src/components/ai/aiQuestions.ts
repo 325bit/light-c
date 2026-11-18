@@ -1,29 +1,29 @@
 // ============================================================================
-// 快捷提问的问句模板
+// Question templates for quick asks
 //
-// **不要直接复用"一键搜索"的关键字**。那是给搜索引擎用的短语，例如
-//   `Windows 文件 C:\Windows\Temp 可以删除吗`
-// 空格堆词对搜索引擎没问题，但模型在具体模块的语境下会把它读成"处理这个对象"——
-// 旧驱动模块就因此把"查这个驱动"理解成了"删这个驱动"，直接开始提删除。
+// **Do not directly reuse the "one-click search" keywords**. Those are phrases for search engines, e.g.
+//   `Windows file C:\Windows\Temp - can it be deleted`
+// piling up space-separated words is fine for search engines, but a model in a specific module's context reads it as "handle this object" -
+// the old driver module thus understood "look up this driver" as "delete this driver" and started proposing deletion outright.
 //
-// 所以统一在这里把同一个对象包装成完整问句：字段仍取自模块已有的数据，
-// 不另维护一套；变的只是"怎么问"。
+// So wrap the same object into a full question here uniformly: fields still come from the module's existing data,
+// no separate set is maintained; only "how to ask" changes.
 //
-// ⚠️ 问句也要跟着界面语言走：英文/日文界面里冒出一句中文问句很突兀，
-// 而且会把模型也带成用中文回答。文案在 i18n 的 `askQuestion.*` 下，四种语言各一套。
+// ⚠️ The question must also follow the UI language: a Chinese question popping up in an English/Japanese UI is jarring,
+// and would lead the model to answer in Chinese as well. The text lives under i18n `askQuestion.*`, one set for each of the four languages.
 // ============================================================================
 
 import i18n from '../../i18n';
 
-/** 被询问的对象类型，决定用词与追问的重点。 */
+/** Type of object being asked about; determines wording and follow-up focus. */
 export type AskTargetKind = 'file' | 'folder' | 'model';
 
 /**
- * 组装某个对象的完整问句。target 通常是路径或模型名。
+ * Build the full question for an object. target is usually a path or a model name.
  *
- * ⚠️ `askQuestion.file / folder / model` 这三个键**不受类型检查** ——
- * 键名写错时 tsc 与构建都不报，只会把键名本身显示在气泡里。
- * 四种语言都补齐了，改动时挨个核一遍。
+ * ⚠️ The three keys `askQuestion.file / folder / model` are **not type-checked** -
+ * a typo in a key raises no tsc or build error; the key name itself just shows up in the bubble.
+ * All four languages are filled in; when changing them, verify each one.
  */
 export function buildItemQuestion(target: string, kind: AskTargetKind = 'file'): string {
   const trimmed = target.trim();

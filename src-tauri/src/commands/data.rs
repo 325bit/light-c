@@ -1,26 +1,26 @@
 // ============================================================================
-// 数据目录管理命令
+// Data directory management commands
 // ============================================================================
 
 use std::fs;
 use std::path::{Path, PathBuf};
 use tauri::Manager;
 
-/// 壁纸在数据目录中的固定文件名（不含扩展名）。
-/// 用固定名而不是原文件名：选图后复制到数据目录，原图被用户删掉/移动也不影响。
-/// 扩展名保留真实后缀——WebView 靠它判断 asset:// 资源的 MIME 类型，
-/// 改成统一的 .img 会导致图片加载失败。
+/// Fixed file name of the wallpaper in the data directory (without extension).
+/// Use a fixed name rather than the original: after selection it is copied into the data directory, so deleting/moving the original does not matter.
+/// Keep the real extension — WebView relies on it to determine the MIME type of asset:// resources,
+/// changing to a uniform .img would make the image fail to load.
 const WALLPAPER_FILE_STEM: &str = "wallpaper";
 
-/// 壁纸允许的扩展名。用扩展名判断而不是读文件头：WebView 需要正确的扩展名才会
-/// 按图片解码 asset:// 资源，改名的文件即使内容合法也加载不出来。
+/// Allowed wallpaper extensions. Judge by extension rather than reading the file header: WebView needs the correct extension to
+/// decode an asset:// resource as an image; a renamed file will not load even if its content is valid.
 const WALLPAPER_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "webp", "bmp", "gif"];
 
-/// 壁纸文件大小上限（20MB）。超大图片会让 WebView 每次启动都解码一张巨图，
-/// 且 asset 资源会整体进内存，代价远超一张背景图的价值。
+/// Wallpaper size limit (20MB). A huge image makes WebView decode a giant picture on every startup,
+/// and asset resources are loaded entirely into memory, a cost far exceeding a background image's value.
 const WALLPAPER_MAX_BYTES: u64 = 20 * 1024 * 1024;
 
-/// 列出数据目录里已安装的壁纸文件（换图时清掉旧后缀的那份）。
+/// List installed wallpaper files in the data directory (clear the one with the old extension when changing images).
 fn existing_wallpaper_paths() -> Vec<PathBuf> {
     let data_dir = crate::data_dir::get_data_dir();
     let Ok(entries) = fs::read_dir(&data_dir) else {
@@ -37,14 +37,14 @@ fn existing_wallpaper_paths() -> Vec<PathBuf> {
         .collect()
 }
 
-/// 当前壁纸的绝对路径；没有安装时返回 None。
+/// Absolute path of the current wallpaper; None if none installed.
 fn current_wallpaper_path() -> Option<PathBuf> {
     existing_wallpaper_paths()
         .into_iter()
         .find(|path| path.is_file())
 }
 
-/// 获取当前数据目录路径
+/// Get the current data directory path
 #[tauri::command]
 pub fn get_data_directory() -> Result<String, String> {
     Ok(crate::data_dir::get_data_dir()
@@ -52,25 +52,25 @@ pub fn get_data_directory() -> Result<String, String> {
         .to_string())
 }
 
-/// 获取统一的发行模式、配置路径、数据路径和便携迁移状态。
+/// Get the unified distribution mode, config path, data path and portable migration status.
 #[tauri::command]
 pub fn get_storage_location_info() -> crate::data_dir::StorageLocationInfo {
     crate::data_dir::get_storage_location_info()
 }
 
-/// 检测便携目录写入能力，供设置页在"便携包放在不可写目录"时给出明确指引。
+/// Detect write capability of the portable directory, so the settings page can give clear guidance when "the portable package is in a non-writable directory".
 #[tauri::command]
 pub fn get_storage_write_diagnostic() -> crate::data_dir::StorageWriteDiagnostic {
     crate::data_dir::get_storage_write_diagnostic()
 }
 
-/// 重试便携版旧 AppData 数据迁移，源数据始终保留。
+/// Retry migration of old AppData data for portable builds; source data is always preserved.
 #[tauri::command]
 pub fn migrate_legacy_portable_data() -> Result<crate::data_dir::StorageLocationInfo, String> {
     crate::data_dir::migrate_legacy_portable_data()
 }
 
-/// 设置数据目录并迁移数据
+/// Set the data directory and migrate data
 #[tauri::command]
 pub fn set_data_directory(path: String) -> Result<String, String> {
     let new_path = std::path::Path::new(&path);
@@ -81,7 +81,7 @@ pub fn set_data_directory(path: String) -> Result<String, String> {
     ))
 }
 
-/// 清空本地数据白名单项；模块专属日志和备份由数据目录统一清理清单管理。
+/// Clear local data whitelist entries; module-specific logs and backups are managed by the data directory's unified cleanup list.
 #[tauri::command]
 pub fn clear_local_data() -> Result<(usize, u64), String> {
     crate::data_dir::clear_local_data()
@@ -99,8 +99,8 @@ pub fn clear_selected_local_data(
     crate::data_dir::clear_selected_local_data(&item_ids)
 }
 
-/// 启动时把已安装的壁纸加入 asset 协议白名单。
-/// asset scope 不跨进程持久化，每次启动都要重新授权，否则重启后壁纸裂图。
+/// At startup, add installed wallpapers to the asset protocol whitelist.
+/// Asset scope does not persist across processes, so authorization must be redone each startup, otherwise wallpapers break after restart.
 pub fn authorize_wallpaper(app: &tauri::AppHandle) {
     if let Some(path) = current_wallpaper_path() {
         if let Err(error) = app.asset_protocol_scope().allow_file(&path) {
@@ -109,8 +109,8 @@ pub fn authorize_wallpaper(app: &tauri::AppHandle) {
     }
 }
 
-/// 打开系统图片选择对话框。
-/// 只放行常见静态图片格式：gif 也接受，WebView 能解码，但用户自己选的。
+/// Open the system image picker dialog.
+/// Only allow common static image formats: gif is also accepted and WebView can decode it, but this is the user's own choice.
 #[tauri::command]
 pub async fn pick_wallpaper_dialog(app: tauri::AppHandle) -> Result<Option<String>, String> {
     use tauri_plugin_dialog::DialogExt;
@@ -125,8 +125,8 @@ pub async fn pick_wallpaper_dialog(app: tauri::AppHandle) -> Result<Option<Strin
     Ok(result.map(|p| p.to_string()))
 }
 
-/// 安装壁纸：校验文件 → 复制到数据目录 → 清掉旧后缀的壁纸。
-/// 返回 asset:// 相对路径交给前端拼 convertFileSrc。
+/// Install a wallpaper: validate file → copy to data directory → clear wallpaper with old extension.
+/// Return an asset:// relative path for the frontend to build convertFileSrc.
 #[tauri::command]
 pub fn install_wallpaper(app: tauri::AppHandle, source: String) -> Result<String, String> {
     let source_path = Path::new(&source);
@@ -151,7 +151,7 @@ pub fn install_wallpaper(app: tauri::AppHandle, source: String) -> Result<String
     let data_dir = crate::data_dir::get_data_dir();
     fs::create_dir_all(&data_dir).map_err(|error| format!("创建数据目录失败：{}", error))?;
 
-    // 先删旧壁纸再复制：新旧后缀不同时（如 png → jpg）不会两份并存。
+    // Delete the old wallpaper before copying: when old/new extensions differ (e.g. png → jpg), the two will not coexist.
     for old_path in existing_wallpaper_paths() {
         if let Err(error) = fs::remove_file(&old_path) {
             log::warn!("删除旧壁纸失败 {}: {}", old_path.display(), error);
@@ -161,7 +161,7 @@ pub fn install_wallpaper(app: tauri::AppHandle, source: String) -> Result<String
     let target = data_dir.join(format!("{}.{}", WALLPAPER_FILE_STEM, extension));
     fs::copy(source_path, &target).map_err(|error| format!("保存壁纸失败：{}", error))?;
 
-    // asset 协议默认禁用；只放行这一个文件，不给整个数据目录开权限。
+    // The asset protocol is disabled by default; allow only this one file, do not open the whole data directory.
     app.asset_protocol_scope()
         .allow_file(&target)
         .map_err(|error| format!("授权壁纸文件失败：{}", error))?;
@@ -169,7 +169,7 @@ pub fn install_wallpaper(app: tauri::AppHandle, source: String) -> Result<String
     Ok(target.to_string_lossy().to_string())
 }
 
-/// 清除壁纸：只删数据目录里我们安装的壁纸文件，不碰用户其它数据。
+/// Clear the wallpaper: only delete the wallpaper file we installed in the data directory, do not touch other user data.
 #[tauri::command]
 pub fn clear_wallpaper() -> Result<(), String> {
     for path in existing_wallpaper_paths() {
@@ -178,7 +178,7 @@ pub fn clear_wallpaper() -> Result<(), String> {
     Ok(())
 }
 
-/// 读取当前壁纸的绝对路径；没有则返回空字符串。
+/// Read the absolute path of the current wallpaper; return an empty string if none.
 #[tauri::command]
 pub fn get_wallpaper_path() -> String {
     current_wallpaper_path()
@@ -186,7 +186,7 @@ pub fn get_wallpaper_path() -> String {
         .unwrap_or_default()
 }
 
-/// 打开系统文件夹选择对话框
+/// Open the system folder picker dialog
 #[tauri::command]
 pub async fn pick_folder_dialog(app: tauri::AppHandle) -> Result<Option<String>, String> {
     use tauri_plugin_dialog::DialogExt;

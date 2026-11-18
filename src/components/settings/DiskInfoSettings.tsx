@@ -1,7 +1,7 @@
 // ============================================================================
-// 设置页 - 磁盘信息
+// Settings page - disk information
 //
-// 磁盘信息只读展示，不参与主页面清理模块状态，也不保存检测历史。
+// Disk info is display-only: it doesn't take part in the main page's cleanup-module state, nor is detection history saved.
 // ============================================================================
 
 import {
@@ -90,7 +90,7 @@ function HealthBadge({ status, translate }: { status: DiskHealthInfo['health_sta
 function InfoItem({ label, value, title }: { label: string; value: string; title?: string }) {
   return (
     <div className="glass-list min-w-0 overflow-hidden rounded-xl bg-[var(--bg-card)] px-3 py-2.5">
-      {/* 磁盘字段来自系统接口，标签和值都限制为单行，避免异常厂商文本撑开卡片。 */}
+      {/* Disk fields come from system APIs; both labels and values are limited to one line, so abnormal vendor text can't stretch the card. */}
       <p className="truncate text-[0.79rem] font-medium text-[var(--text-muted)]" title={label}>{label}</p>
       <p className="mt-1 truncate text-xs font-semibold text-[var(--text-primary)]" title={title ?? value}>
         {value}

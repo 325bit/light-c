@@ -1,17 +1,17 @@
 // ============================================================================
-// WhatsApp Windows 数据路径适配器
+// WhatsApp Windows data path adapter
 // ============================================================================
 //
-// WhatsApp Desktop 基于 Electron，常见数据位于 LocalAppData 的 packages、
-// Roaming 的 WhatsApp 目录或用户 profile。只将 Cache/Media/Attachments
-// 作为可清理候选，IndexedDB/Databases 保持聊天数据库保护级别。
+// WhatsApp Desktop is Electron-based; common data lives in LocalAppData's packages,
+// the Roaming WhatsApp directory, or the user profile. Only Cache/Media/Attachments
+// are candidates for cleanup; IndexedDB/Databases keep the chat-database protection level.
 // ============================================================================
 
 use super::core::{FileCategory, SocialAppPath, SocialScanner};
 use std::path::{Path, PathBuf};
 
 impl SocialScanner {
-    /// 查找 WhatsApp Desktop 的缓存、媒体和数据库目录。
+    /// Finds WhatsApp Desktop's cache, media, and database directories.
     pub(super) fn detect_whatsapp_paths(&self) -> Option<Vec<SocialAppPath>> {
         let mut paths = Vec::new();
         let bases = [

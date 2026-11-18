@@ -1,10 +1,10 @@
 // ============================================================================
-// 垃圾清理 - 「查看全部文件」弹窗
+// Junk cleanup - "View All Files" modal
 //
-// 中文说明：深度扫描每个分类首屏只给 500 条，卡片里那块 256px 的窗口
-// 既翻不动几万个文件，也要用户一页页点「加载更多」。改成点一次
-// 「查看全部文件」，把整类结果一次性取回来，在这个弹窗里用完整目录树展示，
-// 勾选状态与模块共用一套（关掉弹窗后卡片里的勾选、底部「清理」口径都一致）。
+// Note: deep scan shows only 500 entries on the first screen per category, and the 256px window in the card
+// can neither scroll through tens of thousands of files nor avoid making users click "Load More" page by page. Changed to a single click
+// "View All Files", fetching the whole category result at once and displaying it as a full directory tree in this modal,
+// sharing the same selection state as the module (after closing the modal, the card's selections and the bottom "clean" count stay consistent).
 // ============================================================================
 
 import { useCallback, useEffect, useMemo } from 'react';
@@ -18,13 +18,13 @@ import { openFile, openInFolder, openRecycleBin } from '../../api/commands';
 import type { CategoryScanResult, FileInfo } from '../../types';
 
 interface JunkFileTreeModalProps {
-  /** 要展示的分类；null 表示关闭 */
+  /** Category to display; null means closed */
   category: CategoryScanResult | null;
   selectedPaths: Set<string>;
   onToggleFile: (path: string) => void;
   onSetSelectionForPaths: (paths: string[], selected: boolean) => void;
   onSearchFile: (file: FileInfo) => void;
-  /** 请求删除：由模块弹统一的确认框，作用范围与底部操作条一致 */
+  /** Request deletion: the module shows a unified confirmation dialog, with the same scope as the bottom toolbar */
   onRequestDelete: () => void;
   onClose: () => void;
 }
@@ -41,11 +41,11 @@ export function JunkFileTreeModal({
   const { t } = useTranslation('junkClean');
   const { t: commonT } = useTranslation('common');
 
-  // 系统托管的分类（Windows.old 之类）应用内删不掉，弹窗里也不给勾选
+  // System-managed categories (like Windows.old) cannot be deleted in-app, so selection is disabled in the modal too
   const isSystemManaged = category?.system_managed === true;
   const isSelectable = useCallback(() => !isSystemManaged, [isSystemManaged]);
 
-  // Esc 关闭：弹窗盖住整页，只留右上角一个叉在几万行的列表里不好找
+  // Esc to close: the modal covers the whole page, and a single X in the top-right is hard to find in a tens-of-thousands-row list
   useEffect(() => {
     if (!category) return;
     const handleKey = (event: KeyboardEvent) => {
@@ -73,7 +73,7 @@ export function JunkFileTreeModal({
     ? t(`categories.${category.category}.name`, { defaultValue: category.display_name })
     : '';
 
-  // 打开回收站条目时「打开所在位置」要点回收站而不是文件所在目录
+  // For recycle bin entries, "Open containing folder" should open the recycle bin, not the file's original directory
   const handleOpenLocation = useCallback((file: FileInfo) => {
     if (file.category === 'RecycleBin') openRecycleBin();
     else openInFolder(file.path);
@@ -124,8 +124,8 @@ export function JunkFileTreeModal({
                 isSelectable={isSelectable}
                 disabled={isSystemManaged}
                 getFileTitle={(file) => file.name}
-                // 弹窗是这个列表唯一"用来看"的地方，排序放这里；
-                // 卡片里那块 256px 的窄列表塞排序控件反而挤掉路径
+                // The modal is the only place this list is "for viewing", so sorting goes here;
+                // putting sorting controls in the 256px narrow list in the card would crowd out the path
                 sortable
                 height={Math.round(Math.min(560, Math.max(280, window.innerHeight * 0.5)))}
                 rowHeight={44}

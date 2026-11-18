@@ -1,8 +1,8 @@
 // ============================================================================
-// 磁盘信息运行期缓存
+// Disk info runtime cache
 //
-// 只在当前应用生命周期内保留一份最新快照，不使用 persist，避免把硬件信息
-// 写入本地存储；菜单切换时直接复用这份内存数据。
+// Keep only one latest snapshot for the current app lifecycle; do not use persist, to avoid writing hardware info
+// to local storage; menu switches reuse this in-memory data directly.
 // ============================================================================
 
 import { create } from 'zustand';
@@ -74,7 +74,7 @@ function normalizeDiskSnapshot(value: unknown): DiskHealthInfo[] {
     throw new Error('磁盘信息中没有可识别的磁盘条目');
   }
 
-  // 只保留当前快照，并限制异常设备返回的数组规模，避免无界数据长期占用内存。
+  // Keep only the current snapshot and limit the array size returned by abnormal devices, avoiding unbounded data occupying memory long-term.
   return validDisks.map(disk => ({
     ...disk,
     model: limitText(disk.model),
@@ -102,7 +102,7 @@ export const useDiskInfoStore = create<DiskInfoStoreState>((set, get) => ({
   status: 'idle',
   error: null,
   fetchDiskInfo: async (force = false) => {
-    // 正在请求时复用同一个 Promise，避免重复点击或组件重建并发启动多个 CIM 查询。
+    // While a request is in flight, reuse the same Promise, so repeated clicks or component rebuilds do not start multiple concurrent CIM queries.
     if (inFlightRequest) return inFlightRequest;
     if (!force && get().status === 'success') return;
 

@@ -1,17 +1,17 @@
 // ============================================================================
-// AI 助手 - 后端能力
+// AI assistant - backend capabilities
 //
-// 设计约束（完整方案见 docs/dev/AI助手-设计方案.md）：
+// Design constraints (full design see docs/dev/AI-assistant-design.md):
 //
-// 1. **网络请求一律在 Rust 侧发起**，API Key 永远不返回前端。
-//    前端只能提交"用哪个模型、说什么话"，拿不到明文密钥 —— 这样即使界面层
-//    被注入或用户打开调试面板，也拿不到 Key。
+// 1. **Network requests are always made on the Rust side**; the API Key is never returned to the frontend.
+//    The frontend can only submit "which model, what message" and cannot obtain the plaintext key - so even if the UI layer
+//    is injected or the user opens dev tools, they cannot get the Key.
 //
-// 2. **服务商差异只集中在两处**：presets.rs（预设表）与 client.rs（协议适配）。
-//    其余代码（配置、命令层）不必知道调用的是 DeepSeek 还是 Anthropic。
+// 2. **Provider differences are concentrated in only two places**: presets.rs (preset table) and client.rs (protocol adaptation).
+//    The rest of the code (config, command layer) need not know whether it is calling DeepSeek or Anthropic.
 //
-// 3. **横向插入**：本模块不修改任何既有模块的扫描/清理逻辑，只新增文件；
-//    对外只通过 commands/ai.rs 暴露命令。
+// 3. **Horizontally inserted**: this module does not modify any existing module's scan/cleanup logic, it only adds files;
+//    it exposes commands to the outside only through commands/ai.rs.
 // ============================================================================
 
 mod attachment;
@@ -22,8 +22,8 @@ mod session;
 mod stream;
 mod tools;
 
-// 对外导出：只导出命令层与前端类型真正用得到的东西。
-// 注意 AiStoredConfig 含明文密钥，**只允许在 Rust 侧流转**，命令层不得把它返回给前端。
+// Public exports: only export what the command layer and frontend types actually use.
+// Note AiStoredConfig contains a plaintext key, **only allowed to flow on the Rust side**; the command layer must not return it to the frontend.
 pub use attachment::{read_attachment, save_attachment};
 pub use client::{chat_once, chat_stream, fetch_models, AiChatReply, AiChatRequest};
 pub use config::{

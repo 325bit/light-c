@@ -1,37 +1,37 @@
 // ============================================================================
-// 系统信息模块
-// 获取 OS 版本、CPU、内存、架构、运行时间等系统信息
+// System info module
+// Gets OS version, CPU, memory, architecture, uptime, and other system information
 // ============================================================================
 
 use serde::{Deserialize, Serialize};
 
-/// 系统信息结构
+/// System info structure
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SystemInfo {
-    /// 操作系统名称
+    /// Operating system name
     pub os_name: String,
-    /// 操作系统版本
+    /// Operating system version
     pub os_version: String,
-    /// 系统架构
+    /// System architecture
     pub os_arch: String,
-    /// 计算机名称
+    /// Computer name
     pub computer_name: String,
-    /// 用户名
+    /// User name
     pub user_name: String,
-    /// CPU 信息
+    /// CPU information
     pub cpu_info: String,
-    /// CPU 核心数
+    /// Number of CPU cores
     pub cpu_cores: u32,
-    /// 总内存（字节）
+    /// Total memory (bytes)
     pub total_memory: u64,
-    /// 可用内存（字节）
+    /// Available memory (bytes)
     pub available_memory: u64,
-    /// 系统启动时间（秒）
+    /// System boot time (seconds)
     pub uptime_seconds: u64,
 }
 
-/// 获取系统盘盘符（如 C）。读取 %SYSTEMDRIVE% 环境变量，读取失败时回退 C，
-/// 兼容系统盘不叫 C 的双系统/定制盘符场景。
+/// Get the system drive letter (e.g. C). Reads the %SYSTEMDRIVE% environment variable, falling back to C on failure,
+/// to cover dual-boot / custom-drive setups where the system drive is not called C.
 pub fn system_drive_letter() -> char {
     std::env::var("SYSTEMDRIVE")
         .ok()
@@ -40,7 +40,7 @@ pub fn system_drive_letter() -> char {
         .unwrap_or('C')
 }
 
-/// 获取系统目录（如 C:\Windows）。读取 %SystemRoot% 环境变量，读取失败时回退 C:\Windows。
+/// Get the system directory (e.g. C:\Windows). Reads the %SystemRoot% environment variable, falling back to C:\Windows on failure.
 pub fn system_root_dir() -> std::path::PathBuf {
     std::env::var("SystemRoot")
         .ok()
@@ -48,7 +48,7 @@ pub fn system_root_dir() -> std::path::PathBuf {
         .unwrap_or_else(|| std::path::PathBuf::from(r"C:\Windows"))
 }
 
-/// 获取系统信息
+/// Get system information
 pub fn gather() -> Result<SystemInfo, String> {
     #[cfg(target_os = "windows")]
     {
@@ -133,7 +133,7 @@ fn get_windows_version() -> String {
         let ubr: u32 = key.get_value("UBR").unwrap_or(0);
 
         if !product_name.is_empty() {
-            // 根据 Build 号判断是否为 Windows 11（Build 22000+）
+            // Determine whether it is Windows 11 from the build number (Build 22000+)
             let build_num: u32 = current_build.parse().unwrap_or(0);
             let corrected_name = if build_num >= 22000 && product_name.contains("Windows 10") {
                 product_name.replace("Windows 10", "Windows 11")

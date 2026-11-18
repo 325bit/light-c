@@ -1,6 +1,6 @@
 // ============================================================================
-// 设置弹窗组件
-// 只负责弹窗生命周期、左侧导航和页面路由；具体设置页面按功能拆分维护。
+// Settings modal component
+// Only handles the modal lifecycle, left navigation and page routing; the concrete settings pages are split and maintained by feature.
 // ============================================================================
 
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from 'react';
@@ -25,39 +25,39 @@ interface SettingsModalProps {
   onClose: () => void;
 }
 
-// 导航宽度按标准字号保存像素值，渲染时再乘以字号缩放，与主界面侧边栏保持同一口径：
-// 像素值在窗口尺寸变化时不会漂移，比例值则会让菜单在窄窗口里被压得放不下文字。
+// The nav width is saved in pixels at standard font size and multiplied by the font scale at render time, matching the main UI sidebar:
+// a pixel value does not drift when the window resizes, while a ratio would squeeze the menu until text no longer fits in narrow windows.
 const SETTINGS_NAV_WIDTH_STORAGE_KEY = 'lightc.settings.navWidth';
 const SETTINGS_NAV_WIDTH_DEFAULT = 220;
 const SETTINGS_NAV_WIDTH_MIN = 180;
 const SETTINGS_NAV_WIDTH_MAX = 360;
-// 键盘调整步长（标准字号下的像素），保证焦点在分隔条上时也能微调宽度。
+// Keyboard adjustment step (pixels at standard font size), so width can still be fine-tuned while focus is on the divider.
 const SETTINGS_NAV_KEYBOARD_STEP = 12;
-// 窗口变窄时导航最多占弹窗宽度的比例，避免保存过的较大宽度把右侧内容挤没。
+// The maximum proportion of the modal width the nav may take when the window narrows, preventing a saved larger width from squeezing out the right content.
 const SETTINGS_NAV_MAX_WIDTH_RATIO = 0.4;
-// 弹窗宽度为 76vw，最大不超过 视口 - 24px；导航上限按视口宽度换算回标准字号像素。
+// The modal is 76vw, capped at viewport - 24px; the nav cap is converted back to standard-font pixels from the viewport width.
 const SETTINGS_MODAL_VIEWPORT_WIDTH_RATIO = 0.76;
 const SETTINGS_MODAL_VIEWPORT_WIDTH_MARGIN = 24;
 
-/** 按当前视口计算导航的展示宽度上限（像素）：窗口越小，导航允许占用的比例越低。 */
+/** Compute the display-width cap of the nav for the current viewport (pixels): the smaller the window, the lower the proportion the nav may take. */
 function getSettingsNavMaxRenderedWidth(viewportWidth: number): number {
   const safeViewportWidth = Math.max(1, Math.round(viewportWidth));
   const modalWidth = Math.min(
     safeViewportWidth * SETTINGS_MODAL_VIEWPORT_WIDTH_RATIO,
     safeViewportWidth - SETTINGS_MODAL_VIEWPORT_WIDTH_MARGIN,
   );
-  // 用展示宽度做比例约束，避免大字号下最小宽度被放大后挤掉右侧内容。
+  // Use the display width for the ratio constraint, so a minimum width enlarged at large font sizes does not squeeze out the right content.
   return Math.round(modalWidth * SETTINGS_NAV_MAX_WIDTH_RATIO);
 }
 
-/** 把展示宽度上限换算回标准字号下的拖拽上限，并收敛到全局上下限之间。 */
+/** Convert the display-width cap back to a drag cap at standard font size, and clamp it within the global lower/upper bounds. */
 function getSettingsNavMaxStoredWidth(viewportWidth: number, fontScale: number): number {
   const ratioLimitedWidth = Math.round(getSettingsNavMaxRenderedWidth(viewportWidth) / fontScale);
-  // 视口极小时比例上限可能低于最小宽度，此时下限仍然保留最小宽度，保证菜单文字可读。
+  // At a very small viewport the ratio cap may fall below the minimum width; in that case the lower bound keeps the minimum width so menu text stays readable.
   return Math.min(SETTINGS_NAV_WIDTH_MAX, Math.max(SETTINGS_NAV_WIDTH_MIN, ratioLimitedWidth));
 }
 
-/** 读取已保存的导航宽度；越界或存储不可用时回退到默认值，避免脏数据撑坏弹窗布局。 */
+/** Read the saved nav width; on out-of-range values or unavailable storage fall back to the default, avoiding dirty data breaking the modal layout. */
 function readSettingsNavWidth(): number {
   try {
     const savedWidth = Number(localStorage.getItem(SETTINGS_NAV_WIDTH_STORAGE_KEY));
@@ -70,7 +70,7 @@ function readSettingsNavWidth(): number {
   }
 }
 
-/** 保存导航宽度；写入失败只影响下次启动的宽度，当前会话拖拽结果仍然有效。 */
+/** Save the nav width; a write failure only affects next startup's width, the current session's drag result remains valid. */
 function writeSettingsNavWidth(width: number): void {
   try {
     localStorage.setItem(SETTINGS_NAV_WIDTH_STORAGE_KEY, String(width));
@@ -89,9 +89,9 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
   const [navWidth, setNavWidth] = useState(readSettingsNavWidth);
   const [isResizingNav, setIsResizingNav] = useState(false);
   const [viewportWidth, setViewportWidth] = useState(() => window.innerWidth);
-  // 记录是否曾经进入可见状态，用于区分首次挂载预隐藏和关闭动画。
+  // Track whether it has ever been visible, to distinguish initial pre-hide on mount from the closing animation.
   const enteredRef = useRef(false);
-  // 拖拽期间通过 ref 读取最新宽度，避免把宽度写进事件监听依赖导致监听器反复重建。
+  // During dragging read the latest width via a ref, avoiding putting width in the event listener dependencies which would rebuild the listener repeatedly.
   const navWidthRef = useRef(navWidth);
   const resizeStartRef = useRef<{ x: number; width: number } | null>(null);
   if (isVisible) enteredRef.current = true;
@@ -99,12 +99,12 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
   const fontScale = (level === 'custom' ? customFontSize : FONT_SIZE_CONFIGS[level].baseSize + FONT_SIZE_CONFIGS[level].offset) / FONT_SIZE_CONFIGS.standard.baseSize;
   const navMaxStoredWidth = getSettingsNavMaxStoredWidth(viewportWidth, fontScale);
   const navMaxRenderedWidth = getSettingsNavMaxRenderedWidth(viewportWidth);
-  // 已保存的宽度在窄窗口下可能超过当前上限，展示时按上限收敛，但不覆写存储值。
+  // A saved width may exceed the current cap in narrow windows; clamp it for display, but do not overwrite the stored value.
   const renderedNavWidth = Math.min(
     Math.round(Math.min(navWidth, navMaxStoredWidth) * fontScale),
     navMaxRenderedWidth,
   );
-  // 最小宽度只作为拖拽下限，不参与展示收敛：大字号下放不下时优先保右侧内容。
+  // The minimum width is only a drag lower bound and is not part of display clamping: when it does not fit at a large font size, prioritize the right content.
   const renderedNavWidthMin = Math.round(SETTINGS_NAV_WIDTH_MIN * fontScale);
   const renderedNavWidthMax = navMaxRenderedWidth;
 
@@ -112,7 +112,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
     navWidthRef.current = navWidth;
   }, [navWidth]);
 
-  // 视口宽度决定导航占比上限，窗口尺寸变化时需要重新计算，否则窄窗口会保留过宽的导航。
+  // The viewport width determines the nav's proportion cap; it must be recomputed when the window resizes, otherwise narrow windows keep an over-wide nav.
   useEffect(() => {
     const handleViewportResize = () => setViewportWidth(window.innerWidth);
     window.addEventListener('resize', handleViewportResize);
@@ -131,8 +131,8 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
     return () => clearTimeout(timer);
   }, [isOpen]);
 
-  // 拖拽与键盘调整共用同一套边界收敛逻辑，两个入口不会出现宽窄不一致。
-  // 上限取当前窗口允许的最大值，因此窄窗口下拖不满、重新放大窗口后也能继续拖宽。
+  // Dragging and keyboard adjustment share the same clamping logic, so the two entry points never disagree on width.
+  // The cap is the current window's maximum, so in narrow windows you cannot drag to the full width, and after enlarging the window you can keep dragging wider.
   const applyNavWidth = useCallback((nextWidth: number) => {
     const clampedWidth = Math.min(navMaxStoredWidth, Math.max(SETTINGS_NAV_WIDTH_MIN, Math.round(nextWidth)));
     navWidthRef.current = clampedWidth;
@@ -144,21 +144,21 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
       const resizeStart = resizeStartRef.current;
       if (!resizeStart) return;
 
-      // 鼠标位移按字号还原到标准字号下的宽度，保证不同字号拖拽手感一致。
+      // Mouse movement is converted back by the font scale to a width at standard font size, keeping the drag feel consistent across font sizes.
       applyNavWidth(resizeStart.width + (event.clientX - resizeStart.x) / fontScale);
     };
 
     const handlePointerUp = () => {
       if (!resizeStartRef.current) return;
       resizeStartRef.current = null;
-      // 只在拖拽结束时写一次存储，避免 pointermove 高频写入。
+      // Write to storage only once when the drag ends, avoiding high-frequency writes during pointermove.
       writeSettingsNavWidth(navWidthRef.current);
       setIsResizingNav(false);
     };
 
     window.addEventListener('pointermove', handlePointerMove);
     window.addEventListener('pointerup', handlePointerUp);
-    // 指针取消或窗口失焦时同样结束拖拽，否则状态会一直停在拖拽中。
+    // End the drag on pointer cancel or window blur as well, otherwise the state stays stuck in "dragging".
     window.addEventListener('pointercancel', handlePointerUp);
     window.addEventListener('blur', handlePointerUp);
     return () => {
@@ -180,7 +180,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
     event.preventDefault();
     const direction = event.key === 'ArrowRight' ? 1 : -1;
     applyNavWidth(navWidth + direction * SETTINGS_NAV_KEYBOARD_STEP);
-    // 键盘调整没有拖拽结束事件，需要立即落盘。
+    // Keyboard adjustment has no drag-end event, so it must be persisted immediately.
     writeSettingsNavWidth(navWidthRef.current);
   };
 
@@ -208,9 +208,9 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                   key={id}
                   type="button"
                   onClick={() => setActiveTab(id)}
-                  /* 选中态额外挂一个语义类：玻璃主题下要换成"玻璃胶囊"，
-                     样式写在 App.css 的 html.glass 下 —— 不在 JSX 里判断外观开关，
-                     关掉玻璃时这条类名没有任何样式，原样保留。 */
+                  /* The selected state gets an extra semantic class: under the glass theme it must switch to a "glass capsule",
+                     with styles written under html.glass in App.css — no appearance-toggle check in JSX,
+                     and when glass is off this class has no styles, so it is preserved as-is. */
                   className={`settings-tab${activeTab === id ? ' settings-tab--active' : ''} flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm transition-colors ${activeTab === id
                     ? 'bg-[var(--brand-green-10)] font-medium text-[var(--brand-green)]'
                     : 'text-[var(--text-secondary)] hover:bg-[var(--bg-hover)]'
@@ -218,13 +218,13 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                 >
                   <Icon className="h-4 w-4 shrink-0" />
                   <span className="whitespace-nowrap">{t(label)}</span>
-                  {/* AI 助手是新能力，标清楚还在打磨中，避免用户按稳定功能的预期来用 */}
+                  {/* The AI assistant is a new capability, clearly marked as still being polished, so users do not use it with the expectations of a stable feature */}
                   {id === 'ai' && <BetaBadge />}
                 </button>
               ))}
             </nav>
 
-            {/* 拖拽热区压在左右分界线上，不影响菜单内容宽度，同时支持左右方向键微调。 */}
+            {/* The drag hot zone sits on the left/right dividing line, does not affect menu content width, and also supports left/right arrow-key fine-tuning. */}
             <div
               className="settings-modal__nav-resize-handle"
               role="separator"

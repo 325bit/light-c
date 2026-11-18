@@ -1,11 +1,11 @@
 // ============================================================================
-// AI 删除结果卡片（独立可复用）
+// AI delete result card (standalone, reusable)
 //
-// 和请求卡片一样是纯展示组件。存在的意义是：**删除结果一律以后端返回为准**，
-// 不用对话气泡里的文字表达 —— 模型复述数字是最容易出错的地方，
-// 而这里显示的字符串直接来自调用方拿到的结果结构。
+// Like the request card, this is a pure presentation component. Its point: **delete results always follow what the backend returns**,
+// rather than being expressed through text in the chat bubble — the model restating numbers is the most error-prone part,
+// while the strings shown here come directly from the result structure the caller received.
 //
-// 失败项做成可展开的列表：用户最需要知道的是"哪一项没删掉、为什么"。
+// Failed items are an expandable list: what users most need to know is "which item wasn't deleted, and why".
 // ============================================================================
 
 import { useState } from 'react';
@@ -17,15 +17,15 @@ export interface AiDeleteFailure {
 }
 
 export interface AiDeleteResultCardProps {
-  /** 成功摘要，例如 "已删除 1,233 项，释放 615.02 MB" */
+  /** Success summary, e.g. "Deleted 1,233 items, freed 615.02 MB" */
   successLabel: string;
-  /** 失败摘要；没有失败时不传 */
+  /** Failure summary; omit when there are no failures */
   failedLabel?: string;
-  /** 失败明细（名称 + 原因），可展开 */
+  /** Failure details (name + reason), expandable */
   failures?: AiDeleteFailure[];
-  /** 失败明细的展开/收起按钮文案 */
+  /** Copy for the failure-detail expand/collapse button */
   detailsLabel?: string;
-  /** 需要重启才能生效时的提示 */
+  /** Hint shown when a reboot is required for changes to take effect */
   rebootNotice?: string;
 }
 

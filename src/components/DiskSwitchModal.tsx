@@ -1,11 +1,11 @@
 // ============================================================================
-// 磁盘切换弹窗
+// Disk switch dialog
 //
-// 顶栏那一行只有几十像素高，塞下拉框时字号、宽度、选项截断反复对不齐；
-// 改成点图标弹窗后，每个分区能完整显示卷标、可用/总量和使用率。
+// The top bar row is only tens of pixels tall; trying to fit a dropdown there meant font size, width, and option truncation never lined up;
+// switching to an icon-click dialog lets each partition show its volume label, free/total space, and usage percentage in full.
 //
-// ⚠️ position: fixed 的弹窗必须 createPortal 到 document.body：
-// 顶栏容器有入场 transform，fixed 会退化成 absolute，遮罩盖不住整个窗口。
+// ⚠️ A position: fixed dialog must use createPortal to document.body:
+// the top bar container has an entrance transform, so fixed degrades to absolute and the overlay cannot cover the whole window.
 // ============================================================================
 
 import { useEffect } from 'react';
@@ -21,9 +21,9 @@ import type { LocalDriveInfo } from '../api/commands';
 interface DiskSwitchModalProps {
   isOpen: boolean;
   onClose: () => void;
-  /** 所有固定磁盘的信息，由顶栏的 useLocalDrives 提供，不在这里重复读取 */
+  /** Info for all fixed disks, provided by the top bar's useLocalDrives, not re-read here */
   drives: LocalDriveInfo[];
-  /** 当前展示的盘符，例如 "C:" */
+  /** Drive letter currently shown, e.g. "C:" */
   selectedDrive: string;
   onSelect: (driveLetter: string) => void;
 }
@@ -37,7 +37,7 @@ export function DiskSwitchModal({
 }: DiskSwitchModalProps) {
   const { t } = useTranslation('common');
 
-  // ESC 关闭：弹窗统一用这个键，和项目里其它弹窗保持一致
+  // ESC to close: all dialogs use this key consistently with the rest of the project
   useEffect(() => {
     if (!isOpen) return;
     const onKeyDown = (event: KeyboardEvent) => {
@@ -107,7 +107,7 @@ export function DiskSwitchModal({
                         </div>
                         {isSelected && <Check className="mt-0.5 h-[1.14em] w-[1.14em] shrink-0 text-[var(--brand-green)]" />}
                       </div>
-                      {/* 使用率条：和顶栏同一套配色阈值，两处读起来是同一种信息 */}
+                      {/* Usage bar: same color thresholds as the top bar, so the two read as the same kind of info */}
                       <div className="mt-[0.57em] h-1.5 overflow-hidden rounded-full bg-[var(--bg-hover)]">
                         <div
                           className={`h-full rounded-full ${

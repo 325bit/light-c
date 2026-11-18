@@ -1,5 +1,5 @@
 // ============================================================================
-// 意见反馈页面
+// Feedback page
 // ============================================================================
 
 import { useState } from 'react';
@@ -25,7 +25,7 @@ export function FeedbackSettings() {
 
   return (
     <div className="space-y-6">
-      {/* 问题反馈 */}
+      {/* Problem feedback */}
       <div className="space-y-3">
         <h4 className="text-xs font-medium text-[var(--text-muted)] uppercase tracking-wider flex items-center gap-2">
           <HelpCircle  className="w-3.5 h-3.5"/>
@@ -78,14 +78,14 @@ export function FeedbackSettings() {
         </div>
       </div>
 
-      {/* 联系方式 - QQ群和微信 */}
+      {/* Contact info - QQ group and WeChat */}
       <div className="space-y-3">
         <h4 className="text-xs font-medium text-[var(--text-muted)] uppercase tracking-wider flex items-center gap-2">
           <MessageCircle className="w-3.5 h-3.5" />
           {t('feedback.contact')}
         </h4>
         <div className="glass-block bg-[var(--bg-main)] rounded-2xl p-4 space-y-3">
-          {/* QQ群 */}
+          {/* QQ group */}
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
               <span className="text-sm text-[var(--text-secondary)]">{t('feedback.qqGroup')}</span>
@@ -105,7 +105,7 @@ export function FeedbackSettings() {
               )}
             </button>
           </div>
-          {/* 微信号 */}
+          {/* WeChat ID */}
           {/* <div className="flex items-center justify-between pt-3 border-t border-[var(--border-color)]">
             <div className="flex items-center gap-2">
               <span className="text-sm text-[var(--text-secondary)]">{t('feedback.wechat')}:</span>
@@ -128,7 +128,7 @@ export function FeedbackSettings() {
         </div>
       </div>
 
-      {/* 支持作者 - 赞赏功能 */}
+      {/* Support the author - donations */}
       <SupportAuthor />
     </div>
   );

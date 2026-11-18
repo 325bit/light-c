@@ -1,9 +1,9 @@
 // ============================================================================
-// 社交软件路径适配器
+// Social app path adapter
 // ============================================================================
 //
-// 每个适配器只负责发现软件数据目录，实际遍历和分类由 core.rs 统一处理。
-// 这样可以在增强单个软件路径时避免复制扫描、去重和风险分级逻辑。
+// Each adapter only discovers its software's data directory; actual traversal and classification are handled uniformly by core.rs.
+// This avoids duplicating scan, dedup and risk-grading logic when enhancing a single app's paths.
 // ============================================================================
 
 use super::core::{FileCategory, SocialAppPath, SocialScanner};
@@ -11,26 +11,26 @@ use log::info;
 use std::path::{Path, PathBuf};
 
 impl SocialScanner {
-    // 飞书路径检测
+    // Feishu path detection
     // ========================================================================
 
-    /// 检测飞书路径
+    /// Detect Feishu paths
     pub(super) fn detect_feishu_paths(&self) -> Option<Vec<SocialAppPath>> {
         let mut paths = Vec::new();
 
-        // 飞书主目录
+        // Feishu main directory
         let feishu_base = PathBuf::from(format!("{}\\feishu", self.appdata));
         if feishu_base.exists() {
             info!("发现飞书目录: {}", feishu_base.display());
             self.scan_feishu_directory(&feishu_base, "飞书", &mut paths);
         }
 
-        // LarkShell 目录（飞书新版）
+        // LarkShell directory (new Feishu version)
         let larkshell_base = PathBuf::from(format!("{}\\LarkShell", self.appdata));
         if larkshell_base.exists() {
             info!("发现LarkShell目录: {}", larkshell_base.display());
 
-            // sdk_storage 目录
+            // sdk_storage directory
             let sdk_storage = larkshell_base.join("sdk_storage");
             Self::add_scan_path(
                 &mut paths,
@@ -40,7 +40,7 @@ impl SocialScanner {
                 false,
             );
 
-            // file_storage 目录
+            // file_storage directory
             let file_storage = larkshell_base.join("file_storage");
             Self::add_scan_path(
                 &mut paths,
@@ -51,14 +51,14 @@ impl SocialScanner {
             );
         }
 
-        // Lark (国际版飞书)
+        // Lark (international Feishu)
         let lark_base = PathBuf::from(format!("{}\\Lark", self.appdata));
         if lark_base.exists() {
             info!("发现Lark目录: {}", lark_base.display());
             self.scan_feishu_directory(&lark_base, "Lark", &mut paths);
         }
 
-        // 飞书文档目录
+        // Feishu documents directory
         let feishu_docs = PathBuf::from(format!("{}\\Feishu", self.documents_dir));
         Self::add_scan_path(
             &mut paths,
@@ -75,7 +75,7 @@ impl SocialScanner {
         }
     }
 
-    /// 扫描飞书目录结构
+    /// Scan the Feishu directory structure
     pub(super) fn scan_feishu_directory(
         &self,
         base: &Path,
@@ -90,15 +90,15 @@ impl SocialScanner {
 
                 let sub_dir = entry.path();
 
-                // 图片
+                // Images
                 let image_dir = sub_dir.join("Image");
                 Self::add_scan_path(paths, app_name, image_dir, FileCategory::ImageVideo, false);
 
-                // 文件
+                // Files
                 let file_dir = sub_dir.join("File");
                 Self::add_scan_path(paths, app_name, file_dir, FileCategory::FileTransfer, false);
 
-                // 缓存
+                // Cache
                 let cache_dir = sub_dir.join("Cache");
                 Self::add_scan_path(paths, app_name, cache_dir, FileCategory::TempCache, false);
 

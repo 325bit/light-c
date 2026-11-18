@@ -1,8 +1,8 @@
 import { useAiModuleBridge } from '../ai/useAiModuleBridge';
 // ============================================================================
-// 右键菜单清理模块
-// 扫描 Windows 注册表中注册的右键菜单项，
-// 识别指向不存在可执行文件的无效条目并提供一键清理
+// Context menu cleanup module
+// Scan context menu entries registered in the Windows registry,
+// identify invalid entries pointing to nonexistent executables, and provide one-click cleanup
 // ============================================================================
 
 import { useState, useCallback, useMemo, useEffect, useRef } from 'react';
@@ -39,12 +39,12 @@ import {
 import type { ModuleRenderProps } from './moduleProps';
 
 // ============================================================================
-// 工具函数
+// Utility functions
 // ============================================================================
 
 /**
- * scope id → 颜色。id 由后端给（file / folder / background / drive / library），
- * 文案一律走 i18n —— 后端不再决定界面上显示什么字。
+ * scope id -> color. The id comes from the backend (file / folder / background / drive / library),
+ * labels always go through i18n - the backend no longer decides what text appears in the UI.
  */
 const SCOPE_STYLE: Record<string, string> = {
   file: 'status-chip text-blue-600',
@@ -58,29 +58,29 @@ function getScopeStyle(scope: string, translate: (key: string) => string): { lab
   const key = `contextMenu.scope.${scope}`;
   const label = translate(key);
   return {
-    // i18n 缺键时会把 key 原样返回，这时至少显示 id，别让界面冒出 "contextMenu.scope.xxx"
+    // When an i18n key is missing, the key itself is returned; in that case show the id at least, do not let "contextMenu.scope.xxx" appear in the UI
     label: label === key ? scope : label,
     className: SCOPE_STYLE[scope] ?? 'bg-[var(--bg-hover)] text-[var(--text-muted)]',
   };
 }
 
-/** 与后端保持同一失效判定：只有"说了路径、文件却不在"才算失效。 */
+/** Keep the same invalidation rule as the backend: only "path given but file missing" counts as invalid. */
 function isInvalidContextMenuEntry(entry: Pick<ContextMenuEntry, 'exe_status'>): boolean {
   return entry.exe_status === 'missing';
 }
 
 /**
- * 提不出路径、无法判定的条目。
+ * Entries with no extractable path that cannot be determined.
  *
- * 这类（COM 处理器、rundll32 代理、级联菜单）不该标红，也不该被当垃圾清掉 ——
- * 界面给它一个中性徽章，说明"程序判断不了"，而不是暗示它坏了。
+ * These (COM handlers, rundll32 proxies, cascading menus) should not be marked red or cleaned as junk -
+ * give them a neutral badge meaning "the program cannot determine this", rather than implying they are broken.
  */
 function isUnknownContextMenuEntry(entry: Pick<ContextMenuEntry, 'exe_status'>): boolean {
   return entry.exe_status === 'unknown';
 }
 
 // ============================================================================
-// 子组件：条目行
+// Subcomponent: entry row
 // ============================================================================
 
 interface EntryRowProps {
@@ -111,9 +111,9 @@ function EntryRow({ entry, isSelected, onToggle }: EntryRowProps) {
       `}
       onClick={() => !isProtected && onToggle(entry)}
     >
-      {/* 主行 */}
+      {/* Main row */}
       <div className="flex items-center gap-3 p-3">
-        {/* 复选框 */}
+        {/* Checkbox */}
         <div
           className={`
             w-5 h-5 rounded border-2 flex items-center justify-center shrink-0
@@ -135,7 +135,7 @@ function EntryRow({ entry, isSelected, onToggle }: EntryRowProps) {
           )}
         </div>
 
-        {/* 图标区 */}
+        {/* Icon area */}
         <div
           className={`
             w-9 h-9 rounded-lg flex items-center justify-center shrink-0
@@ -154,20 +154,20 @@ function EntryRow({ entry, isSelected, onToggle }: EntryRowProps) {
             : isInvalid
               ? <AlertTriangle className="w-4 h-4 text-[var(--color-danger)]" />
               : isUnknown
-                // 判不了就用中性图标：给问号/警告会让人以为它坏了
+                // If it cannot be determined, use a neutral icon: a question mark/warning would make it look broken
                 ? <MousePointerClick className="w-4 h-4 text-[var(--text-muted)]" />
                 : <MousePointerClick className="w-4 h-4 text-[var(--brand-green)]" />
           }
         </div>
 
-        {/* 文字信息 */}
+        {/* Text info */}
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 flex-wrap">
             <p className="text-sm font-medium text-[var(--text-primary)] truncate max-w-[17.14rem]">
               {entry.display_name || entry.key_name}
             </p>
 
-            {/* 风险等级标签 */}
+            {/* Risk level badge */}
             {entry.risk_level === 'danger' && (
               <span className="px-1.5 py-0.5 rounded text-[0.71rem] font-medium bg-[var(--color-danger)]/15 text-[var(--color-danger)] shrink-0">
                 {moduleT('contextMenu.systemProtected')}
@@ -179,31 +179,31 @@ function EntryRow({ entry, isSelected, onToggle }: EntryRowProps) {
               </span>
             )}
 
-            {/* 作用范围标签 */}
+            {/* Scope badge */}
             <span className={`px-1.5 py-0.5 rounded text-[0.71rem] font-medium shrink-0 ${scope.className}`}>
               {scope.label}
             </span>
 
-            {/* 注册表根 */}
+            {/* Registry root */}
             <span className="px-1.5 py-0.5 rounded text-[0.71rem] font-medium bg-[var(--bg-hover)] text-[var(--text-muted)] shrink-0">
               {entry.reg_root}
             </span>
 
-            {/* 无效标记 */}
+            {/* Invalid marker */}
             {isInvalid && (
               <span className="px-1.5 py-0.5 rounded text-[0.71rem] font-medium bg-[var(--color-danger)]/10 text-[var(--color-danger)] shrink-0">
                 {moduleT('contextMenu.missing')}
               </span>
             )}
 
-            {/* 无法判定：中性色，别让用户以为这条也坏了 */}
+            {/* Cannot determine: neutral color, do not make the user think this one is broken too */}
             {isUnknown && (
               <span className="px-1.5 py-0.5 rounded text-[0.71rem] font-medium bg-[var(--bg-hover)] text-[var(--text-muted)] shrink-0">
                 {moduleT('contextMenu.unknown')}
               </span>
             )}
 
-            {/* 需要管理员 */}
+            {/* Needs admin */}
             {entry.needs_admin && (
               <span className="px-1.5 py-0.5 rounded text-[0.71rem] font-medium bg-[var(--color-warning)]/10 text-[var(--color-warning)] shrink-0">
                 {moduleT('contextMenu.admin')}
@@ -211,7 +211,7 @@ function EntryRow({ entry, isSelected, onToggle }: EntryRowProps) {
             )}
           </div>
 
-          {/* exe 路径预览 */}
+          {/* exe path preview */}
           {entry.exe_path && (
             <p
               className={`text-xs mt-0.5 truncate ${
@@ -224,7 +224,7 @@ function EntryRow({ entry, isSelected, onToggle }: EntryRowProps) {
             </p>
           )}
 
-          {/* 系统保护提示 */}
+          {/* System protection hint */}
           {isProtected && (
             <p className="text-xs mt-0.5 text-[var(--color-danger)]/70">
               {moduleT('contextMenu.comWarning')}
@@ -232,7 +232,7 @@ function EntryRow({ entry, isSelected, onToggle }: EntryRowProps) {
           )}
         </div>
 
-        {/* 展开/折叠按钮 */}
+        {/* Expand/collapse button */}
         <button
           onClick={(e) => {
             e.stopPropagation();
@@ -248,13 +248,13 @@ function EntryRow({ entry, isSelected, onToggle }: EntryRowProps) {
         </button>
       </div>
 
-      {/* 展开详情 */}
+      {/* Expanded details */}
       {expanded && (
         <div
           className="px-4 pb-3 space-y-1.5 border-t border-[var(--border-muted)]"
           onClick={(e) => e.stopPropagation()}
         >
-          {/* 注册表完整路径 */}
+          {/* Full registry path */}
           <div className="flex items-start gap-2 pt-2">
             <span className="text-[0.79rem] text-[var(--text-faint)] shrink-0 w-20">{moduleT('contextMenu.registryPath')}</span>
             <span className="text-[0.79rem] text-[var(--text-muted)] break-all font-mono">
@@ -262,7 +262,7 @@ function EntryRow({ entry, isSelected, onToggle }: EntryRowProps) {
             </span>
           </div>
 
-          {/* 原始命令 */}
+          {/* Raw command */}
           {entry.command && (
             <div className="flex items-start gap-2">
               <span className="text-[0.79rem] text-[var(--text-faint)] shrink-0 w-20">{moduleT('contextMenu.command')}</span>
@@ -278,7 +278,7 @@ function EntryRow({ entry, isSelected, onToggle }: EntryRowProps) {
             </div>
           )}
 
-          {/* 图标路径 */}
+          {/* Icon path */}
           {entry.icon_path && (
             <div className="flex items-start gap-2">
               <span className="text-[0.79rem] text-[var(--text-faint)] shrink-0 w-20">{moduleT('contextMenu.icon')}</span>
@@ -294,7 +294,7 @@ function EntryRow({ entry, isSelected, onToggle }: EntryRowProps) {
 }
 
 // ============================================================================
-// 主组件
+// Main component
 // ============================================================================
 
 export function ContextMenuModule({ isPageActive = true }: ModuleRenderProps) {
@@ -308,11 +308,11 @@ export function ContextMenuModule({ isPageActive = true }: ModuleRenderProps) {
   } = useModuleDashboard('contextMenu');
   const lastScanTriggerRef = useRef(0);
 
-  // ── 本地状态 ──────────────────────────────────────────────────────────────
+  // ── Local state ──────────────────────────────────────────────────────────────
   const [scanResult, setScanResult] = useState<ContextMenuScanResult | null>(null);
-  // 接入 AI 助手（只读）：只给摘要，不提供操作动作。
+  // Integrate with the AI assistant (read-only): provide a summary only, no actionable operations.
   useAiModuleBridge('context-menu', {
-    // 只读读取：让助手能"往下看"到底有哪些条目（一次一页，由模型决定要不要继续）。
+    // Read-only: let the assistant "look deeper" at which entries exist (one page at a time; the model decides whether to continue).
     readItems: (_targetId, offset, limit) => {
       const list = scanResult?.entries ?? [];
       if (list.length === 0) return null;
@@ -323,9 +323,9 @@ export function ContextMenuModule({ isPageActive = true }: ModuleRenderProps) {
         ),
       };
     },
-    // 只读：单条详情。itemId 用 read_items 行首那个显示名 —— 该模块每行开头就是它，
-    // 模型照着抄回来的自然也是它。显示名会重复（同一软件在"文件夹"和"任意文件"各有一条），
-    // 所以先按 id / 注册表路径精确匹配，再退回显示名、键名。
+    // Read-only: single-item detail. For itemId, use the display name at the start of the read_items line - each line in this module begins with it,
+    // so the model naturally copies it back. Display names can repeat (the same app has one entry for "folder" and one for "any file"),
+    // so first match exactly by id / registry path, then fall back to display name and key name.
     readItemDetail: (itemId) => {
       const wanted = itemId.trim();
       if (!wanted) return null;
@@ -336,8 +336,8 @@ export function ContextMenuModule({ isPageActive = true }: ModuleRenderProps) {
         list.find((entry) => entry.display_name.trim() === wanted) ??
         list.find((entry) => entry.key_name.trim() === wanted);
       if (!item) return null;
-      // 只给事实："能不能删"由模块自己的判定（系统保护 / 目标程序是否存在）说话，
-      // 不让模型凭菜单名字猜。
+      // Give only facts: "whether it can be deleted" is decided by the module's own logic (system protection / whether the target program exists),
+      // do not let the model guess from the menu name.
       const target = item.exe_path
         ? `${item.exe_path}（${
             item.exe_status === 'missing'
@@ -348,7 +348,7 @@ export function ContextMenuModule({ isPageActive = true }: ModuleRenderProps) {
       return [
         `名称：${item.display_name}`,
         `注册表位置：${item.registry_path}`,
-        // scope 现在是英文 id，给模型看的是翻译后的中文标签
+        // scope is now an English id; what the model sees is the translated Chinese label
         `作用范围：${item.scope ? getScopeStyle(item.scope, moduleT).label : '未标注'}`,
         `命令：${item.command || '（未读取到）'}`,
         `目标程序：${target}`,
@@ -364,21 +364,21 @@ export function ContextMenuModule({ isPageActive = true }: ModuleRenderProps) {
     },
   });
 
-  /** 用 id 作为 key 维护选中集合 */
+  /** Maintain the selection set keyed by id */
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [deleteErrors, setDeleteErrors] = useState<string[]>([]);
   const [showErrorDetails, setShowErrorDetails] = useState(false);
-  /** 按 scope 分组折叠状态 */
+  /** Collapse state grouped by scope */
   const [collapsedScopes, setCollapsedScopes] = useState<Set<string>>(new Set());
-  /** 筛选：仅显示无效条目（默认关闭 —— 后端刻意返回全部条目，用户也可能想关掉某条不用的菜单） */
+  /** Filter: show invalid entries only (off by default - the backend deliberately returns all entries; the user may also want to disable an unused menu) */
   const [showInvalidOnly, setShowInvalidOnly] = useState(false);
 
-  // ── 派生数据 ──────────────────────────────────────────────────────────────
+  // ── Derived data ──────────────────────────────────────────────────────────────
 
-  /** 当前筛选后显示的条目 */
+  /** Entries currently shown after filtering */
   const filteredEntries = useMemo(() => {
     if (!scanResult) return [];
     if (showInvalidOnly) {
@@ -387,7 +387,7 @@ export function ContextMenuModule({ isPageActive = true }: ModuleRenderProps) {
     return scanResult.entries;
   }, [scanResult, showInvalidOnly]);
 
-  /** 按 scope 分组 */
+  /** Group by scope */
   const groupedEntries = useMemo(() => {
     const groups = new Map<string, ContextMenuEntry[]>();
     for (const entry of filteredEntries) {
@@ -397,19 +397,19 @@ export function ContextMenuModule({ isPageActive = true }: ModuleRenderProps) {
     return groups;
   }, [filteredEntries]);
 
-  /** 当前选中的数量 */
+  /** Number of currently selected entries */
   const selectedCount = selectedIds.size;
 
   /**
-   * 是否以管理员身份运行。
+   * Whether running as administrator.
    *
-   * HKLM 下的条目要写注册表，非管理员下 `KEY_WRITE` 直接拒绝访问 —— 实测一台普通
-   * 机器上 34 条里 30 条在 HKLM，不提权等于整个模块删不动。所以这里提前把话说清楚，
-   * 而不是等用户点完删除看一屏"拒绝访问"。
+   * Entries under HKLM need registry writes; without admin rights `KEY_WRITE` is denied outright - measured on an ordinary
+   * machine, 30 of 34 entries were in HKLM, so without elevation the whole module cannot delete anything. State this up front,
+   * rather than waiting until the user clicks delete and sees a screen of "access denied".
    */
   const isAdmin = useAdminPrivilege();
 
-  /** 选中项里有多少条在 HKLM（非管理员下会全部失败） */
+  /** How many selected entries are in HKLM (all will fail without admin rights) */
   const selectedAdminCount = useMemo(() => {
     if (!scanResult || isAdmin !== false) return 0;
     return scanResult.entries.filter(
@@ -417,9 +417,9 @@ export function ContextMenuModule({ isPageActive = true }: ModuleRenderProps) {
     ).length;
   }, [scanResult, selectedIds, isAdmin]);
 
-  // ── 事件处理 ─────────────────────────────────────────────────────────────
+  // ── Event handlers ─────────────────────────────────────────────────────────────
 
-  /** 开始扫描 */
+  /** Start scanning */
   const handleScan = useCallback(async () => {
     updateModuleState('contextMenu', { status: 'scanning', error: null });
     setScanResult(null);
@@ -432,8 +432,8 @@ export function ContextMenuModule({ isPageActive = true }: ModuleRenderProps) {
       const result = await scanContextMenu();
       setScanResult(result);
 
-      // 默认只勾选"确实失效"的条目（排除系统保护项）。
-      // 三态判定之后这里不用再判 exe_path：能进 missing 的一定提得出路径。
+      // By default, select only "truly invalid" entries (excluding system-protected ones).
+      // After the three-state determination, no need to check exe_path again here: anything marked missing must have had a path.
       const defaultSelected = new Set(
         result.entries
           .filter((e) => isInvalidContextMenuEntry(e) && !e.is_system_protected)
@@ -444,7 +444,7 @@ export function ContextMenuModule({ isPageActive = true }: ModuleRenderProps) {
       updateModuleState('contextMenu', {
         status: 'done',
         fileCount: result.invalid_count,
-        totalSize: 0, // 注册表项没有文件大小概念
+        totalSize: 0, // registry entries have no file-size concept
       });
     } catch (err) {
       console.error('右键菜单扫描失败:', err);
@@ -452,7 +452,7 @@ export function ContextMenuModule({ isPageActive = true }: ModuleRenderProps) {
     }
   }, [updateModuleState]);
 
-  /** 监听一键扫描触发器 */
+  /** Listen for the one-click scan trigger */
   useEffect(() => {
     if (oneClickScanTrigger > 0 && oneClickScanTrigger !== lastScanTriggerRef.current) {
       lastScanTriggerRef.current = oneClickScanTrigger;
@@ -460,7 +460,7 @@ export function ContextMenuModule({ isPageActive = true }: ModuleRenderProps) {
     }
   }, [oneClickScanTrigger, handleScan]);
 
-  /** 切换单个条目选中状态 */
+  /** Toggle a single entry's selection */
   const toggleSelect = useCallback((entry: ContextMenuEntry) => {
     setSelectedIds((prev) => {
       const next = new Set(prev);
@@ -473,10 +473,10 @@ export function ContextMenuModule({ isPageActive = true }: ModuleRenderProps) {
     });
   }, []);
 
-  /** 全选/取消全选（仅操作当前过滤后且非系统保护的条目） */
+  /** Select all / deselect all (only affects currently filtered, non-system-protected entries) */
   const toggleSelectAll = useCallback(() => {
     if (!scanResult) return;
-    // 排除系统保护条目的可选中 ID
+    // Selectable IDs excluding system-protected entries
     const selectableIds = filteredEntries
       .filter((e) => !e.is_system_protected)
       .map((e) => e.id);
@@ -495,7 +495,7 @@ export function ContextMenuModule({ isPageActive = true }: ModuleRenderProps) {
     });
   }, [scanResult, filteredEntries, selectedIds]);
 
-  /** 切换 scope 分组折叠状态 */
+  /** Toggle a scope group's collapse state */
   const toggleScope = useCallback((scope: string) => {
     setCollapsedScopes((prev) => {
       const next = new Set(prev);
@@ -508,7 +508,7 @@ export function ContextMenuModule({ isPageActive = true }: ModuleRenderProps) {
     });
   }, []);
 
-  /** 打开注册表备份目录（误删后手动双击 .reg 恢复） */
+  /** Open the registry backup directory (manually double-click a .reg to restore after accidental deletion) */
   const handleOpenBackupDir = useCallback(async () => {
     try {
       await openContextMenuBackupDir();
@@ -517,7 +517,7 @@ export function ContextMenuModule({ isPageActive = true }: ModuleRenderProps) {
     }
   }, []);
 
-  /** 执行删除 */
+  /** Perform deletion */
   const handleDelete = useCallback(async () => {
     if (selectedIds.size === 0 || !scanResult) return;
 
@@ -527,7 +527,7 @@ export function ContextMenuModule({ isPageActive = true }: ModuleRenderProps) {
     setShowErrorDetails(false);
 
     try {
-      // 构建删除请求列表
+      // Build the deletion request list
       const requests: ContextMenuDeleteRequest[] = scanResult.entries
         .filter((e) => selectedIds.has(e.id))
         .map((e) => ({
@@ -538,7 +538,7 @@ export function ContextMenuModule({ isPageActive = true }: ModuleRenderProps) {
 
       const result = await deleteContextMenuEntries(requests);
 
-      // 记录清理日志
+      // Record the cleanup log
       const failedIds = new Set(
         result.details.filter((d) => !d.success).map((d) => d.id)
       );
@@ -556,7 +556,7 @@ export function ContextMenuModule({ isPageActive = true }: ModuleRenderProps) {
         console.warn('记录清理日志失败:', err)
       );
 
-      // 收集失败信息
+      // Collect failure information
       const errorMessages = result.details
         .filter((d) => !d.success && d.error)
         .map((d) => d.error as string);
@@ -566,7 +566,7 @@ export function ContextMenuModule({ isPageActive = true }: ModuleRenderProps) {
         setDeleteErrors(errorMessages);
       }
 
-      // 从结果中移除已成功删除的条目
+      // Remove successfully deleted entries from the result
       const successIds = new Set(
         result.details.filter((d) => d.success).map((d) => d.id)
       );
@@ -581,7 +581,7 @@ export function ContextMenuModule({ isPageActive = true }: ModuleRenderProps) {
         invalid_count: newInvalidCount,
       });
 
-      // 更新选中状态（仅保留失败的）
+      // Update the selection state (keep only failures)
       setSelectedIds((prev) => {
         const next = new Set(prev);
         successIds.forEach((id) => next.delete(id));
@@ -601,8 +601,8 @@ export function ContextMenuModule({ isPageActive = true }: ModuleRenderProps) {
     }
   }, [selectedIds, scanResult, updateModuleState]);
 
-  // ── 渲染 ─────────────────────────────────────────────────────────────────
-  /** 可选中条目（排除系统保护） */
+  // ── Rendering ─────────────────────────────────────────────────────────────────
+  /** Selectable entries (excluding system-protected ones) */
   const selectableEntries = useMemo(
     () => filteredEntries.filter((e) => !e.is_system_protected),
     [filteredEntries]
@@ -633,9 +633,9 @@ export function ContextMenuModule({ isPageActive = true }: ModuleRenderProps) {
           </span>
         }
       >
-        {/* 删除进度改挂在悬浮操作区上（见上面 busyContent）：
-            那是 position: fixed 的层，不占文档流，所以结果区既不被撑开也没有位移 ——
-            右键菜单需要保留"我在删哪几条"的参照。 */}
+        {/* Delete progress is now attached to the floating action area (see busyContent above):
+            it is a position: fixed layer that does not occupy document flow, so the result area neither expands nor shifts -
+            the context menu needs to keep the reference of "which entries I am deleting". */}
         {moduleState.status === 'idle' && !scanResult && (
           <div className="p-5">
             <EmptyState
@@ -656,15 +656,15 @@ export function ContextMenuModule({ isPageActive = true }: ModuleRenderProps) {
           </div>
         )}
 
-        {/* ── 扫描结果内容 ── */}
+        {/* ── Scan result content ── */}
         {scanResult && (
-          // pb-20：底部操作条是 fixed 悬浮层，末端留白免得最后一行被它压住
+          // pb-20: the bottom action bar is a fixed floating layer, so add bottom padding to keep the last row from being covered
           <div className="p-5 space-y-4 pb-20">
 
-            {/* 未提权时先说清楚：HKLM 条目删不动，别等点完删除再看一屏拒绝访问 */}
+            {/* Without elevation, state it up front: HKLM entries cannot be deleted; do not wait until after delete to see a screen of access-denied errors */}
             <AdminRequiredHint description={moduleT('contextMenu.adminHint')} />
 
-            {/* 安全提示横幅 */}
+            {/* Safety banner */}
             <div className="flex items-start gap-3 p-4 bg-[var(--brand-green-10)] rounded-xl border border-[var(--brand-green-20)]">
               <Shield className="w-5 h-5 text-[var(--brand-green)] shrink-0 mt-0.5" />
               <div>
@@ -675,7 +675,7 @@ export function ContextMenuModule({ isPageActive = true }: ModuleRenderProps) {
               </div>
             </div>
 
-            {/* 扫描统计 */}
+            {/* Scan statistics */}
             <div className="grid grid-cols-3 gap-3">
               <div className="glass-block p-3 bg-[var(--bg-main)] rounded-xl text-center">
                 <p className="text-xl font-bold text-[var(--text-primary)] tabular-nums">
@@ -697,10 +697,10 @@ export function ContextMenuModule({ isPageActive = true }: ModuleRenderProps) {
               </div>
             </div>
 
-            {/* 操作栏：筛选与计数留在这里；全选与删除按钮移到悬浮操作区，
-                与垃圾清理等模块共用同一套组件 —— 列表往下滚动时按钮始终可见 */}
+            {/* Action bar: filtering and count stay here; select-all and delete buttons move to the floating action area,
+                sharing the same components as junk cleanup and other modules - buttons stay visible as the list scrolls */}
             <div className="flex items-center gap-3">
-              {/* 仅显示无效条目开关 */}
+              {/* Show invalid entries only toggle */}
               <button
                 onClick={() => setShowInvalidOnly((v) => !v)}
                 className={`
@@ -718,7 +718,7 @@ export function ContextMenuModule({ isPageActive = true }: ModuleRenderProps) {
                 {moduleT('contextMenu.selected', { count: selectedCount })}
               </span>
 
-              {/* 误删后唯一的恢复手段是备份目录里的 .reg，入口放在这里而不是藏进设置页 */}
+              {/* The only recovery method after accidental deletion is the .reg in the backup directory; put the entry here instead of hiding it in the settings page */}
               <button
                 type="button"
                 onClick={handleOpenBackupDir}
@@ -729,7 +729,7 @@ export function ContextMenuModule({ isPageActive = true }: ModuleRenderProps) {
               </button>
             </div>
 
-            {/* 操作按钮区：固定在视口底部，下拉列表再长也不用滚回去找删除按钮 */}
+            {/* Action buttons area: fixed at the bottom of the viewport; no need to scroll back to find the delete button however long the list is */}
             <ModuleOperationToolbar
               moduleId="context"
               busy={isDeleting}
@@ -761,7 +761,7 @@ export function ContextMenuModule({ isPageActive = true }: ModuleRenderProps) {
               </button>
             </ModuleOperationToolbar>
 
-            {/* 错误提示 */}
+            {/* Error message */}
             {deleteError && (
               <div className="p-3 bg-[var(--color-danger)]/10 rounded-xl border border-[var(--color-danger)]/20">
                 <div className="flex items-center justify-between">
@@ -787,7 +787,7 @@ export function ContextMenuModule({ isPageActive = true }: ModuleRenderProps) {
               </div>
             )}
 
-            {/* 条目列表（按 scope 分组） */}
+            {/* Entry list (grouped by scope) */}
             {filteredEntries.length > 0 ? (
               <div className="space-y-3">
                 {Array.from(groupedEntries.entries()).map(([scope, entries]) => {
@@ -796,7 +796,7 @@ export function ContextMenuModule({ isPageActive = true }: ModuleRenderProps) {
 
                   return (
                     <div key={scope} className="space-y-1.5">
-                      {/* 分组标题 */}
+                      {/* Group title */}
                       <button
                         onClick={() => toggleScope(scope)}
                         className="flex items-center gap-2 w-full text-left px-1 py-0.5 hover:opacity-80 transition-opacity"
@@ -813,7 +813,7 @@ export function ContextMenuModule({ isPageActive = true }: ModuleRenderProps) {
                         </span>
                       </button>
 
-                      {/* 条目列表 */}
+                      {/* Entry list */}
                       {!isCollapsed && (
                         <div className="space-y-1.5 pl-4">
                           {entries.map((entry) => (
@@ -831,7 +831,7 @@ export function ContextMenuModule({ isPageActive = true }: ModuleRenderProps) {
                 })}
               </div>
             ) : (
-              /* 过滤后无条目 */
+              /* No entries after filtering */
               <EmptyState
                 icon={MousePointerClick}
                 title={showInvalidOnly ? moduleT('contextMenu.noInvalid') : moduleT('contextMenu.noEntries')}
@@ -843,7 +843,7 @@ export function ContextMenuModule({ isPageActive = true }: ModuleRenderProps) {
           </div>
         )}
 
-        {/* 空状态：扫描完成但无任何条目 */}
+        {/* Empty state: scan completed but no entries */}
         {scanResult && scanResult.entries.length === 0 && (
           <div className="p-5">
             <EmptyState
@@ -856,14 +856,14 @@ export function ContextMenuModule({ isPageActive = true }: ModuleRenderProps) {
         )}
       </ModuleCard>
 
-      {/* 删除确认对话框 */}
+      {/* Delete confirmation dialog */}
       <ConfirmDialog
         isOpen={showDeleteConfirm}
         onCancel={() => setShowDeleteConfirm(false)}
         onConfirm={handleDelete}
         title={t('confirmDeleteContextMenu')}
         description={moduleT('contextMenu.confirmDesc', { count: selectedCount })}
-        // 选中有 HKLM 条目又没提权时，把"会失败"提前写进警告；这比删完再报错有用
+        // When HKLM entries are selected without elevation, put "this will fail" into the warning up front; more useful than erroring after deletion
         warning={
           selectedAdminCount > 0
             ? moduleT('contextMenu.adminBlockedWarning', { count: selectedAdminCount })

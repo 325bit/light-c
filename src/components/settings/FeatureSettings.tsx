@@ -1,5 +1,5 @@
 // ============================================================================
-// 功能设置页面
+// Feature settings page
 // ============================================================================
 
 import { useEffect, useState } from 'react';
@@ -21,7 +21,7 @@ const BIG_FILES_SCAN_LIMIT_MIN = 10;
 const BIG_FILES_SCAN_LIMIT_MAX = 500;
 
 function clampBigFilesScanLimit(value: number): number {
-  // 该值会直接决定后端 TopN 和前端列表长度，设置页输入时先收敛一次，命令层还会再次兜底。
+  // This value directly determines the backend TopN and frontend list length; the settings page clamps it once on input, and the command layer clamps again as a fallback.
   return Math.min(BIG_FILES_SCAN_LIMIT_MAX, Math.max(BIG_FILES_SCAN_LIMIT_MIN, Math.floor(value || 50)));
 }
 
@@ -30,8 +30,8 @@ const JUNK_DEEP_SCAN_DEPTH_MAX = 24;
 const JUNK_DEEP_SCAN_DEPTH_DEFAULT = 16;
 
 function clampJunkDeepScanDepth(value: number): number {
-  // 这个值直接决定后端遍历的目录层数 —— 每往下加一层，要走的目录数可能成倍增长，
-  // 所以两端都要兜：设置页先收敛一次，命令层还会再收敛一次。
+  // This value directly determines how many directory levels the backend traverses — each additional level can multiply the number of directories to visit,
+  // so both ends need a fallback: the settings page clamps once, and the command layer clamps again.
   return Math.min(
     JUNK_DEEP_SCAN_DEPTH_MAX,
     Math.max(JUNK_DEEP_SCAN_DEPTH_MIN, Math.floor(value || JUNK_DEEP_SCAN_DEPTH_DEFAULT)),
@@ -59,7 +59,7 @@ export function FeatureSettings() {
   }, [settings.bigFilesScanLimit]);
 
   const commitBigFilesScanLimit = () => {
-    // 数字输入允许用户临时清空内容，提交时再归一化，避免输入 300 这类值时被中途强制改写。
+    // Number inputs let users temporarily clear the field and normalize on submit, avoiding forced rewriting midway when entering a value like 300.
     const nextLimit = clampBigFilesScanLimit(Number(bigFilesScanLimitDraft));
     updateSettings({ bigFilesScanLimit: nextLimit });
     setBigFilesScanLimitDraft(String(nextLimit));
@@ -67,7 +67,7 @@ export function FeatureSettings() {
 
   return (
     <div className="flex flex-col w-0 min-w-full space-y-4 pb-2">
-      {/* 垃圾清理：深度发现的扫描深度（Evan 要求放在本页最顶部） */}
+      {/* Junk cleanup: scan depth for deep discovery (Evan asked to put this at the very top of the page) */}
       <div className="space-y-3">
         <h4 className="text-xs font-medium text-[var(--text-muted)] uppercase tracking-wider flex items-center gap-2">
           <Trash2 className="w-3.5 h-3.5" />
@@ -77,7 +77,7 @@ export function FeatureSettings() {
           <div className="flex items-start justify-between gap-4">
             <div>
               <p className="text-sm font-medium text-[var(--text-primary)]">{t('features.junkDeepScan.depth')}</p>
-              {/* 必须写清代价：深度是成倍影响扫描时间的，用户得知道自己在换什么 */}
+              {/* Must state the cost clearly: depth affects scan time multiplicatively, so users need to know what they are trading */}
               <p className="text-xs text-[var(--text-muted)] mt-1 leading-relaxed">
                 {t('features.junkDeepScan.depthDesc')}
               </p>
@@ -110,7 +110,7 @@ export function FeatureSettings() {
         </div>
       </div>
 
-      {/* 大文件清理 */}
+      {/* Big file cleanup */}
       <div className="space-y-3">
         <h4 className="text-xs font-medium text-[var(--text-muted)] uppercase tracking-wider flex items-center gap-2">
           <FileBox className="w-3.5 h-3.5" />
@@ -149,14 +149,14 @@ export function FeatureSettings() {
         </div>
       </div>
 
-      {/* 大目录分析 */}
+      {/* Big directory analysis */}
       <div className="space-y-3">
         <h4 className="text-xs font-medium text-[var(--text-muted)] uppercase tracking-wider flex items-center gap-2">
           <HardDrive className="w-3.5 h-3.5" />
           {t('features.hotspot.title')}
         </h4>
         <div className="glass-block bg-[var(--bg-main)] rounded-2xl p-5 space-y-6">
-          {/* 展示深度 — 下拉选择，最大 4 层（实际扫描固定 6 层） */}
+          {/* Display depth — dropdown selection, max 4 levels (actual scan is fixed at 6 levels) */}
           <div className="flex items-center justify-between">
             <div>
               <p className="text-sm font-medium text-[var(--text-primary)]">{t('features.hotspot.depth')}</p>
@@ -172,7 +172,7 @@ export function FeatureSettings() {
             />
           </div>
 
-          {/* 大小阈值 */}
+          {/* Size threshold */}
           <div className="pt-4 border-t border-[var(--border-color)]">
             <div className="flex items-center justify-between mb-3">
               <div>
@@ -202,7 +202,7 @@ export function FeatureSettings() {
             </div>
           </div>
 
-          {/* 深度扫描忽略系统目录 */}
+          {/* Ignore system directories in deep scan */}
           <div className="pt-4 border-t border-[var(--border-color)]">
             <div className="flex items-center justify-between">
               <div>
@@ -211,7 +211,7 @@ export function FeatureSettings() {
                   {t('features.hotspot.ignoreSystemDesc')}
                 </p>
               </div>
-              {/* 改用共享的 ui/Switch：原先这一处也是自绘的，尺寸与设置页其它开关不一致 */}
+              {/* Switched to the shared ui/Switch: this spot was also custom-drawn before, with a size inconsistent with other switches on the settings page */}
               <Switch
                 checked={settings.hotspotIgnoreSystemDirs}
                 onChange={(checked) => updateSettings({ hotspotIgnoreSystemDirs: checked })}
@@ -220,7 +220,7 @@ export function FeatureSettings() {
             </div>
           </div>
 
-          {/* 自动忽略的目录说明 */}
+          {/* Description of auto-ignored directories */}
           <div className="pt-4 border-t border-[var(--border-color)]">
             <p className="text-sm font-medium text-[var(--text-primary)] mb-3 flex items-center gap-1.5">
               <Shield className="w-3.5 h-3.5" />
@@ -255,7 +255,7 @@ export function FeatureSettings() {
         </div>
       </div>
 
-      {/* 磁盘变化分析 */}
+      {/* Disk change analysis */}
       <div className="space-y-3">
         <h4 className="text-xs font-medium text-[var(--text-muted)] uppercase tracking-wider flex items-center gap-2">
           <HardDrive className="w-3.5 h-3.5" />

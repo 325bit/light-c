@@ -1,9 +1,9 @@
 // ============================================================================
-// 社交软件路径适配器
+// Social software path adapters
 // ============================================================================
 //
-// 每个适配器只负责发现软件数据目录，实际遍历和分类由 core.rs 统一处理。
-// 这样可以在增强单个软件路径时避免复制扫描、去重和风险分级逻辑。
+// Each adapter is only responsible for discovering a piece of software's data directory; the actual traversal and classification is handled uniformly by core.rs.
+// This avoids duplicating the scan, deduplication, and risk-grading logic when enhancing a single software's paths.
 // ============================================================================
 
 use super::core::{FileCategory, SocialAppPath, SocialScanner};
@@ -13,23 +13,23 @@ use winreg::enums::HKEY_CURRENT_USER;
 use winreg::RegKey;
 
 impl SocialScanner {
-    // Telegram 路径检测
+    // Telegram path detection
     // ========================================================================
 
     // ------------------------------------------------------------------------
-    // 注册表里的安装位置
+    // Install location from the registry
     // ------------------------------------------------------------------------
 
-    /// 从注册表读出 Telegram 的安装目录。
+    /// Reads Telegram's install directory from the registry.
     ///
-    /// 为什么需要：Telegram Desktop 把 exe 和 tdata 放在同一个目录，
-    /// 装到 `%APPDATA%\Telegram Desktop` 只是**默认值** —— 用户装到别的盘时
-    /// 文件系统里没有任何线索，只有注册表还记着（本机实测：`D:\tmp\Telegram Desktop`）。
+    /// Why needed: Telegram Desktop puts the exe and tdata in the same directory,
+    /// installing to `%APPDATA%\Telegram Desktop` is only the **default** — when the user installs to another drive
+    /// there's no trace in the filesystem, only the registry still remembers (local test: `D:\tmp\Telegram Desktop`).
     fn telegram_dirs_from_registry() -> Vec<PathBuf> {
         let mut dirs = Vec::new();
         let hkcu = RegKey::predef(HKEY_CURRENT_USER);
 
-        // ① tg:// 协议处理器，默认值形如 "\"D:\tmp\Telegram Desktop\Telegram.exe\" -- \"%1\""
+        // ① tg:// protocol handler, default value looks like "\"D:\tmp\Telegram Desktop\Telegram.exe\" -- \"%1\""
         if let Ok(key) = hkcu.open_subkey(r"Software\Classes\tg\shell\open\command") {
             if let Ok(command) = key.get_value::<String, _>("") {
                 if let Some(dir) = Self::exe_dir_from_command(&command) {
@@ -38,7 +38,7 @@ impl SocialScanner {
             }
         }
 
-        // ② 卸载登记里的 InstallLocation 直接就是目录，比解析命令行更可靠
+        // ② InstallLocation in the uninstall entry is directly the directory, more reliable than parsing the command line
         if let Ok(uninstall) =
             hkcu.open_subkey(r"Software\Microsoft\Windows\CurrentVersion\Uninstall")
         {
@@ -58,14 +58,14 @@ impl SocialScanner {
             }
         }
 
-        // tg 协议和卸载登记通常指向同一个目录，去掉重复再返回，
-        // 免得上层还要为"同一路径扫两遍"买单。
+        // The tg protocol and uninstall entry usually point to the same directory; deduplicate before returning,
+        // so the upper layer doesn't pay for "scanning the same path twice".
         dirs.sort();
         dirs.dedup();
         dirs
     }
 
-    /// 从命令行里取出 exe 所在目录：带引号和不带引号两种写法都要认。
+    /// Extracts the exe's containing directory from a command line: both quoted and unquoted forms must be recognized.
     fn exe_dir_from_command(command: &str) -> Option<PathBuf> {
         let exe = match command.strip_prefix('"') {
             Some(rest) => rest.split('"').next()?,
@@ -74,12 +74,12 @@ impl SocialScanner {
         PathBuf::from(exe).parent().map(|dir| dir.to_path_buf())
     }
 
-    /// 检测 Telegram 路径
+    /// Detects Telegram paths
     pub(super) fn detect_telegram_paths(&self) -> Option<Vec<SocialAppPath>> {
         let mut paths = Vec::new();
 
-        // 默认装在 %APPDATA%\Telegram Desktop，但用户可以装到任意盘
-        // （本机实测：D:\tmp\Telegram Desktop），这种位置只有注册表还记着。
+        // Default install is %APPDATA%\Telegram Desktop, but users can install to any drive
+        // (local test: D:\tmp\Telegram Desktop); only the registry remembers such locations.
         let mut bases = vec![PathBuf::from(&self.appdata).join("Telegram Desktop")];
         for dir in Self::telegram_dirs_from_registry() {
             if !bases.iter().any(|existing| existing == &dir) {
@@ -93,15 +93,15 @@ impl SocialScanner {
             }
             info!("发现Telegram目录: {}", telegram_base.display());
 
-            // tdata 目录（用户数据，包含消息数据库）
+            // tdata directory (user data, contains the message database)
             let tdata = telegram_base.join("tdata");
             if !tdata.exists() {
                 continue;
             }
 
-            // 判断这里是不是真的账号数据。
-            // ⚠️ 不能只看 .db：新版 Telegram 的 tdata 里是 key_datas + D877F783D5D3EF8C
-            // 这类目录，一个 .db 都没有（本机实测），只看 .db 会把新版整个跳过。
+            // Determine whether this is really account data.
+            // ⚠️ Don't look only at .db: new Telegram's tdata contains directories like key_datas + D877F783D5D3EF8C,
+            // with no .db at all (local test); looking only at .db would skip the whole new version.
             let has_account = std::fs::read_dir(&tdata)
                 .map(|entries| {
                     entries.filter_map(|e| e.ok()).any(|e| {
@@ -125,7 +125,7 @@ impl SocialScanner {
                 is_custom_path: false,
             });
 
-            // user_data 目录
+            // user_data directory
             let user_data = tdata.join("user_data");
             if user_data.exists() {
                 paths.push(SocialAppPath {
@@ -137,7 +137,7 @@ impl SocialScanner {
             }
         }
 
-        // Microsoft Store 版本不使用 Roaming\Telegram Desktop，需检查包目录的本地状态。
+        // The Microsoft Store version doesn't use Roaming\Telegram Desktop; check the package directory's local state.
         for package in self.find_package_directories(&["telegramdesktop", "telegram"]) {
             self.add_named_subdirectories(
                 &package.join("LocalCache"),
@@ -179,8 +179,8 @@ mod tests {
     use super::SocialScanner;
     use std::path::PathBuf;
 
-    /// 注册表里 tg 协议命令有两种写法：带引号（路径含空格）和不带引号。
-    /// 解析错了就取不到安装目录，Telegram 又会变成"扫不到"。
+    /// The registry's tg protocol command has two forms: quoted (path contains spaces) and unquoted.
+    /// Parse it wrong and you can't get the install directory, and Telegram becomes "unscannable" again.
 
     #[test]
     fn exe_dir_from_command_handles_quoted_and_bare_paths() {
@@ -196,7 +196,7 @@ mod tests {
             Some(PathBuf::from(r"C:\Apps"))
         );
 
-        // 空串不能 panic
+        // An empty string must not panic
         assert_eq!(SocialScanner::exe_dir_from_command(""), None);
     }
 }

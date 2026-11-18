@@ -1,29 +1,29 @@
 /**
- * 开发空间清理的调用层。
+ * Invocation layer for dev-space cleanup.
  *
- * 只做 invoke 转发，字段与 `src/types/devCache.ts` 对应。
+ * Only forwards invoke calls; fields correspond to `src/types/devCache.ts`.
  */
 import { invoke } from '@tauri-apps/api/core';
 import type { DevCacheDeleteResult, DevCacheScanResult } from '../types/devCache';
 
 /**
- * 扫描开发工具链缓存与多版本残留。
+ * Scan toolchain caches and multi-version leftovers.
  *
- * 后端内部用 rayon 并行遍历，一次调用就返回全部分组 —— 没有进度事件，
- * 所以界面上要用"扫描中"的骨架屏而不是进度条（进度条需要一个总量，这里拿不到）。
+ * The backend traverses in parallel internally with rayon and returns all groups in one call - there are no progress events,
+ * so the UI should use a "scanning" skeleton rather than a progress bar (a progress bar needs a total, which is unavailable here).
  */
 export function scanDevCache(): Promise<DevCacheScanResult> {
   return invoke('scan_dev_cache');
 }
 
 /**
- * 删除选中的目录，返回成功数、释放量与失败明细。
+ * Delete the selected directories, returning the success count, space freed, and failure details.
  *
- * 前端传来的路径**不可信**：后端会重新校验归属（必须精确等于某个目标目录，
- * 或位于版本根目录之下的版本号目录），只读项与当前正在使用的版本一律拒绝。
+ * Paths from the frontend are **untrusted**: the backend revalidates ownership (must exactly equal a target directory,
+ * or be a version directory under a version root); readonly items and the version currently in use are always rejected.
  *
- * 返回值必须看 `failed`：IDE / 构建进程开着时文件常被占用，删除会部分失败，
- * 只看 `deleted` 会让界面显示"已删完"而实际占用没降。
+ * You must check `failed` in the return value: when an IDE / build process is running, files are often locked and deletion partially fails;
+ * looking only at `deleted` would make the UI show "all deleted" while the actual usage has not dropped.
  */
 export function deleteDevCachePaths(paths: string[]): Promise<DevCacheDeleteResult> {
   return invoke('delete_dev_cache_paths', { paths });

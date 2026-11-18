@@ -1,16 +1,16 @@
 // ============================================================================
-// 社交软件扫描通用路径工具
+// Common path utilities for social app scanning
 // ============================================================================
 //
-// 适配器只描述“哪里可能有数据”，这里统一处理存在性、路径去重和
-// Windows 大小写/斜杠差异，避免同一文件被重复统计或重复提交删除。
+// Adapters only describe "where data might be"; here we uniformly handle existence, path dedup, and
+// Windows case/slash differences, to avoid counting the same file twice or submitting it for deletion twice.
 // ============================================================================
 
 use super::core::{FileCategory, SocialAppPath, SocialScanner};
 use std::path::{Path, PathBuf};
 
 impl SocialScanner {
-    /// 追加目录候选并去重；候选不存在时不做 IO 递归，避免漏扫修复拖慢常规扫描。
+    /// Append a directory candidate and deduplicate; when the candidate does not exist, do no IO recursion, to avoid slowing normal scans with leftover-fix work.
     pub(super) fn add_candidate(candidates: &mut Vec<PathBuf>, path: PathBuf) {
         if !path.is_dir() {
             return;
@@ -25,7 +25,7 @@ impl SocialScanner {
         }
     }
 
-    /// 将已存在的目录加入扫描路径，并按应用、分类和规范化路径去重。
+    /// Add existing directories to the scan paths, deduplicating by app, category, and normalized path.
     pub(super) fn add_scan_path(
         paths: &mut Vec<SocialAppPath>,
         app_name: &str,
@@ -54,7 +54,7 @@ impl SocialScanner {
         }
     }
 
-    /// 添加多个固定名称的子目录，适合处理 Electron/WebView 类客户端。
+    /// Add multiple fixed-name subdirectories, suitable for Electron/WebView clients.
     pub(super) fn add_named_subdirectories(
         &self,
         base_path: &Path,
@@ -75,7 +75,7 @@ impl SocialScanner {
         }
     }
 
-    /// 查找匹配指定关键词的 Windows Store 包目录。
+    /// Find Windows Store package directories matching given keywords.
     pub(super) fn find_package_directories(&self, markers: &[&str]) -> Vec<PathBuf> {
         let packages_dir = PathBuf::from(&self.local_appdata).join("Packages");
         let Ok(entries) = std::fs::read_dir(packages_dir) else {
@@ -99,29 +99,29 @@ impl SocialScanner {
             .collect()
     }
 
-    /// 统一生成路径键，兼容 Windows 下大小写不敏感和两种分隔符。
+    /// Uniformly generate a path key, compatible with Windows case-insensitivity and both separators.
     ///
-    /// 这条路径每个文件都要走一次（十万级），所以正常路径只允许一次堆分配：
-    /// `to_string_lossy` 对合法 UTF-8 不分配，小写化分配一次；
-    /// 正斜杠只有兼容调用方手写路径时才会出现，命中才多做一次替换。
+    /// This path is taken once per file (on the order of 100,000), so the normal path allows only one heap allocation:
+    /// `to_string_lossy` does not allocate for valid UTF-8, lowercasing allocates once;
+    /// forward slashes only appear when a caller hand-writes a path for compatibility, and only a hit costs one extra replacement.
     pub(super) fn normalize_path_key(path: &Path) -> String {
         let mut key = path.to_string_lossy().to_lowercase();
         if key.contains('/') {
             key = key.replace('/', "\\");
         }
-        // 结尾的分隔符不影响文件路径的比较，统一去掉
+        // A trailing separator does not affect file path comparison; strip it uniformly
         while key.ends_with('\\') {
             key.pop();
         }
         key
     }
 
-    /// 判断盘符根目录下的某个目录是不是系统自带的。
+    /// Determine whether a directory under a drive root is built into the system.
     ///
-    /// 从盘符根下钻查找社交软件数据目录时，必须先跳过这些：它们不可能存放聊天数据，
-    /// 却包含成千上万个子目录，下钻进去纯属浪费时间（尤其 C:\Windows）。
-    /// 反过来，**除了这些之外的顶层目录都要下钻** —— 用户自定义的
-    /// `D:\QQ\Tencent Files`、`D:\weixin\xwechat_files` 就藏在里面（Issue #87）。
+    /// When drilling down from a drive root to find social app data directories, these must be skipped first: they cannot hold chat data,
+    /// yet contain thousands of subdirectories, so descending into them is a pure waste of time (especially C:\Windows).
+    /// Conversely, **all top-level directories except these must be descended into** - user-customized
+    /// `D:\QQ\Tencent Files` and `D:\weixin\xwechat_files` hide in there (Issue #87).
     pub(super) fn is_system_top_level_dir(path: &Path) -> bool {
         const SYSTEM_DIR_NAMES: [&str; 10] = [
             "windows",
