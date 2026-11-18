@@ -15,9 +15,11 @@
 // 3. Extended-length prefix: `\\?\C:\Windows\...` keeps the `\\?\` prefix in the
 //    string, so every `\`-based prefix check misses. → strip the prefix first.
 //
-// The validation template is `scanner/leftovers.rs::is_safe_leftover_path_under`
-// (component-wise comparison + relative-component rejection), promoted here so
-// every delete engine shares one implementation instead of its own.
+// The template was `scanner/leftovers.rs::is_safe_leftover_path_under`
+// (component-wise comparison + relative-component rejection). It lives here now:
+// leftovers, ai_tool_cleaner and dev_cache all call `has_relative_components`
+// instead of carrying their own copy — M13 counted three byte-identical versions
+// of exactly this check before they were folded in.
 // ============================================================================
 
 use std::path::{Component, Path};

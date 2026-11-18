@@ -1,6 +1,6 @@
 //! Core logic for scanning and deletion.
 
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
 use super::tools::build_specs;
@@ -240,10 +240,7 @@ impl AiToolScanner {
         // `Path::starts_with` is a **lexical** comparison:`...\Cursor\Cache\..\..\..\logs` would be judged
         // as under the root, while `remove_dir_all` operates on the resolved real path —
         // without blocking such paths first, the prefix check would be meaningless.
-        if path
-            .components()
-            .any(|component| matches!(component, Component::CurDir | Component::ParentDir))
-        {
+        if crate::path_guard::has_relative_components(path) {
             return false;
         }
 

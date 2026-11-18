@@ -6,7 +6,7 @@
 //! ③ read-only entries and any version root itself are always rejected.
 
 use std::collections::HashSet;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 
 use super::measure::{display_path, measure};
 use super::targets::{self, Env, VersionPattern};
@@ -20,11 +20,6 @@ fn norm(raw: &str) -> String {
         text.pop();
     }
     text.to_ascii_lowercase()
-}
-
-fn has_relative_component(path: &Path) -> bool {
-    path.components()
-        .any(|component| matches!(component, Component::CurDir | Component::ParentDir))
 }
 
 pub fn delete(paths: &[String]) -> DevCacheDeleteResult {
@@ -64,7 +59,7 @@ pub fn delete(paths: &[String]) -> DevCacheDeleteResult {
     for raw in paths {
         let path = PathBuf::from(raw);
 
-        if has_relative_component(&path) {
+        if crate::path_guard::has_relative_components(&path) {
             failed.push(DevCacheDeleteFailure {
                 path: raw.clone(),
                 reason: "路径包含 . 或 .. 组件".to_string(),

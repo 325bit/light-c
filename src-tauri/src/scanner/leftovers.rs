@@ -53,7 +53,7 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 use std::time::{Duration, SystemTime};
 use walkdir::WalkDir;
@@ -2147,10 +2147,7 @@ fn calculate_dir_size(path: &std::path::Path) -> u64 {
 ///    deeper directories should not be wholesale deleted by this module; files (orphaned virtual disks) may go deeper,
 ///    as their real location is inside `Packages\<package name>\LocalState\`.
 fn is_safe_leftover_path_under(path: &Path, roots: &[PathBuf]) -> bool {
-    if path
-        .components()
-        .any(|component| matches!(component, Component::CurDir | Component::ParentDir))
-    {
+    if crate::path_guard::has_relative_components(path) {
         return false;
     }
 
