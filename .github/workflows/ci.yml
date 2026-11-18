@@ -1,0 +1,117 @@
+# ============================================================================
+# LightC quality gates (runs on pull requests and pushes)
+#
+# Division of labour with release.yml:
+#   release.yml -- builds, signs and uploads the installer when a tag is pushed
+#   ci.yml      -- keeps code quality in check; produces no artifacts
+#
+# The gates map to section 8 of the Rust architecture audit:
+#   cargo fmt --check   formatting
+#   cargo clippy        static analysis (correctness / suspicious are errors now)
+#   cargo test --lib    unit tests
+#   cargo deny check    licenses / advisories / bans / sources
+#   cargo machete       unused dependencies
+# ============================================================================
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# Cancel the previous run when a branch is pushed again, instead of queueing
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # Incremental artifacts bloat the target cache and rarely hit on CI, so turn it off
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  format:
+    name: Format
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: cargo fmt --check
+        working-directory: src-tauri
+        run: cargo fmt --all -- --check
+
+  lint-and-test:
+    name: Clippy + unit tests
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - name: Prepare frontend placeholder
+        # tauri::generate_context! reads frontendDist (dist/ at the repository root)
+        # at compile time, but dist/ is a build artifact and not committed. The Rust
+        # gates only care about Rust code, so a placeholder file is enough; there is
+        # no need to build the frontend just to run unit tests.
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          if (-not (Test-Path dist/index.html)) {
+            '<!doctype html><meta charset="utf-8"><title>ci placeholder</title>' |
+              Set-Content -Encoding utf8 dist/index.html
+          }
+
+      - name: cargo clippy
+        working-directory: src-tauri
+        # correctness / suspicious are already set to deny in Cargo.toml [lints.clippy].
+        # -D warnings is deliberately not passed here: 125 style / perf / complexity
+        # warnings remain, and tightening all at once would make the gate red on day
+        # one. Clean them up category by category, then widen.
+        run: cargo clippy --all-targets
+
+      - name: cargo test --lib
+        working-directory: src-tauri
+        run: cargo test --lib
+
+  supply-chain:
+    name: Dependency supply chain
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Prebuilt binaries, an order of magnitude faster than cargo install
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny,cargo-machete
+
+      - name: cargo deny (licenses / bans / sources)
+        working-directory: src-tauri
+        # Split into two steps rather than one `cargo deny check` so a failure
+        # immediately shows which category broke. These three are decided purely
+        # from the local Cargo.lock and are fully reproducible.
+        run: cargo deny check licenses bans sources
+
+      - name: cargo deny (advisories)
+        working-directory: src-tauri
+        # Needs network access to fetch the RustSec database, so it can only run in a
+        # networked environment. If this reports a vulnerability that predates the
+        # change, the correct response is to record it in deny.toml under
+        # [advisories] ignore with a reason and impact scope -- not to comment the
+        # step out.
+        run: cargo deny check advisories
+
+      - name: cargo machete
+        working-directory: src-tauri
+        run: cargo machete

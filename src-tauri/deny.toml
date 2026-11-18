@@ -1,0 +1,129 @@
+# ============================================================================
+# cargo-deny configuration
+#
+# Four independent checks, each guarding a different failure mode:
+#   advisories -- known security advisories in the dependency tree (RustSec DB)
+#   licenses   -- whether every dependency's license is on the allow list
+#   bans       -- forbidden crates / duplicate versions / wildcard requirements
+#   sources    -- whether dependencies come only from trusted sources
+#
+# Usage:
+#   cargo deny check              # all checks
+#   cargo deny check licenses     # single check (works offline, handy locally)
+#
+# Note: advisories needs network access to fetch the RustSec database, and it uses
+# the git protocol, which some corporate proxies break. When that happens, seed the
+# database by hand and run offline (`--offline` is a global flag, so it goes before
+# `check`):
+#
+#   curl -L -o %TEMP%\advisory-db.tar.gz ^
+#     https://codeload.github.com/RustSec/advisory-db/tar.gz/refs/heads/main
+#   mkdir %USERPROFILE%\.cargo\advisory-dbs\advisory-db-3157b0e258782691
+#   tar -xzf %TEMP%\advisory-db.tar.gz -C ^
+#     %USERPROFILE%\.cargo\advisory-dbs\advisory-db-3157b0e258782691 --strip-components=1
+#   cd %USERPROFILE%\.cargo\advisory-dbs\advisory-db-3157b0e258782691
+#   git init -b main && git remote add origin https://github.com/RustSec/advisory-db
+#   git add -A && git commit -m "local snapshot"
+#   cargo deny --offline check advisories
+#
+# The directory name is cargo-deny's hash of the database URL and must match exactly.
+# Re-run the first three steps periodically to refresh the snapshot.
+# ============================================================================
+
+[graph]
+# This is a Windows-only desktop app, so only check dependencies that actually ship
+# in the installer. Without this line, the zbus / ndk / gtk crates that tauri
+# declares for Linux/macOS also enter the graph, which both slows the check down
+# and points license complaints at crates that are never compiled here.
+targets = ["x86_64-pc-windows-msvc"]
+
+[output]
+feature-depth = 1
+
+# ----------------------------------------------------------------------------
+# Security advisories
+#
+# The defaults already match our policy, so nothing is overridden here:
+#   vulnerability with a patch available -> deny (must be handled)
+#   yanked version                       -> warn
+# Only the `ignore` placeholder is kept; every future exemption must state a reason.
+# ----------------------------------------------------------------------------
+[advisories]
+ignore = [
+    # Example: { id = "RUSTSEC-0000-0000", reason = "only called locally, not reachable" },
+]
+
+# ----------------------------------------------------------------------------
+# Licenses
+#
+# This project ships under a custom "Source Available" license (see LICENSE in the
+# repository root), i.e. it is distributed as closed source. Therefore only
+# permissive licenses are accepted, and each must be: commercially usable,
+# redistributable in closed form, and non-viral.
+#
+# The list was derived from an actual survey of every dependency in Cargo.lock
+# (Nov 2026) and checked entry by entry. The less obvious ones:
+#   MPL-2.0             -- file-level weak copyleft; only modified MPL files must be
+#                          published. We ship no modified versions, so acceptable
+#                          (used by option-ext and friends)
+#   Unlicense / CC0-1.0 -- public-domain equivalents, no restrictions
+#   CDLA-Permissive-2.0 -- data license of webpki-roots, unrestricted use
+#   BSL-1.0             -- Boost, permissive
+#   Unicode-3.0         -- license of the Unicode data files, MIT-level permissive
+# ----------------------------------------------------------------------------
+[licenses]
+allow = [
+    "MIT",
+    "MIT-0",
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "0BSD",
+    "ISC",
+    "Zlib",
+    "Unlicense",
+    "CC0-1.0",
+    "BSL-1.0",
+    "Unicode-3.0",
+    "CDLA-Permissive-2.0",
+    "MPL-2.0",
+]
+# 0.8 is cargo-deny's default: license text below this confidence is treated as
+# "unrecognized". Prefer a false alarm over a silent pass.
+confidence-threshold = 0.8
+
+[licenses.private]
+# This package uses a custom (non-SPDX) license and is never published to crates.io,
+# so it counts as a private crate and is skipped by the license check.
+# Relies on `publish = false` in Cargo.toml.
+ignore = true
+
+# ----------------------------------------------------------------------------
+# Bans
+# ----------------------------------------------------------------------------
+[bans]
+# Duplicate versions of the same crate only warn: low-level crates such as
+# windows-sys / bitflags naturally coexist in multiple versions across the Tauri
+# ecosystem, and denying outright would keep the gate permanently red.
+# When duplicates actually need to be collapsed, read the tree printed by
+# `cargo deny check bans` and skip them one by one.
+multiple-versions = "warn"
+# A `*` requirement gives up version constraints entirely: any new release is
+# pulled in automatically. Rejected.
+wildcards = "deny"
+highlight = "all"
+workspace-default-features = "allow"
+external-default-features = "allow"
+
+# ----------------------------------------------------------------------------
+# Sources
+#
+# crates.io only. Git dependencies bypass version review (a tag can be force-pushed
+# and rewritten), so they are forbidden. Any future exception must be added here
+# explicitly with a stated reason.
+# ----------------------------------------------------------------------------
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

@@ -229,7 +229,10 @@ impl DeleteEngine {
                 let is_sharing_violation = false;
 
                 if e.kind() == std::io::ErrorKind::PermissionDenied {
-                    Err(format!("权限不足: {}（系统托管的目录请改用系统磁盘清理）", e))
+                    Err(format!(
+                        "权限不足: {}（系统托管的目录请改用系统磁盘清理）",
+                        e
+                    ))
                 } else if is_sharing_violation {
                     Err(format!("目录内有文件被占用: {}", e))
                 } else {
@@ -257,7 +260,11 @@ impl DeleteEngine {
     }
 
     /// Check whether it is a protected path (multiple safety checks)
-    fn is_protected_path(&self, path: &Path) -> bool {
+    ///
+    /// pub 仅为 benches 调用（经 lib.rs 的 bench_api 出口）：这是「这条路径能不能删」
+    /// 的判定入口，一次批量删除会对每个文件调用一次，耗时直接进删除总时长；
+    /// 同时它也是审计 C1 的修复点，需要基准 + 单元测试双重盯住。
+    pub fn is_protected_path(&self, path: &Path) -> bool {
         let path_str = path.to_string_lossy().to_lowercase();
 
         // Layer 1: check the path prefix
@@ -395,9 +402,7 @@ mod tests {
         // The old Windows installation is system-managed: it cannot be deleted inside the app, and a mid-way failure leaves a "half-deleted" state,
         // so it must be blocked here (the scan side is unaffected and still lists the size normally).
         assert!(engine.is_protected_path(Path::new("C:\\Windows.old")));
-        assert!(engine.is_protected_path(Path::new(
-            "C:\\Windows.old\\Windows\\System32\\old.dll"
-        )));
+        assert!(engine.is_protected_path(Path::new("C:\\Windows.old\\Windows\\System32\\old.dll")));
         assert!(engine.is_protected_path(Path::new("C:\\$Windows.~BT")));
     }
 }

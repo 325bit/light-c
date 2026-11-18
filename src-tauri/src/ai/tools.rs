@@ -196,7 +196,10 @@ fn parse_anthropic_tool_calls(value: &Value) -> Vec<AiToolCall> {
             Some(AiToolCall {
                 call_id: block.get("id")?.as_str()?.to_string(),
                 name: block.get("name")?.as_str()?.to_string(),
-                arguments: block.get("input").cloned().unwrap_or_else(|| serde_json::json!({})),
+                arguments: block
+                    .get("input")
+                    .cloned()
+                    .unwrap_or_else(|| serde_json::json!({})),
             })
         })
         .collect()
@@ -217,260 +220,6 @@ pub fn extract_ids(arguments: &Value) -> Vec<String> {
                 .collect()
         })
         .unwrap_or_default()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn openai_tool_calls_parse_arguments_from_string() {
-        // arguments is JSON in string form — forget the second parse and you'll never get the ids
-        let value = serde_json::json!({
-            "choices": [{
-                "message": {
-                    "tool_calls": [{
-                        "id": "call_1",
-                        "function": { "name": "select_items", "arguments": "{\"ids\":[\"RecycleBin\"]}" }
-                    }]
-                }
-            }]
-        });
-        let calls = parse_tool_calls(AiProtocol::OpenAi, &value);
-        assert_eq!(calls.len(), 1);
-        assert_eq!(calls[0].name, "select_items");
-        assert_eq!(extract_ids(&calls[0].arguments), vec!["RecycleBin".to_string()]);
-    }
-
-    #[test]
-    fn anthropic_tool_use_blocks_parse_input_as_object() {
-        let value = serde_json::json!({
-            "content": [
-                { "type": "text", "text": "我来处理" },
-                { "type": "tool_use", "id": "toolu_1", "name": "propose_delete", "input": { "ids": ["WindowsTemp"] } }
-            ]
-        });
-        let calls = parse_tool_calls(AiProtocol::Anthropic, &value);
-        assert_eq!(calls.len(), 1);
-        assert_eq!(calls[0].name, "propose_delete");
-        assert_eq!(extract_ids(&calls[0].arguments), vec!["WindowsTemp".to_string()]);
-    }
-
-    #[test]
-    fn plain_text_reply_yields_no_tool_calls() {
-        let value = serde_json::json!({ "choices": [{ "message": { "content": "你好" } }] });
-        assert!(parse_tool_calls(AiProtocol::OpenAi, &value).is_empty());
-    }
-
-    #[test]
-    fn malformed_arguments_do_not_panic_and_yield_no_ids() {
-        let value = serde_json::json!({
-            "choices": [{ "message": { "tool_calls": [
-                { "id": "call_1", "function": { "name": "select_items", "arguments": "not-json" } }
-            ] } }]
-        });
-        let calls = parse_tool_calls(AiProtocol::OpenAi, &value);
-        assert_eq!(calls.len(), 1);
-        // Parse failure → empty object → no id → the caller won't use it to delete anything
-        assert!(extract_ids(&calls[0].arguments).is_empty());
-    }
-
-    /// Tested: deepseek-flash writes calls as JSON text like `<tool_call>{"name":…}</tool_call>`.
-    /// If not recognized, the user sees this raw text in chat and the call isn't executed at all (Evan reported this with a screenshot).
-    #[test]
-    fn json_style_tool_call_is_recognized_and_never_shown() {
-        let raw = "这个驱动包可以安全清理。\n<tool_call>\n{\"name\": \"read_item_detail\", \"arguments\": {\"id\": \"oem7.inf\"}}\n</tool_call>";
-        let (calls, cleaned) = extract_inline_tool_calls(raw);
-        assert_eq!(calls.len(), 1, "应认出一次调用");
-        assert_eq!(calls[0].name, "read_item_detail");
-        assert_eq!(
-            calls[0].arguments.get("item_id").and_then(|value| value.as_str()),
-            Some("oem7.inf")
-        );
-        assert!(!cleaned.contains("tool_call"), "调用块不能留在正文里，实际: {}", cleaned);
-        assert!(cleaned.contains("可以安全清理"), "正文必须保留，实际: {}", cleaned);
-    }
-
-    /// Unrecognized tool names: not executed, but that text must also disappear — the user shouldn't see tool syntax.
-    #[test]
-    fn unknown_json_tool_call_is_dropped_from_text() {
-        let raw = "说明。\n<tool_call>{\"name\": \"rm_rf\", \"arguments\": {}}</tool_call>";
-        let (calls, cleaned) = extract_inline_tool_calls(raw);
-        assert!(calls.is_empty(), "未声明的工具不能执行");
-        assert_eq!(cleaned, "说明。");
-    }
-
-    /// arguments written as a JSON string (OpenAI style) must also be accepted.
-    #[test]
-    fn json_style_tool_call_accepts_string_arguments() {
-        let raw = "<tool_call>{\"name\": \"read_items\", \"arguments\": \"{\\\"path\\\": \\\"D:/models\\\"}\"}</tool_call>";
-        let (calls, _) = extract_inline_tool_calls(raw);
-        assert_eq!(calls.len(), 1);
-        assert_eq!(
-            calls[0].arguments.get("target_id").and_then(|value| value.as_str()),
-            Some("D:/models")
-        );
-    }
-
-    #[test]
-    fn inline_xml_tool_call_is_recognized_and_stripped_from_text() {
-        // Tested: deepseek's lightweight tier writes calls as text like this, which neither becomes tool_calls
-        // nor is shown to the user verbatim. It must be recognized here and stripped from the body.
-        let raw = "I'll read the item list.\n<invoke name=\"read_items\">\n<parameter name=\"module\">AI 模型空间</parameter>\n</invoke>";
-        let (calls, cleaned) = extract_inline_tool_calls(raw);
-        assert_eq!(calls.len(), 1);
-        assert_eq!(calls[0].name, "read_items");
-        // module is a parameter name the model made up; map it back to target_id
-        assert_eq!(
-            calls[0].arguments.get("target_id").and_then(|v| v.as_str()),
-            Some("AI 模型空间")
-        );
-        // The XML must not remain in the body, otherwise the user would see "the model pretending to call a tool"
-        assert!(!cleaned.contains("<invoke"));
-        assert!(cleaned.contains("I'll read the item list"));
-    }
-
-    #[test]
-    fn inline_list_parameter_splits_on_commas() {
-        let raw = "<invoke name=\"propose_delete\"><parameter name=\"ids\">RecycleBin, WindowsTemp</parameter></invoke>";
-        let (calls, _) = extract_inline_tool_calls(raw);
-        assert_eq!(calls.len(), 1);
-        let ids = calls[0].arguments.get("ids").and_then(|v| v.as_array()).unwrap();
-        assert_eq!(ids.len(), 2);
-    }
-
-    #[test]
-    fn inline_unknown_tool_is_dropped_entirely() {
-        // Undeclared tools: neither executed nor left in the body
-        let raw = "看看这个 <invoke name=\"run_shell\"><parameter name=\"cmd\">rm -rf /</parameter></invoke>";
-        let (calls, cleaned) = extract_inline_tool_calls(raw);
-        assert!(calls.is_empty());
-        assert!(!cleaned.contains("run_shell"));
-    }
-
-    #[test]
-    fn plain_text_is_left_untouched() {
-        let raw = "这是一个普通回答，里面没有任何工具调用。";
-        let (calls, cleaned) = extract_inline_tool_calls(raw);
-        assert!(calls.is_empty());
-        assert_eq!(cleaned, raw);
-    }
-
-    #[test]
-    fn unknown_tools_are_ignored_in_declarations() {
-        let names = vec!["select_items".to_string(), "run_shell".to_string()];
-        assert_eq!(openai_tools(&names).len(), 1);
-        assert_eq!(anthropic_tools(&names).len(), 1);
-    }
-
-    #[test]
-    fn declarations_use_each_protocol_shape() {
-        let names = vec![TOOL_SELECT_ITEMS.to_string()];
-        let openai = openai_tools(&names);
-        assert!(openai[0].get("function").is_some(), "OpenAI 需要 function 外层");
-        let anthropic = anthropic_tools(&names);
-        assert!(anthropic[0].get("input_schema").is_some(), "Anthropic 用 input_schema");
-        assert!(anthropic[0].get("function").is_none());
-    }
-
-    // ---- Edge cases of the hand-written parser: these have all caused problems before, or are easy to trip over when changing ----
-
-    #[test]
-    fn attributes_are_matched_on_whole_names_only() {
-        // `username=` also contains "name=" — must match on attribute-name boundaries,
-        // otherwise "admin" is taken as name and the real name can't be retrieved.
-        let tag = "<invoke username=\"admin\" name=\"read_items\"";
-        assert_eq!(attribute(tag, "name").as_deref(), Some("read_items"));
-        assert_eq!(
-            attribute("<invoke name=\"read_items\"", "name").as_deref(),
-            Some("read_items")
-        );
-    }
-
-    #[test]
-    fn a_well_formed_inline_call_is_extracted_and_removed_from_the_body() {
-        let content = "先说明一下。\n<invoke name=\"read_items\"><parameter name=\"offset\">0</parameter></invoke>\n后面还有话。";
-        let (calls, cleaned) = extract_inline_tool_calls(content);
-        assert_eq!(calls.len(), 1);
-        assert_eq!(calls[0].name, "read_items");
-        assert_eq!(
-            calls[0].arguments.get("offset").and_then(|value| value.as_i64()),
-            Some(0)
-        );
-        assert!(cleaned.contains("先说明一下。"), "实际: {}", cleaned);
-        assert!(cleaned.contains("后面还有话。"), "实际: {}", cleaned);
-        assert!(!cleaned.contains("<invoke"), "调用块应被剔除，实际: {}", cleaned);
-    }
-
-    #[test]
-    fn an_unclosed_invoke_tag_keeps_the_text_before_it() {
-        // When the model emits half a tag, the body before the opening tag **must not be lost** —
-        // earlier, that spot only advanced cursor without restoring the body, so the whole segment was swallowed (and the body must be displayed and stored).
-        let content = "这一段必须留下来。\n<invoke name=\"read_items\">";
-        let (calls, cleaned) = extract_inline_tool_calls(content);
-        assert!(calls.is_empty(), "残缺的调用不该被执行");
-        assert!(
-            cleaned.contains("这一段必须留下来。"),
-            "正文被吞了，实际: {}",
-            cleaned
-        );
-    }
-
-    #[test]
-    fn paragraph_breaks_in_the_body_are_preserved() {
-        // After removing the call block, only collapse extra blank lines; the body's own blank lines are Markdown paragraph separators and must be kept.
-        let content = "第一段\n\n第二段\n\n<invoke name=\"read_items\"></invoke>";
-        let (calls, cleaned) = extract_inline_tool_calls(content);
-        assert_eq!(calls.len(), 1);
-        assert!(
-            cleaned.contains("第一段\n\n第二段"),
-            "段落分隔被压掉了，实际: {:?}",
-            cleaned
-        );
-    }
-
-    #[test]
-    fn an_unclosed_invoke_tag_does_not_swallow_the_tail() {
-        // A fragment without even '>': the whole segment must be kept verbatim, don't drop content just because "the opening tag's end wasn't found"
-        let content = "前面的正文。\n<invoke name=\"read_items\"";
-        let (calls, cleaned) = extract_inline_tool_calls(content);
-        assert!(calls.is_empty());
-        assert!(cleaned.contains("前面的正文。"), "实际: {}", cleaned);
-        assert!(cleaned.contains("read_items"), "残片本身也该留在正文里: {}", cleaned);
-    }
-
-    #[test]
-    fn dsml_markup_is_recognized_and_removed_from_the_body() {
-        // Tested (deepseek-flash in thinking mode + no tools declared) it uses its own DSML markup to express tool calls.
-        // Forwarded verbatim like this — it must be recognized, and **must not be shown to the user**.
-        let content = "我来查一下。\n\
-             <｜｜DSML｜｜ calls>\n\
-             <｜｜DSML｜｜ invoke name=\"read_items\">\n\
-             <｜｜DSML｜｜ parameter name=\"path\" string=\"true\">C:\\Users\\chunyu\\AppData\\Roaming\\devin</｜｜DSML｜｜ parameter>\n\
-             </｜｜DSML｜｜ invoke>\n\
-             </｜｜DSML｜｜ calls>";
-        let (calls, cleaned) = extract_inline_tool_calls(content);
-        assert_eq!(calls.len(), 1, "DSML 标记应当被认成一次调用，实际: {}", cleaned);
-        assert_eq!(calls[0].name, "read_items");
-        // `path` is an alias we've observed in the wild; not recognizing it loses the parameter
-        assert_eq!(
-            calls[0].arguments.get("target_id").and_then(|value| value.as_str()),
-            Some("C:\\Users\\chunyu\\AppData\\Roaming\\devin")
-        );
-        assert!(!cleaned.contains("DSML"), "标记不该留在正文里: {}", cleaned);
-        assert!(!cleaned.contains("invoke"), "标记不该留在正文里: {}", cleaned);
-        assert!(cleaned.contains("我来查一下。"), "正文要留下: {}", cleaned);
-    }
-
-    #[test]
-    fn dsml_wrapper_alone_leaves_no_leftovers() {
-        // Only the outer wrapper with no real call: should produce no call, and shouldn't leave `<calls>` in the body
-        let content = "说明文字\n<｜｜DSML｜｜ calls>\n</｜｜DSML｜｜ calls>";
-        let (calls, cleaned) = extract_inline_tool_calls(content);
-        assert!(calls.is_empty());
-        assert!(!cleaned.contains("calls"), "包装标签不该留在正文里: {}", cleaned);
-        assert!(cleaned.contains("说明文字"));
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -513,7 +262,10 @@ fn canonical_argument(tool: &str, raw_name: &str) -> Option<&'static str> {
             }
         }
         TOOL_READ_ITEM_DETAIL => {
-            if matches!(name.as_str(), "item_id" | "itemid" | "id" | "path" | "item" | "file") {
+            if matches!(
+                name.as_str(),
+                "item_id" | "itemid" | "id" | "path" | "item" | "file"
+            ) {
                 Some("item_id")
             } else {
                 None
@@ -666,7 +418,10 @@ pub fn extract_inline_tool_calls(content: &str) -> (Vec<AiToolCall>, String) {
     while let Some(open) = content[cursor..].find("<invoke") {
         let open_at = cursor + open;
         // If the opening tag doesn't even have '>': no complete call can follow, let the code outside the loop finish the remaining body
-        let Some(tag_end) = content[open_at..].find('>').map(|relative| open_at + relative) else {
+        let Some(tag_end) = content[open_at..]
+            .find('>')
+            .map(|relative| open_at + relative)
+        else {
             break;
         };
         let name = attribute(&content[open_at..tag_end], "name");
@@ -690,15 +445,24 @@ pub fn extract_inline_tool_calls(content: &str) -> (Vec<AiToolCall>, String) {
             let mut arguments = serde_json::Map::new();
             let mut rest = body;
             while let Some(param_open) = rest.find("<parameter") {
-                let Some(param_tag_end_rel) = rest[param_open..].find('>') else { break };
+                let Some(param_tag_end_rel) = rest[param_open..].find('>') else {
+                    break;
+                };
                 let param_tag_end = param_open + param_tag_end_rel;
                 let param_tag = &rest[param_open..param_tag_end];
-                let Some(param_name) = attribute(param_tag, "name") else { break };
-                let Some(param_close_rel) = rest[param_tag_end..].find("</parameter>") else { break };
+                let Some(param_name) = attribute(param_tag, "name") else {
+                    break;
+                };
+                let Some(param_close_rel) = rest[param_tag_end..].find("</parameter>") else {
+                    break;
+                };
                 let param_value = &rest[param_tag_end + 1..param_tag_end + param_close_rel];
                 rest = &rest[param_tag_end + param_close_rel + "</parameter>".len()..];
                 if let Some(canonical) = canonical_argument(&name, &param_name) {
-                    arguments.insert(canonical.to_string(), argument_value(canonical, param_value));
+                    arguments.insert(
+                        canonical.to_string(),
+                        argument_value(canonical, param_value),
+                    );
                 }
             }
             calls.push(AiToolCall {
@@ -770,4 +534,317 @@ fn attribute(tag: &str, key: &str) -> Option<String> {
     let inner = &rest[1..];
     let end = inner.find(quote)?;
     Some(inner[..end].trim().to_string())
+}
+
+// 测试放在文件末尾：clippy::items_after_test_module 要求测试模块之后不再有代码项，
+// 同时让阅读顺序保持「实现 → 验证」。
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn openai_tool_calls_parse_arguments_from_string() {
+        // arguments is JSON in string form — forget the second parse and you'll never get the ids
+        let value = serde_json::json!({
+            "choices": [{
+                "message": {
+                    "tool_calls": [{
+                        "id": "call_1",
+                        "function": { "name": "select_items", "arguments": "{\"ids\":[\"RecycleBin\"]}" }
+                    }]
+                }
+            }]
+        });
+        let calls = parse_tool_calls(AiProtocol::OpenAi, &value);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].name, "select_items");
+        assert_eq!(
+            extract_ids(&calls[0].arguments),
+            vec!["RecycleBin".to_string()]
+        );
+    }
+
+    #[test]
+    fn anthropic_tool_use_blocks_parse_input_as_object() {
+        let value = serde_json::json!({
+            "content": [
+                { "type": "text", "text": "我来处理" },
+                { "type": "tool_use", "id": "toolu_1", "name": "propose_delete", "input": { "ids": ["WindowsTemp"] } }
+            ]
+        });
+        let calls = parse_tool_calls(AiProtocol::Anthropic, &value);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].name, "propose_delete");
+        assert_eq!(
+            extract_ids(&calls[0].arguments),
+            vec!["WindowsTemp".to_string()]
+        );
+    }
+
+    #[test]
+    fn plain_text_reply_yields_no_tool_calls() {
+        let value = serde_json::json!({ "choices": [{ "message": { "content": "你好" } }] });
+        assert!(parse_tool_calls(AiProtocol::OpenAi, &value).is_empty());
+    }
+
+    #[test]
+    fn malformed_arguments_do_not_panic_and_yield_no_ids() {
+        let value = serde_json::json!({
+            "choices": [{ "message": { "tool_calls": [
+                { "id": "call_1", "function": { "name": "select_items", "arguments": "not-json" } }
+            ] } }]
+        });
+        let calls = parse_tool_calls(AiProtocol::OpenAi, &value);
+        assert_eq!(calls.len(), 1);
+        // Parse failure → empty object → no id → the caller won't use it to delete anything
+        assert!(extract_ids(&calls[0].arguments).is_empty());
+    }
+
+    /// Tested: deepseek-flash writes calls as JSON text like `<tool_call>{"name":…}</tool_call>`.
+    /// If not recognized, the user sees this raw text in chat and the call isn't executed at all (Evan reported this with a screenshot).
+    #[test]
+    fn json_style_tool_call_is_recognized_and_never_shown() {
+        let raw = "这个驱动包可以安全清理。\n<tool_call>\n{\"name\": \"read_item_detail\", \"arguments\": {\"id\": \"oem7.inf\"}}\n</tool_call>";
+        let (calls, cleaned) = extract_inline_tool_calls(raw);
+        assert_eq!(calls.len(), 1, "应认出一次调用");
+        assert_eq!(calls[0].name, "read_item_detail");
+        assert_eq!(
+            calls[0]
+                .arguments
+                .get("item_id")
+                .and_then(|value| value.as_str()),
+            Some("oem7.inf")
+        );
+        assert!(
+            !cleaned.contains("tool_call"),
+            "调用块不能留在正文里，实际: {}",
+            cleaned
+        );
+        assert!(
+            cleaned.contains("可以安全清理"),
+            "正文必须保留，实际: {}",
+            cleaned
+        );
+    }
+
+    /// Unrecognized tool names: not executed, but that text must also disappear — the user shouldn't see tool syntax.
+    #[test]
+    fn unknown_json_tool_call_is_dropped_from_text() {
+        let raw = "说明。\n<tool_call>{\"name\": \"rm_rf\", \"arguments\": {}}</tool_call>";
+        let (calls, cleaned) = extract_inline_tool_calls(raw);
+        assert!(calls.is_empty(), "未声明的工具不能执行");
+        assert_eq!(cleaned, "说明。");
+    }
+
+    /// arguments written as a JSON string (OpenAI style) must also be accepted.
+    #[test]
+    fn json_style_tool_call_accepts_string_arguments() {
+        let raw = "<tool_call>{\"name\": \"read_items\", \"arguments\": \"{\\\"path\\\": \\\"D:/models\\\"}\"}</tool_call>";
+        let (calls, _) = extract_inline_tool_calls(raw);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(
+            calls[0]
+                .arguments
+                .get("target_id")
+                .and_then(|value| value.as_str()),
+            Some("D:/models")
+        );
+    }
+
+    #[test]
+    fn inline_xml_tool_call_is_recognized_and_stripped_from_text() {
+        // Tested: deepseek's lightweight tier writes calls as text like this, which neither becomes tool_calls
+        // nor is shown to the user verbatim. It must be recognized here and stripped from the body.
+        let raw = "I'll read the item list.\n<invoke name=\"read_items\">\n<parameter name=\"module\">AI 模型空间</parameter>\n</invoke>";
+        let (calls, cleaned) = extract_inline_tool_calls(raw);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].name, "read_items");
+        // module is a parameter name the model made up; map it back to target_id
+        assert_eq!(
+            calls[0].arguments.get("target_id").and_then(|v| v.as_str()),
+            Some("AI 模型空间")
+        );
+        // The XML must not remain in the body, otherwise the user would see "the model pretending to call a tool"
+        assert!(!cleaned.contains("<invoke"));
+        assert!(cleaned.contains("I'll read the item list"));
+    }
+
+    #[test]
+    fn inline_list_parameter_splits_on_commas() {
+        let raw = "<invoke name=\"propose_delete\"><parameter name=\"ids\">RecycleBin, WindowsTemp</parameter></invoke>";
+        let (calls, _) = extract_inline_tool_calls(raw);
+        assert_eq!(calls.len(), 1);
+        let ids = calls[0]
+            .arguments
+            .get("ids")
+            .and_then(|v| v.as_array())
+            .unwrap();
+        assert_eq!(ids.len(), 2);
+    }
+
+    #[test]
+    fn inline_unknown_tool_is_dropped_entirely() {
+        // Undeclared tools: neither executed nor left in the body
+        let raw = "看看这个 <invoke name=\"run_shell\"><parameter name=\"cmd\">rm -rf /</parameter></invoke>";
+        let (calls, cleaned) = extract_inline_tool_calls(raw);
+        assert!(calls.is_empty());
+        assert!(!cleaned.contains("run_shell"));
+    }
+
+    #[test]
+    fn plain_text_is_left_untouched() {
+        let raw = "这是一个普通回答，里面没有任何工具调用。";
+        let (calls, cleaned) = extract_inline_tool_calls(raw);
+        assert!(calls.is_empty());
+        assert_eq!(cleaned, raw);
+    }
+
+    #[test]
+    fn unknown_tools_are_ignored_in_declarations() {
+        let names = vec!["select_items".to_string(), "run_shell".to_string()];
+        assert_eq!(openai_tools(&names).len(), 1);
+        assert_eq!(anthropic_tools(&names).len(), 1);
+    }
+
+    #[test]
+    fn declarations_use_each_protocol_shape() {
+        let names = vec![TOOL_SELECT_ITEMS.to_string()];
+        let openai = openai_tools(&names);
+        assert!(
+            openai[0].get("function").is_some(),
+            "OpenAI 需要 function 外层"
+        );
+        let anthropic = anthropic_tools(&names);
+        assert!(
+            anthropic[0].get("input_schema").is_some(),
+            "Anthropic 用 input_schema"
+        );
+        assert!(anthropic[0].get("function").is_none());
+    }
+
+    // ---- Edge cases of the hand-written parser: these have all caused problems before, or are easy to trip over when changing ----
+
+    #[test]
+    fn attributes_are_matched_on_whole_names_only() {
+        // `username=` also contains "name=" — must match on attribute-name boundaries,
+        // otherwise "admin" is taken as name and the real name can't be retrieved.
+        let tag = "<invoke username=\"admin\" name=\"read_items\"";
+        assert_eq!(attribute(tag, "name").as_deref(), Some("read_items"));
+        assert_eq!(
+            attribute("<invoke name=\"read_items\"", "name").as_deref(),
+            Some("read_items")
+        );
+    }
+
+    #[test]
+    fn a_well_formed_inline_call_is_extracted_and_removed_from_the_body() {
+        let content = "先说明一下。\n<invoke name=\"read_items\"><parameter name=\"offset\">0</parameter></invoke>\n后面还有话。";
+        let (calls, cleaned) = extract_inline_tool_calls(content);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].name, "read_items");
+        assert_eq!(
+            calls[0]
+                .arguments
+                .get("offset")
+                .and_then(|value| value.as_i64()),
+            Some(0)
+        );
+        assert!(cleaned.contains("先说明一下。"), "实际: {}", cleaned);
+        assert!(cleaned.contains("后面还有话。"), "实际: {}", cleaned);
+        assert!(
+            !cleaned.contains("<invoke"),
+            "调用块应被剔除，实际: {}",
+            cleaned
+        );
+    }
+
+    #[test]
+    fn an_unclosed_invoke_tag_keeps_the_text_before_it() {
+        // When the model emits half a tag, the body before the opening tag **must not be lost** —
+        // earlier, that spot only advanced cursor without restoring the body, so the whole segment was swallowed (and the body must be displayed and stored).
+        let content = "这一段必须留下来。\n<invoke name=\"read_items\">";
+        let (calls, cleaned) = extract_inline_tool_calls(content);
+        assert!(calls.is_empty(), "残缺的调用不该被执行");
+        assert!(
+            cleaned.contains("这一段必须留下来。"),
+            "正文被吞了，实际: {}",
+            cleaned
+        );
+    }
+
+    #[test]
+    fn paragraph_breaks_in_the_body_are_preserved() {
+        // After removing the call block, only collapse extra blank lines; the body's own blank lines are Markdown paragraph separators and must be kept.
+        let content = "第一段\n\n第二段\n\n<invoke name=\"read_items\"></invoke>";
+        let (calls, cleaned) = extract_inline_tool_calls(content);
+        assert_eq!(calls.len(), 1);
+        assert!(
+            cleaned.contains("第一段\n\n第二段"),
+            "段落分隔被压掉了，实际: {:?}",
+            cleaned
+        );
+    }
+
+    #[test]
+    fn an_unclosed_invoke_tag_does_not_swallow_the_tail() {
+        // A fragment without even '>': the whole segment must be kept verbatim, don't drop content just because "the opening tag's end wasn't found"
+        let content = "前面的正文。\n<invoke name=\"read_items\"";
+        let (calls, cleaned) = extract_inline_tool_calls(content);
+        assert!(calls.is_empty());
+        assert!(cleaned.contains("前面的正文。"), "实际: {}", cleaned);
+        assert!(
+            cleaned.contains("read_items"),
+            "残片本身也该留在正文里: {}",
+            cleaned
+        );
+    }
+
+    #[test]
+    fn dsml_markup_is_recognized_and_removed_from_the_body() {
+        // Tested (deepseek-flash in thinking mode + no tools declared) it uses its own DSML markup to express tool calls.
+        // Forwarded verbatim like this — it must be recognized, and **must not be shown to the user**.
+        let content = "我来查一下。\n\
+             <｜｜DSML｜｜ calls>\n\
+             <｜｜DSML｜｜ invoke name=\"read_items\">\n\
+             <｜｜DSML｜｜ parameter name=\"path\" string=\"true\">C:\\Users\\chunyu\\AppData\\Roaming\\devin</｜｜DSML｜｜ parameter>\n\
+             </｜｜DSML｜｜ invoke>\n\
+             </｜｜DSML｜｜ calls>";
+        let (calls, cleaned) = extract_inline_tool_calls(content);
+        assert_eq!(
+            calls.len(),
+            1,
+            "DSML 标记应当被认成一次调用，实际: {}",
+            cleaned
+        );
+        assert_eq!(calls[0].name, "read_items");
+        // `path` is an alias we've observed in the wild; not recognizing it loses the parameter
+        assert_eq!(
+            calls[0]
+                .arguments
+                .get("target_id")
+                .and_then(|value| value.as_str()),
+            Some("C:\\Users\\chunyu\\AppData\\Roaming\\devin")
+        );
+        assert!(!cleaned.contains("DSML"), "标记不该留在正文里: {}", cleaned);
+        assert!(
+            !cleaned.contains("invoke"),
+            "标记不该留在正文里: {}",
+            cleaned
+        );
+        assert!(cleaned.contains("我来查一下。"), "正文要留下: {}", cleaned);
+    }
+
+    #[test]
+    fn dsml_wrapper_alone_leaves_no_leftovers() {
+        // Only the outer wrapper with no real call: should produce no call, and shouldn't leave `<calls>` in the body
+        let content = "说明文字\n<｜｜DSML｜｜ calls>\n</｜｜DSML｜｜ calls>";
+        let (calls, cleaned) = extract_inline_tool_calls(content);
+        assert!(calls.is_empty());
+        assert!(
+            !cleaned.contains("calls"),
+            "包装标签不该留在正文里: {}",
+            cleaned
+        );
+        assert!(cleaned.contains("说明文字"));
+    }
 }

@@ -23,6 +23,17 @@ mod system_slim;
 use commands::*;
 
 // ============================================================================
+/// 性能基准测试的出口层
+///
+/// `benches/` 是独立 crate，只能看到本 crate 的 `pub` 项，而业务模块保持私有
+/// 是刻意的封装。这里只做一层最小出口：把基准真正需要、且逻辑稳定的函数
+/// 重新导出，其余一律不对外开放。`#[doc(hidden)]` 表示它不属于对外文档。
+pub mod bench_api {
+    pub use crate::cleaner::DeleteEngine;
+    pub use crate::scanner::deep_junk::{could_be_junk_path, normalize_into};
+}
+
+// ============================================================================
 /// Application entry point
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {

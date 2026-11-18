@@ -5,6 +5,10 @@ description = "Windows C盘智能清理工具"
 authors = ["Evan Lau"]
 edition = "2021"
 license-file = "../LICENSE"
+# Distributed under a custom license and never published to crates.io. Declaring
+# this explicitly is what lets cargo-deny's licenses.private treat the package as
+# a private crate and skip the license check for it.
+publish = false
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -43,8 +47,6 @@ winapi = { version = "0.3", features = ["fileapi", "winbase", "handleapi", "errh
 windows = { version = "0.61", features = ["Win32_System_Search", "Win32_System_Com", "Win32_Foundation"] }
 # Windows注册表操作
 winreg = "0.55"
-# 错误处理
-thiserror = "1"
 # 日志
 log = "0.4"
 env_logger = "0.11"
@@ -55,11 +57,46 @@ tauri-plugin-process = "2.3.1"
 dirs = "6.0.0"
 # 单例模式
 once_cell = "1.19"
-# 回收站操作
-trash = "5"
 # 正则匹配（卸载残留包名/版本号过滤）
 regex = "1"
 quick-xml = "0.38"
+
+[dev-dependencies]
+# Benchmarks. Default features are deliberately disabled and only
+# cargo_bench_support is kept: the defaults pull in plotters (chart rendering) and
+# rayon (parallel analysis) along with a dozen extra crates, and since
+# `cargo clippy --all-targets` checks benches too, that would slow CI down.
+# All we need here is timing numbers, not charts.
+criterion = { version = "0.8", default-features = false, features = [
+    "cargo_bench_support",
+] }
+
+# Benchmark entry point. harness = false means Rust's built-in test harness is not
+# used and criterion provides its own main.
+[[bench]]
+name = "path_checks"
+harness = false
+
+# ============================================================================
+# Lint levels: promote "must fix" lints to compile errors, leave the rest as warnings
+#
+# Configured in Cargo.toml rather than on the CI command line because cargo check /
+# cargo clippy / rust-analyzer all read the same config -- that is the only way
+# local and CI results agree.
+#
+# Rolled out in stages: the baseline when this was added was 125 warnings, so a
+# blanket `-D warnings` would make the gate red on day one. The two groups that are
+# essentially bugs are denied right away:
+#   correctness -- the code almost certainly does not do what it looks like
+#                  (e.g. abs() overflow, cloning a Copy type)
+#   suspicious  -- structurally likely a mistake (e.g. items after a test module)
+# The remaining style / perf / complexity warnings get cleaned up category by
+# category, adding each group here once it is at zero, and switching to
+# `all = "deny"` once everything is clear.
+# ============================================================================
+[lints.clippy]
+correctness = "deny"
+suspicious = "deny"
 
 # 开发构建开一级优化。
 #

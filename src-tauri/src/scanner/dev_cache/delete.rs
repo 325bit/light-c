@@ -51,7 +51,7 @@ pub fn delete(paths: &[String]) -> DevCacheDeleteResult {
     let mut version_bases: Vec<(String, VersionPattern)> = Vec::new();
     let mut protected_versions: HashSet<String> = HashSet::new();
     for spec in targets::version_specs(&env) {
-        version_bases.push((norm(&display_path(&spec.base)), spec.pattern.clone()));
+        version_bases.push((norm(&display_path(&spec.base)), spec.pattern));
         if let Some(current) = current_version_path(&spec) {
             protected_versions.insert(norm(&current));
         }

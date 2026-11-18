@@ -187,72 +187,63 @@ pub fn scan_all(window: &Window) -> Result<DeepJunkScanResult, String> {
         // while in parallel the total approaches the slowest drive; any remaining time is wasted waiting.
         // The gain is largest when the disks are independent; if two drive letters are on the same physical disk they share bandwidth, reducing the benefit.
         let stage = std::time::Instant::now();
-        let (drive_results, recycle_result, recycle_ms) =
-            std::thread::scope(|scope| {
-                // Deep mode still keeps the Explorer-visible recycle bin entries and must not enumerate internal files directly via MFT.
-                // It is independent of the drives, so it goes in the same scope — previously it ran serially before the parallel block,
-                // which measured 1.5 seconds of pure queueing.
-                let recycle_handle = scope.spawn(|| {
-                    let recycle_started = std::time::Instant::now();
-                    let mut result = CategoryScanResult::new(JunkCategory::RecycleBin);
-                    super::recycle_bin::scan_current_user(
-                        &JunkCategory::RecycleBin,
-                        &mut result,
-                    );
-                    (result, recycle_started.elapsed().as_millis() as u64)
-                });
+        let (drive_results, recycle_result, recycle_ms) = std::thread::scope(|scope| {
+            // Deep mode still keeps the Explorer-visible recycle bin entries and must not enumerate internal files directly via MFT.
+            // It is independent of the drives, so it goes in the same scope — previously it ran serially before the parallel block,
+            // which measured 1.5 seconds of pure queueing.
+            let recycle_handle = scope.spawn(|| {
+                let recycle_started = std::time::Instant::now();
+                let mut result = CategoryScanResult::new(JunkCategory::RecycleBin);
+                super::recycle_bin::scan_current_user(&JunkCategory::RecycleBin, &mut result);
+                (result, recycle_started.elapsed().as_millis() as u64)
+            });
 
-                let handles: Vec<_> = drive_letters
-                    .iter()
-                    .map(|&drive_letter| {
-                        scope.spawn(move || {
-                            let result =
-                                if super::big_files_engine::mft_core::is_ntfs(drive_letter) {
-                                    match scan_ntfs_drive(drive_letter, window, started_at) {
-                                        Ok(result) => Ok(result),
-                                        Err(error) if error == "扫描已取消" => Err(error),
-                                        Err(error) => {
-                                            warn!(
-                                                "{} 盘 MFT 深度扫描失败，降级为受控遍历: {}",
-                                                drive_letter, error
-                                            );
-                                            Ok(scan_non_ntfs_drive(
-                                                drive_letter,
-                                                window,
-                                                started_at,
-                                                "NTFS",
-                                                Some(format!(
-                                                    "MFT 扫描失败，已降级为受控目录遍历: {}",
-                                                    error
-                                                )),
-                                            ))
-                                        }
-                                    }
-                                } else {
+            let handles: Vec<_> = drive_letters
+                .iter()
+                .map(|&drive_letter| {
+                    scope.spawn(move || {
+                        let result = if super::big_files_engine::mft_core::is_ntfs(drive_letter) {
+                            match scan_ntfs_drive(drive_letter, window, started_at) {
+                                Ok(result) => Ok(result),
+                                Err(error) if error == "扫描已取消" => Err(error),
+                                Err(error) => {
+                                    warn!(
+                                        "{} 盘 MFT 深度扫描失败，降级为受控遍历: {}",
+                                        drive_letter, error
+                                    );
                                     Ok(scan_non_ntfs_drive(
                                         drive_letter,
                                         window,
                                         started_at,
-                                        "非 NTFS",
-                                        Some(
-                                            "非 NTFS 分区使用受控目录遍历，未执行 MFT 扫描"
-                                                .to_string(),
-                                        ),
+                                        "NTFS",
+                                        Some(format!(
+                                            "MFT 扫描失败，已降级为受控目录遍历: {}",
+                                            error
+                                        )),
                                     ))
-                                };
-                            (drive_letter, result)
-                        })
+                                }
+                            }
+                        } else {
+                            Ok(scan_non_ntfs_drive(
+                                drive_letter,
+                                window,
+                                started_at,
+                                "非 NTFS",
+                                Some("非 NTFS 分区使用受控目录遍历，未执行 MFT 扫描".to_string()),
+                            ))
+                        };
+                        (drive_letter, result)
                     })
-                    .collect();
-                // Join order matches creation order, so results still come back in drive-letter order
-                let drives: Vec<(char, Result<DriveScanResult, String>)> = handles
-                    .into_iter()
-                    .map(|handle| handle.join().expect("扫描线程异常退出"))
-                    .collect();
-                let (recycle, recycle_ms) =
-                    recycle_handle.join().expect("回收站扫描线程异常退出");
-                (drives, recycle, recycle_ms)
-            });
+                })
+                .collect();
+            // Join order matches creation order, so results still come back in drive-letter order
+            let drives: Vec<(char, Result<DriveScanResult, String>)> = handles
+                .into_iter()
+                .map(|handle| handle.join().expect("扫描线程异常退出"))
+                .collect();
+            let (recycle, recycle_ms) = recycle_handle.join().expect("回收站扫描线程异常退出");
+            (drives, recycle, recycle_ms)
+        });
 
         // The recycle bin and drives run in the same parallel window, so it no longer adds to total time;
         // it is still recorded separately to tell whether it became the slowest branch.
@@ -552,8 +543,7 @@ fn scan_ntfs_drive(
         .map(|entry| entry.parent_id)
         .collect::<HashSet<_>>();
     let stage = std::time::Instant::now();
-    let directory_paths =
-        mft_core::rebuild_paths_for_records(&entries, drive_letter, &parent_ids);
+    let directory_paths = mft_core::rebuild_paths_for_records(&entries, drive_letter, &parent_ids);
     record_stage(&mut stage_durations, "path", stage);
     // Candidates store only indices, not whole records: files matching the rules are usually only a few thousand,
     // but record fields (including filename strings) are still needed during assembly, so indices are cheapest.
@@ -1034,7 +1024,10 @@ fn join_mft_path_into(parent: &str, name: &str, buffer: &mut String) {
 
 #[cfg(windows)]
 fn is_redundant_supplement_root(root: &Path, scanned_roots: &[PathBuf]) -> bool {
-    let normalized = root.to_string_lossy().replace('/', "\\").to_ascii_lowercase();
+    let normalized = root
+        .to_string_lossy()
+        .replace('/', "\\")
+        .to_ascii_lowercase();
     scanned_roots.iter().any(|scanned| {
         let existing = scanned
             .to_string_lossy()
@@ -1104,12 +1097,7 @@ fn scan_supplement_root(
 /// Collect files at this level under `dir`, appending subdirectories to `subdirs` (do not descend when `remaining` is 1).
 /// Only real files count: symlinks and reparse points are always skipped, consistent with the original `WalkDir::follow_links(false)`.
 #[cfg(windows)]
-fn collect_level(
-    dir: &Path,
-    remaining: usize,
-    out: &mut Vec<PathBuf>,
-    subdirs: &mut Vec<PathBuf>,
-) {
+fn collect_level(dir: &Path, remaining: usize, out: &mut Vec<PathBuf>, subdirs: &mut Vec<PathBuf>) {
     if remaining == 0 {
         return;
     }
@@ -1208,10 +1196,7 @@ fn emit_progress(
     if let Err(error) = window.emit("junk-clean:progress", &progress) {
         warn!("发送垃圾深度扫描进度失败: {}", error);
     }
-    EMIT_WAIT_MS.fetch_add(
-        emit_started.elapsed().as_millis() as u64,
-        Ordering::Relaxed,
-    );
+    EMIT_WAIT_MS.fetch_add(emit_started.elapsed().as_millis() as u64, Ordering::Relaxed);
 }
 
 fn current_unix_timestamp() -> i64 {
@@ -1274,7 +1259,9 @@ const JUNK_PATH_HINTS: &[&str] = &[
 ///
 /// Of the millions of paths on a disk, the vast majority are unrelated to junk rules. Filtering them out here first means
 /// the several string allocations and dozen-plus rules below do not have to run.
-fn could_be_junk_path(path: &str) -> bool {
+// pub 仅为 benches 调用（经 lib.rs 的 bench_api 出口），模块本身仍是 pub(crate)，
+// 对外部使用者不可见。这是全仓性能最敏感的一段，需要一个回归基准盯住它。
+pub fn could_be_junk_path(path: &str) -> bool {
     let bytes = path.as_bytes();
     for (index, &byte) in bytes.iter().enumerate() {
         // Prefixes all begin with a separator
@@ -1315,7 +1302,9 @@ fn starts_with_ignore_ascii_case(haystack: &[u8], needle: &[u8]) -> bool {
 ///
 /// It processes byte by byte and preserves non-ASCII bytes as-is, so paths containing non-ASCII characters are not corrupted;
 /// buffer reuse means a million calls allocate only once, instead of two Strings each time.
-fn normalize_into(path: &str, buffer: &mut Vec<u8>) {
+// pub 仅为 benches 调用（经 lib.rs 的 bench_api 出口）：缓冲区复用是这条路径的
+// 核心优化点，改动它必须有基准数据支撑。
+pub fn normalize_into(path: &str, buffer: &mut Vec<u8>) {
     buffer.clear();
     buffer.reserve(path.len());
     for &byte in path.as_bytes() {
@@ -1410,10 +1399,7 @@ fn match_deep_junk_category_reusing(
         // these directories are automatically rebuilt after deletion and are put in a separate category for easy identification.
         return Some(JunkCategory::ThirdPartyAppCache);
     }
-    if contains_any(
-        normalized,
-        &["\\windows\\softwaredistribution\\download\\"],
-    ) {
+    if contains_any(normalized, &["\\windows\\softwaredistribution\\download\\"]) {
         return Some(JunkCategory::WindowsUpdate);
     }
     if is_thumbnail_cache(normalized) {
@@ -2181,7 +2167,11 @@ mod tests {
     #[test]
     fn sorts_deep_category_files_by_size_before_paging() {
         let mut category = CategoryScanResult::new(JunkCategory::WindowsTemp);
-        for (name, size) in [("small.tmp", 1_u64), ("large.tmp", 900), ("medium.tmp", 500)] {
+        for (name, size) in [
+            ("small.tmp", 1_u64),
+            ("large.tmp", 900),
+            ("medium.tmp", 500),
+        ] {
             category.add_file(FileInfo::new(
                 format!(r"D:\Users\Test\AppData\Local\Temp\{}", name),
                 name.to_string(),
@@ -2308,7 +2298,10 @@ mod tests {
                 "ThumbnailCache",
                 r"C:\Users\chunyu\AppData\Local\Microsoft\Windows\Explorer\iconcache.db",
             ),
-            ("MemoryDump", r"C:\WINDOWS\LiveKernelReports\WATCHDOG\report.dmp"),
+            (
+                "MemoryDump",
+                r"C:\WINDOWS\LiveKernelReports\WATCHDOG\report.dmp",
+            ),
             ("WindowsTemp", r"C:\WINDOWS\SystemTemp\a.tmp"),
             (
                 "WindowsUpdate",
@@ -2339,11 +2332,20 @@ mod tests {
                 r"C:\ProgramData\Microsoft\Windows Defender\Scans\History\Service\entry.bin",
             ),
             ("LogFiles", r"C:\WINDOWS\Logs\setupapi\setupapi.dev.log"),
-            ("LogFiles", r"C:\Users\chunyu\AppData\Local\CrashDumps\app.exe.1234.dmp"),
+            (
+                "LogFiles",
+                r"C:\Users\chunyu\AppData\Local\CrashDumps\app.exe.1234.dmp",
+            ),
             ("MemoryDump", r"C:\WINDOWS\Minidump\010101-1234-01.dmp"),
             ("MemoryDump", r"C:\WINDOWS\MEMORY.DMP"),
-            ("OldWindowsInstallation", r"C:\Windows.old\Windows\System32\old.dll"),
-            ("OldWindowsInstallation", r"C:\$Windows.~BT\sources\install.wim"),
+            (
+                "OldWindowsInstallation",
+                r"C:\Windows.old\Windows\System32\old.dll",
+            ),
+            (
+                "OldWindowsInstallation",
+                r"C:\$Windows.~BT\sources\install.wim",
+            ),
             (
                 "AppCache",
                 r"C:\Users\chunyu\AppData\Local\Microsoft\Windows\WebCache\V01.log",
@@ -2393,9 +2395,18 @@ mod tests {
                 r"C:\Users\other\AppData\Local\Microsoft\Windows\Explorer\iconcache_48.db",
             ),
             ("ShaderCache", r"C:\WINDOWS\System32\d3d_cache\shader.bin"),
-            ("ShaderCache", r"C:\Users\chunyu\AppData\Local\D3DSCache\shader.bin"),
-            ("ShaderCache", r"C:\Users\chunyu\AppData\Local\NVIDIA\DXCache\shader.bin"),
-            ("ShaderCache", r"C:\Users\chunyu\AppData\Local\Intel\ShaderCache\shader.bin"),
+            (
+                "ShaderCache",
+                r"C:\Users\chunyu\AppData\Local\D3DSCache\shader.bin",
+            ),
+            (
+                "ShaderCache",
+                r"C:\Users\chunyu\AppData\Local\NVIDIA\DXCache\shader.bin",
+            ),
+            (
+                "ShaderCache",
+                r"C:\Users\chunyu\AppData\Local\Intel\ShaderCache\shader.bin",
+            ),
         ];
 
         let missing = QUICK_SCAN_TARGETS

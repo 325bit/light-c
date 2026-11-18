@@ -1,0 +1,19 @@
+# rustfmt configuration: turns formatting into an executable convention instead of
+# a matter of each developer's editor settings.
+#
+# style_edition is pinned on purpose: rustfmt's default style evolves with the edition
+# (the 2024 style changes import ordering and some wrapping rules). Without pinning it,
+# a single `rustup update` makes `cargo fmt --check` fail across the whole tree without
+# anyone touching the code, and the gate stops being trustworthy.
+edition = "2021"
+style_edition = "2021"
+
+# Measured against this repository: 100 columns yields the smallest diff
+# (110/120 columns actually produce more churn). Kept at rustfmt's default and pinned
+# explicitly so a future default change cannot silently reformat the tree.
+max_width = 100
+
+# .gitattributes already forces LF for *.rs; declared explicitly here so that a local
+# rustfmt on Windows does not fall back to CRLF under Auto detection and produce
+# whitespace-only pseudo changes.
+newline_style = "Unix"
