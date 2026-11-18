@@ -384,10 +384,6 @@ impl ScanEngine {
     }
 }
 
-// Implement Send and Sync for parallel scanning
-unsafe impl Send for ScanEngine {}
-unsafe impl Sync for ScanEngine {}
-
 impl Default for ScanEngine {
     fn default() -> Self {
         Self::new()
