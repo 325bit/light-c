@@ -451,6 +451,14 @@ fn scan_drive_via_mft(
 
     let mut entries = Vec::new();
     let mut non_resident_fallbacks = 0usize;
+    // [P5] 丢弃分相诊断（log-only，零行为变化）：D 盘 37,991 个 $I 记录在配对/解析两相
+    // 之一被丢弃，现有日志无法区分。本矩阵一轮区分全部假设。
+    let mut orphan_drops = 0usize;
+    let mut parse_drops = 0usize;
+    let mut orphan_samples: Vec<String> = Vec::new();
+    let mut parse_samples: Vec<String> = Vec::new();
+    let mut matched_verified = 0usize;
+    let mut verify_diffs: Vec<String> = Vec::new();
     for metadata in &metadata_records {
         let Some(suffix) = metadata.info.name.strip_prefix("$I") else {
             continue;
@@ -461,7 +469,29 @@ fn scan_drive_via_mft(
         // 孤儿 $I（无 $R 配对）在 Explorer 里也不可见，与 fs 路径同语义丢弃
         let &is_dir = match data_dirs.get(&suffix.to_ascii_lowercase()) {
             Some(is_dir) => is_dir,
-            None => continue,
+            None => {
+                orphan_drops += 1;
+                if orphan_samples.len() < 5 {
+                    // 判别 H1a/H1c（$R 记录存在但名字/parent 不对）vs H1b（$R 记录没被解析）
+                    let r_name = format!("$R{suffix}");
+                    let disk_has_r = fs::metadata(sid_path.join(&r_name)).is_ok();
+                    let in_pass1 = match records
+                        .iter()
+                        .find(|record| record.name.eq_ignore_ascii_case(&r_name))
+                    {
+                        Some(record) => format!(
+                            "pass1 有此记录：mft_id {} name={:?} parent {} is_dir {}",
+                            record.mft_id, record.name, record.parent_id, record.is_dir
+                        ),
+                        None => "pass1 无此记录".to_string(),
+                    };
+                    orphan_samples.push(format!(
+                        "{}：磁盘 $R 存在={}，{}",
+                        metadata.info.name, disk_has_r, in_pass1
+                    ));
+                }
+                continue;
+            }
         };
 
         let metadata_path = sid_path.join(&metadata.info.name);
@@ -470,14 +500,56 @@ fn scan_drive_via_mft(
             non_resident_fallbacks += 1;
             match parse_metadata(&metadata_path) {
                 Some(parsed) => parsed,
-                None => continue,
+                None => {
+                    parse_drops += 1;
+                    continue;
+                }
             }
         } else {
             match parse_metadata_bytes(&metadata.data) {
                 Some(parsed) => parsed,
-                None => continue,
+                None => {
+                    parse_drops += 1;
+                    if parse_samples.len() < 5 {
+                        // 判别 H2（提取字节错误）vs H-data（磁盘上的 $I 本来就坏）
+                        let disk_bytes = fs::read(&metadata_path);
+                        let version = metadata
+                            .data
+                            .get(0..8)
+                            .map(|bytes| u64::from_le_bytes(bytes.try_into().unwrap()));
+                        parse_samples.push(format!(
+                            "{}: 提取 {}B version {:?} path_len {:?}；磁盘 {:?}",
+                            metadata.info.name,
+                            metadata.data.len(),
+                            version,
+                            metadata
+                                .data
+                                .get(24..28)
+                                .map(|bytes| u32::from_le_bytes(bytes.try_into().unwrap())),
+                            disk_bytes.as_ref().map(|bytes| bytes.len()),
+                        ));
+                    }
+                    continue;
+                }
             }
         };
+
+        // [P5] 命中条目抽样：提取字节与磁盘 $I 字节逐字节对比，验证提取正确性
+        if matched_verified < 5 {
+            matched_verified += 1;
+            match fs::read(&metadata_path) {
+                Ok(disk_bytes) if disk_bytes == metadata.data => {}
+                Ok(disk_bytes) => verify_diffs.push(format!(
+                    "{}: 提取 {}B vs 磁盘 {}B（内容不一致）",
+                    metadata.info.name,
+                    metadata.data.len(),
+                    disk_bytes.len()
+                )),
+                Err(error) => {
+                    verify_diffs.push(format!("{}: 磁盘读取失败 {error}", metadata.info.name))
+                }
+            }
+        }
 
         let visible_name = Path::new(&original_path)
             .file_name()
@@ -499,6 +571,31 @@ fn scan_drive_via_mft(
             )
             .with_original_path(original_path),
         );
+    }
+
+    // [P5] 丢弃分相汇总：一次运行同时判别 orphan/parse 两相占比与根因
+    info!(
+        "[P5] mft {}: 丢弃分相 orphan {} / parse {} / 非 resident 兜底 {}；提取一致性差异 {} 条",
+        drive_letter,
+        orphan_drops,
+        parse_drops,
+        non_resident_fallbacks,
+        verify_diffs.len()
+    );
+    if !orphan_samples.is_empty() {
+        info!(
+            "[P5] mft {}: orphan 样本 {:?}",
+            drive_letter, orphan_samples
+        );
+    }
+    if !parse_samples.is_empty() {
+        info!(
+            "[P5] mft {}: parse 失败样本 {:?}",
+            drive_letter, parse_samples
+        );
+    }
+    if !verify_diffs.is_empty() {
+        info!("[P5] mft {}: 提取一致性 {:?}", drive_letter, verify_diffs);
     }
 
     let timing = DrivePhaseTiming {
