@@ -154,8 +154,8 @@ pub async fn delete_deep_junk_files(
     let progress_app = app.clone();
     let mut result = tokio::task::spawn_blocking(move || {
         // Deep-scan paths have already passed is_deep_junk_path whitelist validation and are safe cache directories;
-        // enable elevated deletion (icacls) to clean stubborn cache files that normal permissions can't delete,
-        // applying only to directories covered by SAFE_OWNERSHIP_PATHS, not affecting other deletion entry points.
+        // enable elevated deletion (take ownership) to clean stubborn cache files that normal permissions can't delete,
+        // applying only to directories covered by the ownership whitelist, not affecting other deletion entry points.
         let engine = EnhancedDeleteEngine::new().with_take_ownership(true);
         engine.delete_files_with_progress(&paths, |progress| {
             emit_delete_progress(&progress_app, progress);

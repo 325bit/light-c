@@ -40,10 +40,6 @@ use crate::path_guard::{
     ensure_deletable, is_rebuildable_system_cache_path, is_safe_for_ownership, DeleteScope,
 };
 
-/// Use the built-in Administrators group SID to avoid icacls failing to resolve
-/// localized group names on Chinese Windows.
-const LOCAL_ADMINISTRATORS_SID: &str = "*S-1-5-32-544";
-
 /// How far the ladder may escalate before reporting failure.
 ///
 /// Every field defaults to "off" so a caller has to opt into escalation
@@ -280,52 +276,21 @@ fn clear_attributes_then_retry(path: &Path) -> Result<(), String> {
     direct_delete(path).map_err(|error| format!("retry after clearing attributes: {error}"))
 }
 
-/// Rung 3: grant Administrators ownership with icacls, then retry once.
+/// Rung 3: grant Administrators ownership and full control, then retry once.
 ///
-/// No `/T` recursion — the caller runs this per path, and a recursive icacls on
-/// a deep cache directory is far slower than the walk that follows it.
+/// The two security operations happen in-process (M6). They used to be two
+/// `icacls` invocations per path, which cost ~30 ms of `CreateProcess` each —
+/// the escalation itself is microseconds.
+///
+/// No recursion over the tree: the caller runs this per path, and a recursive
+/// ACL rewrite on a deep cache directory is far slower than the walk that
+/// follows it. Children still inherit the grant, because the ACE is added with
+/// `(OI)(CI)` for a directory.
 fn take_ownership_then_retry(path: &Path) -> Result<(), String> {
     #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        use std::process::Command;
-
-        let path_str = path.to_string_lossy();
-
-        let output = Command::new("icacls")
-            .arg(&*path_str)
-            .arg("/setowner")
-            .arg(LOCAL_ADMINISTRATORS_SID)
-            .arg("/C") // continue on errors
-            .arg("/Q") // quiet mode
-            .creation_flags(0x08000000) // CREATE_NO_WINDOW
-            .output()
-            .map_err(|error| format!("icacls setowner could not start: {error}"))?;
-
-        if !output.status.success() {
-            return Err(format!(
-                "icacls setowner failed (exit {:?})",
-                output.status.code()
-            ));
-        }
-
-        let output = Command::new("icacls")
-            .arg(&*path_str)
-            .arg("/grant")
-            .arg(format!("{LOCAL_ADMINISTRATORS_SID}:F"))
-            .arg("/C")
-            .arg("/Q")
-            .creation_flags(0x08000000)
-            .output()
-            .map_err(|error| format!("icacls grant could not start: {error}"))?;
-
-        if !output.status.success() {
-            return Err(format!(
-                "icacls grant failed (exit {:?})",
-                output.status.code()
-            ));
-        }
-    }
+    super::enhanced_delete::windows_api::grant_administrators_full_control(
+        &path.to_string_lossy(),
+    )?;
 
     #[cfg(not(windows))]
     return Err("take ownership is Windows-only".to_string());

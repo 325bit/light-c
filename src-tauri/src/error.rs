@@ -6,7 +6,7 @@
 //
 //     { "code": "permission_denied",
 //       "message": "delete failed: access denied",
-//       "detail": "icacls /setowner: Access is denied. (os error 5)",
+//       "detail": "direct delete: Access is denied. (os error 5); set owner failed (win32 1307)",
 //       "args": { "path": "C:\\Program Files\\Foo" } }
 //
 // Why the split:
@@ -16,7 +16,7 @@
 //    LeftoversModule.tsx), so rewording one message silently disabled a branch.
 // 2. `message` is an English diagnostic string. It is for logs and for the
 //    untranslated-code fallback, never the primary UI text.
-// 3. `detail` carries the raw OS / external-tool output (icacls, dism, io::Error).
+// 3. `detail` carries the raw OS / external-tool output (io::Error, Win32 codes, dism).
 //    It cannot be translated, so it must not be concatenated into a sentence.
 // 4. `args` carries interpolation values only. Rust must not build sentences:
 //    word order differs between en / ja / zh, and a sentence baked in Rust can
@@ -59,7 +59,7 @@ pub enum ErrorCode {
     TooLarge,
     /// The user cancelled the operation.
     Cancelled,
-    /// dism / icacls / PowerShell / ShellExecute returned an error.
+    /// dism / ShellExecute returned an error.
     ExternalFailed,
     /// Anything else; `detail` must be non-empty.
     Internal,

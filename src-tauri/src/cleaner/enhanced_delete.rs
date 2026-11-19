@@ -109,6 +109,279 @@ pub(crate) mod windows_api {
         let wide_path = to_wide_string(path);
 
         unsafe {
+    /// Grant Administrators ownership and full control over one path (M6).
+    ///
+    /// This replaces the two `icacls` process spawns the ownership rung used to
+    /// make per path — `/setowner *S-1-5-32-544` then `/grant *S-1-5-32-544:F`.
+    /// Two process creations at ~15 ms each dominated the cost of deleting a
+    /// cache tree: ten thousand stubborn files meant five minutes of waiting for
+    /// `CreateProcess`, not for the filesystem.
+    ///
+    /// The escalation itself is unchanged, and the order matters: ownership is
+    /// set first because an owner holds implicit `WRITE_DAC`, which is what makes
+    /// the second call (the ACE) succeed on a directory whose DACL we do not
+    /// control.
+    ///
+    /// Three things the command line used to hide:
+    ///
+    /// - Privileges must be *enabled*, not merely present in the token. `icacls`
+    ///   calls `AdjustTokenPrivileges` itself; a process that only carries
+    ///   `SeRestorePrivilege` cannot use it. `enable_ownership_privileges` does
+    ///   that once per process.
+    /// - `icacls /grant` on a directory applies `(OI)(CI)`, so children inherit
+    ///   the ACE even without `/T`. A file gets a non-inheriting ACE. Passing
+    ///   `NO_INHERITANCE` for directories would silently narrow the grant.
+    /// - The well-known SID is used instead of the name `Administrators`, which
+    ///   is localized on a Chinese Windows.
+    pub fn grant_administrators_full_control(path: &str) -> Result<(), String> {
+        enable_ownership_privileges();
+        take_administrators_ownership(path)?;
+        grant_full_control_ace(path)
+    }
+
+    /// Step 1: make Administrators the owner of `path`.
+    ///
+    /// Naming a *group* as the owner needs `SeRestorePrivilege`, i.e. an elevated
+    /// process. Unelevated, this fails with `ERROR_INVALID_OWNER` (1307) — the
+    /// same answer `icacls /setowner` gives, so the escalation is no stricter than
+    /// the version this replaced.
+    pub(super) fn take_administrators_ownership(path: &str) -> Result<(), String> {
+        use windows::core::PCWSTR;
+        use windows::Win32::Foundation::WIN32_ERROR;
+        use windows::Win32::Security::Authorization::{SetNamedSecurityInfoW, SE_FILE_OBJECT};
+        use windows::Win32::Security::OWNER_SECURITY_INFORMATION;
+
+        let administrators = AdministratorsSid::allocate()?;
+        let wide_path = to_wide_string(path);
+
+        // SAFETY: `object` is a NUL-terminated wide string that outlives the call
+        // and `administrators` is a SID owned by the guard above
+        let status = unsafe {
+            SetNamedSecurityInfoW(
+                PCWSTR::from_raw(wide_path.as_ptr()),
+                SE_FILE_OBJECT,
+                OWNER_SECURITY_INFORMATION,
+                Some(administrators.0),
+                None,
+                None,
+                None,
+            )
+        };
+
+        if status != WIN32_ERROR(0) {
+            return Err(format!("set owner failed (win32 {})", status.0));
+        }
+
+        Ok(())
+    }
+
+    /// Step 2: add a full-control ACE for Administrators, inheriting for a
+    /// directory and not inheriting for a file.
+    ///
+    /// Runs after step 1, so the caller owns the object and holds implicit
+    /// `WRITE_DAC`. On a file this process already owns it also works unelevated,
+    /// which is what the unit test relies on.
+    pub(super) fn grant_full_control_ace(path: &str) -> Result<(), String> {
+        use std::ffi::c_void;
+        use std::path::Path;
+        use std::ptr;
+
+        use windows::core::PCWSTR;
+        use windows::Win32::Foundation::{LocalFree, HLOCAL, WIN32_ERROR};
+        use windows::Win32::Security::Authorization::{
+            GetNamedSecurityInfoW, SetEntriesInAclW, SetNamedSecurityInfoW, EXPLICIT_ACCESS_W,
+            GRANT_ACCESS, SE_FILE_OBJECT, TRUSTEE_IS_SID, TRUSTEE_IS_WELL_KNOWN_GROUP, TRUSTEE_W,
+        };
+        use windows::Win32::Security::{
+            ACL, DACL_SECURITY_INFORMATION, NO_INHERITANCE, PSECURITY_DESCRIPTOR,
+            SUB_CONTAINERS_AND_OBJECTS_INHERIT,
+        };
+        use windows::Win32::Storage::FileSystem::FILE_ALL_ACCESS;
+
+        let administrators = AdministratorsSid::allocate()?;
+        let wide_path = to_wide_string(path);
+        let object = PCWSTR::from_raw(wide_path.as_ptr());
+        let inheritance = if Path::new(path).is_dir() {
+            SUB_CONTAINERS_AND_OBJECTS_INHERIT
+        } else {
+            NO_INHERITANCE
+        };
+
+        unsafe {
+            let mut old_dacl: *mut ACL = ptr::null_mut();
+            let mut descriptor = PSECURITY_DESCRIPTOR(ptr::null_mut());
+            // SAFETY: `object` is a NUL-terminated wide string that outlives the
+            // call; every out-param lives for the whole call and the returned
+            // descriptor is LocalFree'd on every path below
+            let read_status = GetNamedSecurityInfoW(
+                object,
+                SE_FILE_OBJECT,
+                DACL_SECURITY_INFORMATION,
+                None,
+                None,
+                Some(&mut old_dacl),
+                None,
+                &mut descriptor,
+            );
+            if read_status != WIN32_ERROR(0) {
+                return Err(format!("read the DACL failed (win32 {})", read_status.0));
+            }
+
+            let trustee = TRUSTEE_W {
+                TrusteeForm: TRUSTEE_IS_SID,
+                TrusteeType: TRUSTEE_IS_WELL_KNOWN_GROUP,
+                ptstrName: windows::core::PWSTR(administrators.0 .0 as *mut u16),
+                ..Default::default()
+            };
+
+            let entry = EXPLICIT_ACCESS_W {
+                grfAccessPermissions: FILE_ALL_ACCESS.0,
+                grfAccessMode: GRANT_ACCESS,
+                grfInheritance: inheritance,
+                Trustee: trustee,
+            };
+
+            let mut new_dacl: *mut ACL = ptr::null_mut();
+            // SAFETY: `old_dacl` belongs to `descriptor`; the new ACL is
+            // API-allocated and freed on every path below
+            let acl_status = SetEntriesInAclW(Some(&[entry]), Some(old_dacl), &mut new_dacl);
+            if acl_status != WIN32_ERROR(0) {
+                LocalFree(Some(HLOCAL(descriptor.0)));
+                return Err(format!("build the ACE failed (win32 {})", acl_status.0));
+            }
+
+            // SAFETY: `object` is still valid; `new_dacl` is the ACL built above
+            // and is copied into the object's security descriptor by this call
+            let grant_status = SetNamedSecurityInfoW(
+                object,
+                SE_FILE_OBJECT,
+                DACL_SECURITY_INFORMATION,
+                None,
+                None,
+                Some(new_dacl),
+                None,
+            );
+            LocalFree(Some(HLOCAL(new_dacl as *mut c_void)));
+            LocalFree(Some(HLOCAL(descriptor.0)));
+
+            if grant_status != WIN32_ERROR(0) {
+                return Err(format!("grant failed (win32 {})", grant_status.0));
+            }
+        }
+
+        Ok(())
+    }
+
+    /// `BUILTIN\Administrators` (S-1-5-32-544), freed on drop.
+    ///
+    /// A guard rather than a bare `PSID` because both steps above have three
+    /// early returns each, and a manual `FreeSid` at every one of them is where
+    /// leaks get introduced. `windows` 0.62 exports the two RIDs as `i32` from
+    /// `Win32::System::SystemServices`, a feature this crate does not enable; two
+    /// local integers are cheaper than a feature.
+    struct AdministratorsSid(windows::Win32::Security::PSID);
+
+    impl AdministratorsSid {
+        fn allocate() -> Result<Self, String> {
+            use std::ptr;
+
+            use windows::Win32::Security::{AllocateAndInitializeSid, PSID, SECURITY_NT_AUTHORITY};
+
+            const SECURITY_BUILTIN_DOMAIN_RID: u32 = 32;
+            const DOMAIN_ALIAS_RID_ADMINS: u32 = 544;
+
+            let mut sid = PSID(ptr::null_mut());
+            // SAFETY: out-param only; the SID is freed by `Drop`
+            let built = unsafe {
+                AllocateAndInitializeSid(
+                    &SECURITY_NT_AUTHORITY,
+                    2,
+                    SECURITY_BUILTIN_DOMAIN_RID,
+                    DOMAIN_ALIAS_RID_ADMINS,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    &mut sid,
+                )
+            };
+
+            if built.is_err() {
+                // SAFETY: `GetLastError` has no preconditions; it reads the
+                // calling thread's last-error slot
+                let code = unsafe { windows::Win32::Foundation::GetLastError().0 };
+                return Err(format!(
+                    "could not build the Administrators SID (win32 {code})"
+                ));
+            }
+
+            Ok(Self(sid))
+        }
+    }
+
+    impl Drop for AdministratorsSid {
+        fn drop(&mut self) {
+            // SAFETY: `self.0` came from AllocateAndInitializeSid and is dropped once
+            unsafe { windows::Win32::Security::FreeSid(self.0) };
+        }
+    }
+
+    /// Enable the two privileges the ownership step needs, once per process.
+    ///
+    /// Best effort on purpose: a non-elevated process does not hold them, and
+    /// `AdjustTokenPrivileges` then reports `ERROR_NOT_ALL_ASSIGNED`. That is not
+    /// an error worth reporting here — the security call that follows fails with
+    /// `access denied`, which names the real problem.
+    fn enable_ownership_privileges() {
+        use std::sync::OnceLock;
+
+        use windows::Win32::Foundation::{CloseHandle, HANDLE};
+        use windows::Win32::Security::{
+            AdjustTokenPrivileges, LookupPrivilegeValueW, LUID_AND_ATTRIBUTES,
+            SE_PRIVILEGE_ENABLED, SE_RESTORE_NAME, SE_TAKE_OWNERSHIP_NAME, TOKEN_ADJUST_PRIVILEGES,
+            TOKEN_PRIVILEGES, TOKEN_QUERY,
+        };
+        use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+
+        static ONCE: OnceLock<()> = OnceLock::new();
+
+        ONCE.get_or_init(|| unsafe {
+            let mut token = HANDLE::default();
+            // SAFETY: pseudo-handle for the current process; `token` is closed below
+            if OpenProcessToken(
+                GetCurrentProcess(),
+                TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY,
+                &mut token,
+            )
+            .is_err()
+            {
+                return;
+            }
+
+            for name in [SE_TAKE_OWNERSHIP_NAME, SE_RESTORE_NAME] {
+                let mut luid = Default::default();
+                // SAFETY: `name` is a static wide string; `luid` is the out-param
+                if LookupPrivilegeValueW(None, name, &mut luid).is_err() {
+                    continue;
+                }
+                let state = TOKEN_PRIVILEGES {
+                    PrivilegeCount: 1,
+                    Privileges: [LUID_AND_ATTRIBUTES {
+                        Luid: luid,
+                        Attributes: SE_PRIVILEGE_ENABLED,
+                    }],
+                };
+                // SAFETY: `token` is valid; `state` outlives the call
+                let _ = AdjustTokenPrivileges(token, false, Some(&state), 0, None, None);
+            }
+
+            // SAFETY: `token` came from OpenProcessToken and is not used after this
+            let _ = CloseHandle(token);
+        });
+    }
+
             let result = MoveFileExW(
                 wide_path.as_ptr(),
                 ptr::null(), // NULL means delete rather than move
@@ -411,7 +684,9 @@ impl EnhancedDeleteEngine {
             cluster_size,
             cluster_sizes: Mutex::new(HashMap::new()),
             enable_reboot_delete: true, // enabled by default, handles occupied files
-            enable_take_ownership: false, // disabled by default, icacls calls are slow
+            // Off by default: taking ownership rewrites an ACL the user did not
+            // ask to change, so only the deep-clean entry point opts in.
+            enable_take_ownership: false,
         }
     }
 
@@ -878,6 +1153,141 @@ fn delete_recycle_entry(path: &str) -> Result<(), String> {
             "路径不是当前用户的回收站数据文件，已拒绝: {}",
             path
         ));
+    /// M6: the ownership step has to report a Win32 code rather than panic, and
+    /// it must not report success on a path that does not exist.
+    ///
+    /// Both outcomes are correct for the first case: an elevated process really
+    /// can take ownership of a file it owns, an unelevated one is refused with
+    /// `access denied`. Asserting only "no panic" keeps the test honest about the
+    /// machine it runs on (M14's lesson) while still catching a wrong call order,
+    /// which fails for everyone.
+    #[cfg(windows)]
+    #[test]
+    fn taking_ownership_either_succeeds_or_reports_a_win32_code() {
+        let dir = std::env::temp_dir().join(format!("lightc-m6-grant-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create scratch dir");
+        let file = dir.join("payload.bin");
+        std::fs::write(&file, b"x").expect("write file");
+
+        match windows_api::grant_administrators_full_control(&file.to_string_lossy()) {
+            Ok(()) => {}
+            Err(message) => assert!(message.contains("win32"), "message was: {message}"),
+        }
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn taking_ownership_of_a_missing_path_fails() {
+        let missing = std::env::temp_dir()
+            .join(format!("lightc-m6-missing-{}.bin", std::process::id()))
+            .to_string_lossy()
+            .to_string();
+
+        assert!(windows_api::grant_administrators_full_control(&missing).is_err());
+    }
+
+    /// Read a path's DACL back as SDDL, so a test can see what actually landed.
+    #[cfg(windows)]
+    fn dacl_sddl(path: &str) -> String {
+        use windows::core::{PCWSTR, PWSTR};
+        use windows::Win32::Foundation::{LocalFree, HLOCAL, WIN32_ERROR};
+        use windows::Win32::Security::Authorization::{
+            ConvertSecurityDescriptorToStringSecurityDescriptorW, GetNamedSecurityInfoW,
+            SDDL_REVISION_1, SE_FILE_OBJECT,
+        };
+        use windows::Win32::Security::{DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR};
+
+        let wide: Vec<u16> = path.encode_utf16().chain(std::iter::once(0)).collect();
+
+        unsafe {
+            let mut descriptor = PSECURITY_DESCRIPTOR(std::ptr::null_mut());
+            // SAFETY: `wide` is a NUL-terminated wide string; the descriptor is
+            // LocalFree'd below
+            let status = GetNamedSecurityInfoW(
+                PCWSTR::from_raw(wide.as_ptr()),
+                SE_FILE_OBJECT,
+                DACL_SECURITY_INFORMATION,
+                None,
+                None,
+                None,
+                None,
+                &mut descriptor,
+            );
+            assert_eq!(status, WIN32_ERROR(0));
+
+            let mut text = PWSTR::null();
+            let mut length = 0u32;
+            // SAFETY: `descriptor` is valid; `text` receives an API-allocated
+            // buffer that is LocalFree'd below
+            let converted = ConvertSecurityDescriptorToStringSecurityDescriptorW(
+                descriptor,
+                SDDL_REVISION_1,
+                DACL_SECURITY_INFORMATION,
+                &mut text,
+                Some(&mut length),
+            );
+            assert!(converted.is_ok(), "SDDL conversion failed");
+
+            // SAFETY: on success the API guarantees `length` UTF-16 units at `text`
+            let sddl = String::from_utf16_lossy(std::slice::from_raw_parts(
+                text.as_ptr(),
+                length as usize,
+            ));
+            LocalFree(Some(HLOCAL(text.as_ptr() as *mut _)));
+            LocalFree(Some(HLOCAL(descriptor.0)));
+            sddl
+        }
+    }
+
+    /// M6, the half that can be proven without elevation: the ACE step really
+    /// writes an explicit Administrators entry into the DACL.
+    ///
+    /// Ownership is a separate call that needs `SeRestorePrivilege`; this one only
+    /// needs `WRITE_DAC`, which the owner of a temp file always has.
+    ///
+    /// Two details make the assertion narrower than it looks:
+    ///
+    /// - SDDL abbreviates `BUILTIN\Administrators` as `BA`, so the SID string
+    ///   never appears in the output; each ACE ends with its trustee, hence `;BA)`.
+    /// - A file under `%TEMP%` already inherits an Administrators ACE from the
+    ///   profile, so "the trustee appears" would pass without the code doing
+    ///   anything. The assertion is on the *count*, and inherited ACEs are the ones
+    ///   carrying the `ID` flag — the new entry is the one without it.
+    #[cfg(windows)]
+    #[test]
+    fn the_full_control_ace_adds_one_explicit_entry() {
+        let dir = std::env::temp_dir().join(format!("lightc-m6-ace-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create scratch dir");
+        let file = dir.join("payload.bin");
+        std::fs::write(&file, b"x").expect("write file");
+        let path = file.to_string_lossy().to_string();
+
+        let administrators_aces = |sddl: &str| sddl.matches(";BA)").count();
+
+        let before = administrators_aces(&dacl_sddl(&path));
+        windows_api::grant_full_control_ace(&path).expect("grant full control on an owned file");
+        let after = dacl_sddl(&path);
+
+        assert_eq!(
+            administrators_aces(&after),
+            before + 1,
+            "the ACE did not land in the DACL: {after}"
+        );
+        // FILE_ALL_ACCESS, granted rather than denied.
+        assert!(after.contains("(A;;FA;;;BA)"), "unexpected ACE: {after}");
+
+        // A second pass must merge rather than append: `GRANT_ACCESS` replaces the
+        // entry it already made, so a retried delete does not grow the DACL.
+        windows_api::grant_full_control_ace(&path).expect("second grant");
+        assert_eq!(administrators_aces(&dacl_sddl(&path)), before + 1);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     }
     let metadata_path = recycle_entry_twin_path(path)
         .ok_or_else(|| format!("路径不是 $R 回收站条目，已拒绝删除: {}", path))?;
