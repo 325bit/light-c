@@ -26,9 +26,8 @@ pub fn drive_root_of(path: &Path) -> Option<String> {
 /// `GetLogicalDrives` call instead of probing all 26 letters.
 #[cfg(windows)]
 pub fn existing_drive_letters() -> Vec<char> {
-    use winapi::um::fileapi::GetLogicalDrives;
-
-    let mask = unsafe { GetLogicalDrives() };
+    // SAFETY: no parameters; the API only reads the drive bitmask
+    let mask = unsafe { windows::Win32::Storage::FileSystem::GetLogicalDrives() };
     if mask == 0 {
         return Vec::new();
     }
@@ -56,9 +55,11 @@ pub fn existing_drive_roots() -> Vec<String> {
 /// network drives.
 #[cfg(windows)]
 pub fn fixed_drive_letters() -> Result<Vec<char>, String> {
-    use winapi::um::fileapi::{GetDriveTypeW, GetLogicalDrives};
-    use winapi::um::winbase::DRIVE_FIXED;
+    use windows::core::PCWSTR;
+    use windows::Win32::Storage::FileSystem::{GetDriveTypeW, GetLogicalDrives};
+    use windows::Win32::System::WindowsProgramming::DRIVE_FIXED;
 
+    // SAFETY: no parameters; the API only reads the drive bitmask
     let mask = unsafe { GetLogicalDrives() };
     if mask == 0 {
         return Err("无法读取本机磁盘分区列表".to_string());
@@ -75,7 +76,8 @@ pub fn fixed_drive_letters() -> Result<Vec<char>, String> {
                 .encode_utf16()
                 .chain(std::iter::once(0))
                 .collect::<Vec<_>>();
-            let drive_type = unsafe { GetDriveTypeW(wide_root.as_ptr()) };
+            // SAFETY: wide_root is a NUL-terminated wide string living for the call
+            let drive_type = unsafe { GetDriveTypeW(PCWSTR::from_raw(wide_root.as_ptr())) };
             (drive_type == DRIVE_FIXED && Path::new(&root).is_dir()).then_some(letter)
         })
         .collect())

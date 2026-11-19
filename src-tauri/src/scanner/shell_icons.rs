@@ -13,24 +13,38 @@ use std::io::Write;
 use std::os::windows::ffi::OsStringExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use winapi::shared::minwindef::{FALSE, TRUE};
-use winapi::shared::sddl::{self, SDDL_REVISION_1};
-use winapi::um::accctrl::{
-    ACCESS_MODE, DENY_ACCESS, EXPLICIT_ACCESS_W, NO_INHERITANCE, SE_REGISTRY_KEY, TRUSTEE_IS_SID,
-    TRUSTEE_IS_WELL_KNOWN_GROUP,
+use windows::core::{BOOL, PWSTR};
+use windows::Win32::Foundation::{GetLastError, LocalFree, HANDLE, HLOCAL, WIN32_ERROR};
+use windows::Win32::Security::Authorization::{
+    ConvertSecurityDescriptorToStringSecurityDescriptorW,
+    ConvertStringSecurityDescriptorToSecurityDescriptorW, GetSecurityInfo, SetEntriesInAclW,
+    SetSecurityInfo, DENY_ACCESS, EXPLICIT_ACCESS_W, SDDL_REVISION_1, SE_REGISTRY_KEY,
+    TRUSTEE_IS_SID, TRUSTEE_IS_WELL_KNOWN_GROUP, TRUSTEE_W,
 };
-use winapi::um::aclapi::{GetSecurityInfo, SetEntriesInAclW, SetSecurityInfo};
-use winapi::um::errhandlingapi::GetLastError;
-use winapi::um::securitybaseapi::{AllocateAndInitializeSid, FreeSid};
-use winapi::um::winbase::LocalFree;
-use winapi::um::winnt::{
-    ACL, DACL_SECURITY_INFORMATION, DELETE, GROUP_SECURITY_INFORMATION, KEY_ALL_ACCESS,
-    KEY_CREATE_SUB_KEY, KEY_READ, KEY_SET_VALUE, KEY_WOW64_32KEY, KEY_WOW64_64KEY,
-    OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID, SECURITY_WORLD_RID,
-    SECURITY_WORLD_SID_AUTHORITY, SID_IDENTIFIER_AUTHORITY, WRITE_DAC, WRITE_OWNER,
+use windows::Win32::Security::{
+    AllocateAndInitializeSid, FreeSid, GetSecurityDescriptorDacl, GetSecurityDescriptorGroup,
+    GetSecurityDescriptorOwner, ACL, DACL_SECURITY_INFORMATION, GROUP_SECURITY_INFORMATION,
+    NO_INHERITANCE, OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID,
+    SECURITY_WORLD_SID_AUTHORITY,
 };
-use winreg::enums::{HKEY_CLASSES_ROOT, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE};
+use windows::Win32::UI::Shell::{
+    SHChangeNotify, SHLoadIndirectString, SHCNE_ASSOCCHANGED, SHCNF_IDLIST,
+};
+use winreg::enums::{
+    HKEY_CLASSES_ROOT, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_ALL_ACCESS, KEY_CREATE_SUB_KEY,
+    KEY_READ, KEY_SET_VALUE, KEY_WOW64_32KEY, KEY_WOW64_64KEY,
+};
 use winreg::{RegKey, HKEY};
+
+// Numeric-only access-mask constants: winreg's u32 perms API and the ACE mask
+// comparison need plain numbers, and windows 0.62 does not re-export these
+// three as u32. They are values, not bindings, so local definitions keep the
+// "single binding source" goal intact without pulling extra features.
+const WRITE_DAC: u32 = 0x0004_0000;
+const WRITE_OWNER: u32 = 0x0008_0000;
+const DELETE_RIGHT: u32 = 0x0001_0000;
+/// RID 0 of the World (Everyone) well-known SID authority.
+const SECURITY_WORLD_RID: u32 = 0;
 
 const MY_COMPUTER_NAMESPACE_PATH: &str =
     r"SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\MyComputer\NameSpace";
@@ -38,13 +52,6 @@ const DESKTOP_NAMESPACE_PATH: &str =
     r"SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\Desktop\NameSpace";
 const NAVIGATION_CLSID_PATH: &str = r"Software\Classes\CLSID";
 const NAVIGATION_PIN_VALUE: &str = "System.IsPinnedToNameSpaceTree";
-const SHCNE_ASSOCCHANGED: u32 = 0x0800_0000;
-const SHCNF_IDLIST: u32 = 0x0000;
-
-#[link(name = "shell32")]
-extern "system" {
-    fn SHChangeNotify(event_id: u32, flags: u32, item1: *const c_void, item2: *const c_void);
-}
 const SYSTEM_CLSIDS: &[&str] = &[
     "{20D04FE0-3AEA-1069-A2D8-08002B30309D}",
     "{450D8FBA-AD25-11D0-98A6-006008059382}",
@@ -825,13 +832,9 @@ fn regedit_root_name(regedit_config: &RegKey) -> String {
 
 pub fn restart_explorer() -> Result<(), String> {
     // Only send a Shell change notification, do not end explorer.exe, avoiding loss of injected state for taskbar extensions like TranslucentTB.
+    // SAFETY: notification only; no pointers are passed
     unsafe {
-        SHChangeNotify(
-            SHCNE_ASSOCCHANGED,
-            SHCNF_IDLIST,
-            std::ptr::null(),
-            std::ptr::null(),
-        );
+        SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, None, None);
     }
     Ok(())
 }
@@ -1467,44 +1470,52 @@ fn target_registry_subkey_path(target: &ShellIconTarget) -> String {
 
 fn read_acl_sddl(key: &RegKey) -> Result<Option<String>, String> {
     unsafe {
-        let mut owner: PSID = std::ptr::null_mut();
-        let mut group: PSID = std::ptr::null_mut();
+        let mut owner = PSID(std::ptr::null_mut());
+        let mut group = PSID(std::ptr::null_mut());
         let mut dacl: *mut ACL = std::ptr::null_mut();
-        let mut descriptor: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
+        let mut descriptor = PSECURITY_DESCRIPTOR(std::ptr::null_mut());
+        // SAFETY: the winreg key handle is valid; every out-param lives for the
+        // whole call, and the returned descriptor is LocalFree'd below
         let status = GetSecurityInfo(
-            key.raw_handle() as _,
+            HANDLE(key.raw_handle() as *mut c_void),
             SE_REGISTRY_KEY,
             OWNER_SECURITY_INFORMATION | GROUP_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
-            &mut owner,
-            &mut group,
-            &mut dacl,
-            std::ptr::null_mut(),
-            &mut descriptor,
+            Some(&mut owner),
+            Some(&mut group),
+            Some(&mut dacl),
+            None,
+            Some(&mut descriptor),
         );
-        if status != 0 {
-            return Err(format!("读取注册表 ACL 失败: {}", status));
+        if status != WIN32_ERROR(0) {
+            return Err(format!("读取注册表 ACL 失败: {}", status.0));
         }
-        let mut string_descriptor = std::ptr::null_mut();
-        let mut length = 0;
-        let converted = sddl::ConvertSecurityDescriptorToStringSecurityDescriptorW(
+        let mut string_descriptor = PWSTR::null();
+        let mut length: u32 = 0;
+        // SAFETY: descriptor is valid from GetSecurityInfo above; string_descriptor
+        // receives an API-allocated buffer copied out and freed below
+        let converted = ConvertSecurityDescriptorToStringSecurityDescriptorW(
             descriptor,
-            SDDL_REVISION_1 as u32,
+            SDDL_REVISION_1,
             OWNER_SECURITY_INFORMATION | GROUP_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
             &mut string_descriptor,
-            &mut length,
+            Some(&mut length),
         );
-        if converted == FALSE {
-            LocalFree(descriptor);
-            return Err(format!("转换注册表 ACL 失败: {}", GetLastError()));
+        if converted.is_err() {
+            LocalFree(Some(HLOCAL(descriptor.0)));
+            return Err(format!(
+                "转换注册表 ACL 失败: {}",
+                GetLastError().to_hresult()
+            ));
         }
+        // SAFETY: on success the API guarantees string_descriptor points at length UTF-16 units
         let value = OsString::from_wide(std::slice::from_raw_parts(
-            string_descriptor,
+            string_descriptor.as_ptr(),
             length as usize,
         ))
         .to_string_lossy()
         .to_string();
-        LocalFree(string_descriptor as _);
-        LocalFree(descriptor);
+        LocalFree(Some(HLOCAL(string_descriptor.as_ptr() as *mut c_void)));
+        LocalFree(Some(HLOCAL(descriptor.0)));
         Ok(Some(value))
     }
 }
@@ -1518,29 +1529,30 @@ fn add_lock_acl(key: &RegKey) -> Result<(), String> {
         {
             return Ok(());
         }
-        let mut owner: PSID = std::ptr::null_mut();
-        let mut group: PSID = std::ptr::null_mut();
+        let mut owner = PSID(std::ptr::null_mut());
+        let mut group = PSID(std::ptr::null_mut());
         let mut old_dacl: *mut ACL = std::ptr::null_mut();
-        let mut descriptor: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
+        let mut descriptor = PSECURITY_DESCRIPTOR(std::ptr::null_mut());
+        // SAFETY: the winreg key handle is valid; every out-param lives for the
+        // whole call, and the descriptor is LocalFree'd on every path below
         let status = GetSecurityInfo(
-            key.raw_handle() as _,
+            HANDLE(key.raw_handle() as *mut c_void),
             SE_REGISTRY_KEY,
             OWNER_SECURITY_INFORMATION | GROUP_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
-            &mut owner,
-            &mut group,
-            &mut old_dacl,
-            std::ptr::null_mut(),
-            &mut descriptor,
+            Some(&mut owner),
+            Some(&mut group),
+            Some(&mut old_dacl),
+            None,
+            Some(&mut descriptor),
         );
-        if status != 0 {
-            return Err(format!("读取注册表 ACL 失败: {}", status));
+        if status != WIN32_ERROR(0) {
+            return Err(format!("读取注册表 ACL 失败: {}", status.0));
         }
-        let mut everyone_sid: PSID = std::ptr::null_mut();
-        let mut authority = SID_IDENTIFIER_AUTHORITY {
-            Value: SECURITY_WORLD_SID_AUTHORITY,
-        };
+        let mut everyone_sid = PSID(std::ptr::null_mut());
+        // SAFETY: everyone_sid is the out-param, initialized by the API on success
+        // and released with FreeSid on every path below
         if AllocateAndInitializeSid(
-            &mut authority,
+            &SECURITY_WORLD_SID_AUTHORITY,
             1,
             SECURITY_WORLD_RID,
             0,
@@ -1551,41 +1563,47 @@ fn add_lock_acl(key: &RegKey) -> Result<(), String> {
             0,
             0,
             &mut everyone_sid,
-        ) != TRUE
+        )
+        .is_err()
         {
-            LocalFree(descriptor);
-            return Err(format!("创建 Everyone SID 失败: {}", GetLastError()));
+            LocalFree(Some(HLOCAL(descriptor.0)));
+            return Err(format!(
+                "创建 Everyone SID 失败: {}",
+                GetLastError().to_hresult()
+            ));
         }
-        let mut trustee: winapi::um::accctrl::TRUSTEE_W = std::mem::zeroed();
+        let mut trustee = TRUSTEE_W::default();
         trustee.TrusteeForm = TRUSTEE_IS_SID;
         trustee.TrusteeType = TRUSTEE_IS_WELL_KNOWN_GROUP;
-        trustee.ptstrName = everyone_sid as _;
-        let mut entry: EXPLICIT_ACCESS_W = std::mem::zeroed();
-        entry.grfAccessPermissions = KEY_SET_VALUE | KEY_CREATE_SUB_KEY | DELETE;
-        entry.grfAccessMode = DENY_ACCESS as ACCESS_MODE;
+        trustee.ptstrName = PWSTR(everyone_sid.0 as *mut u16);
+        let mut entry = EXPLICIT_ACCESS_W::default();
+        entry.grfAccessPermissions = KEY_SET_VALUE | KEY_CREATE_SUB_KEY | DELETE_RIGHT;
+        entry.grfAccessMode = DENY_ACCESS;
         entry.grfInheritance = NO_INHERITANCE;
         entry.Trustee = trustee;
         let mut new_dacl: *mut ACL = std::ptr::null_mut();
-        let acl_status = SetEntriesInAclW(1, &mut entry, old_dacl, &mut new_dacl);
-        if acl_status != 0 {
+        // SAFETY: old_dacl comes from GetSecurityInfo above; new_dacl receives an
+        // API-allocated ACL applied and freed below
+        let acl_status = SetEntriesInAclW(Some(&[entry]), Some(old_dacl), &mut new_dacl);
+        if acl_status != WIN32_ERROR(0) {
             FreeSid(everyone_sid);
-            LocalFree(descriptor);
-            return Err(format!("构造锁定 ACL 失败: {}", acl_status));
+            LocalFree(Some(HLOCAL(descriptor.0)));
+            return Err(format!("构造锁定 ACL 失败: {}", acl_status.0));
         }
         let set_status = SetSecurityInfo(
-            key.raw_handle() as _,
+            HANDLE(key.raw_handle() as *mut c_void),
             SE_REGISTRY_KEY,
             DACL_SECURITY_INFORMATION,
-            std::ptr::null_mut(),
-            std::ptr::null_mut(),
-            new_dacl,
-            std::ptr::null_mut(),
+            None,
+            None,
+            Some(new_dacl),
+            None,
         );
-        LocalFree(new_dacl as _);
+        LocalFree(Some(HLOCAL(new_dacl as *mut c_void)));
         FreeSid(everyone_sid);
-        LocalFree(descriptor);
-        if set_status != 0 {
-            return Err(format!("应用锁定 ACL 失败: {}", set_status));
+        LocalFree(Some(HLOCAL(descriptor.0)));
+        if set_status != WIN32_ERROR(0) {
+            return Err(format!("应用锁定 ACL 失败: {}", set_status.0));
         }
         Ok(())
     }
@@ -1594,64 +1612,73 @@ fn add_lock_acl(key: &RegKey) -> Result<(), String> {
 fn restore_acl(key: &RegKey, sddl: &str) -> Result<(), String> {
     unsafe {
         let wide: Vec<u16> = sddl.encode_utf16().chain(std::iter::once(0)).collect();
-        let mut descriptor: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
-        let mut length = 0;
-        if sddl::ConvertStringSecurityDescriptorToSecurityDescriptorW(
-            wide.as_ptr(),
-            SDDL_REVISION_1 as u32,
+        let mut descriptor = PSECURITY_DESCRIPTOR(std::ptr::null_mut());
+        let mut length: u32 = 0;
+        // SAFETY: wide is a NUL-terminated wide string; descriptor receives an
+        // API-allocated security descriptor LocalFree'd on every path below
+        if ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            windows::core::PCWSTR::from_raw(wide.as_ptr()),
+            SDDL_REVISION_1,
             &mut descriptor,
-            &mut length,
-        ) == FALSE
+            Some(&mut length),
+        )
+        .is_err()
         {
-            return Err(format!("解析备份 ACL 失败: {}", GetLastError()));
+            return Err(format!(
+                "解析备份 ACL 失败: {}",
+                GetLastError().to_hresult()
+            ));
         }
         let mut dacl: *mut ACL = std::ptr::null_mut();
-        let mut dacl_present = FALSE;
-        let mut dacl_defaulted = FALSE;
-        let mut owner: PSID = std::ptr::null_mut();
-        let mut group: PSID = std::ptr::null_mut();
-        let mut owner_defaulted = FALSE;
-        let mut group_defaulted = FALSE;
-        if winapi::um::securitybaseapi::GetSecurityDescriptorDacl(
+        let mut dacl_present = BOOL(0);
+        let mut dacl_defaulted = BOOL(0);
+        let mut owner = PSID(std::ptr::null_mut());
+        let mut group = PSID(std::ptr::null_mut());
+        let mut owner_defaulted = BOOL(0);
+        let mut group_defaulted = BOOL(0);
+        // SAFETY: descriptor is valid from the conversion above; out-params live
+        // for the whole call
+        if GetSecurityDescriptorDacl(
             descriptor,
             &mut dacl_present,
             &mut dacl,
             &mut dacl_defaulted,
-        ) == FALSE
+        )
+        .is_err()
         {
-            LocalFree(descriptor);
-            return Err(format!("读取备份 ACL 失败: {}", GetLastError()));
+            LocalFree(Some(HLOCAL(descriptor.0)));
+            return Err(format!(
+                "读取备份 ACL 失败: {}",
+                GetLastError().to_hresult()
+            ));
         }
-        if winapi::um::securitybaseapi::GetSecurityDescriptorOwner(
-            descriptor,
-            &mut owner,
-            &mut owner_defaulted,
-        ) == FALSE
-            || winapi::um::securitybaseapi::GetSecurityDescriptorGroup(
-                descriptor,
-                &mut group,
-                &mut group_defaulted,
-            ) == FALSE
+        // SAFETY: descriptor is valid from the conversion above; out-params live
+        // for the whole call
+        if GetSecurityDescriptorOwner(descriptor, &mut owner, &mut owner_defaulted).is_err()
+            || GetSecurityDescriptorGroup(descriptor, &mut group, &mut group_defaulted).is_err()
         {
-            LocalFree(descriptor);
-            return Err(format!("读取备份所有者失败: {}", GetLastError()));
+            LocalFree(Some(HLOCAL(descriptor.0)));
+            return Err(format!(
+                "读取备份所有者失败: {}",
+                GetLastError().to_hresult()
+            ));
         }
         let status = SetSecurityInfo(
-            key.raw_handle() as _,
+            HANDLE(key.raw_handle() as *mut c_void),
             SE_REGISTRY_KEY,
             OWNER_SECURITY_INFORMATION | GROUP_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
-            owner,
-            group,
-            if dacl_present == TRUE {
-                dacl
+            Some(owner),
+            Some(group),
+            if dacl_present.as_bool() {
+                Some(dacl)
             } else {
-                std::ptr::null_mut()
+                None
             },
-            std::ptr::null_mut(),
+            None,
         );
-        LocalFree(descriptor);
-        if status != 0 {
-            Err(format!("恢复注册表 ACL 失败: {}", status))
+        LocalFree(Some(HLOCAL(descriptor.0)));
+        if status != WIN32_ERROR(0) {
+            Err(format!("恢复注册表 ACL 失败: {}", status.0))
         } else {
             Ok(())
         }
@@ -1684,8 +1711,8 @@ fn is_lightc_lock_mask(mask: &str) -> bool {
         .strip_prefix("0X")
         .and_then(|value| u32::from_str_radix(value, 16).ok())
         .is_some_and(|value| {
-            (value & (KEY_SET_VALUE | KEY_CREATE_SUB_KEY | DELETE))
-                == (KEY_SET_VALUE | KEY_CREATE_SUB_KEY | DELETE)
+            (value & (KEY_SET_VALUE | KEY_CREATE_SUB_KEY | DELETE_RIGHT))
+                == (KEY_SET_VALUE | KEY_CREATE_SUB_KEY | DELETE_RIGHT)
         })
 }
 
@@ -1729,24 +1756,16 @@ fn resolve_indirect_string(raw: &str) -> String {
     }
     let source: Vec<u16> = raw.encode_utf16().chain(std::iter::once(0)).collect();
     let mut output = vec![0u16; 512];
-    #[link(name = "shlwapi")]
-    extern "system" {
-        fn SHLoadIndirectString(
-            source: *const u16,
-            output: *mut u16,
-            length: u32,
-            reserved: *mut *const c_void,
-        ) -> i32;
-    }
+    // SAFETY: source is a NUL-terminated wide string and output is pinned to
+    // its full 512-unit length for the duration of the call
     let result = unsafe {
         SHLoadIndirectString(
-            source.as_ptr(),
-            output.as_mut_ptr(),
-            output.len() as u32,
-            std::ptr::null_mut(),
+            windows::core::PCWSTR::from_raw(source.as_ptr()),
+            &mut output,
+            None,
         )
     };
-    if result == 0 {
+    if result.is_ok() {
         if let Some(end) = output.iter().position(|value| *value == 0) {
             return OsString::from_wide(&output[..end])
                 .to_string_lossy()

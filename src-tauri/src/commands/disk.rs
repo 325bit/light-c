@@ -88,8 +88,8 @@ pub fn get_local_drives() -> Result<Vec<LocalDriveInfo>, AppError> {
 
 #[cfg(target_os = "windows")]
 fn query_drive_info(letter: char) -> Result<LocalDriveInfo, AppError> {
-    use winapi::um::fileapi::GetDiskFreeSpaceExW;
-    use winapi::um::winnt::ULARGE_INTEGER;
+    use windows::core::PCWSTR;
+    use windows::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
 
     let normalized_letter = letter.to_ascii_uppercase();
     if !normalized_letter.is_ascii_alphabetic() {
@@ -98,27 +98,29 @@ fn query_drive_info(letter: char) -> Result<LocalDriveInfo, AppError> {
 
     let root = format!("{}:\\", normalized_letter);
     let wide_root = wide_null(&root);
-    let mut free_bytes_available: ULARGE_INTEGER = unsafe { std::mem::zeroed() };
-    let mut total_bytes: ULARGE_INTEGER = unsafe { std::mem::zeroed() };
-    let mut total_free_bytes: ULARGE_INTEGER = unsafe { std::mem::zeroed() };
+    let mut free_bytes_available: u64 = 0;
+    let mut total_bytes: u64 = 0;
+    let mut total_free_bytes: u64 = 0;
 
+    // SAFETY: wide_root is NUL-terminated and the three u64 out-params live for
+    // the whole duration of the call
     let result = unsafe {
         GetDiskFreeSpaceExW(
-            wide_root.as_ptr(),
-            &mut free_bytes_available,
-            &mut total_bytes,
-            &mut total_free_bytes,
+            PCWSTR::from_raw(wide_root.as_ptr()),
+            Some(&mut free_bytes_available),
+            Some(&mut total_bytes),
+            Some(&mut total_free_bytes),
         )
     };
-    if result == 0 {
+    if let Err(error) = result {
         return Err(AppError::new(ErrorCode::ExternalFailed)
-            .detail("GetDiskFreeSpaceExW returned 0")
+            .detail(format!("GetDiskFreeSpaceExW failed: {error}"))
             .arg("drive", root));
     }
 
     let (volume_name, file_system) = query_volume_labels(&wide_root);
-    let total = unsafe { *total_bytes.QuadPart() };
-    let free = unsafe { *total_free_bytes.QuadPart() };
+    let total = total_bytes;
+    let free = total_free_bytes;
     let used = total.saturating_sub(free);
     let usage_percent = if total > 0 {
         (used as f64 / total as f64 * 100.0) as f32
@@ -147,24 +149,25 @@ fn query_drive_info(letter: char) -> Result<LocalDriveInfo, AppError> {
 
 #[cfg(target_os = "windows")]
 fn query_volume_labels(root: &[u16]) -> (String, String) {
-    use winapi::um::fileapi::GetVolumeInformationW;
+    use windows::core::PCWSTR;
+    use windows::Win32::Storage::FileSystem::GetVolumeInformationW;
 
     let mut volume_name = vec![0u16; 260];
     let mut file_system = vec![0u16; 64];
+    // SAFETY: root is NUL-terminated; both buffers are pinned to their full
+    // length for the duration of the call
     let ok = unsafe {
         GetVolumeInformationW(
-            root.as_ptr(),
-            volume_name.as_mut_ptr(),
-            volume_name.len() as u32,
-            std::ptr::null_mut(),
-            std::ptr::null_mut(),
-            std::ptr::null_mut(),
-            file_system.as_mut_ptr(),
-            file_system.len() as u32,
+            PCWSTR::from_raw(root.as_ptr()),
+            Some(&mut volume_name),
+            None,
+            None,
+            None,
+            Some(&mut file_system),
         )
     };
 
-    if ok == 0 {
+    if ok.is_err() {
         return (String::new(), String::new());
     }
 

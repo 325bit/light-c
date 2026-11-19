@@ -220,56 +220,62 @@ fn current_user_sid() -> Option<String> {
 
 #[cfg(windows)]
 fn current_user_sid_uncached() -> Option<String> {
-    use std::ptr::null_mut;
-    use winapi::shared::minwindef::{DWORD, HLOCAL, LPVOID};
-    use winapi::shared::ntdef::HANDLE;
-    use winapi::shared::sddl::ConvertSidToStringSidW;
-    use winapi::um::handleapi::CloseHandle;
-    use winapi::um::processthreadsapi::{GetCurrentProcess, OpenProcessToken};
-    use winapi::um::securitybaseapi::GetTokenInformation;
-    use winapi::um::winbase::LocalFree;
-    use winapi::um::winnt::{TokenUser, TOKEN_QUERY, TOKEN_USER};
+    use windows::core::PWSTR;
+    use windows::Win32::Foundation::{LocalFree, HANDLE, HLOCAL};
+    use windows::Win32::Security::Authorization::ConvertSidToStringSidW;
+    use windows::Win32::Security::{GetTokenInformation, TokenUser, TOKEN_QUERY, TOKEN_USER};
+    use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
     unsafe {
-        let mut token_handle: HANDLE = null_mut();
-        if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token_handle) == 0 {
+        let mut token_handle = HANDLE::default();
+        // SAFETY: token_handle is the out-param; the pseudo process handle is
+        // owned by the OS and never closed here
+        if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token_handle).is_err() {
             return None;
         }
 
-        let mut required_size: DWORD = 0;
-        GetTokenInformation(token_handle, TokenUser, null_mut(), 0, &mut required_size);
+        // token_handle closes itself via HANDLE::drop on every early return
+        // (H4 contract §4.2: never call CloseHandle manually on a windows-crate HANDLE)
+
+        let mut required_size: u32 = 0;
+        // SAFETY: passing None only queries the required buffer size
+        let _ = GetTokenInformation(token_handle, TokenUser, None, 0, &mut required_size);
         if required_size == 0 {
-            CloseHandle(token_handle);
             return None;
         }
 
         // Use a u64 buffer to satisfy TOKEN_USER's alignment requirement on Windows targets.
         let mut buffer = vec![0u64; (required_size as usize + 7) / 8];
+        // SAFETY: buffer is sized to the length reported by the first call, so
+        // the API never writes past its end
         let success = GetTokenInformation(
             token_handle,
             TokenUser,
-            buffer.as_mut_ptr() as LPVOID,
+            Some(buffer.as_mut_ptr() as *mut core::ffi::c_void),
             required_size,
             &mut required_size,
         );
-        if success == 0 {
-            CloseHandle(token_handle);
+        if success.is_err() {
             return None;
         }
 
         let token_user = buffer.as_ptr() as *const TOKEN_USER;
-        let mut sid_string: *mut u16 = null_mut();
+        let mut sid_string = PWSTR::null();
+        // SAFETY: the SID pointer comes from the token info buffer filled above;
+        // sid_string receives an API-allocated buffer freed with LocalFree below
         let converted = ConvertSidToStringSidW((*token_user).User.Sid, &mut sid_string);
-        CloseHandle(token_handle);
-        if converted == 0 || sid_string.is_null() {
+        if converted.is_err() || sid_string.is_null() {
             return None;
         }
 
         let sid_length = (0..)
-            .take_while(|offset| *sid_string.add(*offset) != 0)
+            .take_while(|offset| *sid_string.as_ptr().add(*offset) != 0)
             .count();
-        let sid = String::from_utf16_lossy(std::slice::from_raw_parts(sid_string, sid_length));
-        LocalFree(sid_string as HLOCAL);
+        let sid =
+            String::from_utf16_lossy(std::slice::from_raw_parts(sid_string.as_ptr(), sid_length));
+        // SAFETY: the buffer was allocated by ConvertSidToStringSidW with
+        // LocalAlloc semantics
+        LocalFree(Some(HLOCAL(sid_string.as_ptr() as *mut core::ffi::c_void)));
         Some(sid)
     }
 }

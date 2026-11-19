@@ -42,16 +42,8 @@ use winreg::RegKey;
 // Windows API FFI (for resolving MUIVerb indirect strings @path,-id)
 // ============================================================================
 
-#[link(name = "shlwapi")]
-extern "system" {
-    /// https://learn.microsoft.com/en-us/windows/win32/api/shlwapi/nf-shlwapi-shloadindirectstring
-    fn SHLoadIndirectString(
-        pszSource: *const u16,
-        pszOutBuf: *mut u16,
-        cchOutBuf: u32,
-        ppvReserved: *mut *const std::ffi::c_void,
-    ) -> i32;
-}
+use windows::core::PCWSTR;
+use windows::Win32::UI::Shell::SHLoadIndirectString;
 
 /// Calls SHLoadIndirectString to resolve indirect strings in @path,-id form
 /// Returns the original string on failure
@@ -67,16 +59,12 @@ fn resolve_indirect_string(raw: &str) -> String {
     let source_wide: Vec<u16> = expanded.encode_utf16().chain(std::iter::once(0)).collect();
     let mut out_buf: Vec<u16> = vec![0u16; 512]; // 512 characters are enough for the menu text
 
-    let hr = unsafe {
-        SHLoadIndirectString(
-            source_wide.as_ptr(),
-            out_buf.as_mut_ptr(),
-            out_buf.len() as u32,
-            std::ptr::null_mut(),
-        )
-    };
+    // SAFETY: source_wide is a NUL-terminated wide string and out_buf is pinned
+    // to its full 512-unit length for the duration of the call
+    let hr =
+        unsafe { SHLoadIndirectString(PCWSTR::from_raw(source_wide.as_ptr()), &mut out_buf, None) };
 
-    if hr == 0 {
+    if hr.is_ok() {
         // S_OK — success, truncate at null
         if let Some(null_pos) = out_buf.iter().position(|&c| c == 0) {
             let resolved_wide = &out_buf[..null_pos];

@@ -43,8 +43,9 @@ pub fn relaunch_as_admin(app: tauri::AppHandle) -> Result<bool, AppError> {
     {
         use std::ffi::OsStr;
         use std::os::windows::ffi::OsStrExt;
-        use winapi::um::shellapi::ShellExecuteW;
-        use winapi::um::winuser::SW_SHOWNORMAL;
+        use windows::core::PCWSTR;
+        use windows::Win32::UI::Shell::ShellExecuteW;
+        use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
 
         /// Convert to a NUL-terminated wide string; ShellExecuteW only accepts this form
         fn to_wide(value: &OsStr) -> Vec<u16> {
@@ -63,17 +64,17 @@ pub fn relaunch_as_admin(app: tauri::AppHandle) -> Result<bool, AppError> {
         // SAFETY: all four strings are NUL-terminated wide chars and live for the whole duration of the call
         let result = unsafe {
             ShellExecuteW(
-                std::ptr::null_mut(),
-                operation.as_ptr(),
-                file.as_ptr(),
-                parameters.as_ptr(),
-                working_directory.as_ptr(),
+                None,
+                PCWSTR::from_raw(operation.as_ptr()),
+                PCWSTR::from_raw(file.as_ptr()),
+                PCWSTR::from_raw(parameters.as_ptr()),
+                PCWSTR::from_raw(working_directory.as_ptr()),
                 SW_SHOWNORMAL,
             )
         };
 
         // Convention: return value <= 32 means failure; 1223 = user clicked "No" in UAC
-        let code = result as isize;
+        let code = result.0 as isize;
         if code <= 32 {
             if code == 1223 || code == 5 {
                 info!("用户取消了管理员权限请求（错误码 {}）", code);

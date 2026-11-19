@@ -61,10 +61,32 @@ glob = "0.3"               # Glob pattern expansion
 tokio = { version = "1", features = ["rt", "macros", "sync", "time"] }
 # Date and time
 chrono = { version = "0.4", features = ["serde"] }
-# Windows system APIs
-winapi = { version = "0.3", features = ["fileapi", "winbase", "handleapi", "errhandlingapi", "sysinfoapi", "processenv", "ioapiset", "winnt", "processthreadsapi", "securitybaseapi", "sddl", "aclapi", "accctrl", "shellapi", "winuser", "stringapiset", "winnls", "winsvc", "dpapi", "wincrypt"] }
-# Windows Search index rebuild (COM); reuse the windows crate version already pulled in by tauri
-windows = { version = "0.61", features = ["Win32_System_Search", "Win32_System_Com", "Win32_Foundation"] }
+# Windows system APIs. H4 unified all bindings on this crate (0.62 matches the
+# Tauri stack, so only one copy compiles); the legacy 0.3 bindings were removed
+# once the last one moved over. Feature additions must name the API that needs
+# them; never switch to features = ["all"] (compile-time cost, and it reverses
+# the dependency-narrowing direction of M12).
+windows = { version = "0.62", features = [
+    "Win32_Foundation",                # HANDLE / CloseHandle / GetLastError / LocalFree / WIN32_ERROR
+    "Win32_Storage_FileSystem",        # GetFileAttributesW / SetFileAttributesW / MoveFileExW /
+                                       # CreateFileW / GetDiskFreeSpaceExW / GetDiskFreeSpaceW /
+                                       # GetDriveTypeW / GetLogicalDrives / GetVolumeInformationW
+    "Win32_Security",                  # GetTokenInformation / AllocateAndInitializeSid / FreeSid /
+                                       # TOKEN_USER / TokenUser / GetSecurityDescriptorDacl|Owner|Group
+    "Win32_Security_Authorization",    # GetSecurityInfo / SetSecurityInfo / SetEntriesInAclW /
+                                       # ConvertSidToStringSidW / TRUSTEE_W / EXPLICIT_ACCESS_W
+    "Win32_Security_Cryptography",     # CryptProtectData / CryptUnprotectData / CRYPT_INTEGER_BLOB
+    "Win32_System_Threading",          # GetCurrentProcess / OpenProcessToken
+    "Win32_System_SystemInformation",  # GetSystemInfo / GlobalMemoryStatusEx / GetTickCount64
+    "Win32_System_IO",                 # DeviceIoControl
+    "Win32_System_Services",           # OpenSCManagerW / OpenServiceW / QueryServiceStatus
+    "Win32_System_Com",                # Windows Search index rebuild (COM)
+    "Win32_System_Search",             # CSearchManager / ISearchManager / catalog status
+    "Win32_Globalization",             # MultiByteToWideChar / GetOEMCP / CP_ACP / CP_UTF8
+    "Win32_UI_Shell",                  # ShellExecuteW / SHChangeNotify / SHLoadIndirectString
+    "Win32_UI_WindowsAndMessaging",    # SW_SHOWNORMAL
+    "Win32_System_WindowsProgramming", # DRIVE_FIXED
+] }
 # Windows registry access
 winreg = "0.55"
 # Logging

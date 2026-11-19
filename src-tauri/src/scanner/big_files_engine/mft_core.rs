@@ -10,27 +10,10 @@ use std::os::windows::fs::{FileExt, OpenOptionsExt};
 use std::sync::mpsc;
 use std::time::Instant;
 
-use winapi::shared::minwindef::{BOOL, DWORD, LPVOID};
-use winapi::shared::ntdef::HANDLE;
-use winapi::um::handleapi::CloseHandle;
-use winapi::um::processthreadsapi::{GetCurrentProcess, OpenProcessToken};
-use winapi::um::securitybaseapi::GetTokenInformation;
-use winapi::um::winnt::{
-    TokenElevation, FILE_SHARE_READ, FILE_SHARE_WRITE, TOKEN_ELEVATION, TOKEN_QUERY,
-};
-
-extern "system" {
-    fn GetVolumeInformationW(
-        lpRootPathName: *const u16,
-        lpVolumeNameBuffer: *mut u16,
-        nVolumeNameSize: DWORD,
-        lpVolumeSerialNumber: *mut DWORD,
-        lpMaximumComponentLength: *mut DWORD,
-        lpFileSystemFlags: *mut DWORD,
-        lpFileSystemNameBuffer: *mut u16,
-        nFileSystemNameSize: DWORD,
-    ) -> BOOL;
-}
+use windows::Win32::Foundation::HANDLE;
+use windows::Win32::Security::{GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY};
+use windows::Win32::Storage::FileSystem::{FILE_SHARE_READ, FILE_SHARE_WRITE};
+use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
 const MFT_METADATA_MAX: u64 = 25;
 const MFT_READ_CHUNK: usize = 16 * 1024 * 1024;
@@ -215,41 +198,47 @@ fn resolve_path(
 }
 
 pub fn is_elevated() -> bool {
-    let mut t: HANDLE = std::ptr::null_mut();
-    if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut t) } == 0 {
+    let mut token = HANDLE::default();
+    // SAFETY: token is the out-param; the pseudo process handle returned by
+    // GetCurrentProcess is owned by the OS and never closed here
+    if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) }.is_err() {
         return false;
     }
-    let mut e = TOKEN_ELEVATION { TokenIsElevated: 0 };
-    let mut s: DWORD = 0;
+    let mut elevation = TOKEN_ELEVATION { TokenIsElevated: 0 };
+    let mut return_length: u32 = 0;
+    // SAFETY: elevation is sized for TokenElevation and lives for the whole
+    // call; token closes itself via HANDLE::drop (H4 contract §4.2)
     let ok = unsafe {
         GetTokenInformation(
-            t,
+            token,
             TokenElevation,
-            &mut e as *mut _ as LPVOID,
-            std::mem::size_of::<TOKEN_ELEVATION>() as DWORD,
-            &mut s,
+            Some(&mut elevation as *mut _ as *mut core::ffi::c_void),
+            std::mem::size_of::<TOKEN_ELEVATION>() as u32,
+            &mut return_length,
         )
     };
-    unsafe { CloseHandle(t) };
-    ok != 0 && e.TokenIsElevated != 0
+    ok.is_ok() && elevation.TokenIsElevated != 0
 }
 
 pub fn is_ntfs(drive_letter: char) -> bool {
+    use windows::core::PCWSTR;
+    use windows::Win32::Storage::FileSystem::GetVolumeInformationW;
+
     let r = format!("{}:\\", drive_letter);
     let w: Vec<u16> = r.encode_utf16().chain(std::iter::once(0)).collect();
     let mut fs: [u16; 16] = [0; 16];
+    // SAFETY: w is NUL-terminated; fs is pinned for the duration of the call
     if unsafe {
         GetVolumeInformationW(
-            w.as_ptr(),
-            std::ptr::null_mut(),
-            0,
-            std::ptr::null_mut(),
-            std::ptr::null_mut(),
-            std::ptr::null_mut(),
-            fs.as_mut_ptr(),
-            fs.len() as DWORD,
+            PCWSTR::from_raw(w.as_ptr()),
+            None,
+            None,
+            None,
+            None,
+            Some(&mut fs[..]),
         )
-    } == 0
+    }
+    .is_err()
     {
         return false;
     }
@@ -263,7 +252,7 @@ impl NtfsFileMetadataReader {
         let volume_path = format!("\\\\.\\{}:", drive_letter);
         let volume = fs::OpenOptions::new()
             .read(true)
-            .share_mode((FILE_SHARE_READ | FILE_SHARE_WRITE) as u32)
+            .share_mode((FILE_SHARE_READ | FILE_SHARE_WRITE).0)
             // $MFT is read in whole runs in order; letting the system pre-read makes use of the disk's parallel capability
             .custom_flags(FILE_FLAG_SEQUENTIAL_SCAN)
             .open(&volume_path)

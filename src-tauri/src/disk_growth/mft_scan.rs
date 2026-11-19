@@ -15,8 +15,9 @@ use std::fs;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Instant, UNIX_EPOCH};
 
-use winapi::um::fileapi::GetDriveTypeW;
-use winapi::um::winbase::DRIVE_FIXED;
+use windows::core::PCWSTR;
+use windows::Win32::Storage::FileSystem::GetDriveTypeW;
+use windows::Win32::System::WindowsProgramming::DRIVE_FIXED;
 
 use crate::scanner::big_files_engine::mft_core;
 
@@ -246,7 +247,8 @@ where
 
 fn ensure_fixed_drive(root: &str) -> Result<(), String> {
     let wide: Vec<u16> = root.encode_utf16().chain(std::iter::once(0)).collect();
-    let drive_type = unsafe { GetDriveTypeW(wide.as_ptr()) };
+    // SAFETY: wide is a NUL-terminated wide string and lives for the whole call
+    let drive_type = unsafe { GetDriveTypeW(PCWSTR::from_raw(wide.as_ptr())) };
     if drive_type != DRIVE_FIXED {
         return Err(format!("仅支持固定磁盘扫描: {}", root));
     }

@@ -88,16 +88,8 @@ fn calculate_disk_score(drive_letter: Option<&str>) -> (f64, u32) {
     {
         use std::ffi::OsStr;
         use std::os::windows::ffi::OsStrExt;
-
-        #[link(name = "kernel32")]
-        extern "system" {
-            fn GetDiskFreeSpaceExW(
-                lpDirectoryName: *const u16,
-                lpFreeBytesAvailableToCaller: *mut u64,
-                lpTotalNumberOfBytes: *mut u64,
-                lpTotalNumberOfFreeBytes: *mut u64,
-            ) -> i32;
-        }
+        use windows::core::PCWSTR;
+        use windows::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
 
         // Default to the system drive; after a top-bar switch, use the selected partition; the drive letter is already normalized in disk_score_root
         let drive_root = disk_score_root(drive_letter);
@@ -110,16 +102,18 @@ fn calculate_disk_score(drive_letter: Option<&str>) -> (f64, u32) {
         let mut total_bytes: u64 = 0;
         let mut _total_free: u64 = 0;
 
+        // SAFETY: path is NUL-terminated and the three u64 out-params live for
+        // the whole duration of the call
         let success = unsafe {
             GetDiskFreeSpaceExW(
-                path.as_ptr(),
-                &mut free_bytes,
-                &mut total_bytes,
-                &mut _total_free,
+                PCWSTR::from_raw(path.as_ptr()),
+                Some(&mut free_bytes),
+                Some(&mut total_bytes),
+                Some(&mut _total_free),
             )
         };
 
-        if success != 0 && total_bytes > 0 {
+        if success.is_ok() && total_bytes > 0 {
             let free_percent = (free_bytes as f64 / total_bytes as f64) * 100.0;
             let score = if free_percent >= 30.0 {
                 40

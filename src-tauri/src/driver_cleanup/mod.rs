@@ -1229,34 +1229,26 @@ fn decode_windows_output(raw: &[u8]) -> String {
 
     // pnputil's non-XML output usually uses the system OEM code page; call Windows NLS conversion to avoid Chinese becoming replacement characters.
     use std::os::windows::ffi::OsStringExt;
-    use winapi::shared::ntdef::LPCCH;
-    use winapi::um::stringapiset::MultiByteToWideChar;
-    use winapi::um::winnls::CP_UTF8;
-    use winapi::um::winnls::{GetOEMCP, CP_ACP};
+    use windows::Win32::Globalization::{
+        GetOEMCP, MultiByteToWideChar, CP_ACP, CP_UTF8, MULTI_BYTE_TO_WIDE_CHAR_FLAGS,
+    };
     let code_pages = [unsafe { GetOEMCP() }, CP_ACP, CP_UTF8];
     for code_page in code_pages {
-        let wide_length = unsafe {
-            MultiByteToWideChar(
-                code_page,
-                0,
-                raw.as_ptr() as LPCCH,
-                raw.len() as i32,
-                std::ptr::null_mut(),
-                0,
-            )
-        };
+        // SAFETY: raw outlives the call; passing None only queries the required length
+        let wide_length =
+            unsafe { MultiByteToWideChar(code_page, MULTI_BYTE_TO_WIDE_CHAR_FLAGS(0), raw, None) };
         if wide_length <= 0 {
             continue;
         }
         let mut wide = vec![0u16; wide_length as usize];
+        // SAFETY: wide is sized to the length reported by the first call, so the API
+        // never writes past the end of the buffer
         let converted = unsafe {
             MultiByteToWideChar(
                 code_page,
-                0,
-                raw.as_ptr() as LPCCH,
-                raw.len() as i32,
-                wide.as_mut_ptr(),
-                wide.len() as i32,
+                MULTI_BYTE_TO_WIDE_CHAR_FLAGS(0),
+                raw,
+                Some(&mut wide),
             )
         };
         if converted > 0 {

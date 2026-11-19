@@ -5,7 +5,7 @@
 //! the original drive letter — users think "my C drive is not that big" and cannot tell the directory is not actually on C anymore.
 //! So here we resolve both "where this link points from and to" and "the final landing location" and hand them to the UI.
 //!
-//! Uses only four kernel32 functions, no new dependencies:
+//! Uses only four kernel32 functions via the `windows` crate:
 //! - `GetFileAttributesW` determines whether it is a reparse point
 //! - `CreateFileW(..., FILE_FLAG_OPEN_REPARSE_POINT)` + `DeviceIoControl(FSCTL_GET_REPARSE_POINT)`
 //!   reads the tag, used to distinguish junctions from symlinks
@@ -19,41 +19,19 @@ use std::ffi::OsStr;
 use std::os::windows::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
-const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
-const INVALID_FILE_ATTRIBUTES: u32 = 0xFFFF_FFFF;
-const GENERIC_READ: u32 = 0x8000_0000;
-const FILE_SHARE_ALL: u32 = 0x1 | 0x2 | 0x4;
-const OPEN_EXISTING: u32 = 3;
-const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
-const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+use windows::core::PCWSTR;
+use windows::Win32::Storage::FileSystem::{
+    CreateFileW, GetFileAttributesW, FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS,
+    FILE_FLAG_OPEN_REPARSE_POINT, FILE_GENERIC_READ, FILE_SHARE_MODE, FILE_SHARE_READ,
+    FILE_SHARE_WRITE, INVALID_FILE_ATTRIBUTES, OPEN_EXISTING,
+};
+use windows::Win32::System::IO::DeviceIoControl;
+
+// Numeric-only constants kept local: pulling them in would require the
+// Win32_System_Ioctl / Win32_System_SystemServices features for three u32s.
 const FSCTL_GET_REPARSE_POINT: u32 = 0x0009_00A8;
 const IO_REPARSE_TAG_MOUNT_POINT: u32 = 0xA000_0003;
 const IO_REPARSE_TAG_SYMLINK: u32 = 0xA000_000C;
-
-#[link(name = "kernel32")]
-extern "system" {
-    fn GetFileAttributesW(name: *const u16) -> u32;
-    fn CreateFileW(
-        name: *const u16,
-        desired_access: u32,
-        share_mode: u32,
-        security: *mut core::ffi::c_void,
-        creation: u32,
-        flags: u32,
-        template: *mut core::ffi::c_void,
-    ) -> *mut core::ffi::c_void;
-    fn DeviceIoControl(
-        device: *mut core::ffi::c_void,
-        code: u32,
-        in_buffer: *mut core::ffi::c_void,
-        in_size: u32,
-        out_buffer: *mut core::ffi::c_void,
-        out_size: u32,
-        returned: *mut u32,
-        overlapped: *mut core::ffi::c_void,
-    ) -> i32;
-    fn CloseHandle(handle: *mut core::ffi::c_void) -> i32;
-}
 
 /// Link type. The UI shows them separately — deleting a junction removes only the link; a symlink is similar in effect but different in origin,
 /// so seeing the concrete type tells users which tool to use to change it.
@@ -89,8 +67,9 @@ fn wide(value: &OsStr) -> Vec<u16> {
 }
 
 fn is_reparse_point(path: &Path) -> bool {
-    let attrs = unsafe { GetFileAttributesW(wide(path.as_os_str()).as_ptr()) };
-    attrs != INVALID_FILE_ATTRIBUTES && attrs & FILE_ATTRIBUTE_REPARSE_POINT != 0
+    // SAFETY: the path is a NUL-terminated wide string living for the whole call
+    let attrs = unsafe { GetFileAttributesW(PCWSTR::from_raw(wide(path.as_os_str()).as_ptr())) };
+    attrs != INVALID_FILE_ATTRIBUTES && attrs & FILE_ATTRIBUTE_REPARSE_POINT.0 != 0
 }
 
 /// Reads the tag of a reparse point. Returns `None` if unreadable (permissions / not a reparse point).
@@ -101,37 +80,41 @@ fn is_reparse_point(path: &Path) -> bool {
 fn reparse_tag(path: &Path) -> Option<u32> {
     const MAXIMUM_REPARSE_DATA_BUFFER_SIZE: usize = 16 * 1024;
 
-    let handle = unsafe {
+    // SAFETY: the path is a NUL-terminated wide string; the handle returned
+    // here closes itself via HANDLE::drop (H4 contract §4.2, never CloseHandle
+    // manually on a windows-crate HANDLE)
+    let handle = match unsafe {
         CreateFileW(
-            wide(path.as_os_str()).as_ptr(),
-            GENERIC_READ,
-            FILE_SHARE_ALL,
-            std::ptr::null_mut(),
+            PCWSTR::from_raw(wide(path.as_os_str()).as_ptr()),
+            FILE_GENERIC_READ.0,
+            FILE_SHARE_MODE(FILE_SHARE_READ.0 | FILE_SHARE_WRITE.0),
+            None,
             OPEN_EXISTING,
             FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
-            std::ptr::null_mut(),
+            None,
         )
+    } {
+        Ok(handle) => handle,
+        Err(_) => return None,
     };
-    if handle.is_null() || handle as isize == -1 {
-        return None;
-    }
 
     let mut buffer = vec![0u8; MAXIMUM_REPARSE_DATA_BUFFER_SIZE];
     let mut returned: u32 = 0;
+    // SAFETY: buffer is the full 16 KB the FSCTL may write; handle is valid
+    // from the CreateFileW check above
     let ok = unsafe {
         DeviceIoControl(
             handle,
             FSCTL_GET_REPARSE_POINT,
-            std::ptr::null_mut(),
+            None,
             0,
-            buffer.as_mut_ptr() as *mut core::ffi::c_void,
+            Some(buffer.as_mut_ptr() as *mut core::ffi::c_void),
             buffer.len() as u32,
-            &mut returned,
-            std::ptr::null_mut(),
+            Some(&mut returned),
+            None,
         )
     };
-    unsafe { CloseHandle(handle) };
-    if ok == 0 || returned < 4 {
+    if ok.is_err() || returned < 4 {
         return None;
     }
     Some(u32::from_le_bytes([

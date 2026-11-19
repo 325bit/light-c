@@ -265,75 +265,61 @@ fn unprotect_key(stored: &str) -> String {
 }
 
 fn dpapi_protect(plain: &[u8]) -> Option<Vec<u8>> {
-    use winapi::shared::minwindef::LPVOID;
-    use winapi::um::dpapi::CryptProtectData;
-    use winapi::um::winbase::LocalFree;
-    use winapi::um::wincrypt::DATA_BLOB;
+    use windows::core::PCWSTR;
+    use windows::Win32::Foundation::{LocalFree, HLOCAL};
+    use windows::Win32::Security::Cryptography::{CryptProtectData, CRYPT_INTEGER_BLOB};
 
     let mut buffer = plain.to_vec();
-    let mut input = DATA_BLOB {
+    let input = CRYPT_INTEGER_BLOB {
         cbData: buffer.len() as u32,
         pbData: buffer.as_mut_ptr(),
     };
-    let mut output = DATA_BLOB {
+    let mut output = CRYPT_INTEGER_BLOB {
         cbData: 0,
         pbData: std::ptr::null_mut(),
     };
-    let ok = unsafe {
-        CryptProtectData(
-            &mut input,
-            std::ptr::null(),
-            std::ptr::null_mut(),
-            std::ptr::null_mut(),
-            std::ptr::null_mut(),
-            0,
-            &mut output,
-        )
-    };
-    if ok == 0 {
+    // SAFETY: input points at buffer, which lives for the whole call; output
+    // receives an API-allocated buffer that is copied out and LocalFree'd below
+    let result =
+        unsafe { CryptProtectData(&input, PCWSTR::null(), None, None, None, 0, &mut output) };
+    if result.is_err() {
         return None;
     }
+    // SAFETY: on success the API guarantees output points at cbData bytes
     let encrypted =
         unsafe { std::slice::from_raw_parts(output.pbData, output.cbData as usize).to_vec() };
+    // SAFETY: the buffer was allocated by CryptProtectData with LocalAlloc semantics
     unsafe {
-        LocalFree(output.pbData as LPVOID);
+        LocalFree(Some(HLOCAL(output.pbData as *mut core::ffi::c_void)));
     }
     Some(encrypted)
 }
 
 fn dpapi_unprotect(encrypted: &[u8]) -> Option<Vec<u8>> {
-    use winapi::shared::minwindef::LPVOID;
-    use winapi::um::dpapi::CryptUnprotectData;
-    use winapi::um::winbase::LocalFree;
-    use winapi::um::wincrypt::DATA_BLOB;
+    use windows::Win32::Foundation::{LocalFree, HLOCAL};
+    use windows::Win32::Security::Cryptography::{CryptUnprotectData, CRYPT_INTEGER_BLOB};
 
     let mut buffer = encrypted.to_vec();
-    let mut input = DATA_BLOB {
+    let input = CRYPT_INTEGER_BLOB {
         cbData: buffer.len() as u32,
         pbData: buffer.as_mut_ptr(),
     };
-    let mut output = DATA_BLOB {
+    let mut output = CRYPT_INTEGER_BLOB {
         cbData: 0,
         pbData: std::ptr::null_mut(),
     };
-    let ok = unsafe {
-        CryptUnprotectData(
-            &mut input,
-            std::ptr::null_mut(),
-            std::ptr::null_mut(),
-            std::ptr::null_mut(),
-            std::ptr::null_mut(),
-            0,
-            &mut output,
-        )
-    };
-    if ok == 0 {
+    // SAFETY: input points at buffer, which lives for the whole call; output
+    // receives an API-allocated buffer that is copied out and LocalFree'd below
+    let result = unsafe { CryptUnprotectData(&input, None, None, None, None, 0, &mut output) };
+    if result.is_err() {
         return None;
     }
+    // SAFETY: on success the API guarantees output points at cbData bytes
     let plain =
         unsafe { std::slice::from_raw_parts(output.pbData, output.cbData as usize).to_vec() };
+    // SAFETY: the buffer was allocated by CryptUnprotectData with LocalAlloc semantics
     unsafe {
-        LocalFree(output.pbData as LPVOID);
+        LocalFree(Some(HLOCAL(output.pbData as *mut core::ffi::c_void)));
     }
     Some(plain)
 }

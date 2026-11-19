@@ -1721,13 +1721,14 @@ enum SearchServiceState {
 
 /// Query the Windows Search service status (Service Control Manager + registry startup type)
 fn get_wsearch_service_state() -> SearchServiceState {
-    use winapi::um::winsvc::{
+    use windows::core::PCWSTR;
+    use windows::Win32::System::Services::{
         CloseServiceHandle, OpenSCManagerW, OpenServiceW, QueryServiceStatus, SC_MANAGER_CONNECT,
         SERVICE_QUERY_STATUS, SERVICE_RUNNING, SERVICE_STATUS,
     };
 
     #[cfg(target_os = "windows")]
-    unsafe {
+    {
         use std::os::windows::ffi::OsStrExt;
         // Registry startup type: 4 = disabled; when disabled, the rebuild interface cannot be invoked via COM
         let start_disabled = {
@@ -1746,31 +1747,41 @@ fn get_wsearch_service_state() -> SearchServiceState {
             return SearchServiceState::Disabled;
         }
 
-        let scm = OpenSCManagerW(
-            std::ptr::null_mut(),
-            std::ptr::null_mut(),
-            SC_MANAGER_CONNECT,
-        );
-        if scm.is_null() {
-            return SearchServiceState::NotInstalled;
-        }
+        // SAFETY: no machine/service name is passed (local machine, services
+        // database default); SC_HANDLE values are closed on every path below
+        let scm = unsafe { OpenSCManagerW(PCWSTR::null(), None, SC_MANAGER_CONNECT) };
+        let scm = match scm {
+            Ok(handle) => handle,
+            Err(_) => return SearchServiceState::NotInstalled,
+        };
 
         let service_name: Vec<u16> = std::ffi::OsStr::new("WSearch")
             .encode_wide()
             .chain(Some(0))
             .collect();
-        let service = OpenServiceW(scm, service_name.as_ptr(), SERVICE_QUERY_STATUS);
-        if service.is_null() {
-            CloseServiceHandle(scm);
-            return SearchServiceState::NotInstalled;
-        }
+        // SAFETY: service_name is NUL-terminated; scm is valid from the check above
+        let service = unsafe {
+            OpenServiceW(
+                scm,
+                PCWSTR::from_raw(service_name.as_ptr()),
+                SERVICE_QUERY_STATUS,
+            )
+        };
+        let service = match service {
+            Ok(handle) => handle,
+            Err(_) => {
+                let _ = unsafe { CloseServiceHandle(scm) };
+                return SearchServiceState::NotInstalled;
+            }
+        };
 
-        let mut status: SERVICE_STATUS = std::mem::zeroed();
-        let ok = QueryServiceStatus(service, &mut status);
-        CloseServiceHandle(service);
-        CloseServiceHandle(scm);
+        let mut status: SERVICE_STATUS = unsafe { std::mem::zeroed() };
+        // SAFETY: status is zeroed before the call and service is a valid handle
+        let ok = unsafe { QueryServiceStatus(service, &mut status) };
+        let _ = unsafe { CloseServiceHandle(service) };
+        let _ = unsafe { CloseServiceHandle(scm) };
 
-        if ok == 0 {
+        if ok.is_err() {
             return SearchServiceState::Stopped;
         }
         match status.dwCurrentState {

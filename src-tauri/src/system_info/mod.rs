@@ -52,7 +52,9 @@ pub fn system_root_dir() -> std::path::PathBuf {
 pub fn gather() -> Result<SystemInfo, String> {
     #[cfg(target_os = "windows")]
     {
-        use winapi::um::sysinfoapi::{GetSystemInfo, SYSTEM_INFO};
+        use windows::Win32::System::SystemInformation::{
+            GetSystemInfo, GetTickCount64, SYSTEM_INFO,
+        };
 
         let os_version = get_windows_version();
         let os_arch = get_arch_string();
@@ -65,7 +67,7 @@ pub fn gather() -> Result<SystemInfo, String> {
             sys_info.dwNumberOfProcessors
         };
         let (total_memory, available_memory) = get_memory_info();
-        let uptime_seconds = unsafe { winapi::um::sysinfoapi::GetTickCount64() / 1000 };
+        let uptime_seconds = unsafe { GetTickCount64() / 1000 };
 
         Ok(SystemInfo {
             os_name: "Microsoft Windows".to_string(),
@@ -102,11 +104,13 @@ fn get_arch_string() -> String {
 fn get_memory_info() -> (u64, u64) {
     #[cfg(target_os = "windows")]
     {
-        use winapi::um::sysinfoapi::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
+        use windows::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
         unsafe {
             let mut mem_status: MEMORYSTATUSEX = std::mem::zeroed();
             mem_status.dwLength = std::mem::size_of::<MEMORYSTATUSEX>() as u32;
-            if GlobalMemoryStatusEx(&mut mem_status) != 0 {
+            // SAFETY: mem_status is initialized with dwLength set before the call,
+            // and the API only writes into it
+            if GlobalMemoryStatusEx(&mut mem_status).is_ok() {
                 (mem_status.ullTotalPhys, mem_status.ullAvailPhys)
             } else {
                 (0, 0)
