@@ -71,8 +71,11 @@ impl DeleteEngine {
                     debug!("已标记重启删除: {}", path);
                 }
                 DeleteOutcome::Failed(e) => {
+                    // Log before the error is moved into the result. The warning
+                    // used to carry the path alone, so the log could say a delete
+                    // failed but never why — the reason only reached the UI.
+                    warn!("删除失败: {}: {e}", path);
                     result.add_failure(path.clone(), e);
-                    warn!("删除失败: {}", path);
                 }
             }
         }
