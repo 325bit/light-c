@@ -41,3 +41,6 @@ release.ps1
 
 # Machine-readable output of the i18n audit script (rewritten on every run, for local debugging only)
 .i18n-audit.json
+
+# Local packaging script transcript log
+pack-local-run.log
