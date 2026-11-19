@@ -498,50 +498,94 @@ where
     }
 }
 
+/// One directory's aggregated usage, kept in a single map instead of the former size/mtime pair.
+#[derive(Clone, Copy, Default)]
+struct DirStat {
+    size: u64,
+    /// Newest file modification time inside the subtree (seconds since the epoch).
+    modified: i64,
+}
+
+/// Aggregate file sizes into directory totals, bottom-up.
+///
+/// The previous implementation walked **from every file up to the root**, adding the size at each
+/// ancestor that sat within `max_depth`. Two problems: on a 1M-file volume with an average depth of 8-10
+/// that is 8-10 hash lookups plus 8-10 updates per file, and the loop itself was not bounded by
+/// `max_depth` — deep files paid the full depth although only their first four levels were kept.
+///
+/// Now every file touches its direct parent once, then each directory hands its total to its parent,
+/// deepest level first. That is O(files + directories) no matter how deep the tree is, and the numbers
+/// are identical: every directory still carries the sum and newest mtime of its whole subtree, and only
+/// levels up to `max_depth` are emitted.
 fn aggregate_directories(
     file_sizes: &[FileSizeRecord],
     directory_index: &HashMap<u64, DirectoryInfo>,
     max_depth: u8,
 ) -> Vec<DirSizeEntry> {
-    let mut size_by_dir: HashMap<u64, u64> = HashMap::new();
-    let mut modified_by_dir: HashMap<u64, i64> = HashMap::new();
+    let mut stats: HashMap<u64, DirStat> = HashMap::with_capacity(directory_index.len() / 4 + 1);
 
     for record in file_sizes {
-        let mut current_id = record.parent_id;
-        let mut guard = 0usize;
+        // A file whose parent is not in the index is unreachable from the root and is ignored, as before.
+        if !directory_index.contains_key(&record.parent_id) {
+            continue;
+        }
+        let stat = stats.entry(record.parent_id).or_default();
+        stat.size = stat.size.saturating_add(record.size);
+        // A directory's own mtime on Windows does not necessarily reflect child file changes; aggregate the newest file modification time within the subtree instead, closer to the "change time" users care about.
+        if record.modified > stat.modified {
+            stat.modified = record.modified;
+        }
+    }
 
-        while let Some(directory) = directory_index.get(&current_id) {
-            if directory.depth <= max_depth {
-                *size_by_dir.entry(current_id).or_insert(0) += record.size;
-                // A directory's own mtime on Windows does not necessarily reflect child file changes; aggregate the newest file modification time within the subtree instead, closer to the "change time" users care about.
-                let modified = modified_by_dir.entry(current_id).or_insert(0);
-                if record.modified > *modified {
-                    *modified = record.modified;
-                }
+    // Bucket directories by depth once, then propagate from the deepest level up so that a parent always
+    // receives complete child totals (by the time a level is processed, all of its children are done).
+    let deepest_depth = directory_index
+        .values()
+        .map(|directory| directory.depth)
+        .max()
+        .unwrap_or(0);
+    let mut ids_by_depth: Vec<Vec<u64>> = vec![Vec::new(); deepest_depth as usize + 1];
+    for (directory_id, directory) in directory_index {
+        if let Some(bucket) = ids_by_depth.get_mut(directory.depth as usize) {
+            bucket.push(*directory_id);
+        }
+    }
+
+    for level in (1..ids_by_depth.len()).rev() {
+        for directory_id in &ids_by_depth[level] {
+            let Some(stat) = stats.get(directory_id).copied() else {
+                continue;
+            };
+            let Some(directory) = directory_index.get(directory_id) else {
+                continue;
+            };
+            // The root has no parent; a directory pointing at itself is corrupt and must not loop.
+            if directory.parent_id == 0 || directory.parent_id == *directory_id {
+                continue;
             }
-
-            if directory.parent_id == 0 || directory.parent_id == current_id {
-                break;
+            if !directory_index.contains_key(&directory.parent_id) {
+                continue;
             }
-
-            current_id = directory.parent_id;
-            guard += 1;
-            if guard > 128 {
-                // Extremely abnormal MFT parent chains may cycle or be too deep; truncate directly to ensure the whole scan can finish.
-                break;
+            let parent = stats.entry(directory.parent_id).or_default();
+            parent.size = parent.size.saturating_add(stat.size);
+            if stat.modified > parent.modified {
+                parent.modified = stat.modified;
             }
         }
     }
 
-    let mut entries: Vec<DirSizeEntry> = size_by_dir
+    let mut entries: Vec<DirSizeEntry> = stats
         .into_iter()
-        .filter_map(|(directory_id, size)| {
+        .filter_map(|(directory_id, stat)| {
             let directory = directory_index.get(&directory_id)?;
+            if directory.depth > max_depth {
+                return None;
+            }
             Some(DirSizeEntry {
                 depth: directory.depth,
                 path: directory.path.clone(),
-                size,
-                modified: modified_by_dir.get(&directory_id).copied().unwrap_or(0),
+                size: stat.size,
+                modified: stat.modified,
             })
         })
         .collect();
@@ -769,5 +813,137 @@ mod tests {
         let files = collect_file_records(&entries, &index);
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].path, "c:/users/evan/desktop/report.txt");
+    }
+
+    /// The previous per-file ancestor walk, kept only as the oracle for the equivalence test below.
+    fn aggregate_directories_per_file_walk(
+        file_sizes: &[FileSizeRecord],
+        directory_index: &HashMap<u64, DirectoryInfo>,
+        max_depth: u8,
+    ) -> Vec<DirSizeEntry> {
+        let mut size_by_dir: HashMap<u64, u64> = HashMap::new();
+        let mut modified_by_dir: HashMap<u64, i64> = HashMap::new();
+
+        for record in file_sizes {
+            let mut current_id = record.parent_id;
+            let mut guard = 0usize;
+
+            while let Some(directory) = directory_index.get(&current_id) {
+                if directory.depth <= max_depth {
+                    *size_by_dir.entry(current_id).or_insert(0) += record.size;
+                    let modified = modified_by_dir.entry(current_id).or_insert(0);
+                    if record.modified > *modified {
+                        *modified = record.modified;
+                    }
+                }
+
+                if directory.parent_id == 0 || directory.parent_id == current_id {
+                    break;
+                }
+
+                current_id = directory.parent_id;
+                guard += 1;
+                if guard > 128 {
+                    break;
+                }
+            }
+        }
+
+        let mut entries: Vec<DirSizeEntry> = size_by_dir
+            .into_iter()
+            .filter_map(|(directory_id, size)| {
+                let directory = directory_index.get(&directory_id)?;
+                Some(DirSizeEntry {
+                    depth: directory.depth,
+                    path: directory.path.clone(),
+                    size,
+                    modified: modified_by_dir.get(&directory_id).copied().unwrap_or(0),
+                })
+            })
+            .collect();
+
+        entries.sort_by(|left, right| {
+            right
+                .size
+                .cmp(&left.size)
+                .then_with(|| left.path.cmp(&right.path))
+        });
+        entries
+    }
+
+    /// Bottom-up propagation must produce exactly what the per-file ancestor walk produced.
+    ///
+    /// This is the gate for swapping the algorithm: these entries become the snapshot that the next scan is
+    /// compared against, so one wrong byte turns into phantom growth in the user's UI. The fixture covers
+    /// the places where the two implementations could drift: files deeper than `max_depth`, a branch
+    /// unreachable from the root, an empty directory, and equal sizes that exercise the path tie-break.
+    #[test]
+    fn bottom_up_aggregation_matches_the_per_file_walk() {
+        let entry =
+            |mft_id: u64, parent_id: u64, name: &str, is_dir: bool, size: u64, has_data: bool| {
+                RawEntry {
+                    mft_id,
+                    parent_id,
+                    name: name.to_string(),
+                    is_dir,
+                    size,
+                    modified: 0,
+                    has_data_stream: has_data,
+                }
+            };
+        let entries = vec![
+            entry(ROOT_MFT_ID, ROOT_MFT_ID, ".", true, 0, false),
+            entry(26, ROOT_MFT_ID, "Users", true, 0, false),
+            entry(30, 26, "Evan", true, 0, false),
+            entry(31, 30, "Desktop", true, 0, false),
+            entry(32, 31, "Deep", true, 0, false),
+            entry(33, 32, "Deeper", true, 0, false),
+            entry(34, 33, "DeeperStill", true, 0, false),
+            entry(35, 26, "Empty", true, 0, false),
+            // Parent 999 is not an MFT record: the whole branch is unreachable from the root
+            entry(50, 999, "orphan", true, 0, false),
+            entry(40, 31, "report.txt", false, 100, true),
+            // Depth 6: only its first four ancestor levels may be emitted
+            entry(41, 34, "deep.bin", false, 700, true),
+            entry(42, 30, "a.bin", false, 200, true),
+            // Same size as a.bin: the tie-break must still be by path
+            entry(43, 30, "b.bin", false, 200, true),
+            entry(44, 50, "orphan.bin", false, 999, true),
+        ];
+
+        let index = build_directory_index(&entries, "C:\\");
+        let files: Vec<FileSizeRecord> = entries
+            .iter()
+            .filter(|entry| !entry.is_dir)
+            .map(|entry| FileSizeRecord {
+                parent_id: entry.parent_id,
+                path: entry.name.clone(),
+                size: entry.size,
+                // Distinct timestamps so a dropped `max` shows up as a diff
+                modified: 1_700_000_000 + entry.mft_id as i64,
+            })
+            .collect();
+
+        let legacy = aggregate_directories_per_file_walk(&files, &index, DEFAULT_MAX_DEPTH);
+        let bottom_up = aggregate_directories(&files, &index, DEFAULT_MAX_DEPTH);
+
+        let describe = |entries: &[DirSizeEntry]| -> Vec<(String, u64, u8, i64)> {
+            entries
+                .iter()
+                .map(|entry| (entry.path.clone(), entry.size, entry.depth, entry.modified))
+                .collect()
+        };
+        assert_eq!(describe(&legacy), describe(&bottom_up));
+
+        // Deep files must still roll up into the last emitted level, but not leak past the depth limit.
+        assert!(bottom_up
+            .iter()
+            .all(|entry| entry.depth <= DEFAULT_MAX_DEPTH));
+        let deep = bottom_up
+            .iter()
+            .find(|entry| entry.path == "c:/users/evan/desktop/deep")
+            .expect("depth 4 directory should be emitted");
+        assert_eq!(deep.size, 700, "文件深度超过上限时仍要汇总到第 4 层");
+        assert_eq!(deep.modified, 1_700_000_041, "最深的文件时间要冒泡到祖先");
     }
 }
