@@ -346,11 +346,15 @@ fn one_rejected_recycle_path_does_not_fail_the_remaining_entries() {
 /// genuine `$R`/`$I` pair via the shell, then the engine deletes the `$R` path
 /// and the pair disappears completely.
 ///
-/// Ignored because it mutates the real recycle bin of the machine it runs on.
-/// Run manually with `cargo test --test recycle_delete -- --ignored`; needs a
-/// normal user session (no elevation) on a volume with a `$Recycle.Bin`.
+/// Ignored because it mutates the real recycle bin of the machine it runs on,
+/// and because it needs a *quiet* bin: while another process is filling the
+/// bin (dataset builders) or emptying it (baseline wipes), a freshly sent
+/// entry can be swept before this test finds it, which would report a false
+/// failure. Run manually on an idle machine with
+/// `cargo test --test recycle_delete -- --ignored`; needs a normal user
+/// session (no elevation) on a volume with a `$Recycle.Bin`.
 #[test]
-#[ignore = "touches the real recycle bin: sends one real entry through the shell and deletes it for real; run explicitly with --ignored, no elevation required"]
+#[ignore = "touches the real recycle bin: sends one real entry through the shell and deletes it for real; run explicitly with --ignored on an idle machine (no elevation, no concurrent bin writes/wipes)"]
 fn recycle_bin_round_trip_deletes_both_pair_halves() {
     const PAYLOAD: &[u8] = b"lightc integration test payload";
 
