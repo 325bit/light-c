@@ -91,7 +91,7 @@ pub fn scan_full_drive(
                         root,
                         max_depth,
                         track_modified,
-                        cancel_flag,
+                        Some(cancel_flag),
                         true, // ignore system directories when falling back, to keep performance
                     );
                     (map, HotspotBackend::Walkdir)
@@ -104,7 +104,7 @@ pub fn scan_full_drive(
                 root,
                 max_depth,
                 track_modified,
-                cancel_flag,
+                Some(cancel_flag),
                 true,
             );
             (map, HotspotBackend::Walkdir)

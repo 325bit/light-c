@@ -8,7 +8,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::{Instant, SystemTime};
 use tauri::Emitter;
 
@@ -378,14 +378,15 @@ impl HotspotScanner {
                                          // Modified time is never collected: the only mode that wanted it (Accurate) had no
                                          // constructor left after the dead "accuracy mode" API was removed (M11).
         let track_modified = false;
-        let cancel_flag = AtomicBool::new(false); // AppData scans do not support cancellation
 
-        // Single jwalk traversal of AppData, aggregating ancestors at all levels
+        // Single jwalk traversal of AppData, aggregating ancestors at all levels.
+        // No cancellation support in this mode (existing product decision, L8):
+        // pass None instead of a fabricated never-set flag.
         let (root_stats, ancestor_map) = aggregate_ancestor_stats(
             &appdata_path,
             max_depth,
             track_modified,
-            &cancel_flag,
+            None,
             true, /* AppData scan with no system directories */
         );
 
@@ -599,7 +600,7 @@ impl HotspotScanner {
                         dir,
                         max_depth,
                         track_modified,
-                        cancel_flag,
+                        Some(cancel_flag),
                         self.ignore_system_dirs,
                     );
 
@@ -1251,14 +1252,12 @@ impl HotspotScanner {
             return Err(format!("路径不是文件夹: {}", path));
         }
 
-        // Single WalkDir + ancestor aggregation (max_depth=4, Fast mode)
-        let cancel_flag = AtomicBool::new(false);
+        // Single WalkDir + ancestor aggregation (max_depth=4, Fast mode).
+        // No cancellation support in this mode (existing product decision, L8).
         let (_root_stats, ancestor_map) = aggregate_ancestor_stats(
-            &target,
-            4,     // max_depth
+            &target, 4,     // max_depth
             false, // track_modified (fast mode)
-            &cancel_flag,
-            true, // path drill-down: no system directories in this context
+            None, true, // path drill-down: no system directories in this context
         );
 
         let mut entries: Vec<HotspotEntry> = ancestor_map

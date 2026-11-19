@@ -28,7 +28,7 @@ pub fn aggregate_ancestor_stats(
     root: &Path,
     max_depth: u8,
     track_modified: bool,
-    cancel_flag: &AtomicBool,
+    cancel_flag: Option<&AtomicBool>,
     ignore_system_dirs: bool,
 ) -> (FolderStats, HashMap<PathBuf, FolderStats>) {
     let mut root_stats = FolderStats {
@@ -59,8 +59,10 @@ pub fn aggregate_ancestor_stats(
         .into_iter();
 
     for entry in walker {
-        // Cancellation check
-        if cancel_flag.load(Ordering::SeqCst) {
+        // Cancellation check. Callers whose mode has no cancellation support
+        // (AppData scan, path drill-down) pass None, instead of fabricating a
+        // never-set AtomicBool just to satisfy the old signature (L8).
+        if cancel_flag.is_some_and(|flag| flag.load(Ordering::SeqCst)) {
             break;
         }
 
