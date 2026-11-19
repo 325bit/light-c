@@ -363,6 +363,27 @@ fn scan_drive_via_mft(
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
     );
+    // 未命中的 parent 到底是什么记录：如果它也是同名 SID 目录，说明盘上存在两个
+    // 同名目录（比如曾被整体回收再重建），定位策略需要跟着改。
+    let unmatched_detail: Vec<String> = unmatched_parents
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .iter()
+        .map(
+            |parent_id| match records.iter().find(|record| record.mft_id == *parent_id) {
+                Some(record) => format!(
+                    "mft_id {} name={:?} is_dir={} parent_id {}",
+                    record.mft_id, record.name, record.is_dir, record.parent_id
+                ),
+                None => format!("mft_id {parent_id}: <不在已解析记录中（fixup 失败或空闲记录）>"),
+            },
+        )
+        .collect();
+    info!(
+        "[回收站扫描耗时] mft {}: 未命中 parent 详情 [{}]",
+        drive_letter,
+        unmatched_detail.join("; ")
+    );
 
     // ---- $R 配对：与 fs 路径同语义——孤儿 $I 丢弃，$R 目录标记 is_dir ----
     let mut data_dirs: HashMap<String, bool> = HashMap::new();
