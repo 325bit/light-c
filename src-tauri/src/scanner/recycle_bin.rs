@@ -299,7 +299,13 @@ fn scan_drive_via_mft(
     // 完整 SID 字符串匹配永远落空（本轮 gate 的失败根因）。
     let pass1_started = Instant::now();
     let sid_dir_id = sid_dir_record_id_via_handle(sid_path)?;
-    let (records, _stats) = reader.read_all_records_all_names(&|_| true)?;
+    let (records, pass1_stats) = reader.read_all_records_all_names(&|_| true)?;
+    // P2-5（并行解析）的门槛判据是 parse_ms ≥ 0.5 × io_ms，而这两个数只有真机 $MFT 才测得到：
+    // 其他 5 个消费方都把它记进各自的结果结构，回收站这条路径此前丢掉了，这里至少留一份到日志。
+    info!(
+        "[回收站扫描耗时] mft {}: 第一遍流水线 io {}ms / parse {}ms（P2-5 门槛判据）",
+        drive_letter, pass1_stats.io_ms, pass1_stats.parse_ms
+    );
     let recycle_root_ids: HashSet<u64> = records
         .iter()
         .filter(|record| {
@@ -1021,7 +1027,7 @@ mod tests {
                     continue;
                 }
 
-                let (fs_entries, _) =
+                let (fs_entries, fs_timing) =
                     collect_drive_entries(&sid_path, drive_letter, &JunkCategory::RecycleBin);
                 let (mft_entries, mft_timing) = match scan_drive_via_mft(
                     drive_letter,
@@ -1042,6 +1048,15 @@ mod tests {
                 mft_timing.metadata_files,
                 mft_timing.non_resident_fallbacks,
             );
+                // 切生产的收益上限就在这一行：fs 枚举（read_dir + 并行 $I 读）的耗时从来没被记过，
+                // 没有它就说不清 MFT 两遍读到底省了多少
+                println!(
+                    "{drive_letter}: 盘 fs 计时：{} {}ms（read_dir {} + 并行 $I 读解析 {}）",
+                    fs_timing.backend,
+                    fs_timing.enumerate_ms + fs_timing.parse_ms,
+                    fs_timing.enumerate_ms,
+                    fs_timing.parse_ms,
+                );
 
                 // 稳定性判定：fs 前后两次快照必须一致，否则对照期间回收站发生了增删
                 // （并发噪声，不是路径语义差异），本次比较无效。
