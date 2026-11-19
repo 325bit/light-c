@@ -4,9 +4,10 @@
 // ============================================================================
 
 use super::{CategoryScanResult, FileInfo, JunkCategory};
+use crate::scanner::big_files_engine::mft_core;
 use log::{debug, info, warn};
 use rayon::prelude::*;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 #[cfg(windows)]
@@ -29,9 +30,37 @@ pub fn scan_current_user(category: &JunkCategory, result: &mut CategoryScanResul
         let mut entries = Vec::new();
         let scan_started = Instant::now();
         let mut timings: Vec<DrivePhaseTiming> = Vec::new();
+
+        // MFT 直读按盘路由（前置条件：管理员 + NTFS）：把 10 万次 $I 随机小文件读换成一次
+        // 顺序 $MFT 读（分相计时实测 fs 路径解析相 25.5s，全为随机 IO）。任一盘 MFT 失败都
+        // 逐盘降级到 fs 路径，绝不让整次扫描因新路径失败而变空。
+        let mft_preconditions = mft_core::is_elevated();
         for drive_letter in crate::sys_drive::existing_drive_letters() {
             let sid_path = PathBuf::from(format!("{}:\\$Recycle.Bin\\{}", drive_letter, user_sid));
-            let (drive_entries, timing) = collect_drive_entries(&sid_path, drive_letter, category);
+            let (drive_entries, timing);
+            if mft_preconditions && mft_core::is_ntfs(drive_letter) {
+                match scan_drive_via_mft(drive_letter, &sid_path, &user_sid, category) {
+                    Ok((mft_entries, mft_timing)) => {
+                        drive_entries = mft_entries;
+                        timing = mft_timing;
+                    }
+                    Err(error) => {
+                        warn!(
+                            "{} 盘回收站 MFT 直读失败，降级为目录枚举: {}",
+                            drive_letter, error
+                        );
+                        let (fs_entries, fs_timing) =
+                            collect_drive_entries(&sid_path, drive_letter, category);
+                        drive_entries = fs_entries;
+                        timing = fs_timing;
+                    }
+                }
+            } else {
+                let (fs_entries, fs_timing) =
+                    collect_drive_entries(&sid_path, drive_letter, category);
+                drive_entries = fs_entries;
+                timing = fs_timing;
+            }
             timings.push(timing);
             entries.extend(drive_entries);
         }
@@ -72,20 +101,28 @@ pub fn is_current_user_entry_path(path: &str) -> bool {
 
 #[cfg(windows)]
 /// Per-drive phase timing of the dedicated recycle-bin scan, collected for the
-/// 23s wall-clock diagnosis: enumerate (read_dir + $I/$R pairing) vs parse
+/// wall-clock diagnosis: enumerate (read_dir + $I/$R pairing) vs parse
 /// (parallel $I file reads) have different cost structures and different fixes.
 struct DrivePhaseTiming {
+    /// `"mft"`（两遍 $MFT 顺序读）或 `"fs"`（read_dir + rayon 并行 $I 读）。
+    backend: &'static str,
     drive_letter: char,
-    /// read_dir enumeration + $I/$R pairing (serial, one thread).
+    /// fs: read_dir enumeration + $I/$R pairing (serial, one thread).
+    /// mft: 第一遍——全表顺序读并定位当前用户 SID 目录。
     enumerate_ms: u128,
-    /// Parallel $I metadata reads and parsing.
+    /// fs: parallel $I metadata reads and parsing.
+    /// mft: 第二遍——按 filter 提取 $I resident 内容并解析。
     parse_ms: u128,
-    /// Entries seen by read_dir ($I + $R + anything else in the SID dir).
+    /// fs: entries seen by read_dir ($I + $R + anything else in the SID dir).
+    /// mft: 全表活跃记录数（口径不同，仅供诊断，勿直接对比）。
     directory_entries: usize,
-    /// $I metadata files matched by the pairing.
+    /// fs: $I metadata files matched by the pairing.
+    /// mft: filter 命中且 resident 内容非空的记录数。
     metadata_files: usize,
     /// Recycle-bin entries emitted for this drive.
     found_entries: usize,
+    /// mft: content 缺失（非 resident 等）退化为单独 fs::read 的条目数；fs 恒 0。
+    non_resident_fallbacks: usize,
 }
 
 #[cfg(windows)]
@@ -102,12 +139,14 @@ fn collect_drive_entries(
             return (
                 Vec::new(),
                 DrivePhaseTiming {
+                    backend: "fs",
                     drive_letter,
                     enumerate_ms: drive_started.elapsed().as_millis(),
                     parse_ms: 0,
                     directory_entries: 0,
                     metadata_files: 0,
                     found_entries: 0,
+                    non_resident_fallbacks: 0,
                 },
             );
         }
@@ -183,30 +222,177 @@ fn collect_drive_entries(
     let parse_ms = parse_started.elapsed().as_millis();
 
     let timing = DrivePhaseTiming {
+        backend: "fs",
         drive_letter,
         enumerate_ms,
         parse_ms,
         directory_entries: seen_entries,
         metadata_files: metadata_count,
         found_entries: found.len(),
+        non_resident_fallbacks: 0,
     };
     (found, timing)
 }
 
-/// One info line per drive plus a wall-clock total: this is the data that
-/// decides how to parallelize the dedicated scanner (drives are scanned
-/// serially today, while $I reads already run on the rayon pool).
+/// One drive's recycle-bin entries via two sequential `$MFT` passes instead of
+/// ~100k random small-file reads (measured: fs-path parse phase 25.5s on D:,
+/// all of it random IO; a sequential `$MFT` read of the same drive is ~2s).
+///
+/// Pass 1 (existing `read_all_records`, untouched) locates the current user's
+/// SID directory on this drive — the range semantics must match the fs path,
+/// which only ever enumerates the current user's own SID folder.
+/// Pass 2 (new `read_all_records_with_resident_data`) re-reads sequentially and
+/// copies the resident `$DATA` of `$I` records whose parent is that SID folder.
+/// `$I` headers are always ≤ ~550 bytes, so their content is resident in practice;
+/// entries that come back with empty content fall back to one `fs::read` each.
+#[cfg(windows)]
+fn scan_drive_via_mft(
+    drive_letter: char,
+    sid_path: &Path,
+    user_sid: &str,
+    category: &JunkCategory,
+) -> Result<(Vec<FileInfo>, DrivePhaseTiming), String> {
+    let reader = mft_core::NtfsFileMetadataReader::open(drive_letter)?;
+
+    // ---- 第一遍：定位当前用户 SID 目录 ----
+    let pass1_started = Instant::now();
+    let (records, _stats) = reader.read_all_records(&|_| true)?;
+    let recycle_root_ids: HashSet<u64> = records
+        .iter()
+        .filter(|record| {
+            record.is_dir
+                && record.parent_id == 5 // 驱动器根目录的固定 MFT 参考号
+                && record.name.eq_ignore_ascii_case("$Recycle.Bin")
+        })
+        .map(|record| record.mft_id)
+        .collect();
+    let sid_dir_ids: HashSet<u64> = records
+        .iter()
+        .filter(|record| {
+            record.is_dir
+                && recycle_root_ids.contains(&record.parent_id)
+                && record.name.eq_ignore_ascii_case(user_sid)
+        })
+        .map(|record| record.mft_id)
+        .collect();
+    let enumerate_ms = pass1_started.elapsed().as_millis();
+
+    // ---- 第二遍：提取 $I 的 resident 内容 ----
+    let pass2_started = Instant::now();
+    let filter = |info: &mft_core::MftRecordInfo| {
+        sid_dir_ids.contains(&info.parent_id)
+            && !info.is_dir
+            && info
+                .name
+                .get(..2)
+                .is_some_and(|prefix| prefix.eq_ignore_ascii_case("$I"))
+    };
+    let (metadata_records, stats) =
+        reader.read_all_records_with_resident_data(&filter, &|_| true)?;
+    let parse_ms = pass2_started.elapsed().as_millis();
+    // 第二遍内部的磁盘/解析分相：判断 $MFT 顺序读与解析哪个是剩余瓶颈
+    debug!(
+        "[回收站扫描耗时] mft {}: pass2 $MFT io {}ms / parse {}ms / 命中 {} 条",
+        drive_letter, stats.io_ms, stats.parse_ms, stats.resident_extracted
+    );
+
+    // ---- $R 配对：与 fs 路径同语义——孤儿 $I 丢弃，$R 目录标记 is_dir ----
+    let mut data_dirs: HashMap<String, bool> = HashMap::new();
+    for record in &records {
+        if !sid_dir_ids.contains(&record.parent_id) || record.name.len() <= 2 {
+            continue;
+        }
+        if let Some(suffix) = record.name.strip_prefix("$R") {
+            data_dirs.insert(suffix.to_ascii_lowercase(), record.is_dir);
+        }
+    }
+
+    let mut entries = Vec::new();
+    let mut non_resident_fallbacks = 0usize;
+    for metadata in &metadata_records {
+        let Some(suffix) = metadata.info.name.strip_prefix("$I") else {
+            continue;
+        };
+        if suffix.is_empty() {
+            continue;
+        }
+        // 孤儿 $I（无 $R 配对）在 Explorer 里也不可见，与 fs 路径同语义丢弃
+        let &is_dir = match data_dirs.get(&suffix.to_ascii_lowercase()) {
+            Some(is_dir) => is_dir,
+            None => continue,
+        };
+
+        let metadata_path = sid_path.join(&metadata.info.name);
+        let (logical_size, original_path, deleted_at) = if metadata.data.is_empty() {
+            // 非 resident / 内容缺失：退化为单独读（预期数量≈0，日志可实测）
+            non_resident_fallbacks += 1;
+            match parse_metadata(&metadata_path) {
+                Some(parsed) => parsed,
+                None => continue,
+            }
+        } else {
+            match parse_metadata_bytes(&metadata.data) {
+                Some(parsed) => parsed,
+                None => continue,
+            }
+        };
+
+        let visible_name = Path::new(&original_path)
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .filter(|name| !name.is_empty())
+            .unwrap_or_else(|| original_path.clone());
+
+        entries.push(
+            FileInfo::new(
+                sid_path
+                    .join(format!("$R{}", suffix))
+                    .to_string_lossy()
+                    .into_owned(),
+                visible_name,
+                logical_size,
+                deleted_at,
+                is_dir,
+                category.clone(),
+            )
+            .with_original_path(original_path),
+        );
+    }
+
+    let timing = DrivePhaseTiming {
+        backend: "mft",
+        drive_letter,
+        enumerate_ms,
+        parse_ms,
+        directory_entries: stats.records_seen,
+        metadata_files: stats.resident_extracted,
+        found_entries: entries.len(),
+        non_resident_fallbacks,
+    };
+    Ok((entries, timing))
+}
+
+/// One info line per drive plus a wall-clock total. `backend` 告诉读者该盘走的是哪条路径，
+/// 两相口径随 backend 不同（fs=枚举/并行读；mft=第一遍定位/第二遍提取）——对比性能只应
+/// 在同 backend 之间进行。
 #[cfg(windows)]
 fn log_scan_phase_timings(timings: &[DrivePhaseTiming], wall: std::time::Duration, entries: usize) {
     for timing in timings {
+        let fallback_note = if timing.non_resident_fallbacks > 0 {
+            format!("（非 resident 兜底 {} 次）", timing.non_resident_fallbacks)
+        } else {
+            String::new()
+        };
         info!(
-            "[回收站扫描耗时] {}: 枚举 {}ms ({} 项, $I {} 个) + 解析 {}ms → 条目 {}",
+            "[回收站扫描耗时] {} {}: 枚举 {}ms ({} 项, $I {} 个) + 解析 {}ms → 条目 {}{}",
+            timing.backend,
             timing.drive_letter,
             timing.enumerate_ms,
             timing.directory_entries,
             timing.metadata_files,
             timing.parse_ms,
             timing.found_entries,
+            fallback_note,
         );
     }
     info!(
@@ -273,7 +459,9 @@ fn parse_metadata_bytes(bytes: &[u8]) -> Option<(u64, String, i64)> {
 #[cfg(all(test, windows))]
 mod tests {
     use super::parse_metadata_bytes;
-    use crate::scanner::{CategoryScanResult, JunkCategory};
+    use super::{collect_drive_entries, current_user_sid, scan_drive_via_mft};
+    use crate::scanner::{CategoryScanResult, FileInfo, JunkCategory};
+    use std::path::PathBuf;
 
     #[test]
     fn parses_v2_metadata_path_without_length_prefix() {
@@ -304,6 +492,69 @@ mod tests {
         // No hard assertion on the entry count: the machine's recycle bin may
         // legitimately be empty. The timing lines in the log are the deliverable.
         assert_eq!(result.category, JunkCategory::RecycleBin);
+    }
+
+    /// 真机对照门槛（MFT 上线条件）：同一台机器上，MFT 直读路径与 fs 路径产出的回收站
+    /// 条目集合必须逐条一致。两次扫描之间回收站内容变化会产生瞬时差异——与 M1 对照测试
+    /// 同样的已知噪声，重跑即可分辨。
+    #[test]
+    #[ignore = "真机对照（MFT 直读 vs fs 路径）：手动运行 cargo test --lib -- --ignored --nocapture"]
+    fn real_machine_mft_path_matches_fs_path() {
+        let _ = env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
+            .try_init();
+
+        // 卷设备访问（\\.\C:）需要管理员；非管理员时在第一盘就会 os error 5，
+        // 与其用一条含糊的 IO 错误失败，不如开门见山给出运行指引。
+        if !crate::scanner::big_files_engine::mft_core::is_elevated() {
+            panic!("此对照需要管理员权限。请在管理员终端运行：cargo test --lib real_machine_mft_path_matches_fs_path -- --ignored --nocapture");
+        }
+
+        let Some(user_sid) = current_user_sid() else {
+            panic!("真机对照需要当前用户 SID");
+        };
+        let mut compared_drives = 0usize;
+        for drive_letter in crate::sys_drive::existing_drive_letters() {
+            let sid_path = PathBuf::from(format!("{}:\\$Recycle.Bin\\{}", drive_letter, user_sid));
+            if !sid_path.is_dir() {
+                continue;
+            }
+
+            let (fs_entries, _) =
+                collect_drive_entries(&sid_path, drive_letter, &JunkCategory::RecycleBin);
+            let (mft_entries, _) = match scan_drive_via_mft(
+                drive_letter,
+                &sid_path,
+                &user_sid,
+                &JunkCategory::RecycleBin,
+            ) {
+                Ok(result) => result,
+                Err(error) => panic!("{drive_letter}: 盘 MFT 直读不可用: {error}"),
+            };
+
+            let key = |entry: &FileInfo| {
+                (
+                    entry.path.clone(),
+                    entry.size,
+                    entry.modified_time,
+                    entry.is_dir,
+                    entry.original_path.clone(),
+                )
+            };
+            let fs_set: std::collections::BTreeSet<_> = fs_entries.iter().map(&key).collect();
+            let mft_set: std::collections::BTreeSet<_> = mft_entries.iter().map(&key).collect();
+
+            let missing: Vec<_> = fs_set.difference(&mft_set).collect();
+            let extra: Vec<_> = mft_set.difference(&fs_set).collect();
+            assert!(
+                missing.is_empty() && extra.is_empty(),
+                "{drive_letter}: 盘两路径条目不一致。\nfs 有而 MFT 缺失: {missing:?}\nMFT 多出: {extra:?}"
+            );
+            compared_drives += 1;
+        }
+        assert!(
+            compared_drives > 0,
+            "真机上应至少有一个含 SID 目录的回收站分区"
+        );
     }
 }
 

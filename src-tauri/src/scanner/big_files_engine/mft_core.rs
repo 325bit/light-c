@@ -7,6 +7,7 @@
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::os::windows::fs::{FileExt, OpenOptionsExt};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc;
 use std::time::Instant;
 
@@ -66,6 +67,33 @@ pub struct MftReadStats {
     /// Time spent waiting for the disk to return data
     pub io_ms: u64,
     /// Time spent parsing records (fixup + attributes)
+    pub parse_ms: u64,
+}
+
+/// One record whose unnamed resident `$DATA` content was extracted (recycle-bin `$I` reader use case).
+///
+/// A dedicated type instead of an extra field on `MftRecordInfo`: existing callers should not
+/// pay an `Option<Vec<u8>>` per record for a feature only one consumer needs (只增不改 contract §3.2).
+pub struct ResidentDataRecord {
+    /// Same parse product as `read_all_records` yields.
+    pub info: MftRecordInfo,
+    /// Unnamed resident `$DATA` content bytes. An `$I` file is at most ~550 bytes, so this is
+    /// bounded by the record size (1KB/4KB). **Empty means the content could not be extracted**
+    /// (non-resident stream, zero length, or malformed attribute) — callers fall back to
+    /// reading the file from disk.
+    pub data: Vec<u8>,
+}
+
+/// Statistics for one full read with resident-content extraction.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ResidentDataReadStats {
+    /// Active records parsed (before `filter`).
+    pub records_seen: usize,
+    /// Records that passed `filter` **and** yielded non-empty resident content.
+    pub resident_extracted: usize,
+    /// Time spent waiting for the disk to return data (same accounting as `MftReadStats`).
+    pub io_ms: u64,
+    /// Time spent parsing records and copying resident content.
     pub parse_ms: u64,
 }
 
@@ -316,13 +344,69 @@ impl NtfsFileMetadataReader {
             .unwrap_or(0) as usize
             / 2;
 
-        let (io_nanos, parse_nanos, records) =
-            self.read_and_parse_pipelined(&chunks, capacity_hint, progress_cb)?;
+        let (io_nanos, parse_nanos, records) = self.read_and_parse_pipelined(
+            &chunks,
+            capacity_hint,
+            progress_cb,
+            // The generic pipeline's default callback: exactly the behavior read_all_records
+            // has always had. Equivalence is proven by the existing test suite.
+            &|record: &[u8], record_id: u64| parse_record_info(record, record_id),
+        )?;
 
         Ok((
             records,
             MftReadStats {
                 fragments: self.mft_runs.len(),
+                io_ms: (io_nanos / 1_000_000) as u64,
+                parse_ms: (parse_nanos / 1_000_000) as u64,
+            },
+        ))
+    }
+
+    /// Read the entire `$MFT` like `read_all_records`, additionally extracting the unnamed
+    /// resident `$DATA` content of records selected by `filter`.
+    ///
+    /// `filter` runs on the parse thread right after `parse_record_info`, so records it rejects
+    /// never get their content copied — the pipeline stays allocation-free for the ~99% of
+    /// records the caller does not care about. Records that pass the filter but yield no
+    /// resident content (non-resident stream, zero length, malformed attribute) come back with
+    /// an **empty** `data` for the caller to fall back to.
+    pub fn read_all_records_with_resident_data(
+        &self,
+        filter: &(impl Fn(&MftRecordInfo) -> bool + Sync),
+        progress_cb: &(impl Fn(usize) -> bool + Sync),
+    ) -> Result<(Vec<ResidentDataRecord>, ResidentDataReadStats), String> {
+        let records_seen = AtomicUsize::new(0);
+        let resident_extracted = AtomicUsize::new(0);
+
+        let parse = |record: &[u8], record_id: u64| -> Option<ResidentDataRecord> {
+            let info = parse_record_info(record, record_id)?;
+            records_seen.fetch_add(1, Ordering::Relaxed);
+            if !filter(&info) {
+                return None;
+            }
+            let data = extract_resident_data(record).unwrap_or_default();
+            if !data.is_empty() {
+                resident_extracted.fetch_add(1, Ordering::Relaxed);
+            }
+            Some(ResidentDataRecord { info, data })
+        };
+
+        let chunks = self.plan_read_chunks()?;
+        let capacity_hint = chunks
+            .last()
+            .map(|chunk| chunk.base_record_id + chunk.len as u64 / self.file_record_size as u64)
+            .unwrap_or(0) as usize
+            / 2;
+
+        let (io_nanos, parse_nanos, records) =
+            self.read_and_parse_pipelined(&chunks, capacity_hint, progress_cb, &parse)?;
+
+        Ok((
+            records,
+            ResidentDataReadStats {
+                records_seen: records_seen.load(Ordering::Relaxed),
+                resident_extracted: resident_extracted.load(Ordering::Relaxed),
                 io_ms: (io_nanos / 1_000_000) as u64,
                 parse_ms: (parse_nanos / 1_000_000) as u64,
             },
@@ -340,15 +424,21 @@ impl NtfsFileMetadataReader {
     /// Run reading and parsing in two threads simultaneously: the read thread loads data into buffers per task,
     /// and the parse thread returns buffers for reuse when done.
     ///
+    /// `parse_record` decides what one fixed-up record becomes (`T`). The default entry point
+    /// `read_all_records` passes `parse_record_info`; `read_all_records_with_resident_data`
+    /// passes a callback that also copies resident content — the pipeline itself (two threads,
+    /// 16MB buffer pair, backpressure, buffer recycling) is shared and unchanged.
+    ///
     /// Previously it was serial "read a chunk → parse a chunk": measured 1.9 s reading, 0.9 s parsing, 2.8 s combined;
     /// there is no data dependency between the two, so overlapping them makes this section take only the 1.9 s of reading.
     /// Keep only two buffers (16MB × 2); more just wastes memory.
-    fn read_and_parse_pipelined(
+    fn read_and_parse_pipelined<T: Send>(
         &self,
         chunks: &[MftReadChunk],
         capacity_hint: usize,
         progress_cb: &(impl Fn(usize) -> bool + Sync),
-    ) -> Result<(u128, u128, Vec<MftRecordInfo>), String> {
+        parse_record: &(impl Fn(&[u8], u64) -> Option<T> + Sync),
+    ) -> Result<(u128, u128, Vec<T>), String> {
         let (ready_tx, ready_rx) = mpsc::channel::<(Vec<u8>, &MftReadChunk)>();
         let (recycle_tx, recycle_rx) = mpsc::channel::<Vec<u8>>();
 
@@ -393,8 +483,8 @@ impl NtfsFileMetadataReader {
                 Ok(io_nanos)
             });
 
-            let parser = scope.spawn(move || -> Result<(Vec<MftRecordInfo>, u128), String> {
-                let mut records: Vec<MftRecordInfo> = Vec::with_capacity(capacity_hint);
+            let parser = scope.spawn(move || -> Result<(Vec<T>, u128), String> {
+                let mut records: Vec<T> = Vec::with_capacity(capacity_hint);
                 let mut parse_nanos = 0u128;
                 let mut processed = 0usize;
 
@@ -412,8 +502,8 @@ impl NtfsFileMetadataReader {
                             && looks_like_active_record(record)
                             && self.apply_fixup(record).is_some()
                         {
-                            if let Some(info) = parse_record_info(record, record_id) {
-                                records.push(info);
+                            if let Some(item) = parse_record(record, record_id) {
+                                records.push(item);
                             }
                         }
 
@@ -625,6 +715,52 @@ fn parse_data_attribute_size(record: &[u8], attribute_offset: usize) -> Option<u
     } else {
         read_u64(record, attribute_offset + 48)
     }
+}
+
+/// Extract the content bytes of an unnamed **resident** `$DATA` attribute from a fixup-ed record.
+///
+/// Offsets follow the same convention as `parse_data_attribute_size`'s resident branch: a resident
+/// attribute header is 24 bytes, `value_length` (u32) sits at +16 and `value_offset` (u16) at +20.
+/// `None` = no usable unnamed resident `$DATA` (attribute absent, non-resident stream, zero length,
+/// or an attribute chain that fails bounds checks). `parse_record_info` itself is untouched — this
+/// walks the attribute chain a second time on an already-fixed-up record, at negligible cost.
+fn extract_resident_data(record: &[u8]) -> Option<Vec<u8>> {
+    let attributes_offset = read_u16(record, 20)? as usize;
+    let mut offset = attributes_offset;
+
+    while offset + 16 <= record.len() {
+        let attribute_type = read_u32(record, offset)?;
+        if attribute_type == 0xFFFF_FFFF {
+            break;
+        }
+
+        let attribute_length = read_u32(record, offset + 4)? as usize;
+        if attribute_length == 0 || offset + attribute_length > record.len() {
+            return None;
+        }
+
+        if attribute_type == 0x80 && *record.get(offset + 9)? == 0 {
+            // Unnamed $DATA found; named streams (ADS) keep scanning past this branch.
+            if *record.get(offset + 8)? != 0 {
+                return None; // non-resident: content lives in external clusters
+            }
+            let value_length = read_u32(record, offset + 16)? as usize;
+            if value_length == 0 {
+                return None;
+            }
+            let value_offset = read_u16(record, offset + 20)? as usize;
+            let value_start = offset.checked_add(value_offset)?;
+            let value_end = value_start.checked_add(value_length)?;
+            if value_end > record.len() {
+                return None;
+            }
+            return Some(record[value_start..value_end].to_vec());
+        }
+
+        offset += attribute_length;
+    }
+
+    None
 }
 
 fn parse_file_record_data_runs(record: &[u8]) -> Option<Vec<DataRun>> {
@@ -903,5 +1039,70 @@ mod tests {
         // Clear the "in use" flag
         record[22..24].copy_from_slice(&0u16.to_le_bytes());
         assert!(!looks_like_active_record(&record));
+    }
+
+    /// Resident `$DATA` content extraction is the whole point of the recycle-bin `$I` reader:
+    /// content lives directly in the record, replacing one random open/read per file.
+    #[test]
+    fn extract_resident_data_returns_content_bytes() {
+        let mut record = vec![0u8; 1024];
+        record[0..4].copy_from_slice(b"FILE");
+        record[20..22].copy_from_slice(&56u16.to_le_bytes());
+        record[22..24].copy_from_slice(&FILE_RECORD_FLAG_IN_USE.to_le_bytes());
+
+        let data = 56;
+        let content = b"$I-file-content-15B";
+        let length = 24 + content.len();
+        write_attribute_header(&mut record, data, 0x80, length, 24);
+        record[data + 16..data + 20].copy_from_slice(&(content.len() as u32).to_le_bytes());
+        record[data + 24..data + 24 + content.len()].copy_from_slice(content);
+        record[data + length..data + length + 4].copy_from_slice(&0xFFFF_FFFFu32.to_le_bytes());
+
+        let extracted = extract_resident_data(&record).expect("resident 内容应可提取");
+        assert_eq!(extracted, content);
+    }
+
+    /// A non-resident stream has no content inside the record: `None` (caller falls back to
+    /// reading the file from disk), never garbage bytes.
+    #[test]
+    fn extract_resident_data_rejects_non_resident_stream() {
+        let mut record = vec![0u8; 1024];
+        record[0..4].copy_from_slice(b"FILE");
+        record[20..22].copy_from_slice(&56u16.to_le_bytes());
+        record[22..24].copy_from_slice(&FILE_RECORD_FLAG_IN_USE.to_le_bytes());
+
+        let data = 56;
+        write_attribute_header(&mut record, data, 0x80, 48, 24);
+        record[data + 8] = 1; // non-resident
+
+        assert!(extract_resident_data(&record).is_none());
+    }
+
+    /// A named stream (ADS) before the unnamed one must be skipped, not mistaken for content.
+    #[test]
+    fn extract_resident_data_skips_named_streams() {
+        let mut record = vec![0u8; 1024];
+        record[0..4].copy_from_slice(b"FILE");
+        record[20..22].copy_from_slice(&56u16.to_le_bytes());
+        record[22..24].copy_from_slice(&FILE_RECORD_FLAG_IN_USE.to_le_bytes());
+
+        // ADS first: named (name_length at +9 != 0), resident, with decoy content
+        let ads = 56;
+        write_attribute_header(&mut record, ads, 0x80, 48, 24);
+        record[ads + 9] = 1;
+        record[ads + 16..ads + 20].copy_from_slice(&16u32.to_le_bytes());
+        record[ads + 24..ads + 40].copy_from_slice(b"ADS-decoy-bytes!");
+
+        // Unnamed resident $DATA after it
+        let data = ads + 48;
+        let content = b"real-content";
+        let length = 24 + content.len();
+        write_attribute_header(&mut record, data, 0x80, length, 24);
+        record[data + 16..data + 20].copy_from_slice(&(content.len() as u32).to_le_bytes());
+        record[data + 24..data + 24 + content.len()].copy_from_slice(content);
+        record[data + length..data + length + 4].copy_from_slice(&0xFFFF_FFFFu32.to_le_bytes());
+
+        let extracted = extract_resident_data(&record).expect("应跳过 ADS 后提取未命名流");
+        assert_eq!(extracted, content);
     }
 }
