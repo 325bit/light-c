@@ -263,11 +263,12 @@ fn file_record_id_via_handle(path: &Path) -> Result<u64, String> {
 /// One drive's recycle-bin entries via two sequential `$MFT` passes instead of
 /// ~100k random small-file reads.
 ///
-/// 【实验性，未接入生产路径】真机对照（2026-11-19，见
-/// `light-c-回收站MFT直读方案.md` 与工作区记忆）发现已知限制：在记录高速变化的卷上
-/// （D 盘 99% 记录活跃率、rustc 构建产物持续写入/删除），约 25% 的 $R 记录无法从
-/// $MFT 解析出有效记录（fixup / IN_USE / 记录重用时序，待查），导致条目缺失——
-/// C 盘（低变化率）则全量通过。生产路径维持 fs 枚举（`collect_drive_entries`）。
+/// 【实验性，未接入生产路径】真机对照（2026-11-19，4 个盘、D 盘 15.4 万条目）
+/// 已做到 **与 fs 枚举逐条相等**（C 29204/29204、D 154163/154163、E 5/5、F 2/2）。
+/// 曾经约 25% 的 $R 记录缺失，根因不是解析或读取，而是 `parse_record_info` 每条记录只留
+/// 一个名字：rustc incremental 的硬链接被逐个改名进回收站，一条记录背上 2~40 个
+/// `$FILE_NAME`，单名字扫描只登记了第一个（详见 `read_all_records_all_names`）。
+/// 生产路径仍维持 fs 枚举（`collect_drive_entries`）。
 ///
 /// 本函数与对照测试（`real_machine_mft_path_matches_fs_path`）保留，作为
 /// mft_core 记录解析可靠性议题（联动 S6 引擎合并）的实验场与门槛。
@@ -970,12 +971,9 @@ mod tests {
         assert_eq!(result.category, JunkCategory::RecycleBin);
     }
 
-    /// 真机对照（实验性 MFT 路径，需管理员）：**正确性门槛**——MFT 路径产出的条目必须是
-    /// fs 路径条目的子集（不允许 MFT 凭空多出条目）。
-    ///
-    /// 完整性（数量一致）目前**无保证**：在记录高速变化的卷上（D 盘实测约 25% 的 $R
-    /// 记录解析不出有效记录），MFT 路径会缺失条目——这是 `scan_drive_via_mft` 文档里的
-    /// 已知限制，缺失量以警告打印，不作为失败条件。
+    /// 真机对照（实验性 MFT 路径，需管理员）：**正确性与完整性双门槛**——MFT 路径产出的条目
+    /// 必须与 fs 枚举逐条相等。多出条目 = 路径语义错误；缺失条目 = 解析路径又漏了名字（曾经
+    /// 25% 的 $R 因单名字扫描被丢掉，见 `read_all_records_all_names`），两者都直接失败。
     ///
     /// 三明治对照：fs₁ → MFT → fs₂；fs₁ ≠ fs₂ 说明对照期间回收站发生变化（并发会话的
     /// 构建产物写入/移除，实测 D 盘 4 分钟窗口进出约 3.4 万条目），本次比较无效——自动
@@ -1119,19 +1117,19 @@ mod tests {
                     extra.len(),
                     extra.iter().take(10).collect::<Vec<_>>(),
                 );
-                // 完整性（fs 有而 MFT 缺失）是已知限制：高波动卷上部分 $R 记录解析不出
-                // （见 scan_drive_via_mft 文档），以警告打印，不计入失败。
+                // 完整性（fs 有而 MFT 缺失）：曾经是"已知限制"（单名字扫描丢掉硬链接名字），
+                // 现在必须为 0，否则说明解析路径又漏了名字，直接失败。
                 let missing: Vec<_> = fs_set.difference(mft_set).collect();
-                if !missing.is_empty() {
-                    println!(
-                        "已知限制：{drive_letter}: 盘 MFT 缺失 {} 条（部分 $R 记录解析不出）。前 5 条: {:?}",
-                        missing.len(),
-                        missing.iter().take(5).collect::<Vec<_>>(),
-                    );
-                }
+                assert!(
+                    missing.is_empty(),
+                    "{drive_letter}: 盘 MFT 缺失 fs 有的条目 {} 条（完整性违规，比较 {} 条）。前 10 条: {:?}",
+                    missing.len(),
+                    fs_set.len(),
+                    missing.iter().take(10).collect::<Vec<_>>(),
+                );
             }
             println!(
-                "对照通过（正确性门槛）：{compared_drives} 个盘的 MFT 产出条目均为 fs 条目的子集（缺失量见上方已知限制警告）"
+                "对照通过（完整性门槛）：{compared_drives} 个盘的 MFT 产出条目与 fs 枚举逐条相等"
             );
             return;
         }
