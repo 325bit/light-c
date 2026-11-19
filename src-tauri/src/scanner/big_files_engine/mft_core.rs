@@ -332,6 +332,41 @@ impl NtfsFileMetadataReader {
     ///
     /// Return records and statistics. **Reading and parsing are timed separately**: only by splitting them can we judge whether the bottleneck is disk or CPU,
     /// otherwise we can only guess (the first two rounds of changes did not split them and picked the wrong direction).
+    /// Human-readable summary of the `$MFT` layout: data runs, derived record count,
+    /// and record/cluster sizes. Diagnostics for the known "position-based mft_id vs
+    /// content-based parent reference" mismatch on some drives — compare the derived
+    /// record count against the real `$MFT` size (`\\.\X:\$MFT` metadata) to spot a
+    /// misparsed or truncated run chain.
+    pub fn layout_summary(&self) -> String {
+        let total_bytes: u64 = self
+            .mft_runs
+            .iter()
+            .map(|run| run.cluster_count * self.cluster_size)
+            .sum();
+        let runs: Vec<String> = self
+            .mft_runs
+            .iter()
+            .map(|run| {
+                format!(
+                    "[lcn {} + {} clusters = {} bytes @ offset {}]",
+                    run.start_lcn,
+                    run.cluster_count,
+                    run.cluster_count * self.cluster_size,
+                    (run.start_lcn as u64) * self.cluster_size
+                )
+            })
+            .collect();
+        format!(
+            "cluster_size {} / record_size {} / runs {} 个共 {} 字节 → 推导记录 {} 条: {}",
+            self.cluster_size,
+            self.file_record_size,
+            self.mft_runs.len(),
+            total_bytes,
+            total_bytes / self.file_record_size as u64,
+            runs.join(" ")
+        )
+    }
+
     pub fn read_all_records(
         &self,
         progress_cb: &(impl Fn(usize) -> bool + Sync),

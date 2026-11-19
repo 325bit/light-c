@@ -277,6 +277,30 @@ fn scan_drive_via_mft(
         .map(|record| record.mft_id)
         .collect();
     let enumerate_ms = pass1_started.elapsed().as_millis();
+    // 位置编号 vs 内容引用编号是否自洽：$Recycle.Bin 与 SID 目录自身的 parent 引用
+    // （内容侧真相）连同 run 布局一起输出，用于定位编号错位
+    let recycle_root_details: Vec<String> = records
+        .iter()
+        .filter(|record| recycle_root_ids.contains(&record.mft_id))
+        .map(|record| format!("mft_id {} parent_id {}", record.mft_id, record.parent_id))
+        .collect();
+    let sid_dir_details: Vec<String> = records
+        .iter()
+        .filter(|record| sid_dir_ids.contains(&record.mft_id))
+        .map(|record| format!("mft_id {} parent_id {}", record.mft_id, record.parent_id))
+        .collect();
+    let mft_file_size = fs::metadata(format!(r"\\.\{}:\$MFT", drive_letter))
+        .ok()
+        .map(|meta| meta.len());
+    info!(
+        "[回收站扫描耗时] mft {}: 布局 {}；\\\\.\\{}:\\$MFT 实际大小 {:?}；$Recycle.Bin 根 [{}]；SID 目录 [{}]",
+        drive_letter,
+        reader.layout_summary(),
+        drive_letter,
+        mft_file_size,
+        recycle_root_details.join("; "),
+        sid_dir_details.join("; ")
+    );
     info!(
         "[回收站扫描耗时] mft {}: 第一遍定位：全表记录 {} 条，$Recycle.Bin 根 {} 个，当前用户 SID 目录 {} 个",
         drive_letter,
