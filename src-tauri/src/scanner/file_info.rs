@@ -52,11 +52,6 @@ impl FileInfo {
         self.original_path = Some(original_path);
         self
     }
-
-    /// Get a human-readable file size
-    pub fn human_readable_size(&self) -> String {
-        format_size(self.size)
-    }
 }
 
 /// Category scan result
