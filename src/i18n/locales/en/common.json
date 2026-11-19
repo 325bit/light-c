@@ -234,6 +234,9 @@
   "adminRequesting": "Requesting administrator rights…",
   "scanStages": {
     "mft": "Enumerating MFT",
+    "snapshotLoad": "Loading previous snapshot",
+    "compare": "Comparing snapshots",
+    "snapshotWrite": "Writing snapshot",
     "index": "Building index",
     "path": "Rebuilding paths",
     "metadata": "Reading metadata",

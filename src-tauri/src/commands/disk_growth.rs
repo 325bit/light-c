@@ -135,12 +135,21 @@ pub async fn scan_disk_growth(
     .await
     .map_err(|error| format!("全盘分析任务执行失败: {}", error))??;
 
+    // Stage breakdown is the only way to tell afterwards whether the next step should target the disk,
+    // the parser or the snapshot writer; without it every optimization is a blind guess.
+    let phases = result
+        .phase_durations
+        .iter()
+        .map(|phase| format!("{}={}ms", phase.stage, phase.duration_ms))
+        .collect::<Vec<_>>()
+        .join(" ");
     info!(
-        "{} 全盘分析完成: {} 个目录变化，扫描 {} 个文件，耗时 {}ms",
+        "{} 全盘分析完成: {} 个目录变化，扫描 {} 个文件，耗时 {}ms | {}",
         result.drive_letter,
         result.growth.entries.len(),
         result.total_files_scanned,
-        result.scan_duration_ms
+        result.scan_duration_ms,
+        phases
     );
 
     Ok(result)

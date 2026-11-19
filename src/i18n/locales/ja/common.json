@@ -234,6 +234,9 @@
   "adminRequesting": "管理者権限を要求しています…",
   "scanStages": {
     "mft": "MFT を列挙中",
+    "snapshotLoad": "前回のスナップショットを読み込み中",
+    "compare": "スナップショットを比較中",
+    "snapshotWrite": "スナップショットを保存中",
     "index": "インデックスを作成中",
     "path": "パスを再構築中",
     "metadata": "メタデータを読み込み中",

@@ -7,6 +7,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
+use std::time::Instant;
 
 use super::mft_scan::{
     normalize_path, scan_drive_with_progress, DirSizeEntry, DiskGrowthPhaseDuration,
@@ -222,9 +223,26 @@ where
     let drive_label = format!("{} 盘", drive_letter);
     let max_change_entries = normalize_max_change_entries(max_change_entries);
     let manager = DiskSnapshotManager::for_drive(&drive_letter)?;
+    // Everything in this function used to be timed only up to directory aggregation, so the "scan took X"
+    // number shown to the user silently excluded three real costs: loading the previous snapshot,
+    // comparing the two snapshots and writing the new one. On a million-file disk those add up to seconds.
+    let total_started = Instant::now();
+    let phase_started = Instant::now();
     let previous = manager.load_latest_snapshot()?;
     let previous_scan_time = previous.as_ref().map(|snapshot| snapshot.date.clone());
+    let snapshot_load_ms = phase_started.elapsed().as_millis() as u64;
+
     let mut scan = scan_drive_with_progress(&drive_letter, progress)?;
+    // Keep phases in execution order: the previous snapshot is loaded before $MFT is read.
+    scan.phase_durations.insert(
+        0,
+        DiskGrowthPhaseDuration {
+            stage: "snapshot_load".to_string(),
+            duration_ms: snapshot_load_ms,
+        },
+    );
+
+    let phase_started = Instant::now();
     let current_snapshot = build_snapshot(&scan);
     let growth = compare_snapshots(
         &current_snapshot,
@@ -232,9 +250,21 @@ where
         max_change_entries,
         &drive_label,
     );
+    scan.phase_durations.push(DiskGrowthPhaseDuration {
+        stage: "compare".to_string(),
+        duration_ms: phase_started.elapsed().as_millis() as u64,
+    });
     // File-level details are only used for writing a side-car shard; moving them out avoids copying a full file list again on very large disks.
     let file_records = std::mem::take(&mut scan.file_records);
+    let phase_started = Instant::now();
     manager.save_scan_snapshot(&scan, file_records)?;
+    scan.phase_durations.push(DiskGrowthPhaseDuration {
+        stage: "snapshot_write".to_string(),
+        duration_ms: phase_started.elapsed().as_millis() as u64,
+    });
+    // Report wall-clock time for the whole analysis: the number under "scan took" has to match the time
+    // the user actually waited, otherwise every later optimization would look like a regression.
+    scan.scan_duration_ms = total_started.elapsed().as_millis() as u64;
 
     let analyze_entries = build_analyze_entries(&scan.entries, &growth);
     let increased_size = growth
