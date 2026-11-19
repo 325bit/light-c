@@ -762,12 +762,13 @@ impl EnhancedDeleteEngine {
         // under the current user's own SID folder, where the owning user holds Full Control, so
         // removing the $R/$I pair directly needs no SYSTEM privileges.
         // C1 fix: normalize first, so `C:/...` or `\\?\...` recycle entries are still classified correctly.
-        let (recycle_paths, normal_paths): (Vec<&String>, Vec<&String>) =
-            paths.iter().partition(|p| {
-                crate::path_guard::normalize(Path::new(p))
-                    .to_lowercase()
-                    .contains("\\$recycle.bin")
-            });
+        // D3 fix: go through path_guard::compare_key (the shared "normalize then
+        // ASCII-lowercase" form) instead of a second local normalize + Unicode
+        // to_lowercase spelling; `$RECYCLE.BIN` case variants still match
+        // because the lowercasing is applied to the whole normalized path.
+        let (recycle_paths, normal_paths): (Vec<&String>, Vec<&String>) = paths
+            .iter()
+            .partition(|p| crate::path_guard::compare_key(Path::new(p)).contains("\\$recycle.bin"));
 
         // Recycle entries are deleted one by one so a bad volume or a foreign-SID entry cannot
         // drag the others down.
@@ -1007,19 +1008,40 @@ impl EnhancedDeleteEngine {
         }
     }
 
-    /// Calculate directory size (simplified, returns an estimate for performance)
+    /// Calculate directory size.
+    ///
+    /// L5 fix: the previous version summed only the direct children (and a
+    /// directory's own `metadata().len()` is 0 on NTFS), so any nested
+    /// directory was reported as 0 bytes and `freed_physical_size` was
+    /// systematically low. Walk the whole tree instead.
+    ///
+    /// Selection rationale: M8's `survey_tree` in `permanent_delete.rs` would
+    /// be the preferred shared implementation, but it is private to that
+    /// module and entangled with the executable-preview survey, so this slot
+    /// reuses the recursive algorithm from `scanner/leftovers.rs`
+    /// verbatim instead (including its no-symlink-follow `file_type()`
+    /// handling). Deduplicating the two copies into one crate-level helper is
+    /// left as follow-up work: `scanner/leftovers.rs` is outside this
+    /// cleanup slot's file-ownership set.
     fn calculate_dir_size(&self, path: &Path) -> u64 {
-        // For performance, only direct children are counted, without recursive traversal
-        // The actually freed space is reported by the system after deletion
-        fs::read_dir(path)
-            .map(|entries| {
-                entries
-                    .filter_map(|e| e.ok())
-                    .filter_map(|e| e.metadata().ok())
-                    .map(|m| m.len())
-                    .sum()
-            })
-            .unwrap_or(0)
+        let mut size = 0u64;
+        if let Ok(entries) = fs::read_dir(path) {
+            for entry in entries.flatten() {
+                // `file_type()` does not follow symlinks / junctions; using `is_dir()` would follow them:
+                // one, it would count capacity from other drives; two, a loop pointing upward would recurse infinitely.
+                let Ok(file_type) = entry.file_type() else {
+                    continue;
+                };
+                if file_type.is_dir() {
+                    size += self.calculate_dir_size(&entry.path());
+                } else if file_type.is_file() {
+                    if let Ok(metadata) = entry.metadata() {
+                        size += metadata.len();
+                    }
+                }
+            }
+        }
+        size
     }
 }
 
