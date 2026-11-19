@@ -32,9 +32,13 @@ pub async fn scan_junk_files(request: Option<ScanRequest>) -> Result<ScanResult,
     let result = tokio::task::spawn_blocking(move || {
         let engine = if let Some(req) = request {
             if let Some(category_names) = req.categories {
+                // Compare against borrowed `&str` display names. Building a
+                // `String` per category per comparison allocated for nothing:
+                // `display_name` already hands out a `&'static str`.
+                let names: Vec<&str> = category_names.iter().map(String::as_str).collect();
                 let categories: Vec<JunkCategory> = JunkCategory::all()
                     .into_iter()
-                    .filter(|c| category_names.contains(&c.display_name().to_string()))
+                    .filter(|c| names.contains(&c.display_name()))
                     .collect();
 
                 if categories.is_empty() {
