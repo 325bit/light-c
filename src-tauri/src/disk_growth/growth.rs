@@ -7,6 +7,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
+use std::time::Instant;
 
 use super::mft_scan::{
     normalize_path, scan_drive_with_progress, DirSizeEntry, DiskGrowthPhaseDuration,
@@ -222,9 +223,38 @@ where
     let drive_label = format!("{} 盘", drive_letter);
     let max_change_entries = normalize_max_change_entries(max_change_entries);
     let manager = DiskSnapshotManager::for_drive(&drive_letter)?;
+    // Everything in this function used to be timed only up to directory aggregation, so the "scan took X"
+    // number shown to the user silently excluded three real costs: loading the previous snapshot,
+    // comparing the two snapshots and writing the new one. On a million-file disk those add up to seconds.
+    let total_started = Instant::now();
+    let phase_started = Instant::now();
     let previous = manager.load_latest_snapshot()?;
     let previous_scan_time = previous.as_ref().map(|snapshot| snapshot.date.clone());
-    let mut scan = scan_drive_with_progress(&drive_letter, progress)?;
+    let snapshot_load_ms = phase_started.elapsed().as_millis() as u64;
+
+    // Reserve the snapshot name and open its shard directory *before* the scan: file rows are streamed
+    // into it while the volume index is still in hand, so the file list never has to exist as one
+    // million-row buffer between the scan and the write.
+    let mut snapshot_writer = manager.begin_scan_snapshot()?;
+    let scan_result = {
+        let mut sink = |parent: &str, name: &str, size: u64, modified: i64| {
+            snapshot_writer.append_file(parent, name, size, modified)
+        };
+        scan_drive_with_progress(&drive_letter, progress, &mut sink)
+    };
+    // On failure the writer is dropped here, which takes the half-written shard directory with it:
+    // a truncated file list would otherwise be read by the next comparison as mass deletion.
+    let mut scan = scan_result?;
+    // Keep phases in execution order: the previous snapshot is loaded before $MFT is read.
+    scan.phase_durations.insert(
+        0,
+        DiskGrowthPhaseDuration {
+            stage: "snapshot_load".to_string(),
+            duration_ms: snapshot_load_ms,
+        },
+    );
+
+    let phase_started = Instant::now();
     let current_snapshot = build_snapshot(&scan);
     let growth = compare_snapshots(
         &current_snapshot,
@@ -232,9 +262,20 @@ where
         max_change_entries,
         &drive_label,
     );
-    // File-level details are only used for writing a side-car shard; moving them out avoids copying a full file list again on very large disks.
-    let file_records = std::mem::take(&mut scan.file_records);
-    manager.save_scan_snapshot(&scan, file_records)?;
+    scan.phase_durations.push(DiskGrowthPhaseDuration {
+        stage: "compare".to_string(),
+        duration_ms: phase_started.elapsed().as_millis() as u64,
+    });
+    // The shards were already written while scanning; this only closes them and writes the main JSON.
+    let phase_started = Instant::now();
+    manager.commit_scan_snapshot(snapshot_writer, &current_snapshot)?;
+    scan.phase_durations.push(DiskGrowthPhaseDuration {
+        stage: "snapshot_write".to_string(),
+        duration_ms: phase_started.elapsed().as_millis() as u64,
+    });
+    // Report wall-clock time for the whole analysis: the number under "scan took" has to match the time
+    // the user actually waited, otherwise every later optimization would look like a regression.
+    scan.scan_duration_ms = total_started.elapsed().as_millis() as u64;
 
     let analyze_entries = build_analyze_entries(&scan.entries, &growth);
     let increased_size = growth
@@ -572,6 +613,105 @@ fn count_export_nodes(nodes: &[DiskGrowthExportNode]) -> usize {
         .sum()
 }
 
+/// A changed directory before any per-child detail rows exist.
+///
+/// The comparison used to render up to 50 detail rows for **every** changed directory and only then
+/// truncate the list to `max_change_entries`; on a disk with 200k changed directories that is millions
+/// of cloned path strings discarded immediately. Details are now built only for the rows that survive.
+struct GrowthCandidate {
+    path: String,
+    old_size: u64,
+    new_size: u64,
+    diff: i64,
+    modified: i64,
+}
+
+/// Keep exactly the paths `create_growth_entry` would keep: unchanged, or below the noise floor.
+fn push_candidate(
+    candidates: &mut Vec<GrowthCandidate>,
+    path: &str,
+    previous_value: Option<SnapshotValue>,
+    current_value: Option<SnapshotValue>,
+) {
+    let old_size = previous_value.map(|value| value.size).unwrap_or(0);
+    let new_size = current_value.map(|value| value.size).unwrap_or(0);
+    let diff = new_size as i64 - old_size as i64;
+    if diff == 0 || determine_level(diff, old_size) == DiskGrowthLevel::Stable {
+        return;
+    }
+    let modified = current_value
+        .map(|value| value.modified)
+        .or_else(|| previous_value.map(|value| value.modified))
+        .unwrap_or(0);
+    candidates.push(GrowthCandidate {
+        path: path.to_string(),
+        old_size,
+        new_size,
+        diff,
+        modified,
+    });
+}
+
+/// Whether a directory should be folded into the child that accounts for its whole change.
+///
+/// The rule was defined on the rendered detail rows, so this reproduces their ordering and cap exactly:
+/// only the 50 largest direct-child changes were ever considered. Keeping the cap matters — without it a
+/// directory with hundreds of children would collapse in cases where the UI previously showed it.
+fn has_matching_child<'a>(
+    candidate: &GrowthCandidate,
+    previous_children: &'a HashMap<String, HashMap<String, SnapshotValue>>,
+    current_children: &'a HashMap<String, HashMap<String, SnapshotValue>>,
+    diff_by_path: &HashMap<&str, i64>,
+    scratch: &mut Vec<(&'a str, i64)>,
+) -> bool {
+    let previous = previous_children.get(&candidate.path);
+    let current = current_children.get(&candidate.path);
+    if previous.is_none() && current.is_none() {
+        return false;
+    }
+
+    // Reuse one buffer across candidates: every directory is a child of exactly one parent, so the total
+    // number of pushed children over the whole pass is the directory count, not candidates × children.
+    scratch.clear();
+    if let Some(current) = current {
+        for (path, value) in current {
+            let old_size = previous
+                .and_then(|map| map.get(path))
+                .map(|value| value.size)
+                .unwrap_or(0);
+            let diff = value.size as i64 - old_size as i64;
+            if diff != 0 {
+                scratch.push((path.as_str(), diff));
+            }
+        }
+    }
+    if let Some(previous) = previous {
+        for (path, value) in previous {
+            // Present in both maps means the child was already accounted for above.
+            if current.is_some_and(|map| map.contains_key(path)) {
+                continue;
+            }
+            scratch.push((path.as_str(), -(value.size as i64)));
+        }
+    }
+
+    scratch.sort_by(|left, right| {
+        right
+            .1
+            .abs()
+            .cmp(&left.1.abs())
+            .then_with(|| left.0.cmp(right.0))
+    });
+    scratch.truncate(MAX_DETAIL_ENTRIES);
+
+    scratch.iter().any(|(path, diff)| {
+        *diff == candidate.diff
+            && diff.signum() == candidate.diff.signum()
+            // The child must itself be a reported change, otherwise the parent is the only row carrying it.
+            && diff_by_path.get(path).copied() == Some(*diff)
+    })
+}
+
 pub fn compare_snapshots(
     current: &DiskSnapshot,
     previous: Option<&DiskSnapshot>,
@@ -586,35 +726,80 @@ pub fn compare_snapshots(
     let previous_map = snapshot_map(&previous.entries);
     let current_children = direct_child_map(&current.entries);
     let previous_children = direct_child_map(&previous.entries);
-    let mut all_paths: HashSet<String> = current_map.keys().cloned().collect();
-    all_paths.extend(previous_map.keys().cloned());
 
-    let mut entries: Vec<DiskGrowthEntry> = all_paths
+    // Pass 1: diff every path, no detail rows.
+    let mut candidates: Vec<GrowthCandidate> =
+        Vec::with_capacity(current_map.len() + previous_map.len());
+    for (path, current_value) in &current_map {
+        if is_root_path(path) {
+            continue;
+        }
+        push_candidate(
+            &mut candidates,
+            path,
+            previous_map.get(path).copied(),
+            Some(*current_value),
+        );
+    }
+    for (path, previous_value) in &previous_map {
+        // Paths still present in the current snapshot were already pushed above.
+        if is_root_path(path) || current_map.contains_key(path) {
+            continue;
+        }
+        push_candidate(&mut candidates, path, Some(*previous_value), None);
+    }
+
+    // Pass 2: drop redundant parents using child diffs only.
+    let keep: Vec<bool> = {
+        let diff_by_path: HashMap<&str, i64> = candidates
+            .iter()
+            .map(|candidate| (candidate.path.as_str(), candidate.diff))
+            .collect();
+        let mut scratch: Vec<(&str, i64)> = Vec::new();
+        candidates
+            .iter()
+            .map(|candidate| {
+                !has_matching_child(
+                    candidate,
+                    &previous_children,
+                    &current_children,
+                    &diff_by_path,
+                    &mut scratch,
+                )
+            })
+            .collect()
+    };
+
+    // Pass 3: order and truncate.
+    let mut candidates: Vec<GrowthCandidate> = candidates
         .into_iter()
-        .filter(|path| !is_root_path(path))
-        .filter_map(|path| {
-            let previous_value = previous_map.get(&path).copied();
-            let current_value = current_map.get(&path).copied();
-            let old_size = previous_value.map(|value| value.size).unwrap_or(0);
-            let new_size = current_value.map(|value| value.size).unwrap_or(0);
-            let modified = current_value
-                .map(|value| value.modified)
-                .or_else(|| previous_value.map(|value| value.modified))
-                .unwrap_or(0);
-            let details = build_detail_entries(&path, &previous_children, &current_children);
-            create_growth_entry(path, old_size, new_size, modified, details)
-        })
+        .zip(keep)
+        .filter_map(|(candidate, keep)| keep.then_some(candidate))
         .collect();
-
-    remove_redundant_parent_entries(&mut entries);
-    entries.sort_by(|left, right| {
+    candidates.sort_by(|left, right| {
         right
             .diff
             .abs()
             .cmp(&left.diff.abs())
             .then_with(|| left.path.cmp(&right.path))
     });
-    entries.truncate(max_change_entries);
+    candidates.truncate(max_change_entries);
+
+    // Pass 4: render details for the surviving rows only.
+    let entries: Vec<DiskGrowthEntry> = candidates
+        .into_iter()
+        .filter_map(|candidate| {
+            let details =
+                build_detail_entries(&candidate.path, &previous_children, &current_children);
+            create_growth_entry(
+                candidate.path,
+                candidate.old_size,
+                candidate.new_size,
+                candidate.modified,
+                details,
+            )
+        })
+        .collect();
 
     let total_growth = current.total_size as i64 - previous.total_size as i64;
     let significant_count = entries
@@ -737,6 +922,10 @@ fn is_root_path(path: &str) -> bool {
     normalized.len() == 2 && normalized.ends_with(':')
 }
 
+/// The eager collapse rule, kept only as the oracle for `lazy_details_match_the_eager_comparison`.
+///
+/// Production now decides the same thing from child diffs (`has_matching_child`) without rendering rows.
+#[cfg(test)]
 fn remove_redundant_parent_entries(entries: &mut Vec<DiskGrowthEntry>) {
     let diff_by_path: HashMap<String, i64> = entries
         .iter()
@@ -1104,5 +1293,140 @@ mod tests {
             node = parent;
         }
         assert_eq!(count_export_nodes(&[node]), 65);
+    }
+
+    fn snapshot(date: &str, total_size: u64, entries: Vec<(String, u64)>) -> DiskSnapshot {
+        DiskSnapshot {
+            timestamp: 0,
+            date: date.to_string(),
+            total_size,
+            total_files_scanned: entries.len(),
+            root_path: "c:/".to_string(),
+            entries: entries
+                .into_iter()
+                .map(|(path, size)| DiskSnapshotEntry {
+                    depth: path.matches('/').count() as u8,
+                    path,
+                    size,
+                    modified: 10,
+                })
+                .collect(),
+            file_entries: Vec::new(),
+            version: 2,
+        }
+    }
+
+    /// The comparison as implemented before the detail rows were deferred, kept verbatim as the oracle.
+    ///
+    /// Both paths must produce the same report: a difference would silently change which directories the
+    /// UI folds away, and that is exactly the kind of regression nobody reports as a bug.
+    fn eager_compare(
+        current: &DiskSnapshot,
+        previous: &DiskSnapshot,
+        max_change_entries: usize,
+    ) -> Vec<DiskGrowthEntry> {
+        let current_map = snapshot_map(&current.entries);
+        let previous_map = snapshot_map(&previous.entries);
+        let current_children = direct_child_map(&current.entries);
+        let previous_children = direct_child_map(&previous.entries);
+        let mut all_paths: HashSet<String> = current_map.keys().cloned().collect();
+        all_paths.extend(previous_map.keys().cloned());
+
+        let mut entries: Vec<DiskGrowthEntry> = all_paths
+            .into_iter()
+            .filter(|path| !is_root_path(path))
+            .filter_map(|path| {
+                let previous_value = previous_map.get(&path).copied();
+                let current_value = current_map.get(&path).copied();
+                let old_size = previous_value.map(|value| value.size).unwrap_or(0);
+                let new_size = current_value.map(|value| value.size).unwrap_or(0);
+                let modified = current_value
+                    .map(|value| value.modified)
+                    .or_else(|| previous_value.map(|value| value.modified))
+                    .unwrap_or(0);
+                let details = build_detail_entries(&path, &previous_children, &current_children);
+                create_growth_entry(path, old_size, new_size, modified, details)
+            })
+            .collect();
+
+        remove_redundant_parent_entries(&mut entries);
+        entries.sort_by(|left, right| {
+            right
+                .diff
+                .abs()
+                .cmp(&left.diff.abs())
+                .then_with(|| left.path.cmp(&right.path))
+        });
+        entries.truncate(max_change_entries);
+        entries
+    }
+
+    /// Deferring the detail rows must not change a single field of the report.
+    ///
+    /// The fixture carries the two cases the collapse rule is sensitive to: a directory whose change equals
+    /// one child's change (folded), and a directory with 60 changed children where the matching child ranks
+    /// 51st by magnitude (kept, because the rule only ever looked at the 50 largest — which is why the new
+    /// implementation reproduces that cap instead of scanning every child).
+    #[test]
+    fn lazy_details_match_the_eager_comparison() {
+        let mut previous_entries: Vec<(String, u64)> = vec![
+            ("c:/".to_string(), 0),
+            ("c:/users".to_string(), 1_000),
+            ("c:/users/app".to_string(), 600),
+            ("c:/users/app/cache".to_string(), 400),
+            ("c:/users/app/data".to_string(), 200),
+            // Child removed in the current snapshot
+            ("c:/users/old".to_string(), 300),
+            // Directory removed entirely
+            ("c:/gone".to_string(), 500),
+            ("c:/wide".to_string(), 0),
+            ("c:/wide/match".to_string(), 0),
+        ];
+        let mut current_entries: Vec<(String, u64)> = vec![
+            ("c:/".to_string(), 0),
+            ("c:/users".to_string(), 2_200),
+            ("c:/users/app".to_string(), 1_200),
+            ("c:/users/app/cache".to_string(), 1_000),
+            ("c:/users/app/data".to_string(), 1_200),
+            ("c:/wide".to_string(), 101_000),
+            ("c:/wide/match".to_string(), 1_000),
+        ];
+        // 50 children changing by 2GB each, so `c:/wide/match` (+1GB) is the 51st largest child change
+        for index in 0..50 {
+            let path = format!("c:/wide/c{index:02}");
+            previous_entries.push((path.clone(), 0));
+            current_entries.push((path, 2_000));
+        }
+
+        let previous = snapshot("2026-11-18 10:00:00", 3_000, previous_entries);
+        let current = snapshot("2026-11-19 10:00:00", 109_400, current_entries);
+
+        let report = compare_snapshots(&current, Some(&previous), 300, "C 盘");
+        let eager = eager_compare(&current, &previous, 300);
+
+        assert_eq!(
+            serde_json::to_value(&report.entries).unwrap(),
+            serde_json::to_value(&eager).unwrap(),
+            "延迟构造明细后，结果必须与旧实现逐字段一致"
+        );
+        // Both collapse decisions from the fixture, spelled out so a future change fails loudly
+        assert!(
+            !report
+                .entries
+                .iter()
+                .any(|entry| entry.path == "c:/users/app"),
+            "整额等于唯一子目录变化的父目录应被折叠"
+        );
+        assert!(
+            report.entries.iter().any(|entry| entry.path == "c:/wide"),
+            "等额子目录排在第 51 位时父目录必须保留"
+        );
+        // Details are still rendered for the survivors (the UI shows them in the expandable row)
+        let users = report
+            .entries
+            .iter()
+            .find(|entry| entry.path == "c:/users")
+            .expect("c:/users should be reported");
+        assert!(!users.details.is_empty(), "存活行仍要带明细");
     }
 }

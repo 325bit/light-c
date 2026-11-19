@@ -268,6 +268,9 @@
   "adminRequesting": "正在請求管理員權限…",
   "scanStages": {
     "mft": "列舉 MFT",
+    "snapshotLoad": "載入歷史快照",
+    "compare": "比對快照",
+    "snapshotWrite": "寫入快照",
     "index": "建立索引",
     "path": "重建路徑",
     "metadata": "讀取後設資料",

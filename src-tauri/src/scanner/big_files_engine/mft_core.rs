@@ -252,6 +252,416 @@ fn resolve_path(
     Some(())
 }
 
+// ============================================================================
+// VolumeIndex — one dense, arena-backed view of the parsed $MFT
+//
+// Landed ahead of its consumers (they switch over in the next step), so the whole section is
+// allowed to be unused for now. Both full-disk callers need the same three things after the read:
+// parent-child topology, depth per directory, and bottom-up subtree totals. They currently build
+// all three separately — two BFS builds, two aggregations (one walking every file up to the root,
+// one propagating level by level), and one `Vec` per parent directory inside a `HashMap`.
+// ============================================================================
+
+/// Synthesized volume root. NTFS record 5 (`$Root`) is a metafile, so the record pass filters it
+/// out (`MFT_METADATA_MAX`); the root node therefore has no record of its own.
+const ROOT_MFT_ID: u64 = 5;
+/// Directory node id of the volume root.
+const ROOT_NODE: u32 = 0;
+/// "No node" sentinel for parent references.
+pub const NO_NODE: u32 = u32::MAX;
+/// Depth of a directory that cannot be reached from the root — not part of this disk.
+const UNREACHABLE_DEPTH: u16 = u16::MAX;
+
+/// Slice of the name arena.
+#[allow(dead_code)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct NameRef {
+    offset: u32,
+    length: u32,
+}
+
+/// Every directory and file name of one volume packed into a single buffer.
+///
+/// A 1.2M-record volume holds ~1.1M names. As `String`s that is 1.1M allocations, each carrying a
+/// 16-32 byte allocator header — tens of MB of pure overhead — and a fragmented heap. Appending the
+/// bytes to one buffer drops both. `(offset, length)` is `u32 + u32` on purpose: with a `u16`
+/// length the struct would still be padded to 8 bytes, so the wider field is free.
+#[allow(dead_code)]
+#[derive(Default)]
+pub struct NameArena {
+    bytes: Vec<u8>,
+}
+
+#[allow(dead_code)]
+impl NameArena {
+    fn with_capacity(bytes: usize) -> Self {
+        Self {
+            bytes: Vec::with_capacity(bytes),
+        }
+    }
+
+    fn intern(&mut self, name: &str) -> NameRef {
+        // 4GB of names is far past any real volume; fail loudly in debug rather than silently
+        // handing out an offset that wraps.
+        debug_assert!(self.bytes.len() + name.len() <= u32::MAX as usize);
+        let offset = self.bytes.len() as u32;
+        self.bytes.extend_from_slice(name.as_bytes());
+        NameRef {
+            offset,
+            length: name.len() as u32,
+        }
+    }
+
+    fn get(&self, reference: NameRef) -> &str {
+        let start = reference.offset as usize;
+        let end = start + reference.length as usize;
+        // The arena only ever receives `&str` bytes, so this validation can never fail; it is
+        // checked rather than assumed because a wrong name silently produces a path that does
+        // not exist on disk, and those paths are handed to the delete / snapshot code.
+        std::str::from_utf8(&self.bytes[start..end]).expect("名字 arena 只存 &str 的字节")
+    }
+}
+
+/// One node of the volume tree. Files and directories share this array; whether a node is a
+/// directory is implied by its id, not stored (see `VolumeIndex`).
+#[allow(dead_code)]
+#[derive(Clone, Copy)]
+struct VolumeNode {
+    /// Parent directory node, or `NO_NODE` when the parent is not a directory reachable from the root.
+    parent: u32,
+    name: NameRef,
+    size: u64,
+    /// Milliseconds since the Unix epoch so both consumers can share one aggregation; directories are 0.
+    modified: i64,
+    has_data_stream: bool,
+}
+
+/// One file as seen by a consumer: enough to build a path and to add its size to a total.
+#[allow(dead_code)]
+pub struct FileEntry<'a> {
+    pub node: u32,
+    /// Parent directory node, or `None` when the file is not reachable from the root.
+    pub parent: Option<u32>,
+    pub name: &'a str,
+    pub size: u64,
+    /// Milliseconds since the Unix epoch.
+    pub modified: i64,
+    /// Whether `$DATA` was parsed. A file without it has an unknown size until a stat returns.
+    pub has_data_stream: bool,
+}
+
+/// Aggregated usage of one directory's whole subtree.
+#[allow(dead_code)]
+#[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
+pub struct DirectoryTotals {
+    pub size: u64,
+    /// Newest file modification time in the subtree, in milliseconds since the Unix epoch.
+    pub modified: i64,
+    /// Number of files with a non-zero size in the subtree.
+    pub file_count: u64,
+}
+
+#[allow(dead_code)]
+impl DirectoryTotals {
+    /// Fold one measured file into these totals. Both consumers use this so that "what counts as a
+    /// file" cannot drift between them: only files with a non-zero size are counted.
+    ///
+    /// `modified` is **milliseconds** since the Unix epoch, like the field it updates. A caller that
+    /// measured the file with `fs::metadata` gets seconds from `as_secs()` and must scale first;
+    /// `DirectoryTotals::modified / 1000` converts back for consumers that report seconds.
+    pub fn add_file(&mut self, size: u64, modified: i64) {
+        self.size = self.size.saturating_add(size);
+        self.file_count += 1;
+        if modified > self.modified {
+            self.modified = modified;
+        }
+    }
+
+    fn add_subtree(&mut self, child: Self) {
+        self.size = self.size.saturating_add(child.size);
+        self.file_count = self.file_count.saturating_add(child.file_count);
+        if child.modified > self.modified {
+            self.modified = child.modified;
+        }
+    }
+
+    /// A directory whose subtree holds no countable file. The consumers skip these, which is what
+    /// keeps the result set equal to the old "only directories that appear in the stats map" rule.
+    pub fn is_empty(&self) -> bool {
+        self.size == 0
+    }
+}
+
+/// Dense, arena-backed index of one volume's `$MFT`.
+///
+/// Layout invariant: **directories occupy `0..directory_count`** (node 0 is the synthetic root) and
+/// files occupy `directory_count..node_count`. That makes a node id double as an index into the
+/// depth and totals arrays, and turns "iterate every file" into a slice range.
+#[allow(dead_code)]
+pub struct VolumeIndex {
+    names: NameArena,
+    nodes: Vec<VolumeNode>,
+    directory_count: u32,
+    /// Depth per directory node, `UNREACHABLE_DEPTH` when the branch does not reach the root.
+    depth: Vec<u16>,
+    /// Every reachable directory, parents before children; root first.
+    bfs_order: Vec<u32>,
+    deepest_depth: u16,
+}
+
+#[allow(dead_code)]
+impl VolumeIndex {
+    pub fn build(records: &[MftRecordInfo]) -> Self {
+        let mut directory_count = 1usize; // the synthetic root
+        let mut file_count = 0usize;
+        let mut name_bytes = 0usize;
+        for record in records {
+            if record.mft_id == 0 || record.mft_id == ROOT_MFT_ID {
+                continue;
+            }
+            name_bytes += record.name.len();
+            if record.is_dir {
+                directory_count += 1;
+            } else {
+                file_count += 1;
+            }
+        }
+
+        let node_count = directory_count + file_count;
+        let mut nodes: Vec<VolumeNode> = Vec::with_capacity(node_count);
+        let mut names = NameArena::with_capacity(name_bytes);
+
+        // Node 0 carries no record: its path is the drive root and its name is empty.
+        nodes.push(VolumeNode {
+            parent: NO_NODE,
+            name: names.intern(""),
+            size: 0,
+            modified: 0,
+            has_data_stream: false,
+        });
+
+        // Only directories can be parents, so only they need a by-id entry: ~1/6 of the records
+        // instead of all of them.
+        let mut by_mft_id: HashMap<u64, u32> = HashMap::with_capacity(directory_count);
+        // Record 5 never reaches this function (the read filters metafiles), so the root has to be
+        // registered by hand — without it every top-level directory loses its parent.
+        by_mft_id.insert(ROOT_MFT_ID, ROOT_NODE);
+        let mut pending_parents: Vec<u64> = Vec::with_capacity(directory_count);
+        pending_parents.push(0);
+        for record in records {
+            if record.mft_id == 0 || record.mft_id == ROOT_MFT_ID || !record.is_dir {
+                continue;
+            }
+            by_mft_id.insert(record.mft_id, nodes.len() as u32);
+            pending_parents.push(record.parent_id);
+            nodes.push(VolumeNode {
+                parent: NO_NODE,
+                name: names.intern(&record.name),
+                size: 0,
+                modified: 0,
+                has_data_stream: false,
+            });
+        }
+
+        // Parents are referenced by mft id, which can only be resolved once every directory is registered.
+        for (node, parent_mft_id) in pending_parents.iter().enumerate().skip(1) {
+            nodes[node].parent = by_mft_id.get(parent_mft_id).copied().unwrap_or(NO_NODE);
+        }
+        drop(pending_parents);
+
+        for record in records {
+            if record.mft_id == 0 || record.mft_id == ROOT_MFT_ID || record.is_dir {
+                continue;
+            }
+            nodes.push(VolumeNode {
+                parent: by_mft_id.get(&record.parent_id).copied().unwrap_or(NO_NODE),
+                name: names.intern(&record.name),
+                size: record.size,
+                // Seconds are what the record holds; milliseconds are what the aggregation needs.
+                modified: record.modified.saturating_mul(1000),
+                has_data_stream: record.has_data_stream,
+            });
+        }
+        debug_assert_eq!(nodes.len(), node_count);
+
+        // Children grouped by parent in two linear passes (count, then fill), producing one flat
+        // array. The previous shape allocated a `Vec` per parent directory.
+        let mut child_offsets = vec![0u32; directory_count + 1];
+        for entry in &nodes[1..directory_count] {
+            if entry.parent != NO_NODE {
+                child_offsets[entry.parent as usize + 1] += 1;
+            }
+        }
+        for index in 1..child_offsets.len() {
+            child_offsets[index] += child_offsets[index - 1];
+        }
+        let mut child_ids = vec![0u32; child_offsets[directory_count] as usize];
+        let mut cursor = child_offsets.clone();
+        for (node, entry) in nodes[1..directory_count].iter().enumerate() {
+            if entry.parent == NO_NODE {
+                continue;
+            }
+            let slot = &mut cursor[entry.parent as usize];
+            child_ids[*slot as usize] = node as u32 + 1;
+            *slot += 1;
+        }
+
+        // Breadth-first from the root: a directory's depth and its place in `bfs_order` are only
+        // known once its parent has been visited, so the two passes cannot be merged.
+        let mut depth = vec![UNREACHABLE_DEPTH; directory_count];
+        let mut bfs_order = Vec::with_capacity(directory_count);
+        depth[ROOT_NODE as usize] = 0;
+        bfs_order.push(ROOT_NODE);
+        let mut head = 0usize;
+        while head < bfs_order.len() {
+            let node = bfs_order[head];
+            head += 1;
+            let child_depth = depth[node as usize].saturating_add(1);
+            let from = child_offsets[node as usize] as usize;
+            let to = child_offsets[node as usize + 1] as usize;
+            for &child in &child_ids[from..to] {
+                if depth[child as usize] == UNREACHABLE_DEPTH {
+                    depth[child as usize] = child_depth;
+                    bfs_order.push(child);
+                }
+            }
+        }
+        drop(child_ids);
+        drop(child_offsets);
+
+        // Anything whose parent never received a depth sits on an orphan branch / self-parent /
+        // cycle and is not part of this disk. Detach it once here so that path building and
+        // aggregation never have to re-test reachability.
+        for entry in nodes[1..].iter_mut() {
+            if entry.parent != NO_NODE && depth[entry.parent as usize] == UNREACHABLE_DEPTH {
+                entry.parent = NO_NODE;
+            }
+        }
+
+        let deepest_depth = bfs_order
+            .iter()
+            .map(|&node| depth[node as usize])
+            .max()
+            .unwrap_or(0);
+
+        Self {
+            names,
+            nodes,
+            directory_count: directory_count as u32,
+            depth,
+            bfs_order,
+            deepest_depth,
+        }
+    }
+
+    /// Node id of the volume root (always 0).
+    pub fn root(&self) -> u32 {
+        ROOT_NODE
+    }
+
+    pub fn directory_count(&self) -> u32 {
+        self.directory_count
+    }
+
+    pub fn node_count(&self) -> u32 {
+        self.nodes.len() as u32
+    }
+
+    /// Empty for the root, whose path comes from the drive letter.
+    pub fn name_of(&self, node: u32) -> &str {
+        self.names.get(self.nodes[node as usize].name)
+    }
+
+    pub fn parent_of(&self, node: u32) -> Option<u32> {
+        match self.nodes[node as usize].parent {
+            NO_NODE => None,
+            parent => Some(parent),
+        }
+    }
+
+    /// `None` when the directory cannot be reached from the root.
+    pub fn depth_of(&self, node: u32) -> Option<u16> {
+        match self.depth[node as usize] {
+            UNREACHABLE_DEPTH => None,
+            depth => Some(depth),
+        }
+    }
+
+    pub fn deepest_depth(&self) -> u16 {
+        self.deepest_depth
+    }
+
+    /// Every reachable directory, parents before children, root first.
+    ///
+    /// A consumer builds its own path form by walking this once:
+    /// `path[node] = join(path[parent], name_of(node))`.
+    pub fn bfs_order(&self) -> &[u32] {
+        &self.bfs_order
+    }
+
+    pub fn files(&self) -> impl Iterator<Item = FileEntry<'_>> + '_ {
+        self.nodes[self.directory_count as usize..]
+            .iter()
+            .enumerate()
+            .map(move |(offset, entry)| FileEntry {
+                node: self.directory_count + offset as u32,
+                parent: match entry.parent {
+                    NO_NODE => None,
+                    parent => Some(parent),
+                },
+                name: self.names.get(entry.name),
+                size: entry.size,
+                modified: entry.modified,
+                has_data_stream: entry.has_data_stream,
+            })
+    }
+
+    /// Fresh per-directory totals, indexed by node id.
+    pub fn empty_totals(&self) -> Vec<DirectoryTotals> {
+        vec![DirectoryTotals::default(); self.directory_count as usize]
+    }
+
+    /// Add every file whose size the `$MFT` already provided to its direct parent.
+    ///
+    /// Files without `$DATA` are skipped: their size is unknown until a stat returns, which only
+    /// the caller can do (it needs a full path). Callers add those through
+    /// `DirectoryTotals::add_file` themselves before calling `propagate_totals`.
+    pub fn accumulate_files(&self, totals: &mut [DirectoryTotals]) {
+        for entry in &self.nodes[self.directory_count as usize..] {
+            if !entry.has_data_stream || entry.size == 0 || entry.parent == NO_NODE {
+                continue;
+            }
+            totals[entry.parent as usize].add_file(entry.size, entry.modified);
+        }
+    }
+
+    /// Hand each directory's subtree total to its parent, deepest level first.
+    ///
+    /// By the time a level is visited every child has its complete total, because `bfs_order`
+    /// places parents before children and the loop runs in reverse. Cost is O(directories)
+    /// regardless of tree depth, unlike the per-file ancestor walk it replaces.
+    pub fn propagate_totals(&self, totals: &mut [DirectoryTotals]) {
+        for &node in self.bfs_order.iter().rev() {
+            let parent = self.nodes[node as usize].parent;
+            // The root has no parent; detached nodes were already cleared during the build.
+            if parent == NO_NODE {
+                continue;
+            }
+            let child = totals[node as usize];
+            totals[parent as usize].add_subtree(child);
+        }
+    }
+
+    /// `$MFT`-sized files only. Callers that must stat the remaining files assemble the three
+    /// steps themselves so they can inject those measurements in between.
+    pub fn aggregate(&self) -> Vec<DirectoryTotals> {
+        let mut totals = self.empty_totals();
+        self.accumulate_files(&mut totals);
+        self.propagate_totals(&mut totals);
+        totals
+    }
+}
+
 pub fn is_elevated() -> bool {
     let mut token = HANDLE::default();
     // SAFETY: token is the out-param; the pseudo process handle returned by
@@ -357,16 +767,23 @@ impl NtfsFileMetadataReader {
             reader.mft_runs = runs;
         }
         let runs_ms = runs_started.elapsed().as_millis();
+        // 同一处 1KB 再读一次：区分"每个卷只付一次的首读代价"（第二次回到毫秒级）与
+        // "每次读这个偏移都要阻塞"（两次都慢）。真机上这一段能吃掉 1.5~2.3s，比整表 1.8GB
+        // 的顺序读还慢一个数量级，所以必须弄清它是首读还是稳态。
+        let reread_started = Instant::now();
+        let _ = reader.read_mft_data_runs();
+        let reread_ms = reread_started.elapsed().as_millis();
         // open 是每次扫描的固定开销，且此前从未被单独计时：真机实测 0.1~1.1s（C/D 盘最慢），
         // 与回收站条目数无关，占了小卷 MFT 扫描成本的一大半。拆开才能判断它花在
         // CreateFile（卷设备打开）、引导扇区读还是 run 列表读上。
         info!(
-            "[MFT] {}:卷打开拆分 CreateFile {}ms / 引导扇区 {}ms / run 列表 {}ms（{} 个 run）",
+            "[MFT] {}:卷打开拆分 CreateFile {}ms / 引导扇区 {}ms / run 列表 {}ms（{} 个 run）/ 同一记录再读 {}ms",
             drive_letter,
             create_ms,
             boot_ms,
             runs_ms,
-            reader.mft_runs.len()
+            reader.mft_runs.len(),
+            reread_ms
         );
 
         Ok(reader)
@@ -805,250 +1222,6 @@ impl NtfsFileMetadataReader {
     }
 }
 
-// ============================================================================
-// [P6] 记录级取证视图（`#[cfg(test)]`：生产构建中不存在，零行为影响）
-//
-// 用途：给定一个**权威记录号**（来自 OS 文件句柄的文件索引），把该记录从卷上单独
-// 读出来、应用 fixup、逐属性 dump，回答"这条记录到底长什么样、为什么没进结果集"。
-// 与 `read_and_parse_pipelined` 是两条独立的读取路径（单记录 seek_read 而非 16MB 块），
-// 因此它同时能判别"记录本身有问题"和"块读取/记录号映射有问题"。
-// ============================================================================
-
-#[cfg(test)]
-#[derive(Debug, Default, Clone)]
-pub struct ProbeRecordView {
-    pub record_id: u64,
-    pub offset: u64,
-    pub magic_ok: bool,
-    pub magic: [u8; 4],
-    pub in_use: bool,
-    pub is_dir: bool,
-    pub hardlink_count: u16,
-    pub used_size: u32,
-    pub allocated_size: u32,
-    pub fixup_ok: bool,
-    /// 属性链上的 (type, attribute_length) 序列
-    pub attributes: Vec<(u32, usize)>,
-    /// $FILE_NAME: (parent_id, namespace, name)
-    pub file_names: Vec<(u64, u8, String)>,
-    /// $STANDARD_INFORMATION 的 file attributes 位（bit 0x400 = reparse point，解析器会丢弃）
-    pub si_file_attributes: u32,
-    /// $DATA: (是否非 resident, run 数)
-    pub data_attributes: Vec<(bool, usize)>,
-    /// $ATTRIBUTE_LIST: (attribute_type, 扩展记录号)
-    pub attribute_list: Vec<(u32, u64)>,
-    pub parse_ok: bool,
-    pub parsed_name: Option<String>,
-    pub parsed_parent: Option<u64>,
-    /// 属性链遍历中途失败的说明（越界/长度非法），正常为 None
-    pub walk_error: Option<String>,
-}
-
-#[cfg(test)]
-impl ProbeRecordView {
-    pub fn describe(&self) -> String {
-        let attrs: Vec<String> = self
-            .attributes
-            .iter()
-            .map(|(kind, length)| format!("0x{kind:X}({length})"))
-            .collect();
-        let names: Vec<String> = self
-            .file_names
-            .iter()
-            .map(|(parent, namespace, name)| format!("(parent={parent},ns={namespace},{name:?})"))
-            .collect();
-        let data: Vec<String> = self
-            .data_attributes
-            .iter()
-            .map(|(non_resident, runs)| {
-                format!("({},runs={runs})", if *non_resident { "非resi" } else { "resi" })
-            })
-            .collect();
-        let attr_list: Vec<String> = self
-            .attribute_list
-            .iter()
-            .map(|(kind, record)| format!("0x{kind:X}->{record}"))
-            .collect();
-        format!(
-            "rid={} off={} magic={} in_use={} dir={} links={} used={} alloc={} si_attr=0x{:X} fixup={} attrs=[{}] names=[{}] data=[{}] attrlist=[{}] parse={} parsed=({:?},{:?}) walk_err={:?}",
-            self.record_id,
-            self.offset,
-            String::from_utf8_lossy(&self.magic),
-            self.in_use,
-            self.is_dir,
-            self.hardlink_count,
-            self.used_size,
-            self.allocated_size,
-            self.si_file_attributes,
-            self.fixup_ok,
-            attrs.join(" "),
-            names.join(" "),
-            data.join(" "),
-            attr_list.join(" "),
-            self.parse_ok,
-            self.parsed_name,
-            self.parsed_parent,
-            self.walk_error,
-        )
-    }
-}
-
-/// 记录号 → 卷内字节偏移（按 run 链累计）。与 `plan_read_chunks` 口径一致。
-#[cfg(test)]
-impl NtfsFileMetadataReader {
-    pub fn probe_record_offset(&self, record_id: u64) -> Option<u64> {
-        let record_size = self.file_record_size as u64;
-        let mut base = 0u64;
-        for run in &self.mft_runs {
-            let run_records = run.cluster_count * self.cluster_size / record_size;
-            if record_id < base + run_records {
-                return Some(
-                    (run.start_lcn as u64) * self.cluster_size
-                        + (record_id - base) * record_size,
-                );
-            }
-            base += run_records;
-        }
-        None
-    }
-
-    /// 单独读一条记录并 dump 全貌。**不经过** 16MB 块流水线。
-    pub fn probe_record(&self, record_id: u64) -> Result<ProbeRecordView, String> {
-        let offset = self
-            .probe_record_offset(record_id)
-            .ok_or_else(|| format!("记录号 {record_id} 超出 run 链覆盖范围"))?;
-        let mut raw = vec![0u8; self.file_record_size];
-        let read = self
-            .volume
-            .seek_read(&mut raw, offset)
-            .map_err(|error| format!("单记录读取失败: {error}"))?;
-        if read != raw.len() {
-            return Err(format!("单记录短读 {read}/{}", raw.len()));
-        }
-
-        let mut view = ProbeRecordView {
-            record_id,
-            offset,
-            magic: [raw[0], raw[1], raw[2], raw[3]],
-            ..ProbeRecordView::default()
-        };
-        view.magic_ok = &raw[0..4] == b"FILE";
-        if !view.magic_ok {
-            return Ok(view);
-        }
-
-        view.in_use = read_u16(&raw, 22).is_some_and(|flags| flags & FILE_RECORD_FLAG_IN_USE != 0);
-        view.is_dir = read_u16(&raw, 22).is_some_and(|flags| flags & FILE_RECORD_FLAG_DIRECTORY != 0);
-        view.hardlink_count = read_u16(&raw, 18).unwrap_or(0);
-        view.used_size = read_u32(&raw, 24).unwrap_or(0);
-        view.allocated_size = read_u32(&raw, 28).unwrap_or(0);
-
-        let mut fixed = raw;
-        view.fixup_ok = self.apply_fixup(&mut fixed).is_some();
-        if !view.fixup_ok {
-            return Ok(view);
-        }
-
-        let attributes_offset = read_u16(&fixed, 20).unwrap_or(0) as usize;
-        let mut offset = attributes_offset;
-        while offset + 16 <= fixed.len() {
-            let Some(attribute_type) = read_u32(&fixed, offset) else {
-                view.walk_error = Some(format!("读 type 越界 @{offset}"));
-                break;
-            };
-            if attribute_type == 0xFFFF_FFFF {
-                break;
-            }
-            let Some(attribute_length) = read_u32(&fixed, offset + 4).map(|v| v as usize) else {
-                view.walk_error = Some(format!("读 length 越界 @{offset}"));
-                break;
-            };
-            if attribute_length == 0 || offset + attribute_length > fixed.len() {
-                view.walk_error = Some(format!(
-                    "属性长度非法 0x{attribute_type:X} len={attribute_length} @{offset} (record_len={})",
-                    fixed.len()
-                ));
-                break;
-            }
-
-            view.attributes.push((attribute_type, attribute_length));
-            match attribute_type {
-                0x10 => {
-                    if let Some((_, file_attributes)) = parse_standard_info(&fixed, offset) {
-                        view.si_file_attributes = file_attributes;
-                    }
-                }
-                0x20 => {
-                    view.attribute_list =
-                        probe_attribute_list_entries(&fixed, offset).unwrap_or_default();
-                }
-                0x30 => {
-                    if let Some((parent_id, name, namespace)) =
-                        parse_file_name_attribute(&fixed, offset)
-                    {
-                        view.file_names.push((parent_id, namespace, name));
-                    }
-                }
-                0x80 => {
-                    let non_resident = *fixed.get(offset + 8).unwrap_or(&0) != 0;
-                    let runs = if non_resident {
-                        probe_data_run_count(&fixed, offset).unwrap_or(0)
-                    } else {
-                        0
-                    };
-                    view.data_attributes.push((non_resident, runs));
-                }
-                _ => {}
-            }
-
-            offset += attribute_length;
-        }
-
-        if let Some(info) = parse_record_info(&fixed, record_id) {
-            view.parse_ok = true;
-            view.parsed_name = Some(info.name);
-            view.parsed_parent = Some(info.parent_id);
-        }
-        Ok(view)
-    }
-}
-
-/// $ATTRIBUTE_LIST（resident）的条目：每条 26 字节，file_reference 低 48 位是扩展记录号。
-#[cfg(test)]
-fn probe_attribute_list_entries(record: &[u8], attribute_offset: usize) -> Option<Vec<(u32, u64)>> {
-    if *record.get(attribute_offset + 8)? != 0 {
-        return None; // 非 resident 属性列表：本议题场景不出现
-    }
-    let value_length = read_u32(record, attribute_offset + 16)? as usize;
-    let value_offset = read_u16(record, attribute_offset + 20)? as usize;
-    let start = attribute_offset.checked_add(value_offset)?;
-    let end = start.checked_add(value_length)?.min(record.len());
-    let value = record.get(start..end)?;
-
-    let mut entries = Vec::new();
-    let mut cursor = 0usize;
-    while cursor + 26 <= value.len() {
-        let attribute_type = read_u32(value, cursor)?;
-        let length = read_u16(value, cursor + 4)? as usize;
-        if length < 26 || cursor + length > value.len() {
-            break;
-        }
-        let file_reference = read_u64(value, cursor + 16)? & 0x0000_FFFF_FFFF_FFFF;
-        entries.push((attribute_type, file_reference));
-        cursor += length;
-    }
-    Some(entries)
-}
-
-#[cfg(test)]
-fn probe_data_run_count(record: &[u8], attribute_offset: usize) -> Option<usize> {
-    let data_run_offset = read_u16(record, attribute_offset + 32)? as usize;
-    let start = attribute_offset + data_run_offset;
-    let length = read_u32(record, attribute_offset + 4)? as usize;
-    let end = attribute_offset + length;
-    parse_data_runs(record.get(start..end)?).map(|runs| runs.len())
-}
-
 /// Judge whether a record is in use from header flags only, without distinguishing files from directories.
 fn looks_like_active_record(record: &[u8]) -> bool {
     if record.len() < 24 || &record[0..4] != b"FILE" {
@@ -1100,18 +1273,21 @@ fn parse_record_info(record: &[u8], mft_id: u64) -> Option<MftRecordInfo> {
             }
             // $FILE_NAME: parent directory reference + file name. Hard links produce multiple entries; skip 8.3 short names
             0x30 => {
-                if let Some((parent_id, name, namespace)) =
-                    parse_file_name_attribute(record, offset)
-                {
+                if let Some(entry) = parse_file_name_location(record, offset) {
+                    // Hard links and the 8.3 alias both produce extra `$FILE_NAME` attributes. Decide from
+                    // the namespace first and decode only the winner: decoding a name that is immediately
+                    // discarded costs one String per attribute, and a disk has millions of them.
                     let should_replace = match &name_entry {
                         None => true,
                         Some((_, _, existing_namespace)) => {
                             *existing_namespace == FILE_NAME_NAMESPACE_DOS
-                                && namespace != FILE_NAME_NAMESPACE_DOS
+                                && entry.namespace != FILE_NAME_NAMESPACE_DOS
                         }
                     };
                     if should_replace {
-                        name_entry = Some((parent_id, name, namespace));
+                        if let Some(name) = decode_file_name(record, &entry) {
+                            name_entry = Some((entry.parent_id, name, entry.namespace));
+                        }
                     }
                 }
             }
@@ -1144,31 +1320,59 @@ fn parse_record_info(record: &[u8], mft_id: u64) -> Option<MftRecordInfo> {
     })
 }
 
-/// Parse the `$FILE_NAME` attribute: return (parent directory reference, file name, namespace).
-fn parse_file_name_attribute(record: &[u8], attribute_offset: usize) -> Option<(u64, String, u8)> {
+/// Where a `$FILE_NAME` attribute's payload lives, plus the cheap fields needed to decide whether to keep it.
+///
+/// Split out from decoding so the parser can skip names it would discard anyway (8.3 alias of an entry
+/// that already has a long name) without paying for a String.
+struct FileNameLocation {
+    parent_id: u64,
+    namespace: u8,
+    name_start: usize,
+    name_length: usize,
+}
+
+/// Read the `$FILE_NAME` attribute header: parent directory reference, namespace and name span.
+fn parse_file_name_location(record: &[u8], attribute_offset: usize) -> Option<FileNameLocation> {
     let value_offset = read_u16(record, attribute_offset + 20)? as usize;
     let value_start = attribute_offset + value_offset;
-    let parent_reference = read_u64(record, value_start)? & 0x0000_FFFF_FFFF_FFFF;
+    let parent_id = read_u64(record, value_start)? & 0x0000_FFFF_FFFF_FFFF;
     let name_length = *record.get(value_start + 64)? as usize;
     let namespace = *record.get(value_start + 65)?;
     if name_length == 0 {
         return None;
     }
     let name_start = value_start + 66;
-    let name_end = name_start + name_length * 2;
+    // Half a UTF-16 unit cannot be decoded, and a truncated attribute must not index past the record.
+    let name_end = name_start.checked_add(name_length.checked_mul(2)?)?;
     if name_end > record.len() {
         return None;
     }
-    // The file name is UTF-16LE; decode by slicing u16 directly, without extra copying
-    let units: Vec<u16> = record[name_start..name_end]
-        .chunks_exact(2)
-        .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
-        .collect();
-    Some((
-        parent_reference,
-        String::from_utf16_lossy(&units),
+    Some(FileNameLocation {
+        parent_id,
         namespace,
-    ))
+        name_start,
+        name_length,
+    })
+}
+
+/// Decode a UTF-16LE name straight from the record bytes.
+///
+/// The previous version collected a `Vec<u16>` and then built a `String` from it: two allocations and two
+/// copies per file name, which on a 1.2M-record volume is millions of avoidable heap operations on the
+/// single parse thread. Unpaired surrogates still become U+FFFD, exactly like `String::from_utf16_lossy`.
+fn decode_file_name(record: &[u8], location: &FileNameLocation) -> Option<String> {
+    let name_end = location
+        .name_start
+        .checked_add(location.name_length.checked_mul(2)?)?;
+    let bytes = record.get(location.name_start..name_end)?;
+    let units = bytes
+        .chunks_exact(2)
+        .map(|pair| u16::from_le_bytes([pair[0], pair[1]]));
+    Some(
+        char::decode_utf16(units)
+            .map(|unit| unit.unwrap_or(char::REPLACEMENT_CHARACTER))
+            .collect(),
+    )
 }
 
 /// Every `$FILE_NAME` attribute of a fixup-ed record, in attribute order.
@@ -1197,8 +1401,12 @@ fn collect_file_names(record: &[u8]) -> Vec<(u64, String, u8)> {
             break;
         }
         if attribute_type == 0x30 {
-            if let Some((parent_id, name, namespace)) = parse_file_name_attribute(record, offset) {
-                names.push((parent_id, name, namespace));
+            // 复用 P2-1 的两段式：先读位置、再解码。这里**每个**名字都要，所以不做 8.3 剪枝——
+            // 剪枝是 `parse_record_info` 的取舍（它只需要一个名字），目录项枚举不能剪。
+            if let Some(location) = parse_file_name_location(record, offset) {
+                if let Some(name) = decode_file_name(record, &location) {
+                    names.push((location.parent_id, name, location.namespace));
+                }
             }
         }
         offset += attribute_length;
@@ -1659,5 +1867,332 @@ mod tests {
 
         let extracted = extract_resident_data(&record).expect("应跳过 ADS 后提取未命名流");
         assert_eq!(extracted, content);
+    }
+
+    /// Build a record for the volume-index tests. Files are given a `$DATA` stream unless cleared.
+    fn record(
+        mft_id: u64,
+        parent_id: u64,
+        name: &str,
+        is_dir: bool,
+        size: u64,
+        modified: i64,
+    ) -> MftRecordInfo {
+        MftRecordInfo {
+            mft_id,
+            parent_id,
+            name: name.to_string(),
+            is_dir,
+            size,
+            modified,
+            has_data_stream: !is_dir,
+        }
+    }
+
+    /// ```
+    /// 5 ─┬─ 10 Users ── 11 Alice ─┬─ 20 a.txt        100 B
+    ///    │                        ├─ 21 b.bin       2000 B
+    ///    │                        └─ 22 empty.log      0 B
+    ///    ├─ 12 Windows ── 24 nostream.dat   ($DATA missing, size unknown)
+    ///    └─ 23 pagefile.sys  5000 B
+    /// ```
+    fn sample_volume() -> Vec<MftRecordInfo> {
+        vec![
+            record(10, 5, "Users", true, 0, 0),
+            record(11, 10, "Alice", true, 0, 0),
+            record(12, 5, "Windows", true, 0, 0),
+            record(20, 11, "a.txt", false, 100, 1_700_000_100),
+            record(21, 11, "b.bin", false, 2000, 1_700_000_300),
+            record(22, 11, "empty.log", false, 0, 1_700_000_500),
+            record(23, 5, "pagefile.sys", false, 5000, 1_700_000_200),
+            MftRecordInfo {
+                has_data_stream: false,
+                ..record(24, 12, "nostream.dat", false, 0, 1_700_000_000)
+            },
+        ]
+    }
+
+    /// The replaced implementation, kept as the oracle: every file climbs its parent chain and adds
+    /// its size at each ancestor. Quadratic in depth, but obviously correct.
+    ///
+    /// Returns totals keyed by directory mft id; a directory absent from the map has an empty subtree.
+    fn oracle_totals(records: &[MftRecordInfo]) -> HashMap<u64, (u64, i64, u64)> {
+        let dir_parent: HashMap<u64, u64> = records
+            .iter()
+            .filter(|record| record.is_dir && record.mft_id != 0)
+            .map(|record| (record.mft_id, record.parent_id))
+            .collect();
+
+        // Walk up to the root. `None` means the chain breaks (unknown parent) or loops.
+        let ancestor_chain = |start: u64| -> Option<Vec<u64>> {
+            let mut chain = vec![start];
+            let mut current = start;
+            while current != ROOT_MFT_ID {
+                if chain.len() > 4096 {
+                    return None;
+                }
+                current = *dir_parent.get(&current)?;
+                chain.push(current);
+            }
+            Some(chain)
+        };
+
+        let mut totals: HashMap<u64, (u64, i64, u64)> = HashMap::new();
+        for record in records {
+            if record.is_dir || !record.has_data_stream || record.size == 0 {
+                continue;
+            }
+            let Some(chain) = ancestor_chain(record.parent_id) else {
+                continue;
+            };
+            for directory in chain {
+                let totals = totals.entry(directory).or_default();
+                totals.0 += record.size;
+                totals.1 = totals.1.max(record.modified.saturating_mul(1000));
+                totals.2 += 1;
+            }
+        }
+        totals
+    }
+
+    /// Directory mft ids in node order: node 0 is the synthetic root, then directories in record
+    /// order. Mirrors the layout invariant that `VolumeIndex` documents.
+    fn directory_mft_ids(records: &[MftRecordInfo]) -> Vec<u64> {
+        let mut ids = vec![ROOT_MFT_ID];
+        ids.extend(
+            records
+                .iter()
+                .filter(|record| record.is_dir && record.mft_id != 0)
+                .map(|record| record.mft_id),
+        );
+        ids
+    }
+
+    /// Depth is what both consumers use to cap the result set, and it is derived only by the BFS.
+    #[test]
+    fn volume_index_assigns_depth_from_the_root() {
+        let index = VolumeIndex::build(&sample_volume());
+        let ids = directory_mft_ids(&sample_volume());
+        let node_of = |mft_id: u64| ids.iter().position(|id| *id == mft_id).unwrap() as u32;
+
+        assert_eq!(index.depth_of(index.root()), Some(0));
+        assert_eq!(index.depth_of(node_of(10)), Some(1));
+        assert_eq!(index.depth_of(node_of(11)), Some(2));
+        assert_eq!(index.depth_of(node_of(12)), Some(1));
+        assert_eq!(index.deepest_depth(), 2);
+
+        // The root has no name; its path is the drive letter.
+        assert_eq!(index.name_of(index.root()), "");
+        assert_eq!(index.name_of(node_of(11)), "Alice");
+        assert_eq!(index.parent_of(node_of(11)), Some(node_of(10)));
+        assert_eq!(index.parent_of(index.root()), None);
+    }
+
+    /// `bfs_order` is the contract consumers build paths on: parents strictly before children.
+    #[test]
+    fn volume_index_bfs_order_visits_parents_before_children() {
+        let records = sample_volume();
+        let index = VolumeIndex::build(&records);
+        let ids = directory_mft_ids(&records);
+
+        let mut paths = vec![String::new(); index.node_count() as usize];
+        paths[index.root() as usize] = "c:".to_string();
+        // Every node except the root already has its parent's path built.
+        for &node in index.bfs_order().iter().skip(1) {
+            let parent = index.parent_of(node).expect("可达目录必须有父目录");
+            let mut path = paths[parent as usize].clone();
+            path.push('/');
+            path.push_str(index.name_of(node));
+            paths[node as usize] = path;
+        }
+
+        let path_of = |mft_id: u64| paths[ids.iter().position(|id| *id == mft_id).unwrap()].clone();
+        assert_eq!(path_of(5), "c:");
+        assert_eq!(path_of(10), "c:/Users");
+        assert_eq!(path_of(11), "c:/Users/Alice");
+        assert_eq!(path_of(12), "c:/Windows");
+        // A directory's depth is exactly its number of path segments below the drive root.
+        assert_eq!(path_of(11).matches('/').count(), 2);
+    }
+
+    /// The bottom-up aggregation must reproduce the per-file ancestor walk it replaces, field by field.
+    #[test]
+    fn volume_index_totals_match_the_per_file_ancestor_walk() {
+        let records = sample_volume();
+        let index = VolumeIndex::build(&records);
+        let ids = directory_mft_ids(&records);
+        let expected = oracle_totals(&records);
+
+        let totals = index.aggregate();
+        assert_eq!(totals.len(), ids.len(), "每个目录节点都要有一份 totals");
+
+        for (node, mft_id) in ids.iter().enumerate() {
+            let actual = totals[node];
+            let want = expected.get(mft_id).copied().unwrap_or_default();
+            assert_eq!(
+                (actual.size, actual.modified, actual.file_count),
+                want,
+                "目录 {mft_id} 的聚合结果不一致"
+            );
+        }
+
+        // Sanity check on the fixture itself, so a broken oracle cannot pass by agreeing on zeros.
+        let alice = ids.iter().position(|id| *id == 11).unwrap();
+        assert_eq!(totals[alice].size, 2100, "空文件不计入大小");
+        assert_eq!(totals[alice].file_count, 2, "nostream.dat 与空文件都不计数");
+        let root = index.root() as usize;
+        assert_eq!(totals[root].size, 7100);
+        assert_eq!(totals[root].file_count, 3);
+    }
+
+    /// Branches that do not reach the root are not on this disk: no depth, no parent, no totals.
+    ///
+    /// The old code expressed this as "the parent is not in the directory index"; here it is a
+    /// one-off detach during the build, so every later pass can trust `parent`.
+    #[test]
+    fn unreachable_branches_are_detached() {
+        let mut records = sample_volume();
+        // Unknown parent, self-parent, and a two-node cycle.
+        records.push(record(30, 99, "Orphan", true, 0, 0));
+        records.push(record(31, 30, "x.txt", false, 400, 1_700_000_400));
+        records.push(record(40, 40, "Self", true, 0, 0));
+        records.push(record(50, 51, "CycleA", true, 0, 0));
+        records.push(record(51, 50, "CycleB", true, 0, 0));
+
+        let index = VolumeIndex::build(&records);
+        let ids = directory_mft_ids(&records);
+        let node_of = |mft_id: u64| ids.iter().position(|id| *id == mft_id).unwrap() as u32;
+
+        for mft_id in [30, 40, 50, 51] {
+            assert_eq!(index.depth_of(node_of(mft_id)), None, "{mft_id} 不可达");
+            assert_eq!(
+                index.parent_of(node_of(mft_id)),
+                None,
+                "{mft_id} 应被摘除父引用"
+            );
+            assert!(
+                !index.bfs_order().contains(&node_of(mft_id)),
+                "{mft_id} 不应出现在 BFS 序列里"
+            );
+        }
+
+        // Files under an orphan directory are detached as well, so their size never lands anywhere.
+        let orphan_file = index
+            .files()
+            .find(|file| file.name == "x.txt")
+            .expect("文件仍应可枚举");
+        assert_eq!(orphan_file.parent, None);
+
+        let totals = index.aggregate();
+        assert_eq!(totals[node_of(30) as usize], DirectoryTotals::default());
+        assert_eq!(
+            totals[index.root() as usize].size,
+            7100,
+            "孤儿分支不得计入根"
+        );
+    }
+
+    /// Consumers rely on "directories first, files after": node ids index the totals and depth
+    /// arrays, and the file range is a plain slice. Breaking this would silently misalign both.
+    #[test]
+    fn volume_index_lays_out_directories_before_files() {
+        let records = sample_volume();
+        let index = VolumeIndex::build(&records);
+        let directories = records.iter().filter(|record| record.is_dir).count();
+        let files = records.len() - directories;
+
+        // Synthetic root + one node per directory record, then every file.
+        assert_eq!(index.directory_count(), (directories + 1) as u32);
+        assert_eq!(index.node_count(), (directories + 1 + files) as u32);
+        // The file range starts exactly where the directory nodes end.
+        let names: Vec<&str> = index.files().map(|file| file.name).collect();
+        assert_eq!(
+            names,
+            vec![
+                "a.txt",
+                "b.bin",
+                "empty.log",
+                "pagefile.sys",
+                "nostream.dat"
+            ]
+        );
+    }
+
+    /// Names feed the rebuilt paths shown to users and used for deletion, so the arena must not
+    /// mangle anything the old `String` path preserved.
+    #[test]
+    fn name_arena_round_trips_non_ascii_names() {
+        let records = vec![
+            record(10, 5, "项目资料", true, 0, 0),
+            record(20, 10, "报表😀.LOG", false, 10, 1),
+        ];
+        let index = VolumeIndex::build(&records);
+
+        assert_eq!(index.name_of(1), "项目资料");
+        let file = index.files().next().expect("应有一个文件");
+        assert_eq!(file.name, "报表😀.LOG");
+        assert_eq!(file.parent, Some(1));
+    }
+
+    /// `propagate_totals` is called after the caller injects stat results, so it must tolerate a
+    /// totals array that already carries values (that is exactly how the fallback files get in).
+    #[test]
+    fn injected_file_sizes_propagate_to_the_root() {
+        let records = sample_volume();
+        let index = VolumeIndex::build(&records);
+        let ids = directory_mft_ids(&records);
+        let windows = ids.iter().position(|id| *id == 12).unwrap();
+
+        let mut totals = index.empty_totals();
+        index.accumulate_files(&mut totals);
+        // Stand-in for the stat pass over `nostream.dat`, newest file on the volume.
+        let stat_modified_ms = 1_700_000_700_000i64;
+        totals[windows].add_file(4096, stat_modified_ms);
+        index.propagate_totals(&mut totals);
+
+        assert_eq!(totals[windows].size, 4096);
+        assert_eq!(totals[windows].file_count, 1);
+        assert_eq!(totals[index.root() as usize].size, 7100 + 4096);
+        assert_eq!(totals[index.root() as usize].file_count, 4);
+        assert_eq!(
+            totals[index.root() as usize].modified,
+            stat_modified_ms,
+            "最新的修改时间要冒到根"
+        );
+    }
+
+    /// The allocation-free decoder must produce exactly what `String::from_utf16_lossy` produced.
+    ///
+    /// These names become part of the rebuilt full path, which is shown to the user and handed to the
+    /// delete paths, so a different replacement character or a truncated pair would turn into a path that
+    /// does not exist on disk.
+    #[test]
+    fn name_decoding_matches_from_utf16_lossy() {
+        let cases: Vec<Vec<u16>> = vec![
+            "report.txt".encode_utf16().collect(),
+            "报表.LOG".encode_utf16().collect(),
+            // Emoji: a surrogate pair that must decode as one char
+            "😀模型.bin".encode_utf16().collect(),
+            // Lone high surrogate: must fall back to U+FFFD, same as from_utf16_lossy
+            vec![0x41, 0xD800, 0x2E, 0x74, 0x78, 0x74],
+        ];
+
+        for units in cases {
+            let mut buffer: Vec<u8> = vec![0u8; 8];
+            for unit in &units {
+                buffer.extend_from_slice(&unit.to_le_bytes());
+            }
+            let location = FileNameLocation {
+                parent_id: 0,
+                namespace: 1,
+                name_start: 8,
+                name_length: units.len(),
+            };
+            assert_eq!(
+                decode_file_name(&buffer, &location).unwrap(),
+                String::from_utf16_lossy(&units),
+                "decoded name diverged for {units:?}"
+            );
+        }
     }
 }
