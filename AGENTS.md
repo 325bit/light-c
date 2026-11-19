@@ -130,3 +130,16 @@ Never retry because of garbled console output. If output contains unreadable cha
 +     return Err(format!("path outside allowed scope: {}", file_path.display()));
 + }
 ```
+
+---
+
+## 11. 多任务并行（与审计议题隔离）
+
+- 允许多议题并行推进，但开工前自查三问：改动面大（≥5 个文件或跨模块）？周期超过一天？与进行中的工作有文件交集或共享构建产物？**命中两条以上先隔离再动手**
+- 完整流程（worktree 建立、文件所有权登记、收敛顺序、已知坑与真实案例）见 WorkBuddy 的 `parallel-workflow` skill，不在本文件重复
+- 仓库特定约定：
+  - 分支与 commit 用审计议题编号命名（如 `h4-bindings`、`m13-s3`，commit 标注如 `(M13, part 1 of S3)`）
+  - 议题间的文件所有权边界写进对应方案文档（范本：workspace 的 H4 契约文档 §3/§10 对 M13 的边界声明）；交集文件**谁后做谁适配**，不抢
+  - 共享工作区时 cargo 系命令互斥（构建锁）：短期用独立 `CARGO_TARGET_DIR` 绕开，长期并行用 `git worktree`
+  - 同一文件被两个议题触碰时**不拆 hunk 提交**——整个文件归属一个议题，拆错的代价比少拆大
+  - 删依赖后的验收口径是"我们的使用面归零"，不是"依赖图归零"（传递依赖不可控）
