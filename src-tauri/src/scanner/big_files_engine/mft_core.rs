@@ -11,6 +11,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc;
 use std::time::Instant;
 
+use log::info;
+
 use windows::Win32::Foundation::HANDLE;
 use windows::Win32::Security::{GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY};
 use windows::Win32::Storage::FileSystem::{FILE_SHARE_READ, FILE_SHARE_WRITE};
@@ -302,6 +304,7 @@ pub fn is_ntfs(drive_letter: char) -> bool {
 
 impl NtfsFileMetadataReader {
     pub fn open(drive_letter: char) -> Result<Self, String> {
+        let create_started = Instant::now();
         let volume_path = format!("\\\\.\\{}:", drive_letter);
         let volume = fs::OpenOptions::new()
             .read(true)
@@ -310,11 +313,14 @@ impl NtfsFileMetadataReader {
             .custom_flags(FILE_FLAG_SEQUENTIAL_SCAN)
             .open(&volume_path)
             .map_err(|error| format!("打开 NTFS 卷失败: {}", error))?;
+        let create_ms = create_started.elapsed().as_millis();
 
+        let boot_started = Instant::now();
         let mut boot_sector = [0u8; 512];
         volume
             .seek_read(&mut boot_sector, 0)
             .map_err(|error| format!("读取 NTFS 引导扇区失败: {}", error))?;
+        let boot_ms = boot_started.elapsed().as_millis();
 
         let bytes_per_sector = read_u16(&boot_sector, 11)
             .ok_or_else(|| "NTFS 引导扇区缺少 bytes_per_sector".to_string())?
@@ -346,9 +352,22 @@ impl NtfsFileMetadataReader {
             }],
         };
 
+        let runs_started = Instant::now();
         if let Some(runs) = reader.read_mft_data_runs() {
             reader.mft_runs = runs;
         }
+        let runs_ms = runs_started.elapsed().as_millis();
+        // open 是每次扫描的固定开销，且此前从未被单独计时：真机实测 0.1~1.1s（C/D 盘最慢），
+        // 与回收站条目数无关，占了小卷 MFT 扫描成本的一大半。拆开才能判断它花在
+        // CreateFile（卷设备打开）、引导扇区读还是 run 列表读上。
+        info!(
+            "[MFT] {}:卷打开拆分 CreateFile {}ms / 引导扇区 {}ms / run 列表 {}ms（{} 个 run）",
+            drive_letter,
+            create_ms,
+            boot_ms,
+            runs_ms,
+            reader.mft_runs.len()
+        );
 
         Ok(reader)
     }

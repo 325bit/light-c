@@ -97,15 +97,42 @@ struct DrivePhaseTiming {
     non_resident_fallbacks: usize,
 }
 
-/// 生产入口：按运行时环境选引擎——**管理员 + NTFS 一律走 MFT 直读**，其余回退 fs 枚举。
+/// 走 MFT 直读所需的最小 `$R` 条目数（设为 0 即"管理员 + NTFS 一律走 MFT"）。
+///
+/// 依据是本机 4 盘的真机实测（2026-11-19，两遍合一之后）：
+///
+/// | 盘 | `$R` 条目 | fs 枚举 | MFT 直读 |
+/// |----|-----------|---------|----------|
+/// | C  | 29,262    |   834ms | 3,006ms  |
+/// | D  | 145,653   | 7,284ms | 3,283ms  |
+/// | E  | 5         |     3ms | 1,044ms  |
+/// | F  | 2         |    24ms | 4,473ms  |
+///
+/// MFT 侧成本近乎**常量**——open（0.1~1.1s）+ 整表顺序读（$MFT 越大越久），与回收站里有多少
+/// 条目无关；fs 侧才是逐条目付费（≈50~90µs/条）。平衡点 ≈ 3s ÷ 70µs ≈ 4~5 万条，取 5 万留余量。
+/// 一律走 MFT 会让本机四盘总耗时从 4.1s 变成 11.8s（C/E/F 三盘净亏，F 盘为 2 个条目白花 4.5s），
+/// 所以按条目数分档。
+#[cfg(windows)]
+const MFT_MIN_ENTRIES: usize = 50_000;
+
+/// 数一遍 `$R` 条目，只用于选择引擎：read_dir 本身极便宜（实测 D 盘 29 万条目 190ms，
+/// 约 0.65µs/条），比"选错引擎"的代价低两个数量级。
+#[cfg(windows)]
+fn recycle_entry_count(sid_path: &Path) -> usize {
+    let Ok(entries) = fs::read_dir(sid_path) else {
+        return 0;
+    };
+    entries
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_name().as_encoded_bytes().starts_with(b"$R"))
+        .count()
+}
+
+/// 生产入口：按运行时环境选引擎——**管理员 + NTFS + 条目数过阈值 → MFT 直读**，其余回退 fs 枚举。
 ///
 /// 回退是**整盘**的：一个盘要么全走 MFT、要么全走 fs，不允许同盘两种口径混用（混用会让
 /// 条目数与大小的来源变成"两套"的平均值，排查时无从归因）。任何 MFT 侧失败——卷设备打不开、
 /// `$MFT` 布局异常、SID 目录句柄取不到记录号——都退化为 fs，功能不会因此不可用。
-///
-/// 不按条目数分档是本轮的决定：MFT 一遍读的成本近乎常量（$MFT 大小 / 顺序读带宽），而 fs 的
-/// 成本是"每条目一次随机小读"。两遍合一后 MFT 侧约 2.3s，小卷（C 盘 2.9 万条目、fs 1.9s）只
-/// 慢 0.4s，用这点时间换掉整套阈值逻辑与两套口径，是划算的。
 #[cfg(windows)]
 fn collect_drive_entries(
     sid_path: &Path,
@@ -117,14 +144,22 @@ fn collect_drive_entries(
     // 该盘这个用户根本没有回收站目录（从未在本盘删过东西）：没有任何条目可枚举，直接走 fs
     // 的 read_dir 失败路径返回空，不要在每次扫描时打进一条"MFT 直读失败"的警告。
     if elevated && ntfs && sid_path.is_dir() {
-        match scan_drive_via_mft(drive_letter, sid_path, category) {
-            Ok(result) => return result,
-            Err(error) => warn!(
-                "[回收站扫描] {}: MFT 直读失败，整盘回退 fs 枚举：{}",
-                drive_letter, error
-            ),
+        let entry_count = recycle_entry_count(sid_path);
+        if entry_count >= MFT_MIN_ENTRIES {
+            match scan_drive_via_mft(drive_letter, sid_path, category) {
+                Ok(result) => return result,
+                Err(error) => warn!(
+                    "[回收站扫描] {}: MFT 直读失败，整盘回退 fs 枚举：{}",
+                    drive_letter, error
+                ),
+            }
+        } else {
+            debug!(
+                "[回收站扫描] {}: $R 条目 {} < 阈值 {} → fs 枚举",
+                drive_letter, entry_count, MFT_MIN_ENTRIES
+            );
         }
-    } else if !(elevated && ntfs) {
+    } else {
         debug!(
             "[回收站扫描] {}: 管理员 {} / NTFS {} → fs 枚举",
             drive_letter, elevated, ntfs
