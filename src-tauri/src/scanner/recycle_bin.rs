@@ -235,6 +235,53 @@ fn collect_drive_entries(
     (found, timing)
 }
 
+/// Resolve the SID directory's true MFT record number by opening it and asking the OS.
+///
+/// `GetFileInformationByHandle`'s file index IS the NTFS record reference (low 48 bits
+/// record number, high 16 bits sequence) — the same encoding `$FILE_NAME` parent
+/// references use, so no name matching is involved.
+///
+/// 名字匹配在这里被实测证伪：SID 目录的记录里可能只解析出 8.3 短名（C 盘实测
+/// "S-1-5-~1"，完整 SID 42 字符的短名），而句柄文件索引是操作系统的唯一权威。
+/// 无需管理员权限——当前用户对自己 SID 目录有完全控制权（H1 时已实测）。
+#[cfg(windows)]
+fn sid_dir_record_id_via_handle(sid_path: &Path) -> Result<u64, String> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows::core::PCWSTR;
+    use windows::Win32::Storage::FileSystem::{
+        CreateFileW, GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
+        FILE_FLAG_BACKUP_SEMANTICS, FILE_GENERIC_READ, FILE_SHARE_MODE, FILE_SHARE_READ,
+        FILE_SHARE_WRITE, OPEN_EXISTING,
+    };
+
+    let mut units: Vec<u16> = sid_path.as_os_str().encode_wide().collect();
+    units.push(0);
+
+    // SAFETY: path is a NUL-terminated wide string valid for the whole call; the
+    // handle closes itself via HANDLE::drop (H4 contract §4.2)
+    let handle = unsafe {
+        CreateFileW(
+            PCWSTR::from_raw(units.as_ptr()),
+            FILE_GENERIC_READ.0,
+            FILE_SHARE_MODE(FILE_SHARE_READ.0 | FILE_SHARE_WRITE.0),
+            None,
+            OPEN_EXISTING,
+            FILE_FLAG_BACKUP_SEMANTICS,
+            None,
+        )
+    }
+    .map_err(|error| format!("打开 SID 目录句柄失败: {}", error))?;
+
+    let mut info = BY_HANDLE_FILE_INFORMATION::default();
+    // SAFETY: info is the out-param and lives for the whole call
+    unsafe { GetFileInformationByHandle(handle, &mut info) }
+        .map_err(|error| format!("读取 SID 目录文件索引失败: {}", error))?;
+
+    // 64 位文件索引 = MFT 引用：低 48 位记录号 + 高 16 位序号，掩码口径与
+    // $FILE_NAME 引用一致
+    Ok(((info.nFileIndexHigh as u64 & 0xFFFF) << 32) | info.nFileIndexLow as u64)
+}
+
 /// One drive's recycle-bin entries via two sequential `$MFT` passes instead of
 /// ~100k random small-file reads (measured: fs-path parse phase 25.5s on D:,
 /// all of it random IO; a sequential `$MFT` read of the same drive is ~2s).
@@ -255,8 +302,12 @@ fn scan_drive_via_mft(
 ) -> Result<(Vec<FileInfo>, DrivePhaseTiming), String> {
     let reader = mft_core::NtfsFileMetadataReader::open(drive_letter)?;
 
-    // ---- 第一遍：定位当前用户 SID 目录 ----
+    // ---- 第一遍：全表读取（$R 配对数据源）+ 定位当前用户 SID 目录 ----
+    // 定位的权威来源是 OS 文件索引（打开目录句柄拿记录号），而不是名字匹配：
+    // 实测 C 盘 SID 目录的记录里 $FILE_NAME 只解析出 8.3 短名 "S-1-5-~1"，
+    // 完整 SID 字符串匹配永远落空（本轮 gate 的失败根因）。
     let pass1_started = Instant::now();
+    let sid_dir_id = sid_dir_record_id_via_handle(sid_path)?;
     let (records, _stats) = reader.read_all_records(&|_| true)?;
     let recycle_root_ids: HashSet<u64> = records
         .iter()
@@ -267,7 +318,10 @@ fn scan_drive_via_mft(
         })
         .map(|record| record.mft_id)
         .collect();
-    let sid_dir_ids: HashSet<u64> = records
+    let sid_dir_ids: HashSet<u64> = HashSet::from([sid_dir_id]);
+    let enumerate_ms = pass1_started.elapsed().as_millis();
+    // 名字匹配结果仅作对照日志：与句柄记录号一致说明名字解析正常，不一致即 8.3 短名情形
+    let name_matched_sid_ids: HashSet<u64> = records
         .iter()
         .filter(|record| {
             record.is_dir
@@ -276,7 +330,14 @@ fn scan_drive_via_mft(
         })
         .map(|record| record.mft_id)
         .collect();
-    let enumerate_ms = pass1_started.elapsed().as_millis();
+    info!(
+        "[回收站扫描耗时] mft {}: 第一遍定位：全表记录 {} 条，$Recycle.Bin 根 {} 个，名字匹配 SID 目录 {:?}，句柄权威记录号 {}",
+        drive_letter,
+        records.len(),
+        recycle_root_ids.len(),
+        name_matched_sid_ids,
+        sid_dir_id
+    );
     // 位置编号 vs 内容引用编号是否自洽：$Recycle.Bin 与 SID 目录自身的 parent 引用
     // （内容侧真相）连同 run 布局一起输出，用于定位编号错位
     let recycle_root_details: Vec<String> = records
@@ -302,21 +363,13 @@ fn scan_drive_via_mft(
         sid_dir_details.join("; ")
     );
     info!(
-        "[回收站扫描耗时] mft {}: 第一遍定位：全表记录 {} 条，$Recycle.Bin 根 {} 个，当前用户 SID 目录 {} 个",
+        "[回收站扫描耗时] mft {}: 第一遍定位：全表记录 {} 条，$Recycle.Bin 根 {} 个，名字匹配 SID 目录 {:?}，句柄权威记录号 {}",
         drive_letter,
         records.len(),
         recycle_root_ids.len(),
-        sid_dir_ids.len()
+        name_matched_sid_ids,
+        sid_dir_id
     );
-    // SID 目录定位失败意味着 pass2 必然空手而归——与其静默 Ok(0)（对照测试会误报
-    // "全部缺失"），不如显式报错走逐盘降级，把定位现场的数字带进警告。
-    if sid_dir_ids.is_empty() {
-        return Err(format!(
-            "未在 {drive_letter}: 盘 MFT 中定位到当前用户 SID 目录（全表记录 {} 条，$Recycle.Bin 根 {} 个）",
-            records.len(),
-            recycle_root_ids.len()
-        ));
-    }
 
     // ---- 第二遍：提取 $I 的 resident 内容 ----
     let pass2_started = Instant::now();
