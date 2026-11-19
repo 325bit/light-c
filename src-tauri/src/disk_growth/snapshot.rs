@@ -251,20 +251,26 @@ impl DiskSnapshotManager {
             SNAPSHOT_SUFFIX
         );
         let path = self.snapshot_dir.join(filename);
-        let json =
-            serde_json::to_string(snapshot).map_err(|e| format!("序列化全盘快照失败: {}", e))?;
-
-        fs::write(&path, json).map_err(|e| format!("写入全盘快照失败: {}", e))?;
+        // Stream straight into the file: the former `to_string` first built a 20-40MB string in memory
+        // only for `fs::write` to copy it again.
+        let file = File::create(&path).map_err(|e| format!("创建全盘快照失败: {}", e))?;
+        let mut writer = BufWriter::new(file);
+        serde_json::to_writer(&mut writer, snapshot)
+            .map_err(|e| format!("序列化全盘快照失败: {}", e))?;
+        writer
+            .flush()
+            .map_err(|e| format!("写入全盘快照失败: {}", e))?;
         Ok(path)
     }
 
     pub fn save_scan_snapshot(
         &self,
-        scan: &FullDiskScanResult,
+        snapshot: &DiskSnapshot,
         file_records: Vec<FileSizeRecord>,
     ) -> Result<PathBuf, String> {
-        let snapshot = build_snapshot(scan);
-        let path = self.save_snapshot(&snapshot)?;
+        // The caller already built this snapshot for the comparison; rebuilding it here would walk every
+        // directory entry a second time (and re-normalize every path) for an identical result.
+        let path = self.save_snapshot(snapshot)?;
         // Save file-level details in per-directory shards to avoid the main JSON ballooning to hundreds of MB with millions of files.
         if let Err(error) = self.save_file_shards(&path, file_records) {
             // The main snapshot and the file shards must succeed together, otherwise detail queries would get an incomplete new snapshot.
@@ -582,8 +588,17 @@ pub fn build_snapshot(scan: &FullDiskScanResult) -> DiskSnapshot {
 }
 
 fn snapshot_entry_from_dir(entry: &DirSizeEntry) -> DiskSnapshotEntry {
+    // `DirSizeEntry.path` already comes out of the directory index in normalized form (lowercase + forward
+    // slashes); running `normalize_path` again allocated two strings per directory for nothing. The
+    // debug assert keeps the invariant honest, because these paths are the snapshot keys that the next
+    // scan is compared against — a silent mismatch would look like every directory changing at once.
+    debug_assert_eq!(
+        normalize_path(&entry.path),
+        entry.path,
+        "DirSizeEntry path must already be normalized"
+    );
     DiskSnapshotEntry {
-        path: normalize_path(&entry.path),
+        path: entry.path.clone(),
         size: entry.size,
         depth: entry.depth,
         modified: entry.modified,

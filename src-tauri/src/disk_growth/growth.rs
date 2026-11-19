@@ -257,7 +257,7 @@ where
     // File-level details are only used for writing a side-car shard; moving them out avoids copying a full file list again on very large disks.
     let file_records = std::mem::take(&mut scan.file_records);
     let phase_started = Instant::now();
-    manager.save_scan_snapshot(&scan, file_records)?;
+    manager.save_scan_snapshot(&current_snapshot, file_records)?;
     scan.phase_durations.push(DiskGrowthPhaseDuration {
         stage: "snapshot_write".to_string(),
         duration_ms: phase_started.elapsed().as_millis() as u64,
