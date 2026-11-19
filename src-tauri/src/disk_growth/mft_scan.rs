@@ -10,7 +10,6 @@
 use rayon::prelude::*;
 use rayon::ThreadPoolBuilder;
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, VecDeque};
 use std::fs;
 use std::time::{Instant, UNIX_EPOCH};
 
@@ -22,7 +21,9 @@ use crate::scanner::big_files_engine::mft_core;
 
 const DEFAULT_MAX_DEPTH: u8 = 4;
 const METADATA_PROGRESS_STEP: usize = 10_000;
-/// Fixed record number of the volume root directory in NTFS: the first 16 MFT records are metafiles, and `$Root` is record 5.
+/// Record number of the volume root directory. The index synthesizes the root node itself, so only
+/// the test fixtures need to name it.
+#[cfg(test)]
 const ROOT_MFT_ID: u64 = 5;
 
 // M13 fix: the cancel flag used to be a module-local `static DISK_GROWTH_SCAN_CANCELLED`;
@@ -33,6 +34,7 @@ fn ensure_not_cancelled() -> Result<(), String> {
 
 /// A single MFT record. This directly uses the parse result from `mft_core` - one sequential read yields
 /// the name, parent-child relationship, size, and time; no separate enumeration or on-demand seek of FILE records is needed.
+#[cfg(test)]
 type RawEntry = mft_core::MftRecordInfo;
 
 #[derive(Debug, Clone)]
@@ -46,6 +48,7 @@ struct FileRecord {
 
 #[derive(Debug, Clone)]
 pub(crate) struct FileSizeRecord {
+    /// Directory **node id** inside the scan's `VolumeIndex`, not an MFT record number.
     pub(crate) parent_id: u64,
     pub(crate) path: String,
     pub(crate) size: u64,
@@ -56,13 +59,6 @@ struct FileSizeCollection {
     records: Vec<FileSizeRecord>,
     mft_size_count: usize,
     metadata_fallback_count: usize,
-}
-
-#[derive(Debug, Clone)]
-struct DirectoryInfo {
-    parent_id: u64,
-    path: String,
-    depth: u8,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -180,16 +176,18 @@ where
         None,
     );
     let phase_start = Instant::now();
-    // Build the directory index in one pass: paths are assembled into their final form directly during BFS (forward slashes + lowercase),
-    // and file paths just append a filename to the parent path - the original built paths for directories and files separately then normalized,
-    // costing nearly three million string allocations for 710k records.
-    let directory_index = build_directory_index(&raw_entries, &drive_root);
-    ensure_not_cancelled()?;
-    let file_records = collect_file_records(&raw_entries, &directory_index);
-    // The record set is dead once every file path exists: on a 1.2M-record volume the names alone cost
-    // ~110MB, and keeping them alive through the size and aggregate phases only inflates peak RSS.
-    // `mft_bigfiles` drops its copy at the same point; disk_growth used to hold on to it until return.
+    // One dense index replaces the three ad-hoc structures used before (a `HashMap<u64, Vec<u32>>`
+    // of children, a `HashMap<u64, DirectoryInfo>` of paths and depths, and the per-file ancestor
+    // walk). Building it copies every name the index needs, so the record set can go immediately —
+    // earlier than the old code, which had to keep it alive until all paths existed.
+    let volume_index = mft_core::VolumeIndex::build(&raw_entries);
     drop(raw_entries);
+    ensure_not_cancelled()?;
+    // Directory paths are still assembled in their final form (forward slashes + lowercase) because
+    // they are snapshot keys; `build_directory_paths` walks the index's breadth-first order.
+    let directory_paths = build_directory_paths(&volume_index, &drive_root);
+    ensure_not_cancelled()?;
+    let file_records = collect_file_records(&volume_index, &directory_paths);
     push_phase_duration(&mut phase_durations, "path", phase_start);
     ensure_not_cancelled()?;
 
@@ -215,7 +213,12 @@ where
         None,
     );
     let phase_start = Instant::now();
-    let entries = aggregate_directories(&file_size_collection.records, &directory_index, max_depth);
+    let entries = aggregate_directories(
+        &file_size_collection.records,
+        &volume_index,
+        &directory_paths,
+        max_depth,
+    );
     ensure_not_cancelled()?;
     let total_size = file_size_collection
         .records
@@ -263,99 +266,58 @@ fn normalize_drive_letter(value: &str) -> Result<char, String> {
     Ok(letter.to_ascii_uppercase())
 }
 
-/// Build the directory index in a single traversal: while BFS descends, paths are assembled in **final form** (forward slashes + lowercase).
+/// Assemble one path per directory node, in the index's breadth-first order (parents before children).
 ///
-/// The original took three steps: build a backslash path for each directory -> clone it and normalize the whole thing -> then build a separate path for each file.
-/// Now directory paths are allocated only once and depth accumulates along BFS (no longer counting separators in strings),
-/// and cycle detection uses "whether this path is in the index" instead of an extra `HashSet`.
-fn build_directory_index(entries: &[RawEntry], drive_root: &str) -> HashMap<u64, DirectoryInfo> {
-    // Directories make up roughly one sixth of all valid records
-    let mut children: HashMap<u64, Vec<u32>> = HashMap::with_capacity(entries.len() / 6);
-    for (index, entry) in entries.iter().enumerate() {
-        // Files have no children; putting them in children would only make BFS do a wasted pass
-        if entry.mft_id == 0 || !entry.is_dir {
-            continue;
-        }
-        children
-            .entry(entry.parent_id)
-            .or_default()
-            .push(index as u32);
+/// The path form is a **snapshot key** — forward slashes, all lowercase — so it still goes through
+/// `join_normalized_path` from an already-normalized parent, byte for byte what the previous
+/// `HashMap`-based BFS produced. What changed is only where the traversal comes from: the index
+/// already knows the order, the depth and the parent, so this loop has no queue, no visited set and
+/// no hash lookups.
+fn build_directory_paths(index: &mft_core::VolumeIndex, drive_root: &str) -> Vec<String> {
+    let mut paths = vec![String::new(); index.directory_count() as usize];
+    paths[index.root() as usize] = normalize_path(drive_root);
+
+    for &node in index.bfs_order().iter().skip(1) {
+        let parent = index
+            .parent_of(node)
+            .expect("bfs order holds only directories reachable from the root");
+        let path = join_normalized_path(&paths[parent as usize], index.name_of(node));
+        paths[node as usize] = path;
     }
 
-    let mut directories: HashMap<u64, DirectoryInfo> = HashMap::with_capacity(children.len() + 1);
-    directories.insert(
-        ROOT_MFT_ID,
-        DirectoryInfo {
-            parent_id: 0,
-            path: normalize_path(drive_root),
-            depth: 0,
-        },
-    );
-
-    let mut queue = VecDeque::new();
-    if let Some(root_children) = children.get(&ROOT_MFT_ID) {
-        queue.extend(root_children.iter().copied());
-    }
-
-    while let Some(index) = queue.pop_front() {
-        let entry = &entries[index as usize];
-        // Skip directories that already have a path built: this also blocks infinite loops caused by abnormal parent chains
-        if entry.mft_id == 0 || directories.contains_key(&entry.mft_id) {
-            continue;
-        }
-        // If the parent is not in the index, the chain breaks at a location unreachable from the root, so the whole branch cannot be built
-        let Some(parent) = directories.get(&entry.parent_id) else {
-            continue;
-        };
-        let depth = parent.depth.saturating_add(1);
-        let path = join_normalized_path(&parent.path, &entry.name);
-        // The immutable borrow of directories above ends here, so insertion is safe
-        directories.insert(
-            entry.mft_id,
-            DirectoryInfo {
-                parent_id: entry.parent_id,
-                path,
-                depth,
-            },
-        );
-
-        if let Some(next_children) = children.get(&entry.mft_id) {
-            queue.extend(next_children.iter().copied());
-        }
-    }
-
-    directories
+    paths
 }
 
 fn collect_file_records(
-    entries: &[RawEntry],
-    directory_index: &HashMap<u64, DirectoryInfo>,
+    index: &mft_core::VolumeIndex,
+    directory_paths: &[String],
 ) -> Vec<FileRecord> {
-    // Reserve capacity up front by record count: relying on collect's automatic growth would repeatedly move a tens-of-MB array several times
-    let mut records = Vec::with_capacity(entries.len());
-    for entry in entries {
-        if entry.is_dir || entry.mft_id == 0 {
-            continue;
-        }
-        // A parsed $DATA stream with size 0 means a genuinely empty file. The size stage discards those
-        // before counting them, so the path string would be allocated only to be thrown away.
-        // Records without $DATA must stay: their size is unknown until a stat returns.
-        if entry.has_data_stream && entry.size == 0 {
-            continue;
-        }
-        // The parent path in the directory index is **already in normalized form** (lowercase + forward slashes)
-        let Some(parent) = directory_index.get(&entry.parent_id) else {
+    // Reserve capacity up front by node count: relying on collect's automatic growth would repeatedly move a tens-of-MB array several times
+    let mut records = Vec::with_capacity(index.node_count() as usize);
+    for file in index.files() {
+        // A parent of `None` means the branch never reaches the root, so no path can be built for it.
+        let Some(parent) = file.parent else {
             continue;
         };
+        // A parsed $DATA stream with size 0 means a genuinely empty file. The size stage discards those
+        // before counting them, so the path string would be allocated only to be thrown away.
+        // Files without $DATA must stay: their size is unknown until a stat returns.
+        if file.has_data_stream && file.size == 0 {
+            continue;
+        }
         records.push(FileRecord {
-            path: join_normalized_path(&parent.path, &entry.name),
-            parent_id: entry.parent_id,
-            // Size and time were already obtained during the sequential $MFT read, just carry them through here
-            size: entry.size,
-            modified: entry.modified,
-            has_data_stream: entry.has_data_stream,
+            // The parent path is already in normalized form (lowercase + forward slashes)
+            path: join_normalized_path(&directory_paths[parent as usize], file.name),
+            // Node id, not mft id: the aggregation below indexes its totals array with it.
+            parent_id: u64::from(parent),
+            // Size and time were already obtained during the sequential $MFT read, so just carry them through
+            size: file.size,
+            // The index stores milliseconds (shared with the hotspot scanner); this record is in seconds
+            modified: file.modified / 1000,
+            has_data_stream: file.has_data_stream,
         });
     }
+
     records
 }
 
@@ -498,14 +460,6 @@ where
     }
 }
 
-/// One directory's aggregated usage, kept in a single map instead of the former size/mtime pair.
-#[derive(Clone, Copy, Default)]
-struct DirStat {
-    size: u64,
-    /// Newest file modification time inside the subtree (seconds since the epoch).
-    modified: i64,
-}
-
 /// Aggregate file sizes into directory totals, bottom-up.
 ///
 /// The previous implementation walked **from every file up to the root**, adding the size at each
@@ -513,79 +467,53 @@ struct DirStat {
 /// that is 8-10 hash lookups plus 8-10 updates per file, and the loop itself was not bounded by
 /// `max_depth` — deep files paid the full depth although only their first four levels were kept.
 ///
-/// Now every file touches its direct parent once, then each directory hands its total to its parent,
-/// deepest level first. That is O(files + directories) no matter how deep the tree is, and the numbers
-/// are identical: every directory still carries the sum and newest mtime of its whole subtree, and only
-/// levels up to `max_depth` are emitted.
+/// Now every file touches its direct parent once and the index hands each directory's total to its
+/// parent, deepest level first: one write per file and one per directory, no hashing at all.
 fn aggregate_directories(
     file_sizes: &[FileSizeRecord],
-    directory_index: &HashMap<u64, DirectoryInfo>,
+    index: &mft_core::VolumeIndex,
+    directory_paths: &[String],
     max_depth: u8,
 ) -> Vec<DirSizeEntry> {
-    let mut stats: HashMap<u64, DirStat> = HashMap::with_capacity(directory_index.len() / 4 + 1);
+    let mut totals = index.empty_totals();
 
     for record in file_sizes {
-        // A file whose parent is not in the index is unreachable from the root and is ignored, as before.
-        if !directory_index.contains_key(&record.parent_id) {
+        // `collect_file_records` already dropped files whose branch never reaches the root, so every
+        // parent id here is a live directory node; the lookup form is kept anyway because a panic in
+        // the middle of a full-disk scan costs the user the whole scan.
+        let Some(total) = totals.get_mut(record.parent_id as usize) else {
             continue;
-        }
-        let stat = stats.entry(record.parent_id).or_default();
-        stat.size = stat.size.saturating_add(record.size);
-        // A directory's own mtime on Windows does not necessarily reflect child file changes; aggregate the newest file modification time within the subtree instead, closer to the "change time" users care about.
-        if record.modified > stat.modified {
-            stat.modified = record.modified;
-        }
+        };
+        // A directory's own mtime on Windows does not necessarily reflect child file changes; aggregate
+        // the newest file modification time within the subtree instead, closer to the "change time"
+        // users care about. These records carry seconds, the shared aggregation works in milliseconds.
+        total.add_file(record.size, record.modified.saturating_mul(1000));
     }
 
-    // Bucket directories by depth once, then propagate from the deepest level up so that a parent always
-    // receives complete child totals (by the time a level is processed, all of its children are done).
-    let deepest_depth = directory_index
-        .values()
-        .map(|directory| directory.depth)
-        .max()
-        .unwrap_or(0);
-    let mut ids_by_depth: Vec<Vec<u64>> = vec![Vec::new(); deepest_depth as usize + 1];
-    for (directory_id, directory) in directory_index {
-        if let Some(bucket) = ids_by_depth.get_mut(directory.depth as usize) {
-            bucket.push(*directory_id);
-        }
-    }
+    // Reverse breadth-first order is a valid reverse topological order of the tree, so by the time a
+    // directory is visited every one of its children already carries its complete subtree total.
+    index.propagate_totals(&mut totals);
 
-    for level in (1..ids_by_depth.len()).rev() {
-        for directory_id in &ids_by_depth[level] {
-            let Some(stat) = stats.get(directory_id).copied() else {
-                continue;
-            };
-            let Some(directory) = directory_index.get(directory_id) else {
-                continue;
-            };
-            // The root has no parent; a directory pointing at itself is corrupt and must not loop.
-            if directory.parent_id == 0 || directory.parent_id == *directory_id {
-                continue;
+    let mut entries: Vec<DirSizeEntry> = index
+        .bfs_order()
+        .iter()
+        .filter_map(|&node| {
+            let totals = totals[node as usize];
+            // Only directories that actually hold files are reported, exactly like when the stats map
+            // was the source: it only ever gained an entry through a file.
+            if totals.is_empty() {
+                return None;
             }
-            if !directory_index.contains_key(&directory.parent_id) {
-                continue;
-            }
-            let parent = stats.entry(directory.parent_id).or_default();
-            parent.size = parent.size.saturating_add(stat.size);
-            if stat.modified > parent.modified {
-                parent.modified = stat.modified;
-            }
-        }
-    }
-
-    let mut entries: Vec<DirSizeEntry> = stats
-        .into_iter()
-        .filter_map(|(directory_id, stat)| {
-            let directory = directory_index.get(&directory_id)?;
-            if directory.depth > max_depth {
+            let depth = index.depth_of(node)?;
+            if depth > u16::from(max_depth) {
                 return None;
             }
             Some(DirSizeEntry {
-                depth: directory.depth,
-                path: directory.path.clone(),
-                size: stat.size,
-                modified: stat.modified,
+                depth: depth as u8,
+                path: directory_paths[node as usize].clone(),
+                size: totals.size,
+                // Reported in seconds, the unit `DirSizeEntry` has always used.
+                modified: totals.modified / 1000,
             })
         })
         .collect();
@@ -643,6 +571,7 @@ fn emit_progress<F>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
 
     #[test]
     fn normalize_path_uses_forward_slash_and_lowercase() {
@@ -735,8 +664,9 @@ mod tests {
             entry(42, 26, "unknown.bin", false, 0, false),
         ];
 
-        let index = build_directory_index(&entries, "C:\\");
-        let records = collect_file_records(&entries, &index);
+        let index = mft_core::VolumeIndex::build(&entries);
+        let directory_paths = build_directory_paths(&index, "C:\\");
+        let records = collect_file_records(&index, &directory_paths);
         let paths: Vec<&str> = records.iter().map(|record| record.path.as_str()).collect();
 
         assert_eq!(paths, vec!["c:/users/nonempty.bin", "c:/users/unknown.bin"]);
@@ -773,11 +703,12 @@ mod tests {
         }
     }
 
-    /// Directory index paths and depth: depth now accumulates level by level along BFS (no longer counting separators in strings),
-    /// so it must be verified to match "how many segments are in the path" exactly - the frontend aggregates by depth level,
-    /// and one level off would attribute a directory's usage to its parent.
+    /// Directory paths and depth: depth is accumulated by the index's breadth-first walk (no longer
+    /// counting separators in strings), so it must be verified to match "how many segments are in the
+    /// path" exactly - the frontend aggregates by depth level, and one level off would attribute a
+    /// directory's usage to its parent.
     #[test]
-    fn build_directory_index_matches_path_segments() {
+    fn build_directory_paths_match_path_segments() {
         let entry = |mft_id: u64, parent_id: u64, name: &str, is_dir: bool| RawEntry {
             mft_id,
             parent_id,
@@ -798,19 +729,35 @@ mod tests {
             entry(51, 50, "inside", true),
         ];
 
-        let index = build_directory_index(&entries, "C:\\");
-        assert_eq!(index[&ROOT_MFT_ID].depth, 0);
-        assert_eq!(index[&26].path, "c:/users");
-        assert_eq!(index[&26].depth, 1);
-        assert_eq!(index[&30].depth, 2);
-        assert_eq!(index[&31].depth, 3);
-        assert!(
-            !index.contains_key(&50) && !index.contains_key(&51),
-            "不可达目录不该进索引"
+        let index = mft_core::VolumeIndex::build(&entries);
+        let paths = build_directory_paths(&index, "C:\\");
+        let node_of = |path: &str| -> u32 {
+            paths
+                .iter()
+                .position(|candidate| candidate == path)
+                .unwrap_or_else(|| panic!("没有为 {path} 建出路径: {paths:?}")) as u32
+        };
+
+        assert_eq!(paths[index.root() as usize], "c:/");
+        assert_eq!(index.depth_of(node_of("c:/users")), Some(1));
+        assert_eq!(index.depth_of(node_of("c:/users/evan")), Some(2));
+        assert_eq!(index.depth_of(node_of("c:/users/evan/desktop")), Some(3));
+        // Depth is exactly the number of path segments below the drive root.
+        assert_eq!(
+            u16::try_from("c:/users/evan/desktop".matches('/').count()).unwrap(),
+            3
         );
 
+        // The unreachable branch never got a path and never entered the order.
+        assert_eq!(
+            paths.iter().filter(|path| path.is_empty()).count(),
+            2,
+            "orphan 与 inside 都不该被建出路径"
+        );
+        assert!(!paths.iter().any(|path| path.contains("orphan")));
+
         // File paths are assembled from "parent path + filename"; the parent is already in the index
-        let files = collect_file_records(&entries, &index);
+        let files = collect_file_records(&index, &paths);
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].path, "c:/users/evan/desktop/report.txt");
     }
@@ -818,30 +765,30 @@ mod tests {
     /// The previous per-file ancestor walk, kept only as the oracle for the equivalence test below.
     fn aggregate_directories_per_file_walk(
         file_sizes: &[FileSizeRecord],
-        directory_index: &HashMap<u64, DirectoryInfo>,
+        index: &mft_core::VolumeIndex,
+        directory_paths: &[String],
         max_depth: u8,
     ) -> Vec<DirSizeEntry> {
-        let mut size_by_dir: HashMap<u64, u64> = HashMap::new();
-        let mut modified_by_dir: HashMap<u64, i64> = HashMap::new();
+        let mut size_by_dir: HashMap<u32, u64> = HashMap::new();
+        let mut modified_by_dir: HashMap<u32, i64> = HashMap::new();
 
         for record in file_sizes {
-            let mut current_id = record.parent_id;
+            let mut current = record.parent_id as u32;
             let mut guard = 0usize;
 
-            while let Some(directory) = directory_index.get(&current_id) {
-                if directory.depth <= max_depth {
-                    *size_by_dir.entry(current_id).or_insert(0) += record.size;
-                    let modified = modified_by_dir.entry(current_id).or_insert(0);
+            while let Some(depth) = index.depth_of(current) {
+                if depth <= u16::from(max_depth) {
+                    *size_by_dir.entry(current).or_insert(0) += record.size;
+                    let modified = modified_by_dir.entry(current).or_insert(0);
                     if record.modified > *modified {
                         *modified = record.modified;
                     }
                 }
 
-                if directory.parent_id == 0 || directory.parent_id == current_id {
+                let Some(parent) = index.parent_of(current) else {
                     break;
-                }
-
-                current_id = directory.parent_id;
+                };
+                current = parent;
                 guard += 1;
                 if guard > 128 {
                     break;
@@ -851,13 +798,16 @@ mod tests {
 
         let mut entries: Vec<DirSizeEntry> = size_by_dir
             .into_iter()
-            .filter_map(|(directory_id, size)| {
-                let directory = directory_index.get(&directory_id)?;
+            .filter_map(|(node, size)| {
+                let depth = index.depth_of(node)?;
+                if depth > u16::from(max_depth) {
+                    return None;
+                }
                 Some(DirSizeEntry {
-                    depth: directory.depth,
-                    path: directory.path.clone(),
+                    depth: depth as u8,
+                    path: directory_paths[node as usize].clone(),
                     size,
-                    modified: modified_by_dir.get(&directory_id).copied().unwrap_or(0),
+                    modified: modified_by_dir.get(&node).copied().unwrap_or(0),
                 })
             })
             .collect();
@@ -911,21 +861,36 @@ mod tests {
             entry(44, 50, "orphan.bin", false, 999, true),
         ];
 
-        let index = build_directory_index(&entries, "C:\\");
-        let files: Vec<FileSizeRecord> = entries
+        let index = mft_core::VolumeIndex::build(&entries);
+        let directory_paths = build_directory_paths(&index, "C:\\");
+        // Feed both implementations the same input, produced by the production path, with distinct
+        // timestamps so a dropped `max` shows up as a diff.
+        let collected = collect_file_records(&index, &directory_paths);
+        let files: Vec<FileSizeRecord> = collected
             .iter()
-            .filter(|entry| !entry.is_dir)
-            .map(|entry| FileSizeRecord {
-                parent_id: entry.parent_id,
-                path: entry.name.clone(),
-                size: entry.size,
-                // Distinct timestamps so a dropped `max` shows up as a diff
-                modified: 1_700_000_000 + entry.mft_id as i64,
+            .enumerate()
+            .map(|(offset, record)| FileSizeRecord {
+                parent_id: record.parent_id,
+                path: record.path.clone(),
+                size: record.size,
+                modified: 1_700_000_000 + offset as i64,
             })
             .collect();
+        // `orphan.bin` sits under a branch that never reaches the root, so it must not even be here.
+        assert!(
+            !files
+                .iter()
+                .any(|record| record.path.ends_with("orphan.bin")),
+            "不可达分支的文件不该进入聚合"
+        );
 
-        let legacy = aggregate_directories_per_file_walk(&files, &index, DEFAULT_MAX_DEPTH);
-        let bottom_up = aggregate_directories(&files, &index, DEFAULT_MAX_DEPTH);
+        let legacy = aggregate_directories_per_file_walk(
+            &files,
+            &index,
+            &directory_paths,
+            DEFAULT_MAX_DEPTH,
+        );
+        let bottom_up = aggregate_directories(&files, &index, &directory_paths, DEFAULT_MAX_DEPTH);
 
         let describe = |entries: &[DirSizeEntry]| -> Vec<(String, u64, u8, i64)> {
             entries
@@ -944,6 +909,14 @@ mod tests {
             .find(|entry| entry.path == "c:/users/evan/desktop/deep")
             .expect("depth 4 directory should be emitted");
         assert_eq!(deep.size, 700, "文件深度超过上限时仍要汇总到第 4 层");
-        assert_eq!(deep.modified, 1_700_000_041, "最深的文件时间要冒泡到祖先");
+        let deepest_offset = collected
+            .iter()
+            .position(|record| record.path.ends_with("/deep.bin"))
+            .expect("deep.bin 应该在记录里");
+        assert_eq!(
+            deep.modified,
+            1_700_000_000 + deepest_offset as i64,
+            "最深的文件时间要冒泡到祖先"
+        );
     }
 }
