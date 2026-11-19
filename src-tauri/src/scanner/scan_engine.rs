@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, PoisonError};
 use std::thread;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use walkdir::WalkDir;
 
 use super::{CategoryScanResult, FileInfo, JunkCategory, ScanResult};
@@ -102,6 +102,22 @@ impl ScanEngine {
         // pool capped at the machine's core count. Declared outside `thread::scope`
         // because the scoped workers borrow it for the scope's lifetime.
         let next_root = AtomicUsize::new(0);
+        // Per-root wall time, collected for the granularity diagnosis: when the
+        // slowest root approaches the total wall time, the worker pool cannot go
+        // wider and the traversal needs finer-grained work inside that root.
+        let root_timings: Mutex<Vec<RootWalkTiming>> = Mutex::new(Vec::new());
+        // The dedicated recycle-bin scanner shares this parallel window but is not
+        // a root walk; time it separately so the wall-clock dominator is visible.
+        let recycle_elapsed: Mutex<Option<Duration>> = Mutex::new(None);
+        let worker_count = plan
+            .roots
+            .len()
+            .min(
+                std::thread::available_parallelism()
+                    .map(|n| n.get())
+                    .unwrap_or(1),
+            )
+            .max(1);
         thread::scope(|scope| {
             // Recycle bin entries use the dedicated scanner (physical $R/$I layout with
             // multi-user SIDs — WalkDir would not see the same picture as Explorer).
@@ -111,26 +127,25 @@ impl ScanEngine {
                 .filter(|category| matches!(category, JunkCategory::RecycleBin))
                 .map(|category| {
                     let category = category.clone();
+                    // Borrow, don't move: the spawned closure is `move` (for the
+                    // cloned category), but the Mutex must stay shared via scope.
+                    let recycle_elapsed = &recycle_elapsed;
                     scope.spawn(move || {
                         let mut category_result = CategoryScanResult::new(category.clone());
+                        let recycle_started = Instant::now();
                         let ok = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                             super::recycle_bin::scan_current_user(&category, &mut category_result);
                         }))
                         .is_ok();
+                        *recycle_elapsed
+                            .lock()
+                            .unwrap_or_else(PoisonError::into_inner) =
+                            Some(recycle_started.elapsed());
                         (ok, category_result)
                     })
                 })
                 .collect();
 
-            let worker_count = plan
-                .roots
-                .len()
-                .min(
-                    std::thread::available_parallelism()
-                        .map(|n| n.get())
-                        .unwrap_or(1),
-                )
-                .max(1);
             let walker_handles: Vec<_> = (0..worker_count)
                 .map(|_| {
                     scope.spawn(|| {
@@ -140,12 +155,23 @@ impl ScanEngine {
                             if index >= plan.roots.len() {
                                 break;
                             }
+                            let walk_started = Instant::now();
                             let walked =
                                 std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                                     walk_root(self, &plan, index, self.max_depth)
                                 }));
                             match walked {
-                                Ok(root_emissions) => emissions.extend(root_emissions),
+                                Ok(root_emissions) => {
+                                    root_timings
+                                        .lock()
+                                        .unwrap_or_else(PoisonError::into_inner)
+                                        .push(RootWalkTiming {
+                                            path: plan.roots[index].path.clone(),
+                                            elapsed: walk_started.elapsed(),
+                                            emissions: root_emissions.len(),
+                                        });
+                                    emissions.extend(root_emissions);
+                                }
                                 Err(_) => {
                                     let mut failed =
                                         failed_roots.lock().unwrap_or_else(PoisonError::into_inner);
@@ -194,6 +220,25 @@ impl ScanEngine {
                 }
             }
         });
+
+        log_root_timing_summary(
+            &root_timings
+                .into_inner()
+                .unwrap_or_else(PoisonError::into_inner),
+            plan.roots.len(),
+            worker_count,
+            start_time.elapsed(),
+        );
+        if let Some(recycle_ms) = recycle_elapsed
+            .into_inner()
+            .unwrap_or_else(PoisonError::into_inner)
+            .map(|elapsed| elapsed.as_millis())
+        {
+            info!(
+                "[ScanEngine 耗时] 回收站专用扫描 {}ms（与遍历并行，可能才是墙钟主导者）",
+                recycle_ms
+            );
+        }
 
         // Aggregate in deterministic selection order; categories with no files are
         // still listed (the old engine always pushed a CategoryScanResult per category).
@@ -713,6 +758,59 @@ fn chain_reachable(engine: &ScanEngine, file_path: &Path, root: &ScanRoot) -> bo
     false
 }
 
+/// Wall time of one root's traversal, collected for the granularity diagnosis:
+/// when the slowest root approaches the total wall time, the bounded worker pool
+/// cannot go wider and that root needs internal parallelism instead.
+struct RootWalkTiming {
+    path: PathBuf,
+    elapsed: Duration,
+    /// (category, file) pairs emitted by this root — a file in several roots
+    /// counts once per root, which is fine for a distribution indicator.
+    emissions: usize,
+}
+
+/// Log the per-root timing distribution: one info line with the headline numbers
+/// (slowest root vs wall clock is the granularity verdict), the full sorted
+/// distribution at debug level for anyone drilling in.
+fn log_root_timing_summary(
+    timings: &[RootWalkTiming],
+    root_count: usize,
+    worker_count: usize,
+    wall: Duration,
+) {
+    if timings.is_empty() {
+        return;
+    }
+    let total_walk_ms: u128 = timings.iter().map(|t| t.elapsed.as_millis()).sum();
+    let wall_ms = wall.as_millis().max(1);
+    let slowest = timings
+        .iter()
+        .max_by_key(|t| t.elapsed)
+        .expect("timings 非空，max_by_key 必有值");
+    let slowest_ms = slowest.elapsed.as_millis();
+    info!(
+        "[ScanEngine 耗时] 根 {} 个 / {} 工作线程 / 墙钟 {}ms / 遍历合计 {}ms / 最慢根 {}ms ({}, {} 项, 占墙钟 {:.0}%)",
+        root_count,
+        worker_count,
+        wall_ms,
+        total_walk_ms,
+        slowest_ms,
+        slowest.path.display(),
+        slowest.emissions,
+        slowest_ms * 100 / wall_ms,
+    );
+    let mut sorted: Vec<&RootWalkTiming> = timings.iter().collect();
+    sorted.sort_by_key(|timing| std::cmp::Reverse(timing.elapsed));
+    for timing in &sorted {
+        debug!(
+            "[ScanEngine 耗时] 根 {:>6}ms / {:>6} 项 / {}",
+            timing.elapsed.as_millis(),
+            timing.emissions,
+            timing.path.display()
+        );
+    }
+}
+
 /// Walk one root and classify every file it contains.
 ///
 /// Returns (category, file) pairs; a file can appear more than once when
@@ -1127,6 +1225,10 @@ mod tests {
     #[test]
     #[ignore = "真机对照验证（M1 上线门槛）：全分类真实根扫描较慢；手动运行 cargo test --lib -- --ignored。两次扫描间文件系统若发生变化可能产生瞬时差异"]
     fn test_real_machine_parity_reference_vs_single_traversal() {
+        // Surface the per-root timing summary with --nocapture (the app's
+        // env_logger::init lives in run(), which tests never call).
+        let _ = env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
+            .try_init();
         let engine = ScanEngine::new();
         let mut requested: Vec<(JunkCategory, Vec<PathBuf>)> = Vec::new();
         for category in JunkCategory::all() {
