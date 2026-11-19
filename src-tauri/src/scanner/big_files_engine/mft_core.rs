@@ -539,18 +539,21 @@ fn parse_record_info(record: &[u8], mft_id: u64) -> Option<MftRecordInfo> {
             }
             // $FILE_NAME: parent directory reference + file name. Hard links produce multiple entries; skip 8.3 short names
             0x30 => {
-                if let Some((parent_id, name, namespace)) =
-                    parse_file_name_attribute(record, offset)
-                {
+                if let Some(entry) = parse_file_name_location(record, offset) {
+                    // Hard links and the 8.3 alias both produce extra `$FILE_NAME` attributes. Decide from
+                    // the namespace first and decode only the winner: decoding a name that is immediately
+                    // discarded costs one String per attribute, and a disk has millions of them.
                     let should_replace = match &name_entry {
                         None => true,
                         Some((_, _, existing_namespace)) => {
                             *existing_namespace == FILE_NAME_NAMESPACE_DOS
-                                && namespace != FILE_NAME_NAMESPACE_DOS
+                                && entry.namespace != FILE_NAME_NAMESPACE_DOS
                         }
                     };
                     if should_replace {
-                        name_entry = Some((parent_id, name, namespace));
+                        if let Some(name) = decode_file_name(record, &entry) {
+                            name_entry = Some((entry.parent_id, name, entry.namespace));
+                        }
                     }
                 }
             }
@@ -583,31 +586,59 @@ fn parse_record_info(record: &[u8], mft_id: u64) -> Option<MftRecordInfo> {
     })
 }
 
-/// Parse the `$FILE_NAME` attribute: return (parent directory reference, file name, namespace).
-fn parse_file_name_attribute(record: &[u8], attribute_offset: usize) -> Option<(u64, String, u8)> {
+/// Where a `$FILE_NAME` attribute's payload lives, plus the cheap fields needed to decide whether to keep it.
+///
+/// Split out from decoding so the parser can skip names it would discard anyway (8.3 alias of an entry
+/// that already has a long name) without paying for a String.
+struct FileNameLocation {
+    parent_id: u64,
+    namespace: u8,
+    name_start: usize,
+    name_length: usize,
+}
+
+/// Read the `$FILE_NAME` attribute header: parent directory reference, namespace and name span.
+fn parse_file_name_location(record: &[u8], attribute_offset: usize) -> Option<FileNameLocation> {
     let value_offset = read_u16(record, attribute_offset + 20)? as usize;
     let value_start = attribute_offset + value_offset;
-    let parent_reference = read_u64(record, value_start)? & 0x0000_FFFF_FFFF_FFFF;
+    let parent_id = read_u64(record, value_start)? & 0x0000_FFFF_FFFF_FFFF;
     let name_length = *record.get(value_start + 64)? as usize;
     let namespace = *record.get(value_start + 65)?;
     if name_length == 0 {
         return None;
     }
     let name_start = value_start + 66;
-    let name_end = name_start + name_length * 2;
+    // Half a UTF-16 unit cannot be decoded, and a truncated attribute must not index past the record.
+    let name_end = name_start.checked_add(name_length.checked_mul(2)?)?;
     if name_end > record.len() {
         return None;
     }
-    // The file name is UTF-16LE; decode by slicing u16 directly, without extra copying
-    let units: Vec<u16> = record[name_start..name_end]
-        .chunks_exact(2)
-        .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
-        .collect();
-    Some((
-        parent_reference,
-        String::from_utf16_lossy(&units),
+    Some(FileNameLocation {
+        parent_id,
         namespace,
-    ))
+        name_start,
+        name_length,
+    })
+}
+
+/// Decode a UTF-16LE name straight from the record bytes.
+///
+/// The previous version collected a `Vec<u16>` and then built a `String` from it: two allocations and two
+/// copies per file name, which on a 1.2M-record volume is millions of avoidable heap operations on the
+/// single parse thread. Unpaired surrogates still become U+FFFD, exactly like `String::from_utf16_lossy`.
+fn decode_file_name(record: &[u8], location: &FileNameLocation) -> Option<String> {
+    let name_end = location
+        .name_start
+        .checked_add(location.name_length.checked_mul(2)?)?;
+    let bytes = record.get(location.name_start..name_end)?;
+    let units = bytes
+        .chunks_exact(2)
+        .map(|pair| u16::from_le_bytes([pair[0], pair[1]]));
+    Some(
+        char::decode_utf16(units)
+            .map(|unit| unit.unwrap_or(char::REPLACEMENT_CHARACTER))
+            .collect(),
+    )
 }
 
 fn parse_standard_info(record: &[u8], attribute_offset: usize) -> Option<(i64, u32)> {
@@ -903,5 +934,40 @@ mod tests {
         // Clear the "in use" flag
         record[22..24].copy_from_slice(&0u16.to_le_bytes());
         assert!(!looks_like_active_record(&record));
+    }
+
+    /// The allocation-free decoder must produce exactly what `String::from_utf16_lossy` produced.
+    ///
+    /// These names become part of the rebuilt full path, which is shown to the user and handed to the
+    /// delete paths, so a different replacement character or a truncated pair would turn into a path that
+    /// does not exist on disk.
+    #[test]
+    fn name_decoding_matches_from_utf16_lossy() {
+        let cases: Vec<Vec<u16>> = vec![
+            "report.txt".encode_utf16().collect(),
+            "报表.LOG".encode_utf16().collect(),
+            // Emoji: a surrogate pair that must decode as one char
+            "😀模型.bin".encode_utf16().collect(),
+            // Lone high surrogate: must fall back to U+FFFD, same as from_utf16_lossy
+            vec![0x41, 0xD800, 0x2E, 0x74, 0x78, 0x74],
+        ];
+
+        for units in cases {
+            let mut buffer: Vec<u8> = vec![0u8; 8];
+            for unit in &units {
+                buffer.extend_from_slice(&unit.to_le_bytes());
+            }
+            let location = FileNameLocation {
+                parent_id: 0,
+                namespace: 1,
+                name_start: 8,
+                name_length: units.len(),
+            };
+            assert_eq!(
+                decode_file_name(&buffer, &location).unwrap(),
+                String::from_utf16_lossy(&units),
+                "decoded name diverged for {units:?}"
+            );
+        }
     }
 }
