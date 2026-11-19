@@ -33,10 +33,8 @@
 // ============================================================================
 
 use std::path::Path;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 use log::{info, warn};
-use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use walkdir::WalkDir;
 
@@ -399,11 +397,23 @@ impl PermanentDeleteEngine {
     // Deletion execution
     // ========================================================================
 
-    /// Perform permanent deletion (concurrent processing)
+    /// Perform permanent deletion
     ///
     /// Explanation
-    /// Uses a rayon thread pool to delete multiple directories concurrently, keeping the UI responsive.
-    /// Every directory runs the triple safety check before deletion.
+    /// Directories are deleted one at a time (M7). The caller already runs this on
+    /// a blocking thread, so nothing here needs a thread pool to stay off the UI
+    /// thread.
+    ///
+    /// This used to run on rayon's *global* pool, which meant a queue of
+    /// `remove_dir_all` calls blocked every other rayon user in the process for as
+    /// long as the delete took, and on a mechanical disk it made the head thrash
+    /// between directories. The work is I/O bound, the queue is what the user
+    /// selected — tens of directories, not thousands — and a fixed order makes a
+    /// partial failure easier to reason about than a completion order that depends
+    /// on how the pool scheduled it.
+    ///
+    /// Dropping the pool also drops the atomics: with `&mut` counters available the
+    /// accounting is plain arithmetic, so the numbers cannot be read mid-update.
     pub fn delete_leftovers(
         &self,
         paths: Vec<String>,
@@ -411,24 +421,78 @@ impl PermanentDeleteEngine {
     ) -> PermanentDeleteResult {
         let start_time = std::time::Instant::now();
 
-        // Use atomic counters for concurrent statistics
-        let success_count = AtomicUsize::new(0);
-        let failed_count = AtomicUsize::new(0);
-        let manual_review_count = AtomicUsize::new(0);
-        let reboot_pending_count = AtomicUsize::new(0);
-        let freed_size = AtomicU64::new(0);
+        let mut success_count = 0usize;
+        let mut failed_count = 0usize;
+        let mut manual_review_count = 0usize;
+        let mut reboot_pending_count = 0usize;
+        let mut freed_size = 0u64;
+        let mut details: Vec<LeftoverDeleteResult> = Vec::with_capacity(paths.len());
 
-        // Execute deletions concurrently
-        let details: Vec<LeftoverDeleteResult> = paths
-            .par_iter()
-            .map(|path_str| {
-                let path = Path::new(path_str);
+        for path_str in &paths {
+            let path = Path::new(path_str);
 
-                // The cheap checks first (M8): a path the protection table
-                // refuses must not pay for a walk of the tree it protects.
-                if let Some(safety_check) = self.gate_failure(path) {
-                    failed_count.fetch_add(1, Ordering::Relaxed);
-                    return LeftoverDeleteResult {
+            // The cheap checks first (M8): a path the protection table refuses
+            // must not pay for a walk of the tree it protects.
+            if let Some(safety_check) = self.gate_failure(path) {
+                failed_count += 1;
+                details.push(LeftoverDeleteResult {
+                    path: path_str.clone(),
+                    success: false,
+                    deleted_files: 0,
+                    freed_size: 0,
+                    failure_reason: Some(safety_check.display_message()),
+                    failure_code: safety_check.error_code(),
+                    marked_for_reboot: false,
+                    needs_manual_review: false,
+                    safety_check,
+                });
+                continue;
+            }
+
+            // One walk answers both questions: the executable preview the safety
+            // check needs and the size / file count the result reports.
+            let survey = survey_tree(path, SurveyScope::Full);
+            let safety_check = executable_verdict(allow_executables, &survey.executables);
+
+            match &safety_check {
+                SafetyCheckResult::Safe => {
+                    // Passed the safety check, perform the deletion
+                    let (result, kind) = self.delete_single_leftover(path, &survey);
+
+                    // Counted by the shared bucket, not by re-reading the two
+                    // booleans on the result struct.
+                    match kind {
+                        OutcomeKind::Freed => {
+                            success_count += 1;
+                            freed_size += result.freed_size;
+                        }
+                        OutcomeKind::RebootPending => reboot_pending_count += 1,
+                        OutcomeKind::Failed => failed_count += 1,
+                    }
+
+                    details.push(result);
+                }
+                SafetyCheckResult::ContainsExecutables { .. } => {
+                    // Contains executable files, mark as requiring manual review
+                    manual_review_count += 1;
+
+                    details.push(LeftoverDeleteResult {
+                        path: path_str.clone(),
+                        success: false,
+                        deleted_files: 0,
+                        freed_size: 0,
+                        failure_reason: Some(safety_check.display_message()),
+                        failure_code: safety_check.error_code(),
+                        marked_for_reboot: false,
+                        needs_manual_review: true,
+                        safety_check,
+                    });
+                }
+                _ => {
+                    // Other safety checks failed
+                    failed_count += 1;
+
+                    details.push(LeftoverDeleteResult {
                         path: path_str.clone(),
                         success: false,
                         deleted_files: 0,
@@ -438,91 +502,29 @@ impl PermanentDeleteEngine {
                         marked_for_reboot: false,
                         needs_manual_review: false,
                         safety_check,
-                    };
+                    });
                 }
-
-                // One walk answers both questions: the executable preview the
-                // safety check needs and the size / file count the result
-                // reports.
-                let survey = survey_tree(path, SurveyScope::Full);
-                let safety_check = executable_verdict(allow_executables, &survey.executables);
-
-                match &safety_check {
-                    SafetyCheckResult::Safe => {
-                        // Passed the safety check, perform the deletion
-                        let (result, kind) = self.delete_single_leftover(path, &survey);
-
-                        // Counted by the shared bucket, not by re-reading the two
-                        // booleans on the result struct.
-                        match kind {
-                            OutcomeKind::Freed => {
-                                success_count.fetch_add(1, Ordering::Relaxed);
-                                freed_size.fetch_add(result.freed_size, Ordering::Relaxed);
-                            }
-                            OutcomeKind::RebootPending => {
-                                reboot_pending_count.fetch_add(1, Ordering::Relaxed);
-                            }
-                            OutcomeKind::Failed => {
-                                failed_count.fetch_add(1, Ordering::Relaxed);
-                            }
-                        }
-
-                        result
-                    }
-                    SafetyCheckResult::ContainsExecutables { .. } => {
-                        // Contains executable files, mark as requiring manual review
-                        manual_review_count.fetch_add(1, Ordering::Relaxed);
-
-                        LeftoverDeleteResult {
-                            path: path_str.clone(),
-                            success: false,
-                            deleted_files: 0,
-                            freed_size: 0,
-                            failure_reason: Some(safety_check.display_message()),
-                            failure_code: safety_check.error_code(),
-                            marked_for_reboot: false,
-                            needs_manual_review: true,
-                            safety_check,
-                        }
-                    }
-                    _ => {
-                        // Other safety checks failed
-                        failed_count.fetch_add(1, Ordering::Relaxed);
-
-                        LeftoverDeleteResult {
-                            path: path_str.clone(),
-                            success: false,
-                            deleted_files: 0,
-                            freed_size: 0,
-                            failure_reason: Some(safety_check.display_message()),
-                            failure_code: safety_check.error_code(),
-                            marked_for_reboot: false,
-                            needs_manual_review: false,
-                            safety_check,
-                        }
-                    }
-                }
-            })
-            .collect();
+            }
+        }
 
         let duration_ms = start_time.elapsed().as_millis() as u64;
 
         info!(
             "永久删除完成: 成功 {}, 失败 {}, 待审核 {}, 待重启 {}, 释放 {} 字节, 耗时 {}ms",
-            success_count.load(Ordering::Relaxed),
-            failed_count.load(Ordering::Relaxed),
-            manual_review_count.load(Ordering::Relaxed),
-            reboot_pending_count.load(Ordering::Relaxed),
-            freed_size.load(Ordering::Relaxed),
+            success_count,
+            failed_count,
+            manual_review_count,
+            reboot_pending_count,
+            freed_size,
             duration_ms
         );
 
         PermanentDeleteResult {
-            success_count: success_count.load(Ordering::Relaxed),
-            failed_count: failed_count.load(Ordering::Relaxed),
-            manual_review_count: manual_review_count.load(Ordering::Relaxed),
-            reboot_pending_count: reboot_pending_count.load(Ordering::Relaxed),
-            freed_size: freed_size.load(Ordering::Relaxed),
+            success_count,
+            failed_count,
+            manual_review_count,
+            reboot_pending_count,
+            freed_size,
             details,
             duration_ms,
         }

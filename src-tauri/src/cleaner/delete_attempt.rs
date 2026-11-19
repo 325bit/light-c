@@ -22,10 +22,12 @@
 // - It does not decide whether a path may be deleted. That is
 //   `path_guard::ensure_deletable`, called before the ladder starts.
 // - It does not measure anything. The three engines account sizes differently
-//   (logical, cluster-aligned physical, file counts) and a shared walk here would
-//   add a fourth traversal of the same tree, which is what M8 is about.
-// - It does not run anything in parallel. `permanent_delete` still uses rayon
-//   around this call; M7 changes that separately.
+//   (logical, cluster-aligned physical, file counts), and a walk here would be a
+//   second traversal of a tree the caller has already surveyed (M8) — the size has
+//   to be measured before the delete anyway.
+// - It does not run anything in parallel. The three engines call it one path at a
+//   time; `permanent_delete` used to wrap the whole loop in rayon and stopped
+//   doing that in M7.
 // ============================================================================
 
 use std::fs;
@@ -178,9 +180,10 @@ impl DeleteOutcome {
 //
 // The counters themselves stay in each result struct, because the three structs
 // measure different things (logical vs cluster-aligned physical bytes, file
-// counts, safety verdicts). Unifying the counters further is blocked on M7:
-// `permanent_delete` runs under rayon and accumulates through atomics, so it
-// cannot take `&mut` on a shared accumulator.
+// counts, safety verdicts). M7 removed the mechanical obstacle — `permanent_delete`
+// no longer accumulates through atomics under rayon, so it could take `&mut` — but
+// a shared accumulator would still have to know which of the three shapes it is
+// filling in.
 //
 // An engine may report extra buckets beyond these three — `permanent_delete` has
 // `manual_review_count` for "contains executables". That is a *pre-check*
