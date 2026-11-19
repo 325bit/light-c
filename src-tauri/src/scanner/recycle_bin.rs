@@ -495,11 +495,17 @@ mod tests {
     }
 
     /// 真机对照门槛（MFT 上线条件）：同一台机器上，MFT 直读路径与 fs 路径产出的回收站
-    /// 条目集合必须逐条一致。两次扫描之间回收站内容变化会产生瞬时差异——与 M1 对照测试
-    /// 同样的已知噪声，重跑即可分辨。
+    /// 条目集合必须逐条一致。
+    ///
+    /// 回收站不是静态目标：并发会话（构建、清理）会持续往里写入新条目，而 fs 先扫、
+    /// MFT 后扫，间隔内的新增会单向表现为"MFT 多出"——实测被 s6 会话的构建命中过。
+    /// 因此只比较**测试开始前就已删除**的条目（回收站条目的 modified_time 即删除时间），
+    /// 对照期间的新增剔除出双方，属预期噪声而非差异。
     #[test]
-    #[ignore = "真机对照（MFT 直读 vs fs 路径）：手动运行 cargo test --lib -- --ignored --nocapture"]
+    #[ignore = "真机对照（MFT 直读 vs fs 路径，需管理员）：手动运行 cargo test --lib -- --ignored --nocapture"]
     fn real_machine_mft_path_matches_fs_path() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
         let _ = env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
             .try_init();
 
@@ -508,6 +514,11 @@ mod tests {
         if !crate::scanner::big_files_engine::mft_core::is_elevated() {
             panic!("此对照需要管理员权限。请在管理员终端运行：cargo test --lib real_machine_mft_path_matches_fs_path -- --ignored --nocapture");
         }
+
+        let test_started_unix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("系统时钟早于 Unix 纪元")
+            .as_secs() as i64;
 
         let Some(user_sid) = current_user_sid() else {
             panic!("真机对照需要当前用户 SID");
@@ -531,6 +542,24 @@ mod tests {
                 Err(error) => panic!("{drive_letter}: 盘 MFT 直读不可用: {error}"),
             };
 
+            // 只比较测试开始前就已删除的条目；对照期间新增的条目（其他会话的构建产物）
+            // 在两侧的口径天然不同（fs 先扫看不到，MFT 后扫看得到），剔除而非比较。
+            let fs_compared: Vec<&FileInfo> = fs_entries
+                .iter()
+                .filter(|entry| entry.modified_time < test_started_unix)
+                .collect();
+            let mft_compared: Vec<&FileInfo> = mft_entries
+                .iter()
+                .filter(|entry| entry.modified_time < test_started_unix)
+                .collect();
+            println!(
+                "{drive_letter}: 盘 fs {} 条 / mft {} 条；剔除对照期间新增后比较 {} vs {} 条",
+                fs_entries.len(),
+                mft_entries.len(),
+                fs_compared.len(),
+                mft_compared.len()
+            );
+
             let key = |entry: &FileInfo| {
                 (
                     entry.path.clone(),
@@ -540,14 +569,21 @@ mod tests {
                     entry.original_path.clone(),
                 )
             };
-            let fs_set: std::collections::BTreeSet<_> = fs_entries.iter().map(&key).collect();
-            let mft_set: std::collections::BTreeSet<_> = mft_entries.iter().map(&key).collect();
+            let fs_set: std::collections::BTreeSet<_> =
+                fs_compared.iter().map(|entry| key(entry)).collect();
+            let mft_set: std::collections::BTreeSet<_> =
+                mft_compared.iter().map(|entry| key(entry)).collect();
 
             let missing: Vec<_> = fs_set.difference(&mft_set).collect();
             let extra: Vec<_> = mft_set.difference(&fs_set).collect();
             assert!(
                 missing.is_empty() && extra.is_empty(),
-                "{drive_letter}: 盘两路径条目不一致。\nfs 有而 MFT 缺失: {missing:?}\nMFT 多出: {extra:?}"
+                "{drive_letter}: 盘两路径条目不一致（比较 {} 条）。\nfs 有而 MFT 缺失 {} 条（前 10 条）: {:?}\nMFT 多出 {} 条（前 10 条）: {:?}",
+                fs_compared.len(),
+                missing.len(),
+                missing.iter().take(10).collect::<Vec<_>>(),
+                extra.len(),
+                extra.iter().take(10).collect::<Vec<_>>(),
             );
             compared_drives += 1;
         }
