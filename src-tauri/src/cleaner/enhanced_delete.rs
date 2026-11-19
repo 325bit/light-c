@@ -762,12 +762,13 @@ impl EnhancedDeleteEngine {
         // under the current user's own SID folder, where the owning user holds Full Control, so
         // removing the $R/$I pair directly needs no SYSTEM privileges.
         // C1 fix: normalize first, so `C:/...` or `\\?\...` recycle entries are still classified correctly.
-        let (recycle_paths, normal_paths): (Vec<&String>, Vec<&String>) =
-            paths.iter().partition(|p| {
-                crate::path_guard::normalize(Path::new(p))
-                    .to_lowercase()
-                    .contains("\\$recycle.bin")
-            });
+        // D3 fix: go through path_guard::compare_key (the shared "normalize then
+        // ASCII-lowercase" form) instead of a second local normalize + Unicode
+        // to_lowercase spelling; `$RECYCLE.BIN` case variants still match
+        // because the lowercasing is applied to the whole normalized path.
+        let (recycle_paths, normal_paths): (Vec<&String>, Vec<&String>) = paths
+            .iter()
+            .partition(|p| crate::path_guard::compare_key(Path::new(p)).contains("\\$recycle.bin"));
 
         // Recycle entries are deleted one by one so a bad volume or a foreign-SID entry cannot
         // drag the others down.
