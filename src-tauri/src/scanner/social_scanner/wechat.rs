@@ -231,7 +231,7 @@ impl SocialScanner {
         path.file_name()
             .unwrap_or_default()
             .to_string_lossy()
-            .to_lowercase()
+            .to_ascii_lowercase()
             .starts_with("wxid_")
     }
 

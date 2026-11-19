@@ -232,6 +232,7 @@ pub fn scan_shell_icons() -> Result<Vec<ShellIconInfo>, String> {
         unique_entries.entry(key).or_insert(entry);
     }
     let mut entries: Vec<ShellIconInfo> = unique_entries.into_values().collect();
+    // Sort key, not a path (L4): display names are user-facing and may be non-ASCII.
     entries.sort_by(|left, right| left.name.to_lowercase().cmp(&right.name.to_lowercase()));
     Ok(entries)
 }
@@ -419,6 +420,9 @@ fn identify_known_application(
     if clsid.eq_ignore_ascii_case("{679F137C-3162-45DA-BE3C-2F9C3D093F64}") {
         return Some("百度网盘");
     }
+    // App-name matching, not a path comparison (L4): the haystack is matched
+    // against a table of product names that includes Chinese ones, so it keeps
+    // the display-name normalization.
     let source_name = source_path
         .and_then(|path| Path::new(path).file_stem())
         .map(|value| value.to_string_lossy().to_lowercase())

@@ -25,7 +25,7 @@ pub fn unique_existing_paths(paths: Vec<PathBuf>) -> Vec<PathBuf> {
 
     for path in paths {
         if let Some(existing_path) = normalize_existing_path(path) {
-            let key = existing_path.to_string_lossy().to_lowercase();
+            let key = existing_path.to_string_lossy().to_ascii_lowercase();
             if seen.insert(key) {
                 unique_paths.push(existing_path);
             }

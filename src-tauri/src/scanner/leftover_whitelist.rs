@@ -145,11 +145,12 @@ fn normalize_path_for_storage(path: &Path) -> String {
 }
 
 fn normalize_path_for_compare(path: &Path) -> String {
-    normalize_path_for_storage(path).to_lowercase()
+    normalize_path_for_storage(path).to_ascii_lowercase()
 }
 
 fn normalize_string_path_for_compare(path: &str) -> String {
-    trim_trailing_separator(strip_extended_length_prefix(&path.replace('/', "\\"))).to_lowercase()
+    trim_trailing_separator(strip_extended_length_prefix(&path.replace('/', "\\")))
+        .to_ascii_lowercase()
 }
 
 /// Check whether a path may contain an 8.3 short name.
@@ -198,7 +199,7 @@ fn canonicalize_longest_existing_prefix(path: &Path) -> Option<String> {
                 if !resolved.ends_with('\\') {
                     resolved.push('\\');
                 }
-                resolved.push_str(&part.to_lowercase());
+                resolved.push_str(&part.to_ascii_lowercase());
             }
             return Some(resolved);
         }

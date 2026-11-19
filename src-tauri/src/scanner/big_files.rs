@@ -238,7 +238,7 @@ pub fn scan(
             .into_iter()
             .filter_entry(|e| {
                 if e.file_type().is_dir() {
-                    let name = e.file_name().to_string_lossy().to_lowercase();
+                    let name = e.file_name().to_string_lossy().to_ascii_lowercase();
                     if name == "$recycle.bin" || name == "system volume information" {
                         return false;
                     }
@@ -246,7 +246,7 @@ pub fn scan(
                         if let Some(parent) = e.path().parent() {
                             if parent
                                 .to_string_lossy()
-                                .to_lowercase()
+                                .to_ascii_lowercase()
                                 .ends_with("\\windows")
                             {
                                 return false;
@@ -348,12 +348,12 @@ pub fn scan(
 /// 4 = higher risk (program files / Windows outside Temp)
 /// 5 = system critical (System32 / drivers / page files)
 pub(crate) fn compute_file_risk_level(path: &str) -> u8 {
-    let lower = path.to_lowercase();
+    let lower = path.to_ascii_lowercase();
     let file_name = std::path::Path::new(path)
         .file_name()
         .and_then(|f| f.to_str())
         .unwrap_or("");
-    let file_name_lower = file_name.to_lowercase();
+    let file_name_lower = file_name.to_ascii_lowercase();
     let ext = file_name_lower.rsplit('.').next().unwrap_or("");
 
     // 5 - system critical
@@ -432,12 +432,12 @@ pub(crate) fn compute_file_risk_level(path: &str) -> u8 {
 
 /// Identify the source label from a file path
 pub(crate) fn compute_source_label(path: &str) -> String {
-    let lower = path.to_lowercase();
+    let lower = path.to_ascii_lowercase();
     let file_name = std::path::Path::new(path)
         .file_name()
         .and_then(|f| f.to_str())
         .unwrap_or("");
-    let file_name_lower = file_name.to_lowercase();
+    let file_name_lower = file_name.to_ascii_lowercase();
     let ext = file_name_lower.rsplit('.').next().unwrap_or("");
 
     // Identify by extension

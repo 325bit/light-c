@@ -187,6 +187,7 @@ fn compare_names(left: &str, right: &str) -> Ordering {
                 } else {
                     left_chars.next();
                     right_chars.next();
+                    // Natural-sort comparison of two names, not a path lookup (L4).
                     let order = left_char.to_lowercase().cmp(right_char.to_lowercase());
                     if order != Ordering::Equal {
                         return order;

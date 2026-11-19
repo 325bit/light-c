@@ -810,7 +810,7 @@ impl HotspotScanner {
     fn should_skip_appdata_folder(path: &Path) -> bool {
         let folder_name = path
             .file_name()
-            .map(|n| n.to_string_lossy().to_lowercase())
+            .map(|n| n.to_string_lossy().to_ascii_lowercase())
             .unwrap_or_default();
 
         APPDATA_SKIP_FOLDERS.contains(&folder_name.as_str())
@@ -840,7 +840,7 @@ impl HotspotScanner {
 
     /// Determine whether it is a system-protected directory (blacklist)
     fn is_protected_directory(path: &Path) -> bool {
-        let path_str = path.to_string_lossy().to_lowercase();
+        let path_str = path.to_string_lossy().to_ascii_lowercase();
 
         // Extract the folder name from the end of the path (avoid an extra String allocation)
         let folder_name = path_str.rsplit('\\').next().unwrap_or("");
@@ -872,8 +872,8 @@ impl HotspotScanner {
 
     /// Determine whether it is a cache directory
     fn is_cache_directory(path: &str, folder_name: &str) -> bool {
-        let path_lower = path.to_lowercase();
-        let name_lower = folder_name.to_lowercase();
+        let path_lower = path.to_ascii_lowercase();
+        let name_lower = folder_name.to_ascii_lowercase();
 
         let cache_keywords = [
             "cache",
@@ -906,7 +906,7 @@ impl HotspotScanner {
 
     /// Determine whether it is a program directory
     fn is_program_directory(path: &str) -> bool {
-        let path_lower = path.to_lowercase();
+        let path_lower = path.to_ascii_lowercase();
         path_lower.contains("\\programs\\")
             || path_lower.contains("\\program files\\")
             || path_lower.contains("\\program files (x86)\\")
@@ -914,7 +914,7 @@ impl HotspotScanner {
 
     /// Get the parent directory type
     fn get_parent_type(path: &str) -> String {
-        let path_lower = path.to_lowercase();
+        let path_lower = path.to_ascii_lowercase();
 
         if path_lower.contains("\\appdata\\local\\") {
             "Local".to_string()

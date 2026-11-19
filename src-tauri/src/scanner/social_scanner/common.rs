@@ -90,10 +90,10 @@ impl SocialScanner {
                     return None;
                 }
 
-                let name = entry.file_name().to_string_lossy().to_lowercase();
+                let name = entry.file_name().to_string_lossy().to_ascii_lowercase();
                 markers
                     .iter()
-                    .any(|marker| name.contains(&marker.to_lowercase()))
+                    .any(|marker| name.contains(&marker.to_ascii_lowercase()))
                     .then_some(entry.path())
             })
             .collect()
@@ -105,7 +105,7 @@ impl SocialScanner {
     /// `to_string_lossy` does not allocate for valid UTF-8, lowercasing allocates once;
     /// forward slashes only appear when a caller hand-writes a path for compatibility, and only a hit costs one extra replacement.
     pub(super) fn normalize_path_key(path: &Path) -> String {
-        let mut key = path.to_string_lossy().to_lowercase();
+        let mut key = path.to_string_lossy().to_ascii_lowercase();
         if key.contains('/') {
             key = key.replace('/', "\\");
         }

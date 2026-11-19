@@ -243,7 +243,7 @@ fn survey_tree(path: &Path, scope: SurveyScope) -> LeftoverSurvey {
             && survey.executables.len() < EXECUTABLE_PREVIEW_LIMIT
         {
             if let Some(extension) = entry.path().extension() {
-                let extension = extension.to_string_lossy().to_lowercase();
+                let extension = extension.to_string_lossy().to_ascii_lowercase();
                 if EXECUTABLE_EXTENSIONS.contains(&extension.as_str()) {
                     survey
                         .executables

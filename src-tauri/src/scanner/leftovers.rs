@@ -685,6 +685,9 @@ struct InstalledAppMap {
 
 /// Normalize DisplayName: lowercase, remove version numbers, parenthetical content, and extra spaces
 fn normalize_display_name(name: &str) -> String {
+    // Unicode lowercasing on purpose (L4): this is a registry DisplayName, not a
+    // path. Every folder-name token it is compared against is normalized here
+    // too, so switching one side to ASCII would break the match.
     let lower = name.to_lowercase();
     // Remove parenthetical content (e.g. "Foo App (x64)" -> "foo app")
     let no_parens = lower.replace(|c: char| c == '(' || c == ')', " ");
@@ -832,6 +835,9 @@ fn infer_folder_names(install_location: Option<&str>) -> Vec<String> {
 
     // a. Final directory name: the app's own folder, most reliable
     if let Some(folder) = location_path.file_name() {
+        // Unicode on purpose (L4): this is a folder name, but it becomes an app
+        // token matched against `normalize_display_name` output, not against
+        // another path — keep both sides in the same normalization.
         let name = folder.to_string_lossy().to_lowercase();
         if !name.is_empty() {
             inferred.push(name);
@@ -842,6 +848,8 @@ fn infer_folder_names(install_location: Option<&str>) -> Vec<String> {
     //    otherwise every app under Program Files would also register "program files" as a folder name.
     if let Some(parent) = location_path.parent() {
         if let Some(vendor) = parent.file_name() {
+            // Same token domain as (a): compared against registry-derived app
+            // tokens, not against paths (L4).
             let vendor_name = vendor.to_string_lossy().to_lowercase();
             if !vendor_name.is_empty() && !EXCLUDED_PARENT_DIRS.contains(&vendor_name.as_str()) {
                 inferred.push(vendor_name);
@@ -1123,11 +1131,11 @@ fn probe_directory(path: &Path, max_depth: usize) -> FsProbeResult {
             result.file_count += 1;
         }
 
-        let file_name = entry.file_name().to_string_lossy().to_lowercase();
+        let file_name = entry.file_name().to_string_lossy().to_ascii_lowercase();
 
         // Check executable files
         if let Some(ext) = entry.path().extension() {
-            let ext_lower = ext.to_string_lossy().to_lowercase();
+            let ext_lower = ext.to_string_lossy().to_ascii_lowercase();
             if EXECUTABLE_EXTENSIONS.contains(&ext_lower.as_str()) {
                 result.executable_count += 1;
             }
@@ -1252,6 +1260,12 @@ impl LeftoverScanner {
                         continue;
                     }
 
+                    // Unicode on purpose (L4): although the regexes below only use
+                    // ASCII patterns, this same string is fed to `app_map`'s
+                    // token/display-name lookups, whose keys come from
+                    // `normalize_display_name` and `infer_folder_names` — both
+                    // Unicode-normalized. Folding only this side to ASCII would
+                    // stop non-ASCII app names from matching.
                     let folder_lower = folder_name.to_lowercase();
 
                     // Pre-filter: package-name format folder (com.xxx.yyy) -> skip directly
@@ -1529,7 +1543,7 @@ impl LeftoverScanner {
 
     /// Whitelist check (structured rule matching)
     fn is_whitelisted(&self, folder_name: &str) -> bool {
-        let name_lower = folder_name.to_lowercase();
+        let name_lower = folder_name.to_ascii_lowercase();
         self.whitelist.iter().any(|rule| rule.matches(&name_lower))
     }
 
@@ -1548,7 +1562,7 @@ impl LeftoverScanner {
 
         while current.starts_with(base_dir) && current != base_dir {
             if let Some(name) = current.file_name() {
-                let name_lower = name.to_string_lossy().to_lowercase();
+                let name_lower = name.to_string_lossy().to_ascii_lowercase();
                 if self.is_whitelisted(&name_lower) {
                     return true;
                 }
@@ -1565,7 +1579,7 @@ impl LeftoverScanner {
     /// Emulator detection (exact/prefix matching, not global contains)
     /// Returns the matched emulator name (if any)
     fn detect_emulator(&self, folder_name: &str) -> Option<String> {
-        let name_lower = folder_name.to_lowercase();
+        let name_lower = folder_name.to_ascii_lowercase();
 
         for sig in EMULATOR_SIGNATURES {
             for keyword in sig.folder_keywords {
@@ -1619,7 +1633,7 @@ impl LeftoverScanner {
                     continue;
                 };
                 if !EXECUTABLE_EXTENSIONS
-                    .contains(&extension.to_string_lossy().to_lowercase().as_str())
+                    .contains(&extension.to_string_lossy().to_ascii_lowercase().as_str())
                 {
                     continue;
                 }
@@ -1642,6 +1656,8 @@ impl LeftoverScanner {
                     continue;
                 }
 
+                // Unicode on purpose (L4): the file name is matched against app
+                // tokens (`installed_app_for_name`), not against other paths.
                 let name_lower = file_name.to_lowercase();
                 let days_old = Self::get_days_since_modified(&path);
 
@@ -1740,7 +1756,7 @@ impl LeftoverScanner {
                     if !entry.file_type().is_dir() {
                         return true;
                     }
-                    let name = entry.file_name().to_string_lossy().to_lowercase();
+                    let name = entry.file_name().to_string_lossy().to_ascii_lowercase();
                     should_descend_for_disks(&name, entry.depth())
                 })
                 .filter_map(|e| e.ok())
@@ -1760,7 +1776,7 @@ impl LeftoverScanner {
                 // Check the extension
                 let ext = path
                     .extension()
-                    .map(|e| format!(".{}", e.to_string_lossy().to_lowercase()))
+                    .map(|e| format!(".{}", e.to_string_lossy().to_ascii_lowercase()))
                     .unwrap_or_default();
 
                 if !VIRTUAL_DISK_EXTENSIONS.contains(&ext.as_str()) {
@@ -1784,6 +1800,8 @@ impl LeftoverScanner {
                 }
 
                 // Check whether the parent directory corresponds to an installed app
+                // Unicode on purpose (L4): compared against `inferred_folder_names`,
+                // which carry the registry display-name normalization.
                 let parent_folder = path
                     .parent()
                     .and_then(|p| p.file_name())
@@ -1931,7 +1949,7 @@ fn has_executables_shallow(path: &Path) -> Option<String> {
             continue;
         }
         if let Some(ext) = entry.path().extension() {
-            let ext_lower = ext.to_string_lossy().to_lowercase();
+            let ext_lower = ext.to_string_lossy().to_ascii_lowercase();
             if EXE_EXTENSIONS.contains(&ext_lower.as_str()) {
                 found += 1;
                 if example.is_empty() {
@@ -2755,6 +2773,8 @@ mod tests {
 
         let mut uninstalled_tokens: HashMap<String, String> = HashMap::new();
         for name in uninstalled {
+            // Mirrors production's display-name normalization (L4: a registry
+            // name, not a path).
             let lower = name.to_lowercase();
             for token in name_tokens(&lower) {
                 uninstalled_tokens

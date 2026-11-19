@@ -418,7 +418,7 @@ impl ScanEngine {
         }
 
         let file_name = match path.file_name() {
-            Some(name) => name.to_string_lossy().to_lowercase(),
+            Some(name) => name.to_string_lossy().to_ascii_lowercase(),
             None => return false,
         };
 
@@ -434,8 +434,8 @@ impl ScanEngine {
     /// Simple glob pattern matching
     fn matches_glob(&self, name: &str, pattern: &str) -> bool {
         // Windows file-name matching is case-insensitive; name and pattern must use the same normalization.
-        let name = name.to_lowercase();
-        let pattern = pattern.to_lowercase();
+        let name = name.to_ascii_lowercase();
+        let pattern = pattern.to_ascii_lowercase();
 
         if pattern == "*" {
             return true;
@@ -477,7 +477,7 @@ impl ScanEngine {
 
     /// Check whether a path is system-protected (should not be scanned)
     fn is_system_protected(&self, path: &Path) -> bool {
-        let path_str = path.to_string_lossy().to_lowercase();
+        let path_str = path.to_string_lossy().to_ascii_lowercase();
 
         // Protect critical system directories
         let protected_paths = [
@@ -503,7 +503,7 @@ impl ScanEngine {
 
         // Protect critical system file extensions
         if let Some(ext) = path.extension() {
-            let ext_str = ext.to_string_lossy().to_lowercase();
+            let ext_str = ext.to_string_lossy().to_ascii_lowercase();
             let protected_exts = ["sys", "dll", "exe", "msi", "cat", "mum", "manifest"];
             // Only protect these extensions under the Windows directory
             if path_str.contains("\\windows\\") && protected_exts.contains(&ext_str.as_str()) {
@@ -521,7 +521,7 @@ impl ScanEngine {
     /// EBWebView\Default. The IndexedDB, Local Storage, and various SQLite/LevelDB files in there
     /// are not pure caches; deleting them loses conversation lists, app preferences, or indexes.
     fn is_persistent_app_profile_path(&self, path: &Path) -> bool {
-        let path_str = path.to_string_lossy().to_lowercase();
+        let path_str = path.to_string_lossy().to_ascii_lowercase();
         if !path_str.contains("\\appdata\\local\\packages\\") && !path_str.contains("\\ebwebview\\")
         {
             return false;

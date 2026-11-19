@@ -236,7 +236,7 @@ impl SocialScanner {
         let name_matches = path
             .file_name()
             .and_then(|name| name.to_str())
-            .is_some_and(|name| name.to_lowercase().contains("qq"));
+            .is_some_and(|name| name.to_ascii_lowercase().contains("qq"));
 
         if name_matches {
             return true;
@@ -408,7 +408,7 @@ impl SocialScanner {
                     // Case one: the directory itself is named Tencent Files
                     if path
                         .file_name()
-                        .map(|n| n.to_string_lossy().to_lowercase() == "tencent files")
+                        .map(|n| n.to_string_lossy().to_ascii_lowercase() == "tencent files")
                         .unwrap_or(false)
                     {
                         info!("全盘搜索发现QQ目录: {}", path.display());

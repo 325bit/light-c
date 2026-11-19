@@ -47,6 +47,7 @@ impl SocialScanner {
                     continue;
                 };
                 let display: String = entry.get_value("DisplayName").unwrap_or_default();
+                // Registry DisplayName, not a path (L4).
                 if !display.to_lowercase().contains("telegram") {
                     continue;
                 }
@@ -105,7 +106,7 @@ impl SocialScanner {
             let has_account = std::fs::read_dir(&tdata)
                 .map(|entries| {
                     entries.filter_map(|e| e.ok()).any(|e| {
-                        let name = e.file_name().to_string_lossy().to_lowercase();
+                        let name = e.file_name().to_string_lossy().to_ascii_lowercase();
                         name.ends_with(".db")
                             || name.contains("cache")
                             || name == "key_datas"

@@ -133,7 +133,7 @@ impl RegistryScanner {
             }
 
             // Deduplication: the same exe may be registered under multiple application names
-            let path_lower = exe_path.to_lowercase();
+            let path_lower = exe_path.to_ascii_lowercase();
             if seen_paths.contains(&path_lower) {
                 continue;
             }

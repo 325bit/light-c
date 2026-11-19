@@ -137,7 +137,7 @@ pub async fn delete_deep_junk_files(
     }
 
     let mut unique_paths = std::collections::HashSet::new();
-    paths.retain(|path| unique_paths.insert(path.to_lowercase()));
+    paths.retain(|path| unique_paths.insert(path.to_ascii_lowercase()));
     if paths.is_empty() {
         return Ok(EnhancedDeleteResult::new());
     }
@@ -186,7 +186,7 @@ pub async fn get_physical_size(logical_size: u64) -> Result<u64, AppError> {
 /// Checks whether administrator privileges are needed
 #[tauri::command]
 pub async fn check_admin_for_path(path: String) -> Result<bool, AppError> {
-    let path_lower = path.to_lowercase();
+    let path_lower = path.to_ascii_lowercase();
 
     let admin_required_paths = [
         "c:\\windows\\",

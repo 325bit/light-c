@@ -242,6 +242,8 @@ fn is_absolute_path(token: &str) -> bool {
 
 /// Whether it is a "delegate executor": the command itself is not the real target; the real target is in the arguments
 fn is_delegate_executor(token: &str) -> bool {
+    // Unicode on purpose (L4): a token parsed out of a registry command line,
+    // not a filesystem path.
     let lower = token.to_lowercase();
     ["rundll32", "msiexec", "regsvr32", "wscript", "cscript"]
         .iter()
@@ -436,6 +438,8 @@ impl ContextMenuScanner {
             status_rank(a.exe_status)
                 .cmp(&status_rank(b.exe_status))
                 .then_with(|| {
+                    // Sort key, not a path (L4): display names may be non-ASCII
+                    // (Chinese menu titles), so keep Unicode folding here.
                     a.display_name
                         .to_lowercase()
                         .cmp(&b.display_name.to_lowercase())
@@ -594,6 +598,7 @@ impl ContextMenuScanner {
 
         // COM handlers are not driven by the command subkey; their command is the DLL pointed to by the CLSID.
         // Without resolving it, this whole class of entries stays "undetermined" no matter how many scan locations are added.
+        // Registry subkey path, not a filesystem path (L4).
         let is_com_handler = reg_subpath
             .to_lowercase()
             .contains(r"shellex\contextmenuhandlers");
@@ -719,6 +724,7 @@ impl ContextMenuScanner {
         let mut order: Vec<String> = Vec::new();
 
         for entry in entries {
+            // Dedup key on a registry subkey path, not a filesystem path (L4).
             let key = entry.reg_subpath.to_lowercase();
             match best.get(&key) {
                 None => {
@@ -811,6 +817,7 @@ pub fn delete_context_menu_entries(
 /// Automatically exports a .reg backup to the data directory before deletion
 fn delete_single_entry(req: &ContextMenuDeleteRequest) -> Result<(), String> {
     let subpath = req.reg_subpath.as_str();
+    // Registry subkey path, not a filesystem path (L4).
     let lower_subpath = subpath.to_lowercase();
 
     // Safety valve one: the path must fall within an allowed context menu cleanup location.

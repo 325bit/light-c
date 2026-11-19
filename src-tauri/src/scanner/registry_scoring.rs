@@ -126,7 +126,7 @@ impl PathResolver {
 
     /// Check whether a string looks like an executable path (drive letter + exe/dll/sys extension)
     fn looks_like_exe_path(&self, s: &str) -> bool {
-        let lower = s.to_lowercase();
+        let lower = s.to_ascii_lowercase();
         // Environment-variable paths have no drive letter before expansion; allow a valid %VAR% prefix here and let later resolution handle it.
         let starts_with_environment_variable = lower.starts_with('%')
             && lower[1..]
@@ -160,7 +160,7 @@ impl PathResolver {
 
     /// Check whether a path is in a system directory
     pub fn is_system_path(&self, path: &str) -> bool {
-        let lower = path.to_lowercase();
+        let lower = path.to_ascii_lowercase();
         let system_roots = [
             "c:\\windows\\system32",
             "c:\\windows\\syswow64",
@@ -211,7 +211,7 @@ pub fn is_definitely_safe_to_delete(extracted_path: &str, path_cache: &mut PathC
     }
 
     // Condition 3: path must not be in a system directory
-    let lower = extracted_path.to_lowercase();
+    let lower = extracted_path.to_ascii_lowercase();
     let system_dirs = [
         "\\windows\\system32",
         "\\windows\\syswow64",
@@ -231,7 +231,7 @@ pub fn is_definitely_safe_to_delete(extracted_path: &str, path_cache: &mut PathC
         .file_name()
         .and_then(|f| f.to_str())
         .unwrap_or("");
-    let file_name_lower = file_name.to_lowercase();
+    let file_name_lower = file_name.to_ascii_lowercase();
     let system_exes = [
         "rundll32.exe",
         "svchost.exe",
@@ -283,7 +283,7 @@ mod tests {
         let result = resolver.extract_and_resolve(r"%SystemRoot%\system32\notepad.exe %1");
         assert!(result.is_some());
         let (path, is_system) = result.unwrap();
-        let path_str = path.to_string_lossy().to_lowercase();
+        let path_str = path.to_string_lossy().to_ascii_lowercase();
         assert!(path_str.contains("system32"));
         assert!(is_system);
     }

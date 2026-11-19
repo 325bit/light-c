@@ -409,7 +409,7 @@ pub fn get_paths_for_categories(
     let requested_names = category_names.iter().collect::<HashSet<_>>();
     let excluded = excluded_paths
         .iter()
-        .map(|path| path.to_lowercase())
+        .map(|path| path.to_ascii_lowercase())
         .collect::<HashSet<_>>();
     let mut matched_names = HashSet::new();
     let mut paths = Vec::new();
@@ -423,7 +423,7 @@ pub fn get_paths_for_categories(
             category
                 .files
                 .iter()
-                .filter(|file| !excluded.contains(&file.path.to_lowercase()))
+                .filter(|file| !excluded.contains(&file.path.to_ascii_lowercase()))
                 .map(|file| file.path.clone()),
         );
     }

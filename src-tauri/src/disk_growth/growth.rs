@@ -945,7 +945,7 @@ fn build_analyze_entries(
 }
 
 fn explain_path(path: &str, diff: i64, level: DiskGrowthLevel) -> (String, String) {
-    let lower_path = path.to_lowercase();
+    let lower_path = path.to_ascii_lowercase();
     // Use unsigned_abs instead of abs() as u64: abs() overflows and panics when diff is i64::MIN.
     // All we need here is a display byte count; the sign is expressed by `direction` below.
     let readable = format_size(diff.unsigned_abs());
@@ -993,7 +993,7 @@ fn explain_path(path: &str, diff: i64, level: DiskGrowthLevel) -> (String, Strin
 }
 
 fn classify_path(path: &str) -> String {
-    let lower_path = path.to_lowercase();
+    let lower_path = path.to_ascii_lowercase();
     if lower_path.contains("/windows") {
         "Windows".to_string()
     } else if lower_path.contains("/users/") {

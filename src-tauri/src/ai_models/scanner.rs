@@ -303,7 +303,7 @@ fn canonical_path_key(path: &Path) -> String {
     path.canonicalize()
         .unwrap_or_else(|_| path.to_path_buf())
         .to_string_lossy()
-        .to_lowercase()
+        .to_ascii_lowercase()
 }
 
 #[cfg(test)]

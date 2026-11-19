@@ -37,7 +37,7 @@ impl ModelDetector for HuggingFaceDetector {
             source_path.get_or_insert_with(|| cache.size_root.clone());
             models.append(&mut collect_huggingface_models(&cache.hub_dir));
 
-            let key = cache.size_root.to_string_lossy().to_lowercase();
+            let key = cache.size_root.to_string_lossy().to_ascii_lowercase();
             if seen_size_roots.insert(key) {
                 size_roots.push(cache.size_root.clone());
             }
@@ -107,7 +107,7 @@ fn unique_hub_caches(candidates: Vec<HubCache>) -> Vec<HubCache> {
         let Some(hub_dir) = normalize_existing_path(hub_dir) else {
             continue;
         };
-        if !seen_hubs.insert(hub_dir.to_string_lossy().to_lowercase()) {
+        if !seen_hubs.insert(hub_dir.to_string_lossy().to_ascii_lowercase()) {
             continue;
         }
         caches.push(HubCache { hub_dir, size_root });

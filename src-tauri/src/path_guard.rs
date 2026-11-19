@@ -679,7 +679,7 @@ fn protected_rule(key: &str, shell_folders: bool) -> Option<&'static str> {
 }
 
 fn protected_file_name(path: &Path) -> Option<String> {
-    let name = path.file_name()?.to_string_lossy().to_lowercase();
+    let name = path.file_name()?.to_string_lossy().to_ascii_lowercase();
     PROTECTED_FILES
         .iter()
         .find(|protected| name == **protected)

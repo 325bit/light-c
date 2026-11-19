@@ -892,12 +892,12 @@ impl SocialScanner {
     ///
     /// **Effect:** safe to clean, does not affect normal use
     fn classify_file(&self, path: &Path, base_category: FileCategory) -> (FileCategory, RiskLevel) {
-        let path_str = path.to_string_lossy().to_lowercase();
+        let path_str = path.to_string_lossy().to_ascii_lowercase();
         let ext = path
             .extension()
             .and_then(|e| e.to_str())
             .unwrap_or("")
-            .to_lowercase();
+            .to_ascii_lowercase();
 
         // ================================================================
         // Rule 1: chat-record database (CRITICAL) - highest priority

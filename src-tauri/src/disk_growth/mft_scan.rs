@@ -375,7 +375,10 @@ fn join_normalized_path(parent: &str, name: &str) -> String {
     path.push_str(name);
     path.make_ascii_lowercase();
     if path.chars().any(char::is_uppercase) {
-        // Only non-ASCII uppercase letters (such as Ö, Д) reach here
+        // Only non-ASCII uppercase letters (such as Ö, Д) reach here.
+        // Deliberately NOT converted to ASCII-only (L4): this is a snapshot key,
+        // and it has to stay byte-identical to what `normalize_path` produced
+        // when the existing snapshots were written.
         path = path.to_lowercase();
     }
     path
@@ -530,6 +533,8 @@ fn aggregate_directories(
 }
 
 pub fn normalize_path(path: &str) -> String {
+    // Unicode on purpose (L4): snapshot key. Must produce the same bytes as
+    // `join_normalized_path`, and as the snapshots already on disk.
     path.to_lowercase().replace('\\', "/")
 }
 

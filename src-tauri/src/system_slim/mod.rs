@@ -851,6 +851,7 @@ fn parse_winsxs_analyze_output(output: &str) -> WinsxsAnalyzeResult {
     let mut saw_verdict = false;
 
     for line in output.lines() {
+        // Unicode on purpose (L4): DISM output text (localized), not a path.
         let normalized = line.trim().to_lowercase();
 
         if is_winsxs_reclaimable_size_line(&normalized) {
@@ -941,6 +942,7 @@ fn is_winsxs_cache_line(line: &str) -> bool {
 
 /// Parse a byte count from a size string, supporting formats like "3.50 GB", "500 MB", "12 KB"
 fn parse_size_from_line(line: &str) -> Option<u64> {
+    // DISM output text (localized unit strings), not a path (L4).
     let line = line.to_lowercase();
     let mut value: Option<f64> = None;
     let mut unit_multiplier = 1024.0 * 1024.0;
@@ -1008,7 +1010,7 @@ fn get_pagefile_status() -> SlimItemStatus {
     let mut other_drive_paths: Vec<String> = Vec::new();
 
     for cfg in &pagefile_configs {
-        let path_lower = cfg.path.to_lowercase();
+        let path_lower = cfg.path.to_ascii_lowercase();
         let actual_size = std::fs::metadata(&cfg.path)
             .map(|m| m.len())
             .unwrap_or(cfg.max_size);
@@ -1034,7 +1036,7 @@ fn get_pagefile_status() -> SlimItemStatus {
         || pagefile_configs.len() == 1
             && pagefile_configs
                 .first()
-                .map_or(false, |c| c.path.to_lowercase().starts_with("c:"))
+                .map_or(false, |c| c.path.to_ascii_lowercase().starts_with("c:"))
         || pagefile_configs.is_empty()
     {
         let loc_text = if pagefile_configs.is_empty() {
