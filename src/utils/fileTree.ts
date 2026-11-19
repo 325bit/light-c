@@ -14,6 +14,15 @@ export interface TreeSourceFile {
   size: number;
   /** Modification time (Unix seconds). Sources without this field use 0 and sort last uniformly */
   modified_time?: number;
+  /**
+   * Where the file lived before it was deleted (only recycle-bin entries carry it).
+   *
+   * When present the tree is built on **this** path, because the only thing a user can reason about
+   * inside the recycle bin is "where did this come from": the `$R…` names are flat and meaningless.
+   * The row's identity stays `path`, though — checking a folder and deleting must act on the real
+   * `$R` path that exists on disk, not on the original location that is already gone.
+   */
+  original_path?: string | null;
 }
 
 export interface FileTreeFolder<T extends TreeSourceFile> {
@@ -45,7 +54,13 @@ export interface FileTreeFolder<T extends TreeSourceFile> {
 export interface FileTreeFile<T extends TreeSourceFile> {
   key: string;
   name: string;
+  /** Identity path: what checking and deleting must use. For recycle entries this is the `$R` path. */
   path: string;
+  /**
+   * Path the tree was built from (the original location for recycle entries).
+   * Only differs from `path` when the source carries `original_path`; used for row tooltips.
+   */
+  displayPath: string;
   depth: number;
   isDir: false;
   /** Modification time (Unix seconds); 0 if the source did not provide it */
@@ -154,7 +169,9 @@ function aggregate<T extends TreeSourceFile>(node: FileTreeFolder<T>): void {
  */
 export function buildFileTree<T extends TreeSourceFile>(
   files: T[],
-  getPath: (file: T) => string = (file) => file.path,
+  // Default: group by the original location when the source has one. For every other category this
+  // is identical to `file.path`, so the only behaviour that changes is the recycle bin.
+  getPath: (file: T) => string = (file) => file.original_path || file.path,
   getModified: (file: T) => number = (file) => file.modified_time ?? 0,
 ): FileTree<T> {
   const total = files.length;
@@ -238,9 +255,12 @@ export function buildFileTree<T extends TreeSourceFile>(
     }
 
     cursor.children.push({
-      key: `f|${paths[index]}`,
+      // Identity, not display path: two recycle entries can share one original path (the same file
+      // deleted twice), and duplicate React keys would drop rows.
+      key: `f|${files[index].path}`,
       name: segments[segments.length - 1],
-      path: paths[index],
+      path: files[index].path,
+      displayPath: paths[index],
       depth: cursor.depth + 1,
       isDir: false,
       modifiedTime: getModified(files[index]),

@@ -281,7 +281,7 @@ export function FileTreeList<T extends TreeSourceFile>({
           ${checked && selectable ? 'bg-[var(--brand-green-10)]' : 'hover:bg-[var(--bg-hover)]'}`}
         style={{ height: rowHeight, paddingLeft: 12 + node.depth * INDENT_STEP }}
         onClick={() => { if (selectable) onToggleFile(node.file); }}
-        title={node.path}
+        title={node.displayPath || node.path}
       >
         {/* Directory rows have a collapse-arrow placeholder, and file rows keep the same width, so checkboxes at the same level align */}
         <span className="h-3.5 w-3.5 shrink-0" />
@@ -292,7 +292,7 @@ export function FileTreeList<T extends TreeSourceFile>({
           onToggle={() => onToggleFile(node.file)}
         />
         <FileIcon className="h-4 w-4 shrink-0 text-[var(--text-faint)]" />
-        <span className="min-w-0 flex-1 truncate text-[0.93rem] text-[var(--text-secondary)]" title={node.path}>
+        <span className="min-w-0 flex-1 truncate text-[0.93rem] text-[var(--text-secondary)]" title={node.displayPath || node.path}>
           {title}
         </span>
         {renderFileMeta?.(node.file)}
