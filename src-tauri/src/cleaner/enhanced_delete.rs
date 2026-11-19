@@ -35,51 +35,12 @@ use crate::path_guard::{ensure_deletable, DeleteScope};
 pub(crate) mod windows_api {
     use std::ptr;
 
-    // MoveFileEx flags
-    pub const MOVEFILE_DELAY_UNTIL_REBOOT: u32 = 0x00000004;
-    pub const MOVEFILE_REPLACE_EXISTING: u32 = 0x00000001;
-
-    // File attribute constants
-    pub const FILE_ATTRIBUTE_READONLY: u32 = 0x00000001;
-    pub const FILE_ATTRIBUTE_HIDDEN: u32 = 0x00000002;
-    pub const FILE_ATTRIBUTE_SYSTEM: u32 = 0x00000004;
-
-    #[link(name = "kernel32")]
-    extern "system" {
-        /// Mark a file for deletion on reboot
-        ///
-        /// # Safety note
-        /// This function uses the MOVEFILE_DELAY_UNTIL_REBOOT flag to mark a file for deletion on reboot.
-        /// This is the standard way Windows Storage Sense handles locked files.
-        ///
-        /// # Parameters
-        /// - lpExistingFileName: path of the file to delete (wide characters)
-        /// - lpNewFileName: target path; NULL means delete
-        /// - dwFlags: operation flags, using MOVEFILE_DELAY_UNTIL_REBOOT
-        pub fn MoveFileExW(
-            lpExistingFileName: *const u16,
-            lpNewFileName: *const u16,
-            dwFlags: u32,
-        ) -> i32;
-
-        /// Get file attributes
-        pub fn GetFileAttributesW(lpFileName: *const u16) -> u32;
-
-        /// Set file attributes
-        pub fn SetFileAttributesW(lpFileName: *const u16, dwFileAttributes: u32) -> i32;
-
-        /// Get the last error code
-        pub fn GetLastError() -> u32;
-
-        /// Get disk free space (used to calculate cluster size)
-        pub fn GetDiskFreeSpaceW(
-            lpRootPathName: *const u16,
-            lpSectorsPerCluster: *mut u32,
-            lpBytesPerSector: *mut u32,
-            lpNumberOfFreeClusters: *mut u32,
-            lpTotalNumberOfClusters: *mut u32,
-        ) -> i32;
-    }
+    use windows::core::PCWSTR;
+    use windows::Win32::Storage::FileSystem::{
+        GetDiskFreeSpaceW, GetFileAttributesW, MoveFileExW, SetFileAttributesW,
+        FILE_ATTRIBUTE_HIDDEN, FILE_ATTRIBUTE_READONLY, FILE_ATTRIBUTE_SYSTEM,
+        FILE_FLAGS_AND_ATTRIBUTES, MOVEFILE_DELAY_UNTIL_REBOOT,
+    };
 
     /// Convert a Rust string to a Windows wide string
     pub fn to_wide_string(s: &str) -> Vec<u16> {
@@ -108,7 +69,46 @@ pub(crate) mod windows_api {
     pub fn mark_for_delete_on_reboot(path: &str) -> Result<(), String> {
         let wide_path = to_wide_string(path);
 
+        // SAFETY: wide_path is a NUL-terminated wide string living for the call;
+        // a NULL target means "delete on reboot" rather than "move"
+        let result = unsafe {
+            MoveFileExW(
+                PCWSTR::from_raw(wide_path.as_ptr()),
+                PCWSTR::null(),
+                MOVEFILE_DELAY_UNTIL_REBOOT,
+            )
+        };
+
+        result.map_err(|error| format!("标记重启删除失败，{error}"))
+    }
+
+    /// Remove a file's read-only, hidden, and system attributes
+    pub fn remove_protection_attributes(path: &str) -> Result<(), String> {
+        let wide_path = to_wide_string(path);
+
+        // SAFETY: wide_path is NUL-terminated and lives for both calls below
         unsafe {
+            let attrs = GetFileAttributesW(PCWSTR::from_raw(wide_path.as_ptr()));
+            if attrs == u32::MAX {
+                return Err("无法获取文件属性".to_string());
+            }
+
+            // Remove read-only, hidden, and system attributes
+            let new_attrs = attrs
+                & !(FILE_ATTRIBUTE_READONLY.0 | FILE_ATTRIBUTE_HIDDEN.0 | FILE_ATTRIBUTE_SYSTEM.0);
+
+            if new_attrs != attrs {
+                SetFileAttributesW(
+                    PCWSTR::from_raw(wide_path.as_ptr()),
+                    FILE_FLAGS_AND_ATTRIBUTES(new_attrs),
+                )
+                .map_err(|_| "无法修改文件属性".to_string())?;
+            }
+        }
+
+        Ok(())
+    }
+
     /// Grant Administrators ownership and full control over one path (M6).
     ///
     /// This replaces the two `icacls` process spawns the ownership rung used to
@@ -382,46 +382,6 @@ pub(crate) mod windows_api {
         });
     }
 
-            let result = MoveFileExW(
-                wide_path.as_ptr(),
-                ptr::null(), // NULL means delete rather than move
-                MOVEFILE_DELAY_UNTIL_REBOOT,
-            );
-
-            if result != 0 {
-                Ok(())
-            } else {
-                let error_code = GetLastError();
-                Err(format!("标记重启删除失败，错误代码: {}", error_code))
-            }
-        }
-    }
-
-    /// Remove a file's read-only, hidden, and system attributes
-    pub fn remove_protection_attributes(path: &str) -> Result<(), String> {
-        let wide_path = to_wide_string(path);
-
-        unsafe {
-            let attrs = GetFileAttributesW(wide_path.as_ptr());
-            if attrs == u32::MAX {
-                return Err("无法获取文件属性".to_string());
-            }
-
-            // Remove read-only, hidden, and system attributes
-            let new_attrs =
-                attrs & !(FILE_ATTRIBUTE_READONLY | FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM);
-
-            if new_attrs != attrs {
-                let result = SetFileAttributesW(wide_path.as_ptr(), new_attrs);
-                if result == 0 {
-                    return Err("无法修改文件属性".to_string());
-                }
-            }
-        }
-
-        Ok(())
-    }
-
     /// Get the disk cluster size (used to calculate physical usage)
     pub fn get_cluster_size(root_path: &str) -> Option<u32> {
         let wide_path = to_wide_string(root_path);
@@ -430,20 +390,18 @@ pub(crate) mod windows_api {
         let mut free_clusters: u32 = 0;
         let mut total_clusters: u32 = 0;
 
+        // SAFETY: wide_path is NUL-terminated and the four u32 out-params live
+        // for the whole duration of the call
         unsafe {
-            let result = GetDiskFreeSpaceW(
-                wide_path.as_ptr(),
-                &mut sectors_per_cluster,
-                &mut bytes_per_sector,
-                &mut free_clusters,
-                &mut total_clusters,
-            );
-
-            if result != 0 {
-                Some(sectors_per_cluster * bytes_per_sector)
-            } else {
-                None
-            }
+            GetDiskFreeSpaceW(
+                PCWSTR::from_raw(wide_path.as_ptr()),
+                Some(&mut sectors_per_cluster),
+                Some(&mut bytes_per_sector),
+                Some(&mut free_clusters),
+                Some(&mut total_clusters),
+            )
+            .ok()
+            .map(|_| sectors_per_cluster * bytes_per_sector)
         }
     }
 }
@@ -1153,6 +1111,48 @@ fn delete_recycle_entry(path: &str) -> Result<(), String> {
             "路径不是当前用户的回收站数据文件，已拒绝: {}",
             path
         ));
+    }
+    let metadata_path = recycle_entry_twin_path(path)
+        .ok_or_else(|| format!("路径不是 $R 回收站条目，已拒绝删除: {}", path))?;
+
+    // Clear hidden/system/read-only attributes first: $Recycle.Bin contents carry the
+    // hidden bit, and std::fs removal refuses read-only files.
+    let _ = windows_api::remove_protection_attributes(path);
+    if file_path.is_dir() {
+        fs::remove_dir_all(file_path)
+            .map_err(|error| format!("删除回收站数据目录失败: {}", error))?;
+    } else {
+        fs::remove_file(file_path).map_err(|error| format!("删除回收站数据文件失败: {}", error))?;
+    }
+
+    // The data blob is gone; remove the metadata so Explorer stops showing the entry.
+    // Deleting the data first means a metadata failure can never hide live data — worst
+    // case is a phantom entry, reported honestly as a failure here.
+    let _ = windows_api::remove_protection_attributes(&metadata_path);
+    fs::remove_file(&metadata_path).map_err(|error| {
+        format!(
+            "回收站数据已删除但元数据清理失败 ({}): {}",
+            metadata_path, error
+        )
+    })?;
+
+    Ok(())
+}
+
+impl Default for EnhancedDeleteEngine {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
     /// M6: the ownership step has to report a Win32 code rather than panic, and
     /// it must not report success on a path that does not exist.
     ///
@@ -1287,48 +1287,6 @@ fn delete_recycle_entry(path: &str) -> Result<(), String> {
 
         let _ = std::fs::remove_dir_all(&dir);
     }
-
-    }
-    let metadata_path = recycle_entry_twin_path(path)
-        .ok_or_else(|| format!("路径不是 $R 回收站条目，已拒绝删除: {}", path))?;
-
-    // Clear hidden/system/read-only attributes first: $Recycle.Bin contents carry the
-    // hidden bit, and std::fs removal refuses read-only files.
-    let _ = windows_api::remove_protection_attributes(path);
-    if file_path.is_dir() {
-        fs::remove_dir_all(file_path)
-            .map_err(|error| format!("删除回收站数据目录失败: {}", error))?;
-    } else {
-        fs::remove_file(file_path).map_err(|error| format!("删除回收站数据文件失败: {}", error))?;
-    }
-
-    // The data blob is gone; remove the metadata so Explorer stops showing the entry.
-    // Deleting the data first means a metadata failure can never hide live data — worst
-    // case is a phantom entry, reported honestly as a failure here.
-    let _ = windows_api::remove_protection_attributes(&metadata_path);
-    fs::remove_file(&metadata_path).map_err(|error| {
-        format!(
-            "回收站数据已删除但元数据清理失败 ({}): {}",
-            metadata_path, error
-        )
-    })?;
-
-    Ok(())
-}
-
-impl Default for EnhancedDeleteEngine {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-// ============================================================================
-// Tests
-// ============================================================================
-
-#[cfg(test)]
-mod tests {
-    use super::*;
 
     /// The reporting contract (S3c): a reboot-pending item is not a success, its
     /// bytes are not freed, and they are not "skipped" either — they are simply
