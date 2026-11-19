@@ -12,7 +12,7 @@ use super::delete_attempt::{
 };
 use crate::error::{AppError, ErrorCode};
 use crate::path_guard::{ensure_deletable, DeleteScope};
-use crate::scanner::{DeleteResult, FileInfo};
+use crate::scanner::DeleteResult;
 
 /// Junk clean escalates exactly two rungs: attributes (read-only leftovers from
 /// installers, and now for directories too — it used to skip those) and the
@@ -48,40 +48,6 @@ impl DeleteEngine {
     pub fn with_skip_in_use(mut self, enabled: bool) -> Self {
         self.skip_in_use = enabled;
         self
-    }
-
-    /// Delete a list of files
-    pub fn delete_files(&self, files: &[FileInfo]) -> DeleteResult {
-        let mut result = DeleteResult::new();
-
-        info!("开始删除 {} 个文件", files.len());
-
-        for file in files {
-            match self.delete_single_file(&file.path) {
-                DeleteOutcome::Freed => {
-                    result.add_success(file.size);
-                    debug!("成功删除: {}", file.path);
-                }
-                DeleteOutcome::RebootPending => {
-                    result.add_reboot_pending(file.size);
-                    debug!("已标记重启删除: {}", file.path);
-                }
-                DeleteOutcome::Failed(e) => {
-                    result.add_failure(file.path.clone(), e);
-                    warn!("删除失败: {}", file.path);
-                }
-            }
-        }
-
-        info!(
-            "删除完成: 成功 {} 个, 失败 {} 个, 待重启 {} 个, 释放空间 {} 字节",
-            result.success_count,
-            result.failed_count,
-            result.reboot_pending_count,
-            result.freed_size
-        );
-
-        result
     }
 
     /// Delete a list of specified paths
