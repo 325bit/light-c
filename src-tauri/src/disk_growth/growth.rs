@@ -232,7 +232,19 @@ where
     let previous_scan_time = previous.as_ref().map(|snapshot| snapshot.date.clone());
     let snapshot_load_ms = phase_started.elapsed().as_millis() as u64;
 
-    let mut scan = scan_drive_with_progress(&drive_letter, progress)?;
+    // Reserve the snapshot name and open its shard directory *before* the scan: file rows are streamed
+    // into it while the volume index is still in hand, so the file list never has to exist as one
+    // million-row buffer between the scan and the write.
+    let mut snapshot_writer = manager.begin_scan_snapshot()?;
+    let scan_result = {
+        let mut sink = |parent: &str, name: &str, size: u64, modified: i64| {
+            snapshot_writer.append_file(parent, name, size, modified)
+        };
+        scan_drive_with_progress(&drive_letter, progress, &mut sink)
+    };
+    // On failure the writer is dropped here, which takes the half-written shard directory with it:
+    // a truncated file list would otherwise be read by the next comparison as mass deletion.
+    let mut scan = scan_result?;
     // Keep phases in execution order: the previous snapshot is loaded before $MFT is read.
     scan.phase_durations.insert(
         0,
@@ -254,10 +266,9 @@ where
         stage: "compare".to_string(),
         duration_ms: phase_started.elapsed().as_millis() as u64,
     });
-    // File-level details are only used for writing a side-car shard; moving them out avoids copying a full file list again on very large disks.
-    let file_records = std::mem::take(&mut scan.file_records);
+    // The shards were already written while scanning; this only closes them and writes the main JSON.
     let phase_started = Instant::now();
-    manager.save_scan_snapshot(&current_snapshot, file_records)?;
+    manager.commit_scan_snapshot(snapshot_writer, &current_snapshot)?;
     scan.phase_durations.push(DiskGrowthPhaseDuration {
         stage: "snapshot_write".to_string(),
         duration_ms: phase_started.elapsed().as_millis() as u64,

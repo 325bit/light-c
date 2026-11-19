@@ -1,13 +1,12 @@
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 use std::collections::HashMap;
+use std::fmt::Write as _;
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
 
-use super::mft_scan::{
-    normalize_path, DirSizeEntry, FileSizeRecord, FileSnapshotEntry, FullDiskScanResult,
-};
+use super::mft_scan::{normalize_path, DirSizeEntry, FileSnapshotEntry, FullDiskScanResult};
 
 const SNAPSHOT_DIR: &str = "disk_growth_snapshots";
 const SNAPSHOT_PREFIX: &str = "disk_growth_";
@@ -233,6 +232,136 @@ pub struct DiskSnapshotHandle {
     pub path: PathBuf,
 }
 
+/// A reserved snapshot file name plus the shard directory being filled in while the scan runs.
+pub struct ScanSnapshotWriter {
+    pub path: PathBuf,
+    shards: FileShardWriter,
+}
+
+impl ScanSnapshotWriter {
+    /// Append one file row. `parent` and `name` are the parts the scanner already holds, so the row
+    /// never has to be assembled into a full path and split apart again.
+    pub fn append_file(
+        &mut self,
+        parent: &str,
+        name: &str,
+        size: u64,
+        modified: i64,
+    ) -> Result<(), String> {
+        self.shards.append(parent, name, size, modified)
+    }
+}
+
+/// Streaming writer for the 256 per-bucket JSONL shards.
+///
+/// Each row is `{"parent":…,"name":…,"size":…,"modified":…}`; the line is written by hand into one
+/// reused buffer instead of going through the serializer per row (a million rows made that visible
+/// next to the disk write). Names that would need JSON escaping fall back to `serde_json`, because
+/// NTFS's POSIX namespace allows quotes and backslashes in names even though Win32 does not.
+///
+/// Dropping the writer without [`FileShardWriter::commit`] deletes the directory: a truncated shard
+/// set would make the next comparison see every remaining file as deleted.
+struct FileShardWriter {
+    dir: PathBuf,
+    writers: Vec<Option<BufWriter<File>>>,
+    line: String,
+    committed: bool,
+}
+
+impl FileShardWriter {
+    fn begin(dir: PathBuf) -> Result<Self, String> {
+        if dir.exists() {
+            fs::remove_dir_all(&dir)
+                .map_err(|e| format!("清理旧文件级快照分片失败 {}: {}", dir.display(), e))?;
+        }
+        fs::create_dir_all(&dir)
+            .map_err(|e| format!("创建文件级快照分片目录失败 {}: {}", dir.display(), e))?;
+        Ok(Self {
+            dir,
+            writers: (0..FILE_SHARD_BUCKETS).map(|_| None).collect(),
+            line: String::with_capacity(256),
+            committed: false,
+        })
+    }
+
+    fn append(&mut self, parent: &str, name: &str, size: u64, modified: i64) -> Result<(), String> {
+        let Self {
+            dir, writers, line, ..
+        } = self;
+        let bucket = shard_bucket(parent) as usize;
+
+        if writers[bucket].is_none() {
+            let path = dir.join(format!("{:03}.jsonl", bucket));
+            let file = File::create(&path)
+                .map_err(|e| format!("创建文件级快照分片失败 {}: {}", path.display(), e))?;
+            writers[bucket] = Some(BufWriter::new(file));
+        }
+        let writer = writers[bucket]
+            .as_mut()
+            .ok_or_else(|| "文件级快照分片写入器缺失".to_string())?;
+
+        if needs_json_escaping(parent) || needs_json_escaping(name) {
+            let row = DiskFileShardEntry {
+                parent: parent.to_string(),
+                name: name.to_string(),
+                size,
+                modified,
+            };
+            serde_json::to_writer(&mut *writer, &row)
+                .map_err(|e| format!("写入文件级快照分片失败: {}", e))?;
+        } else {
+            // Field order and separators must match what `serde_json` produces for
+            // `DiskFileShardEntry`, byte for byte: the shard reader only accepts its own format.
+            line.clear();
+            line.push_str("{\"parent\":\"");
+            line.push_str(parent);
+            line.push_str("\",\"name\":\"");
+            line.push_str(name);
+            line.push_str("\",\"size\":");
+            let _ = write!(line, "{size}");
+            line.push_str(",\"modified\":");
+            let _ = write!(line, "{modified}");
+            line.push_str("}\n");
+            writer
+                .write_all(line.as_bytes())
+                .map_err(|e| format!("写入文件级快照分片失败: {}", e))?;
+            return Ok(());
+        }
+
+        writer
+            .write_all(b"\n")
+            .map_err(|e| format!("写入文件级快照分片失败: {}", e))
+    }
+
+    fn commit(mut self) -> Result<(), String> {
+        for writer in std::mem::take(&mut self.writers).into_iter().flatten() {
+            writer
+                .into_inner()
+                .map_err(|e| format!("刷新文件级快照分片失败: {}", e))?;
+        }
+        self.committed = true;
+        Ok(())
+    }
+}
+
+impl Drop for FileShardWriter {
+    fn drop(&mut self) {
+        if !self.committed {
+            let _ = fs::remove_dir_all(&self.dir);
+        }
+    }
+}
+
+/// Bytes `serde_json` escapes and a hand-written line would have to escape too.
+///
+/// Windows file names cannot contain these, but the rows come straight from `$MFT`: NTFS's POSIX
+/// namespace does allow them, and a row written raw would produce a JSONL file that no longer parses.
+fn needs_json_escaping(value: &str) -> bool {
+    value
+        .bytes()
+        .any(|byte| byte == b'"' || byte == b'\\' || byte < 0x20)
+}
+
 impl DiskSnapshotManager {
     pub fn for_drive(drive_letter: &str) -> Result<Self, String> {
         let snapshot_dir = crate::data_dir::get_data_dir().join(SNAPSHOT_DIR);
@@ -243,7 +372,16 @@ impl DiskSnapshotManager {
         })
     }
 
-    pub fn save_snapshot(&self, snapshot: &DiskSnapshot) -> Result<PathBuf, String> {
+    /// Reserve this scan's snapshot file name and open its shard directory **before** the scan runs.
+    ///
+    /// The name has to exist up front because file rows are streamed into the shards while the volume
+    /// index is still in hand. Waiting until the scan finished was what forced a million-row buffer
+    /// (full path per file, ~150MB on C:) to survive the whole size and aggregate phase.
+    ///
+    /// Both the snapshot file and the shard directory are created by the writer: if the scan fails or
+    /// is cancelled, dropping this value removes whatever was written, so no half snapshot is left
+    /// behind for the next comparison to read.
+    pub fn begin_scan_snapshot(&self) -> Result<ScanSnapshotWriter, String> {
         let filename = format!(
             "{}{}{}",
             self.snapshot_prefix,
@@ -251,31 +389,68 @@ impl DiskSnapshotManager {
             SNAPSHOT_SUFFIX
         );
         let path = self.snapshot_dir.join(filename);
-        // Stream straight into the file: the former `to_string` first built a 20-40MB string in memory
-        // only for `fs::write` to copy it again.
-        let file = File::create(&path).map_err(|e| format!("创建全盘快照失败: {}", e))?;
-        let mut writer = BufWriter::new(file);
-        serde_json::to_writer(&mut writer, snapshot)
-            .map_err(|e| format!("序列化全盘快照失败: {}", e))?;
-        writer
-            .flush()
-            .map_err(|e| format!("写入全盘快照失败: {}", e))?;
-        Ok(path)
+        self.sweep_orphan_shard_dirs();
+        let shards = FileShardWriter::begin(self.file_shard_dir(&path))?;
+        Ok(ScanSnapshotWriter { path, shards })
     }
 
-    pub fn save_scan_snapshot(
+    /// Delete shard directories whose snapshot file does not exist.
+    ///
+    /// `FileShardWriter` removes its directory on every error path and on cancellation, but a process
+    /// kill leaves one behind. Nothing ever reads such a directory again, so it would just sit there
+    /// costing space; the sweep is one `read_dir` over a handful of entries per scan.
+    fn sweep_orphan_shard_dirs(&self) {
+        let Ok(entries) = fs::read_dir(&self.snapshot_dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+                continue;
+            };
+            if !name.starts_with(&self.snapshot_prefix)
+                || path.extension().and_then(|ext| ext.to_str()) != Some(FILE_SHARD_SUFFIX)
+            {
+                continue;
+            }
+            if !path.with_extension("json").exists() {
+                let _ = fs::remove_dir_all(&path);
+            }
+        }
+    }
+
+    /// Write the main JSON into the name reserved by [`begin_scan_snapshot`] and close the shards.
+    ///
+    /// The snapshot and its shards have to land together: a snapshot without shards makes detail
+    /// queries silently return nothing, and shards without a snapshot are invisible to the loader.
+    pub fn commit_scan_snapshot(
         &self,
+        writer: ScanSnapshotWriter,
         snapshot: &DiskSnapshot,
-        file_records: Vec<FileSizeRecord>,
     ) -> Result<PathBuf, String> {
-        // The caller already built this snapshot for the comparison; rebuilding it here would walk every
-        // directory entry a second time (and re-normalize every path) for an identical result.
-        let path = self.save_snapshot(snapshot)?;
-        // Save file-level details in per-directory shards to avoid the main JSON ballooning to hundreds of MB with millions of files.
-        if let Err(error) = self.save_file_shards(&path, file_records) {
-            // The main snapshot and the file shards must succeed together, otherwise detail queries would get an incomplete new snapshot.
+        let ScanSnapshotWriter { path, shards } = writer;
+        // Stream straight into the file: `to_string` would build a 20-40MB string in memory only for
+        // `fs::write` to copy it again.
+        let file = File::create(&path).map_err(|e| format!("创建全盘快照失败: {}", e))?;
+        let mut file_writer = BufWriter::new(file);
+        let written = serde_json::to_writer(&mut file_writer, snapshot)
+            .map_err(|e| format!("序列化全盘快照失败: {}", e))
+            .and_then(|_| {
+                file_writer
+                    .flush()
+                    .map_err(|e| format!("写入全盘快照失败: {}", e))
+            });
+        if let Err(error) = written {
+            // `shards` drops here and takes its directory with it; the partial main JSON goes too,
+            // so a failed write cannot leave a snapshot whose shard side is missing.
             let _ = fs::remove_file(&path);
-            let _ = fs::remove_dir_all(self.file_shard_dir(&path));
+            return Err(error);
+        }
+        if let Err(error) = shards.commit() {
+            let _ = fs::remove_file(&path);
             return Err(error);
         }
         // Do cleanup only after the whole snapshot set is written successfully, to avoid deleting old snapshots early on errors such as a full disk.
@@ -445,60 +620,6 @@ impl DiskSnapshotManager {
         Ok(())
     }
 
-    fn save_file_shards(
-        &self,
-        snapshot_path: &Path,
-        entries: Vec<FileSizeRecord>,
-    ) -> Result<(), String> {
-        let dir = self.file_shard_dir(snapshot_path);
-        if dir.exists() {
-            fs::remove_dir_all(&dir)
-                .map_err(|e| format!("清理旧文件级快照分片失败 {}: {}", dir.display(), e))?;
-        }
-        fs::create_dir_all(&dir)
-            .map_err(|e| format!("创建文件级快照分片目录失败 {}: {}", dir.display(), e))?;
-
-        let mut writers: Vec<Option<BufWriter<File>>> =
-            (0..FILE_SHARD_BUCKETS).map(|_| None).collect();
-
-        for entry in entries {
-            let Some(parent) = parent_path_of(&entry.path) else {
-                continue;
-            };
-            let name = display_name_from_path(&entry.path);
-            let bucket = shard_bucket(&parent) as usize;
-            if writers[bucket].is_none() {
-                let path = dir.join(format!("{:03}.jsonl", bucket));
-                let file = File::create(&path)
-                    .map_err(|e| format!("创建文件级快照分片失败 {}: {}", path.display(), e))?;
-                writers[bucket] = Some(BufWriter::new(file));
-            }
-
-            let Some(writer) = writers[bucket].as_mut() else {
-                continue;
-            };
-            let row = DiskFileShardEntry {
-                parent,
-                name,
-                size: entry.size,
-                modified: entry.modified,
-            };
-            serde_json::to_writer(&mut *writer, &row)
-                .map_err(|e| format!("写入文件级快照分片失败: {}", e))?;
-            writer
-                .write_all(b"\n")
-                .map_err(|e| format!("写入文件级快照分片失败: {}", e))?;
-        }
-
-        for writer in writers.into_iter().flatten() {
-            writer
-                .into_inner()
-                .map_err(|e| format!("刷新文件级快照分片失败: {}", e))?;
-        }
-
-        Ok(())
-    }
-
     fn load_file_shard(
         &self,
         shard_path: &Path,
@@ -611,14 +732,6 @@ fn parent_path_of(path: &str) -> Option<String> {
         .rsplit_once('/')
         .map(|(parent, _)| parent.to_string())
         .filter(|parent| !parent.is_empty())
-}
-
-fn display_name_from_path(path: &str) -> String {
-    path.rsplit('/')
-        .next()
-        .filter(|name| !name.is_empty())
-        .unwrap_or(path)
-        .to_string()
 }
 
 impl SubtreeDiffCollector {
@@ -895,5 +1008,102 @@ mod tests {
         let order = FileDetailOrder::parse(Some("whatever"), None);
         assert_eq!(order.key, FileDetailSortKey::Diff);
         assert!(order.desc);
+    }
+
+    /// The hand-written shard line must be byte-identical to what the serializer produces, and names
+    /// that JSON cannot hold raw must still land as valid rows.
+    ///
+    /// Windows file names cannot contain a quote or a backslash, but the rows come straight from
+    /// `$MFT` and NTFS's POSIX namespace does allow them. Writing such a name raw would produce a
+    /// JSONL line that no longer parses — and the file list is the only record of what was on disk.
+    #[test]
+    fn shard_lines_match_the_serializer_and_escape_what_they_must() {
+        let dir = std::env::temp_dir().join("lightc-disk-growth-shards");
+        let _ = fs::remove_dir_all(&dir);
+
+        let rows = [
+            ("c:/users", "plain.bin", 100u64, 1_700_000_000i64),
+            // POSIX-namespace name: must take the serializer path
+            ("c:/users", "with\"quote.bin", 200, 1_700_000_001),
+            ("c:/users", "back\\slash.bin", 300, 1_700_000_002),
+            ("c:/users", "tab\tname.bin", 400, 1_700_000_003),
+            // Non-ASCII is legal raw in JSON and must stay readable
+            ("c:/users", "中文.bin", 500, 1_700_000_004),
+        ];
+        {
+            let mut writer = FileShardWriter::begin(dir.clone()).unwrap();
+            for (parent, name, size, modified) in rows {
+                writer.append(parent, name, size, modified).unwrap();
+            }
+            writer.commit().unwrap();
+        }
+
+        let mut parsed_names = Vec::new();
+        for index in 0..FILE_SHARD_BUCKETS {
+            let path = dir.join(format!("{:03}.jsonl", index));
+            if !path.exists() {
+                continue;
+            }
+            for line in fs::read_to_string(&path).unwrap().lines() {
+                let row: DiskFileShardEntry =
+                    serde_json::from_str(line).expect("每一行都必须是合法 JSON");
+                let serialized = serde_json::to_string(&row).unwrap();
+                assert_eq!(line, serialized, "手写行必须与 serde 输出逐字节一致");
+                parsed_names.push(row.name);
+            }
+        }
+
+        let expected: Vec<String> = rows
+            .iter()
+            .map(|(_, name, _, _)| name.to_string())
+            .collect();
+        assert_eq!(parsed_names, expected, "名字必须原样往返");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A writer that never reaches `commit` must take its directory with it; a leftover, truncated
+    /// shard set would make the next comparison treat every missing row as a deleted file.
+    #[test]
+    fn an_uncommitted_shard_directory_is_removed() {
+        let dir = std::env::temp_dir().join("lightc-disk-growth-shards-abandoned");
+        let _ = fs::remove_dir_all(&dir);
+        {
+            let mut writer = FileShardWriter::begin(dir.clone()).unwrap();
+            writer.append("c:/users", "a.bin", 1, 0).unwrap();
+            assert!(dir.exists());
+        }
+        assert!(!dir.exists(), "未提交的分片目录必须被清掉");
+    }
+
+    /// Sweeping must remove only shard directories whose snapshot is gone.
+    ///
+    /// It deletes directories, so a too-broad predicate would take a live snapshot's file list with
+    /// it — the snapshot would still load and every detail query would come back empty.
+    #[test]
+    fn orphan_shard_directories_are_swept_but_live_ones_survive() {
+        let dir = std::env::temp_dir().join("lightc-disk-growth-sweep");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let manager = DiskSnapshotManager {
+            snapshot_dir: dir.clone(),
+            snapshot_prefix: "disk_growth_C_".to_string(),
+        };
+
+        fs::write(dir.join("disk_growth_C_20260101_000000.json"), b"{}").unwrap();
+        let live = dir.join("disk_growth_C_20260101_000000.files");
+        fs::create_dir_all(&live).unwrap();
+        // Crash between `begin_scan_snapshot` and `commit_scan_snapshot`: shards, no snapshot.
+        let orphan = dir.join("disk_growth_C_20260102_000000.files");
+        fs::create_dir_all(&orphan).unwrap();
+        // Not ours: a different prefix must be left alone even without a snapshot file.
+        let unrelated = dir.join("something_else.files");
+        fs::create_dir_all(&unrelated).unwrap();
+
+        manager.sweep_orphan_shard_dirs();
+
+        assert!(live.exists(), "有对应快照的分片目录不能被删");
+        assert!(!orphan.exists(), "没有快照的分片目录应当被清掉");
+        assert!(unrelated.exists(), "不是本前缀的目录不归这里管");
+        let _ = fs::remove_dir_all(&dir);
     }
 }
