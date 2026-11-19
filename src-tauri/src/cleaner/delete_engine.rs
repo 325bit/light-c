@@ -31,23 +31,24 @@ const JUNK_CLEAN_POLICY: AttemptPolicy = AttemptPolicy {
 };
 
 /// Delete engine
-pub struct DeleteEngine {
-    /// Whether to skip files that are in use
-    skip_in_use: bool,
-}
+///
+/// Field-less. Its only knob was a "skip files in use" flag, which `new()` set
+/// to true and nothing ever read — the shared ladder decides what happens to a
+/// file that is in use (it queues it for reboot), so the flag never had a
+/// decision to make. It went out together with its builder setter, which had no
+/// callers either.
+///
+/// Left as a named type rather than folded into free functions because this is
+/// the seam for the open S3c question: whether junk clean should keep its own
+/// path loop or reuse the enhanced batch driver. A zero-sized struct makes that
+/// decision cheap to defer and cheap to make — swapping the body does not touch
+/// a single call site.
+pub struct DeleteEngine;
 
 impl DeleteEngine {
     /// Create a new delete engine
     pub fn new() -> Self {
-        DeleteEngine {
-            skip_in_use: true, // skip files in use by default
-        }
-    }
-
-    /// Set whether to skip files in use
-    pub fn with_skip_in_use(mut self, enabled: bool) -> Self {
-        self.skip_in_use = enabled;
-        self
+        DeleteEngine
     }
 
     /// Delete a list of specified paths
