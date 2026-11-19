@@ -657,33 +657,48 @@ mod tests {
             panic!("此对照需要管理员权限。请在管理员终端运行：cargo test --lib real_machine_mft_path_matches_fs_path -- --ignored --nocapture");
         }
 
-        let test_started_unix = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("系统时钟早于 Unix 纪元")
-            .as_secs() as i64;
-
         let Some(user_sid) = current_user_sid() else {
             panic!("真机对照需要当前用户 SID");
         };
-        let mut compared_drives = 0usize;
-        for drive_letter in crate::sys_drive::existing_drive_letters() {
-            let sid_path = PathBuf::from(format!("{}:\\$Recycle.Bin\\{}", drive_letter, user_sid));
-            if !sid_path.is_dir() {
-                continue;
-            }
 
-            let (fs_entries, _) =
-                collect_drive_entries(&sid_path, drive_letter, &JunkCategory::RecycleBin);
-            let (mft_entries, mft_timing) = match scan_drive_via_mft(
-                drive_letter,
-                &sid_path,
-                &user_sid,
-                &JunkCategory::RecycleBin,
-            ) {
-                Ok(result) => result,
-                Err(error) => panic!("{drive_letter}: 盘 MFT 直读不可用: {error}"),
-            };
-            println!(
+        // 三明治重试：fs 快照前后一致（回收站安静）才做集合比较。并发会话（构建、清理）
+        // 会在对照期间写入和移除条目——实测 D 盘 4 分钟窗口进出约 3.4 万条目——两次快照
+        // 之间的出入是并发噪声而非路径语义差异，不稳定就自动重试。
+        const MAX_STABILITY_ATTEMPTS: usize = 3;
+        'attempts: for attempt in 1..=MAX_STABILITY_ATTEMPTS {
+            let test_started_unix = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("系统时钟早于 Unix 纪元")
+                .as_secs() as i64;
+            let mut compared_drives = 0usize;
+            let mut stable = true;
+            type EntryKey = (String, u64, i64, bool, Option<String>);
+            let mut per_drive_sets: Vec<(
+                char,
+                std::collections::BTreeSet<EntryKey>,
+                std::collections::BTreeSet<EntryKey>,
+            )> = Vec::new();
+            for drive_letter in crate::sys_drive::existing_drive_letters() {
+                let sid_path =
+                    PathBuf::from(format!("{}:\\$Recycle.Bin\\{}", drive_letter, user_sid));
+                if !sid_path.is_dir() {
+                    continue;
+                }
+
+                let (fs_entries, _) =
+                    collect_drive_entries(&sid_path, drive_letter, &JunkCategory::RecycleBin);
+                let (mft_entries, mft_timing) = match scan_drive_via_mft(
+                    drive_letter,
+                    &sid_path,
+                    &user_sid,
+                    &JunkCategory::RecycleBin,
+                ) {
+                    Ok(result) => result,
+                    Err(error) => panic!("{drive_letter}: 盘 MFT 直读不可用: {error}"),
+                };
+                let (fs_entries_after, _) =
+                    collect_drive_entries(&sid_path, drive_letter, &JunkCategory::RecycleBin);
+                println!(
                 "{drive_letter}: 盘 mft 计时：第一遍 {}ms / 第二遍 {}ms / 全表记录 {} 条 / resident 提取 {} 条 / 非 resident 兜底 {} 次",
                 mft_timing.enumerate_ms,
                 mft_timing.parse_ms,
@@ -692,55 +707,87 @@ mod tests {
                 mft_timing.non_resident_fallbacks,
             );
 
-            // 只比较测试开始前就已删除的条目；对照期间新增的条目（其他会话的构建产物）
-            // 在两侧的口径天然不同（fs 先扫看不到，MFT 后扫看得到），剔除而非比较。
-            let fs_compared: Vec<&FileInfo> = fs_entries
-                .iter()
-                .filter(|entry| entry.modified_time < test_started_unix)
-                .collect();
-            let mft_compared: Vec<&FileInfo> = mft_entries
-                .iter()
-                .filter(|entry| entry.modified_time < test_started_unix)
-                .collect();
-            println!(
-                "{drive_letter}: 盘 fs {} 条 / mft {} 条；剔除对照期间新增后比较 {} vs {} 条",
-                fs_entries.len(),
-                mft_entries.len(),
-                fs_compared.len(),
-                mft_compared.len()
-            );
+                // 稳定性判定：fs 前后两次快照必须一致，否则对照期间回收站发生了增删
+                // （并发噪声，不是路径语义差异），本次比较无效。
+                let key = |entry: &FileInfo| {
+                    (
+                        entry.path.clone(),
+                        entry.size,
+                        entry.modified_time,
+                        entry.is_dir,
+                        entry.original_path.clone(),
+                    )
+                };
+                let before_set: std::collections::BTreeSet<EntryKey> =
+                    fs_entries.iter().map(&key).collect();
+                let after_set: std::collections::BTreeSet<EntryKey> =
+                    fs_entries_after.iter().map(&key).collect();
+                if before_set != after_set {
+                    println!(
+                    "{drive_letter}: 盘对照期间回收站发生变化（fs 前 {} 条 → 后 {} 条），本次比较无效",
+                    before_set.len(),
+                    after_set.len()
+                );
+                    stable = false;
+                    continue;
+                }
 
-            let key = |entry: &FileInfo| {
-                (
-                    entry.path.clone(),
-                    entry.size,
-                    entry.modified_time,
-                    entry.is_dir,
-                    entry.original_path.clone(),
-                )
-            };
-            let fs_set: std::collections::BTreeSet<_> =
-                fs_compared.iter().map(|entry| key(entry)).collect();
-            let mft_set: std::collections::BTreeSet<_> =
-                mft_compared.iter().map(|entry| key(entry)).collect();
+                // 只比较测试开始前就已删除的条目；对照期间新增的条目（其他会话的构建产物）
+                // 在两侧的口径天然不同（fs 先扫看不到，MFT 后扫看得到），剔除而非比较。
+                let fs_compared: Vec<&FileInfo> = fs_entries
+                    .iter()
+                    .filter(|entry| entry.modified_time < test_started_unix)
+                    .collect();
+                let mft_compared: Vec<&FileInfo> = mft_entries
+                    .iter()
+                    .filter(|entry| entry.modified_time < test_started_unix)
+                    .collect();
+                println!(
+                    "{drive_letter}: 盘 fs {} 条 / mft {} 条；剔除对照期间新增后比较 {} vs {} 条",
+                    fs_entries.len(),
+                    mft_entries.len(),
+                    fs_compared.len(),
+                    mft_compared.len()
+                );
 
-            let missing: Vec<_> = fs_set.difference(&mft_set).collect();
-            let extra: Vec<_> = mft_set.difference(&fs_set).collect();
+                let fs_set: std::collections::BTreeSet<EntryKey> =
+                    fs_compared.iter().map(|entry| key(entry)).collect();
+                let mft_set: std::collections::BTreeSet<EntryKey> =
+                    mft_compared.iter().map(|entry| key(entry)).collect();
+                per_drive_sets.push((drive_letter, fs_set, mft_set));
+                compared_drives += 1;
+            }
+
+            if !stable {
+                if attempt < MAX_STABILITY_ATTEMPTS {
+                    println!("第 {attempt} 次尝试遇到回收站并发变化，自动重试（{attempt}/{MAX_STABILITY_ATTEMPTS}）");
+                    continue 'attempts;
+                }
+                panic!("连续 {MAX_STABILITY_ATTEMPTS} 次对照期间回收站都在变化（并发会话活跃）。请关闭其他会话的构建/清理后再重跑。");
+            }
+
             assert!(
+                compared_drives > 0,
+                "真机上应至少有一个含 SID 目录的回收站分区"
+            );
+            for (drive_letter, fs_set, mft_set) in &per_drive_sets {
+                let missing: Vec<_> = fs_set.difference(mft_set).collect();
+                let extra: Vec<_> = mft_set.difference(fs_set).collect();
+                assert!(
                 missing.is_empty() && extra.is_empty(),
                 "{drive_letter}: 盘两路径条目不一致（比较 {} 条）。\nfs 有而 MFT 缺失 {} 条（前 10 条）: {:?}\nMFT 多出 {} 条（前 10 条）: {:?}",
-                fs_compared.len(),
+                fs_set.len(),
                 missing.len(),
                 missing.iter().take(10).collect::<Vec<_>>(),
                 extra.len(),
                 extra.iter().take(10).collect::<Vec<_>>(),
             );
-            compared_drives += 1;
+            }
+            println!(
+                "对照通过：{compared_drives} 个盘的 MFT 直读条目与 fs 路径逐条一致（稳定窗口内）"
+            );
+            return;
         }
-        assert!(
-            compared_drives > 0,
-            "真机上应至少有一个含 SID 目录的回收站分区"
-        );
     }
 }
 
