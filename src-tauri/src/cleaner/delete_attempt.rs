@@ -140,6 +140,57 @@ pub enum DeleteOutcome {
     Failed(AppError),
 }
 
+/// The three buckets every delete result reports (S3c).
+///
+/// Written once because the three engines each answered it themselves, and one of
+/// them — `enhanced_delete` — derived it from `FileDeleteResult::failure_reason`,
+/// a field whose only job is the tooltip. That is the mistake M16 removed from
+/// the command layer: a display field deciding control flow. A new variant of
+/// `DeleteFailureReason` added for wording would have silently changed the counts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OutcomeKind {
+    /// The bytes are free right now.
+    Freed,
+    /// The OS removes it at next boot, so nothing is free yet.
+    RebootPending,
+    /// Nothing happened; the path is still there.
+    Failed,
+}
+
+impl DeleteOutcome {
+    pub fn kind(&self) -> OutcomeKind {
+        match self {
+            Self::Freed => OutcomeKind::Freed,
+            Self::RebootPending => OutcomeKind::RebootPending,
+            Self::Failed(_) => OutcomeKind::Failed,
+        }
+    }
+}
+
+// ----------------------------------------------------------------------------
+// Reporting contract
+//
+// All three engines report the same three buckets and agree on two rules that
+// used to be written three times, in three shapes, in three files:
+//
+// 1. A reboot-pending item is NOT a success, and its bytes are NOT freed. It
+//    must never reach the freed total — that is what produced "claimed 3 GB
+//    freed, actually 1 GB" before `DeleteResult` started tracking
+//    `reboot_pending_size` separately.
+// 2. A path refused by the gate is a FAILURE, not a skip. The user selected it;
+//    dropping it silently would make the cleanup look complete when it is not.
+//
+// The counters themselves stay in each result struct, because the three structs
+// measure different things (logical vs cluster-aligned physical bytes, file
+// counts, safety verdicts). Unifying the counters further is blocked on M7:
+// `permanent_delete` runs under rayon and accumulates through atomics, so it
+// cannot take `&mut` on a shared accumulator.
+//
+// An engine may report extra buckets beyond these three — `permanent_delete` has
+// `manual_review_count` for "contains executables". That is a *pre-check*
+// verdict, not a delete outcome, and it stays engine-specific on purpose.
+// ----------------------------------------------------------------------------
+
 /// Run one path through the ladder.
 ///
 /// `scope` is only used by `RebootPolicy::EntryScope`; the caller must already
@@ -584,6 +635,20 @@ mod tests {
         }
         // A permission error is not something a reboot fixes.
         assert!(!is_in_use(&denied));
+    }
+
+    /// The three buckets, and the rule that reboot-pending is not a success.
+    #[test]
+    fn outcomes_map_to_their_reporting_bucket() {
+        assert_eq!(DeleteOutcome::Freed.kind(), OutcomeKind::Freed);
+        assert_eq!(
+            DeleteOutcome::RebootPending.kind(),
+            OutcomeKind::RebootPending
+        );
+        assert_eq!(
+            DeleteOutcome::Failed(AppError::new(ErrorCode::Internal)).kind(),
+            OutcomeKind::Failed
+        );
     }
 
     /// The mapping the three engines disagreed on, asserted in one place.

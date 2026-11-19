@@ -41,7 +41,7 @@ use serde::{Deserialize, Serialize};
 use walkdir::WalkDir;
 
 use super::delete_attempt::{
-    attempt_delete, AttemptPolicy, AttributeClearance, DeleteOutcome, RebootPolicy,
+    attempt_delete, AttemptPolicy, AttributeClearance, DeleteOutcome, OutcomeKind, RebootPolicy,
 };
 use crate::error::ErrorCode;
 use crate::path_guard::{ensure_deletable, DeleteScope};
@@ -337,15 +337,21 @@ impl PermanentDeleteEngine {
                 match &safety_check {
                     SafetyCheckResult::Safe => {
                         // Passed the safety check, perform the deletion
-                        let result = self.delete_single_leftover(path);
+                        let (result, kind) = self.delete_single_leftover(path);
 
-                        if result.success {
-                            success_count.fetch_add(1, Ordering::Relaxed);
-                            freed_size.fetch_add(result.freed_size, Ordering::Relaxed);
-                        } else if result.marked_for_reboot {
-                            reboot_pending_count.fetch_add(1, Ordering::Relaxed);
-                        } else {
-                            failed_count.fetch_add(1, Ordering::Relaxed);
+                        // Counted by the shared bucket, not by re-reading the two
+                        // booleans on the result struct.
+                        match kind {
+                            OutcomeKind::Freed => {
+                                success_count.fetch_add(1, Ordering::Relaxed);
+                                freed_size.fetch_add(result.freed_size, Ordering::Relaxed);
+                            }
+                            OutcomeKind::RebootPending => {
+                                reboot_pending_count.fetch_add(1, Ordering::Relaxed);
+                            }
+                            OutcomeKind::Failed => {
+                                failed_count.fetch_add(1, Ordering::Relaxed);
+                            }
                         }
 
                         result
@@ -414,7 +420,9 @@ impl PermanentDeleteEngine {
     /// Explanation
     /// This function performs the actual physical deletion. It first tries direct deletion,
     /// and automatically switches to the "delete on reboot" queue when locked files are encountered.
-    fn delete_single_leftover(&self, path: &Path) -> LeftoverDeleteResult {
+    /// Returns the bucket alongside the result, so the batch loop does not have
+    /// to reconstruct it from `success` / `marked_for_reboot`.
+    fn delete_single_leftover(&self, path: &Path) -> (LeftoverDeleteResult, OutcomeKind) {
         let path_str = path.to_string_lossy().to_string();
 
         // First calculate the directory size
@@ -441,7 +449,10 @@ impl PermanentDeleteEngine {
             },
         };
 
-        match attempt_delete(path, DeleteScope::Leftovers, &policy) {
+        let outcome = attempt_delete(path, DeleteScope::Leftovers, &policy);
+        let kind = outcome.kind();
+
+        let result = match &outcome {
             DeleteOutcome::Freed => {
                 info!(
                     "成功永久删除: {} ({} 文件, {} 字节)",
@@ -492,7 +503,9 @@ impl PermanentDeleteEngine {
                     safety_check: SafetyCheckResult::Safe,
                 }
             }
-        }
+        };
+
+        (result, kind)
     }
 
     /// Calculate directory size

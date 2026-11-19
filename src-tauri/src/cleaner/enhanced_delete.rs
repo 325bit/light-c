@@ -22,7 +22,7 @@ use log::{debug, info, warn};
 use serde::{Deserialize, Serialize};
 
 use super::delete_attempt::{
-    attempt_delete, AttemptPolicy, AttributeClearance, DeleteOutcome, RebootPolicy,
+    attempt_delete, AttemptPolicy, AttributeClearance, DeleteOutcome, OutcomeKind, RebootPolicy,
 };
 use crate::error::ErrorCode;
 use crate::path_guard::{ensure_deletable, DeleteScope};
@@ -312,6 +312,30 @@ impl EnhancedDeleteResult {
         }
     }
 
+    /// Count one outcome.
+    ///
+    /// S3c: this used to be four copies of the same three-branch bookkeeping
+    /// spread over the batch loop. The rules it encodes are documented once in
+    /// `delete_attempt` — in particular that a reboot-pending item is not a
+    /// success and contributes nothing to the freed total.
+    fn record(&mut self, kind: OutcomeKind, logical_size: u64, physical_size: u64) {
+        match kind {
+            OutcomeKind::Freed => {
+                self.success_count += 1;
+                self.freed_logical_size += logical_size;
+                self.freed_physical_size += physical_size;
+            }
+            OutcomeKind::RebootPending => {
+                self.reboot_pending_count += 1;
+                self.needs_reboot = true;
+            }
+            OutcomeKind::Failed => {
+                self.failed_count += 1;
+                self.skipped_size += physical_size;
+            }
+        }
+    }
+
     /// Generate a WeChat-style summary message
     pub fn generate_summary(&mut self) {
         let freed_mb = self.freed_physical_size as f64 / 1024.0 / 1024.0;
@@ -526,8 +550,7 @@ impl EnhancedDeleteEngine {
                 let logical_size = self.get_file_size(Path::new(path));
                 let Some(drive_root) = recycle_drive_root(path) else {
                     let physical_size = self.calculate_physical_size(logical_size);
-                    result.failed_count += 1;
-                    result.skipped_size += physical_size;
+                    result.record(OutcomeKind::Failed, logical_size, physical_size);
                     result.file_results.push(FileDeleteResult {
                         path: (*path).clone(),
                         success: false,
@@ -557,9 +580,7 @@ impl EnhancedDeleteEngine {
                 for (path, logical_size, physical_size) in entries {
                     match delete_recycle_entry(&path) {
                         Ok(()) => {
-                            result.success_count += 1;
-                            result.freed_logical_size += logical_size;
-                            result.freed_physical_size += physical_size;
+                            result.record(OutcomeKind::Freed, logical_size, physical_size);
                             result.file_results.push(FileDeleteResult {
                                 path,
                                 success: true,
@@ -571,8 +592,7 @@ impl EnhancedDeleteEngine {
                         }
                         Err(error) => {
                             warn!("回收站条目删除失败: {}", error);
-                            result.failed_count += 1;
-                            result.skipped_size += physical_size;
+                            result.record(OutcomeKind::Failed, logical_size, physical_size);
                             result.file_results.push(FileDeleteResult {
                                 path,
                                 success: false,
@@ -591,24 +611,10 @@ impl EnhancedDeleteEngine {
 
         // Delete normal files one by one
         for path in normal_paths {
-            let file_result = self.delete_single_file(path);
-
-            match &file_result.failure_reason {
-                None => {
-                    result.success_count += 1;
-                    result.freed_logical_size += file_result.logical_size;
-                    result.freed_physical_size += file_result.physical_size;
-                }
-                Some(DeleteFailureReason::MarkedForReboot) => {
-                    result.reboot_pending_count += 1;
-                    result.needs_reboot = true;
-                }
-                Some(_) => {
-                    result.failed_count += 1;
-                    result.skipped_size += file_result.physical_size;
-                }
-            }
-
+            // The bucket comes back from `delete_single_file`; the loop no longer
+            // reconstructs it from `failure_reason`.
+            let (file_result, kind) = self.delete_single_file(path);
+            result.record(kind, file_result.logical_size, file_result.physical_size);
             result.file_results.push(file_result);
             processed_count += 1;
             emit_progress(processed_count, &result);
@@ -627,8 +633,12 @@ impl EnhancedDeleteEngine {
         result
     }
 
-    /// Delete a single file
-    fn delete_single_file(&self, path: &str) -> FileDeleteResult {
+    /// Delete a single file.
+    ///
+    /// Returns the bucket alongside the result so the batch loop does not have to
+    /// reconstruct it. It used to `match &file_result.failure_reason`, i.e. derive
+    /// "was this a success" from a field that exists for the tooltip.
+    fn delete_single_file(&self, path: &str) -> (FileDeleteResult, OutcomeKind) {
         let file_path = Path::new(path);
 
         // Get the file size
@@ -638,32 +648,38 @@ impl EnhancedDeleteEngine {
         // S3a: the traversal gate, the protection table and the scope layers are one
         // call now. `EnhancedClean` skips the junk allowlist and the
         // `\windows\` extension layer, because the deep scanner deliberately
-        // surfaces installers under `C:\Windows\Temp`.
+        // surfaces installers under `C://Windows//Temp`.
         if let Err(error) = ensure_deletable(file_path, DeleteScope::EnhancedClean) {
             let reason = match error.code {
                 ErrorCode::Protected => DeleteFailureReason::SystemProtected,
                 _ => DeleteFailureReason::OutOfScope,
             };
-            return FileDeleteResult {
-                path: path.to_string(),
-                success: false,
-                logical_size,
-                physical_size,
-                failure_reason: Some(reason),
-                marked_for_reboot: false,
-            };
+            return (
+                FileDeleteResult {
+                    path: path.to_string(),
+                    success: false,
+                    logical_size,
+                    physical_size,
+                    failure_reason: Some(reason),
+                    marked_for_reboot: false,
+                },
+                OutcomeKind::Failed,
+            );
         }
 
         // Check whether the file exists
         if !file_path.exists() {
-            return FileDeleteResult {
-                path: path.to_string(),
-                success: false,
-                logical_size,
-                physical_size,
-                failure_reason: Some(DeleteFailureReason::NotFound),
-                marked_for_reboot: false,
-            };
+            return (
+                FileDeleteResult {
+                    path: path.to_string(),
+                    success: false,
+                    logical_size,
+                    physical_size,
+                    failure_reason: Some(DeleteFailureReason::NotFound),
+                    marked_for_reboot: false,
+                },
+                OutcomeKind::Failed,
+            );
         }
 
         // S3b: the ladder (attributes -> ownership -> reboot queue) is one call
@@ -671,11 +687,13 @@ impl EnhancedDeleteEngine {
         // clearing always, ownership only inside the whitelist and only when the
         // user allowed it (or for rebuildable caches, which the cleanup wizard
         // deletes anyway), reboot queue behind that same whitelist.
-        match attempt_delete(
+        let outcome = attempt_delete(
             file_path,
             DeleteScope::EnhancedClean,
             &self.attempt_policy(),
-        ) {
+        );
+
+        let result = match &outcome {
             DeleteOutcome::Freed => {
                 debug!("成功删除: {}", path);
                 FileDeleteResult {
@@ -706,7 +724,7 @@ impl EnhancedDeleteEngine {
                     ErrorCode::TargetInUse => DeleteFailureReason::FileLocked,
                     ErrorCode::PermissionDenied => DeleteFailureReason::PermissionDenied,
                     ErrorCode::NotFound => DeleteFailureReason::NotFound,
-                    _ => DeleteFailureReason::Other(error.message),
+                    _ => DeleteFailureReason::Other(error.message.clone()),
                 };
                 FileDeleteResult {
                     path: path.to_string(),
@@ -717,7 +735,9 @@ impl EnhancedDeleteEngine {
                     marked_for_reboot: false,
                 }
             }
-        }
+        };
+
+        (result, outcome.kind())
     }
 
     /// This engine's rung selection; see `delete_attempt::AttemptPolicy`.
@@ -899,6 +919,25 @@ impl Default for EnhancedDeleteEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The reporting contract (S3c): a reboot-pending item is not a success, its
+    /// bytes are not freed, and they are not "skipped" either — they are simply
+    /// not free yet. `record` is the only place that encodes this now.
+    #[test]
+    fn reboot_pending_is_not_counted_as_freed() {
+        let mut result = EnhancedDeleteResult::new();
+        result.record(OutcomeKind::Freed, 100, 4096);
+        result.record(OutcomeKind::RebootPending, 200, 8192);
+        result.record(OutcomeKind::Failed, 300, 12288);
+
+        assert_eq!(result.success_count, 1);
+        assert_eq!(result.reboot_pending_count, 1);
+        assert_eq!(result.failed_count, 1);
+        assert_eq!(result.freed_logical_size, 100);
+        assert_eq!(result.freed_physical_size, 4096);
+        assert!(result.needs_reboot);
+        assert_eq!(result.skipped_size, 12288);
+    }
 
     #[test]
     fn test_physical_size_calculation() {
