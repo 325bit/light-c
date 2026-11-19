@@ -114,7 +114,9 @@ fn collect_drive_entries(
 ) -> (Vec<FileInfo>, DrivePhaseTiming) {
     let elevated = mft_core::is_elevated();
     let ntfs = mft_core::is_ntfs(drive_letter);
-    if elevated && ntfs {
+    // 该盘这个用户根本没有回收站目录（从未在本盘删过东西）：没有任何条目可枚举，直接走 fs
+    // 的 read_dir 失败路径返回空，不要在每次扫描时打进一条"MFT 直读失败"的警告。
+    if elevated && ntfs && sid_path.is_dir() {
         match scan_drive_via_mft(drive_letter, sid_path, category) {
             Ok(result) => return result,
             Err(error) => warn!(
@@ -122,7 +124,7 @@ fn collect_drive_entries(
                 drive_letter, error
             ),
         }
-    } else {
+    } else if !(elevated && ntfs) {
         debug!(
             "[回收站扫描] {}: 管理员 {} / NTFS {} → fs 枚举",
             drive_letter, elevated, ntfs
