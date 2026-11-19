@@ -10,10 +10,11 @@
 //   Users may have both an official API and a third-party relay, or use different models for different purposes.
 //   With profiles, "adding another provider" is just adding an element, and "switching" only changes the activeProfileId field.
 //
-// About keys: as with most desktop tools, they are currently stored in plaintext in this file; but **never returned to the frontend** —
-//   the frontend only gets the masked value (sk-****1234); the UI layer cannot obtain a usable key.
-//   To make a copied file unreadable later, Windows DPAPI could be plugged in (see docs/dev/AI-provider-and-key-storage.md);
-//   the public interface of this file does not need to change.
+// About keys: the api_key field is encrypted with the current Windows user's DPAPI (stored as "dpapi:" + hex);
+//   if encryption fails, the key falls back to plaintext and a warning is logged. Plaintext values from configs
+//   saved before this version still work when read and are encrypted automatically on the next save.
+//   Keys are **never returned to the frontend** — the frontend only gets the masked value (sk-****1234);
+//   the UI layer cannot obtain a usable key. A copied config file is undecryptable for any other user or machine.
 // ============================================================================
 
 use serde::{Deserialize, Serialize};
