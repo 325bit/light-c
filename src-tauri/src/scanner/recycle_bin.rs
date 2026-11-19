@@ -7,12 +7,11 @@ use super::{CategoryScanResult, FileInfo, JunkCategory};
 use crate::scanner::big_files_engine::mft_core;
 use log::{debug, info, warn};
 use rayon::prelude::*;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
 #[cfg(windows)]
-use std::sync::{Mutex, OnceLock, PoisonError};
+use std::sync::OnceLock;
 #[cfg(windows)]
 use std::time::Instant;
 
@@ -98,8 +97,42 @@ struct DrivePhaseTiming {
     non_resident_fallbacks: usize,
 }
 
+/// 生产入口：按运行时环境选引擎——**管理员 + NTFS 一律走 MFT 直读**，其余回退 fs 枚举。
+///
+/// 回退是**整盘**的：一个盘要么全走 MFT、要么全走 fs，不允许同盘两种口径混用（混用会让
+/// 条目数与大小的来源变成"两套"的平均值，排查时无从归因）。任何 MFT 侧失败——卷设备打不开、
+/// `$MFT` 布局异常、SID 目录句柄取不到记录号——都退化为 fs，功能不会因此不可用。
+///
+/// 不按条目数分档是本轮的决定：MFT 一遍读的成本近乎常量（$MFT 大小 / 顺序读带宽），而 fs 的
+/// 成本是"每条目一次随机小读"。两遍合一后 MFT 侧约 2.3s，小卷（C 盘 2.9 万条目、fs 1.9s）只
+/// 慢 0.4s，用这点时间换掉整套阈值逻辑与两套口径，是划算的。
 #[cfg(windows)]
 fn collect_drive_entries(
+    sid_path: &Path,
+    drive_letter: char,
+    category: &JunkCategory,
+) -> (Vec<FileInfo>, DrivePhaseTiming) {
+    let elevated = mft_core::is_elevated();
+    let ntfs = mft_core::is_ntfs(drive_letter);
+    if elevated && ntfs {
+        match scan_drive_via_mft(drive_letter, sid_path, category) {
+            Ok(result) => return result,
+            Err(error) => warn!(
+                "[回收站扫描] {}: MFT 直读失败，整盘回退 fs 枚举：{}",
+                drive_letter, error
+            ),
+        }
+    } else {
+        debug!(
+            "[回收站扫描] {}: 管理员 {} / NTFS {} → fs 枚举",
+            drive_letter, elevated, ntfs
+        );
+    }
+    collect_drive_entries_via_fs(sid_path, drive_letter, category)
+}
+
+#[cfg(windows)]
+fn collect_drive_entries_via_fs(
     sid_path: &Path,
     drive_letter: char,
     category: &JunkCategory,
@@ -260,202 +293,79 @@ fn file_record_id_via_handle(path: &Path) -> Result<u64, String> {
     Ok(((info.nFileIndexHigh as u64 & 0xFFFF) << 32) | info.nFileIndexLow as u64)
 }
 
-/// One drive's recycle-bin entries via two sequential `$MFT` passes instead of
-/// ~100k random small-file reads.
+/// One drive's recycle-bin entries via a **single** sequential `$MFT` read instead of
+/// ~150k random small-file reads.
 ///
-/// 【实验性，未接入生产路径】真机对照（2026-11-19，4 个盘、D 盘 15.4 万条目）
-/// 已做到 **与 fs 枚举逐条相等**（C 29204/29204、D 154163/154163、E 5/5、F 2/2）。
-/// 曾经约 25% 的 $R 记录缺失，根因不是解析或读取，而是 `parse_record_info` 每条记录只留
-/// 一个名字：rustc incremental 的硬链接被逐个改名进回收站，一条记录背上 2~40 个
-/// `$FILE_NAME`，单名字扫描只登记了第一个（详见 `read_all_records_all_names`）。
-/// 生产路径仍维持 fs 枚举（`collect_drive_entries`）。
+/// 正确性门槛：真机对照（`real_machine_mft_path_matches_fs_path`）要求与 fs 枚举**双向逐条
+/// 相等**。曾经约 25% 的 $R 条目缺失，根因不是解析或读取，而是 `parse_record_info` 每条记录
+/// 只留一个名字：rustc incremental 的硬链接被逐个改名进回收站，一条记录背上 2~40 个
+/// `$FILE_NAME`，单名字扫描只登记了第一个（详见 `collect_file_names`）。
 ///
-/// 本函数与对照测试（`real_machine_mft_path_matches_fs_path`）保留，作为
-/// mft_core 记录解析可靠性议题（联动 S6 引擎合并）的实验场与门槛。
+/// 定位的权威来源是 OS 文件索引（打开目录句柄拿记录号），**不是名字匹配**：实测 C 盘该目录的
+/// `$FILE_NAME` 只解析出 8.3 短名 "S-1-5-~1"，完整 SID 字符串匹配永远落空（上一轮 gate 的失败根因）。
 ///
-/// Pass 1 (`read_all_records_all_names`) builds the $R-pairing table. It must be the
-/// **all-names** entry point, not `read_all_records`: a record hosting a hard-link set is
-/// several directory entries at once, and `parse_record_info` keeps only the first name, so a
-/// single-name pass silently hides every `$R` link but the first one (measured on D:: 40,106 of
-/// 152,551 entries, exactly the multi-name records);
-/// Pass 2 (new `read_all_records_with_resident_data`) re-reads sequentially and
-/// copies the resident `$DATA` of `$I` records under the SID directory —
-/// the SID directory's record number comes from the OS file index
-/// (`sid_dir_record_id_via_handle`), NOT from name matching (the record's
-/// `$FILE_NAME` may only yield the 8.3 alias "S-1-5-~1").
+/// 拿到记录号之后，本次扫描要的东西**全落在"父目录 = 它"的记录上**——$R 的配对表（名字 +
+/// is_dir）与 $I 的 resident 内容。于是两者能在同一次全表读里产出：以前为了一半信息把 1.8GB
+/// 的 $MFT 再读一遍（D 盘实测 2212 + 2051 = 4263ms），合并后只需一遍（约 2.3s）。
 #[cfg(windows)]
-#[allow(dead_code)] // 实验性：未接入生产路径，仅供对照测试使用（原因见函数文档）
 fn scan_drive_via_mft(
     drive_letter: char,
     sid_path: &Path,
-    user_sid: &str,
     category: &JunkCategory,
 ) -> Result<(Vec<FileInfo>, DrivePhaseTiming), String> {
+    let started = Instant::now();
     let reader = mft_core::NtfsFileMetadataReader::open(drive_letter)?;
-
-    // ---- 第一遍：全表读取（$R 配对数据源）+ 定位当前用户 SID 目录 ----
-    // 定位的权威来源是 OS 文件索引（打开目录句柄拿记录号），而不是名字匹配：
-    // 实测 C 盘 SID 目录的记录里 $FILE_NAME 只解析出 8.3 短名 "S-1-5-~1"，
-    // 完整 SID 字符串匹配永远落空（本轮 gate 的失败根因）。
-    let pass1_started = Instant::now();
     let sid_dir_id = sid_dir_record_id_via_handle(sid_path)?;
-    let (records, pass1_stats) = reader.read_all_records_all_names(&|_| true)?;
-    // P2-5（并行解析）的门槛判据是 parse_ms ≥ 0.5 × io_ms，而这两个数只有真机 $MFT 才测得到：
-    // 其他 5 个消费方都把它记进各自的结果结构，回收站这条路径此前丢掉了，这里至少留一份到日志。
-    info!(
-        "[回收站扫描耗时] mft {}: 第一遍流水线 io {}ms / parse {}ms（P2-5 门槛判据）",
-        drive_letter, pass1_stats.io_ms, pass1_stats.parse_ms
-    );
-    let recycle_root_ids: HashSet<u64> = records
-        .iter()
-        .filter(|record| {
-            record.is_dir
-                && record.parent_id == 5 // 驱动器根目录的固定 MFT 参考号
-                && record.name.eq_ignore_ascii_case("$Recycle.Bin")
-        })
-        .map(|record| record.mft_id)
-        .collect();
-    let sid_dir_ids: HashSet<u64> = HashSet::from([sid_dir_id]);
-    let enumerate_ms = pass1_started.elapsed().as_millis();
-    // 名字匹配结果仅作对照日志：与句柄记录号一致说明名字解析正常，不一致即 8.3 短名情形
-    let name_matched_sid_ids: HashSet<u64> = records
-        .iter()
-        .filter(|record| {
-            record.is_dir
-                && recycle_root_ids.contains(&record.parent_id)
-                && record.name.eq_ignore_ascii_case(user_sid)
-        })
-        .map(|record| record.mft_id)
-        .collect();
-    info!(
-        "[回收站扫描耗时] mft {}: 第一遍定位：全表名字条目 {} 条，$Recycle.Bin 根 {} 个，名字匹配 SID 目录 {:?}，句柄权威记录号 {}",
-        drive_letter,
-        records.len(),
-        recycle_root_ids.len(),
-        name_matched_sid_ids,
-        sid_dir_id
-    );
-    // 位置编号 vs 内容引用编号是否自洽：$Recycle.Bin 与 SID 目录自身的 parent 引用
-    // （内容侧真相）连同 run 布局一起输出，用于定位编号错位
-    let recycle_root_details: Vec<String> = records
-        .iter()
-        .filter(|record| recycle_root_ids.contains(&record.mft_id))
-        .map(|record| format!("mft_id {} parent_id {}", record.mft_id, record.parent_id))
-        .collect();
-    let sid_dir_details: Vec<String> = records
-        .iter()
-        .filter(|record| sid_dir_ids.contains(&record.mft_id))
-        .map(|record| format!("mft_id {} parent_id {}", record.mft_id, record.parent_id))
-        .collect();
-    let mft_file_size = fs::metadata(format!(r"\\.\{}:\$MFT", drive_letter))
-        .ok()
-        .map(|meta| meta.len());
-    info!(
-        "[回收站扫描耗时] mft {}: 布局 {}；\\\\.\\{}:\\$MFT 实际大小 {:?}；$Recycle.Bin 根 [{}]；SID 目录 [{}]",
-        drive_letter,
-        reader.layout_summary(),
-        drive_letter,
-        mft_file_size,
-        recycle_root_details.join("; "),
-        sid_dir_details.join("; ")
-    );
-    info!(
-        "[回收站扫描耗时] mft {}: 第一遍定位：全表名字条目 {} 条，$Recycle.Bin 根 {} 个，名字匹配 SID 目录 {:?}，句柄权威记录号 {}",
-        drive_letter,
-        records.len(),
-        recycle_root_ids.len(),
-        name_matched_sid_ids,
-        sid_dir_id
-    );
+    let locate_ms = started.elapsed().as_millis();
 
-    // ---- 第二遍：提取 $I 的 resident 内容 ----
-    let pass2_started = Instant::now();
-    // 诊断计数器：filter 零命中时区分"表里没有 $I 名称记录"和"$I 的 parent 与定位结果不一致"
-    let i_named_seen = AtomicUsize::new(0);
-    let unmatched_parents = Mutex::new(HashSet::new());
-    let filter = |info: &mft_core::MftRecordInfo| {
-        if info
-            .name
-            .get(..2)
-            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("$I"))
-        {
-            i_named_seen.fetch_add(1, Ordering::Relaxed);
-            if !sid_dir_ids.contains(&info.parent_id) {
-                let mut parents = unmatched_parents
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner);
-                if parents.len() < 8 {
-                    parents.insert(info.parent_id);
-                }
-            }
-        }
-        sid_dir_ids.contains(&info.parent_id)
-            && !info.is_dir
-            && info
-                .name
-                .get(..2)
+    let read_started = Instant::now();
+    let read = reader.read_children_with_resident_data(
+        sid_dir_id,
+        // 内容侧谓词：这条记录只要在目标目录下有任一 `$I…` 名字，就取它的 resident `$DATA`
+        &|name: &str| {
+            name.get(..2)
                 .is_some_and(|prefix| prefix.eq_ignore_ascii_case("$I"))
-    };
-    let (metadata_records, stats) =
-        reader.read_all_records_with_resident_data(&filter, &|_| true)?;
-    let parse_ms = pass2_started.elapsed().as_millis();
-    // 第二遍内部的磁盘/解析分相：判断 $MFT 顺序读与解析哪个是剩余瓶颈
-    debug!(
-        "[回收站扫描耗时] mft {}: pass2 $MFT io {}ms / parse {}ms / 命中 {} 条",
-        drive_letter, stats.io_ms, stats.parse_ms, stats.resident_extracted
-    );
+        },
+        &|_| true,
+    )?;
+    let read_ms = read_started.elapsed().as_millis();
     info!(
-        "[回收站扫描耗时] mft {}: $I 名称记录 {} 条，SID 目录 id {:?}，未命中 parent 样本 {:?}",
+        "[回收站扫描耗时] mft {}: 定位 {}ms（SID 目录记录号 {}）；单遍读表 {}ms（io {}ms / parse {}ms）→ 目录项 {} 条，$I 内容命中 {} 条；{}",
         drive_letter,
-        i_named_seen.load(Ordering::Relaxed),
-        sid_dir_ids,
-        unmatched_parents
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-    );
-    // 未命中的 parent 到底是什么记录：如果它也是同名 SID 目录，说明盘上存在两个
-    // 同名目录（比如曾被整体回收再重建），定位策略需要跟着改。
-    let unmatched_detail: Vec<String> = unmatched_parents
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .iter()
-        .map(
-            |parent_id| match records.iter().find(|record| record.mft_id == *parent_id) {
-                Some(record) => format!(
-                    "mft_id {} name={:?} is_dir={} parent_id {}",
-                    record.mft_id, record.name, record.is_dir, record.parent_id
-                ),
-                None => format!("mft_id {parent_id}: <不在已解析记录中（fixup 失败或空闲记录）>"),
-            },
-        )
-        .collect();
-    info!(
-        "[回收站扫描耗时] mft {}: 未命中 parent 详情 [{}]",
-        drive_letter,
-        unmatched_detail.join("; ")
+        locate_ms,
+        sid_dir_id,
+        read_ms,
+        read.stats.io_ms,
+        read.stats.parse_ms,
+        read.entries.len(),
+        read.resident_hits,
+        reader.layout_summary(),
     );
 
-    // ---- $R 配对：与 fs 路径同语义——孤儿 $I 丢弃，$R 目录标记 is_dir ----
-    let mut data_dirs: HashMap<String, bool> = HashMap::new();
-    for record in &records {
-        if !sid_dir_ids.contains(&record.parent_id) || record.name.len() <= 2 {
+    // ---- $R 配对表：与 fs 路径同语义（孤儿 $I 丢弃，$R 目录标记 is_dir）----
+    let mut data_dirs: HashMap<String, bool> = HashMap::with_capacity(read.entries.len() / 2 + 16);
+    for entry in &read.entries {
+        if entry.name.len() <= 2 {
             continue;
         }
-        if let Some(suffix) = record.name.strip_prefix("$R") {
-            data_dirs.insert(suffix.to_ascii_lowercase(), record.is_dir);
+        if let Some(suffix) = entry.name.strip_prefix("$R") {
+            data_dirs.insert(suffix.to_ascii_lowercase(), entry.is_dir);
         }
     }
+    // $I → resident 内容：同一次读产出的另一半，按记录号关联（$I 文件不会被硬链接，名字唯一）
+    let mut resident_by_record: HashMap<u64, &[u8]> =
+        HashMap::with_capacity(read.resident.len() * 2);
+    for (mft_id, data) in &read.resident {
+        resident_by_record.insert(*mft_id, data.as_slice());
+    }
 
-    let mut entries = Vec::new();
+    let pair_started = Instant::now();
+    let mut entries: Vec<FileInfo> = Vec::with_capacity(data_dirs.len());
     let mut non_resident_fallbacks = 0usize;
     let mut orphan_drops = 0usize;
     let mut parse_drops = 0usize;
-    // [P6] 孤儿 $I 清单：延迟到配对循环之后做全量普查（P5 的"前 5 条"样本有采样偏差，
-    // 前 5 条恰好全是"$R 早已不在磁盘"的陈旧 $I，真正缺失的那 3.7 万条从未被样本覆盖）。
-    #[cfg(test)]
-    let mut orphan_suffixes: Vec<String> = Vec::new();
-    for metadata in &metadata_records {
-        let Some(suffix) = metadata.info.name.strip_prefix("$I") else {
+    for entry in &read.entries {
+        let Some(suffix) = entry.name.strip_prefix("$I") else {
             continue;
         };
         if suffix.is_empty() {
@@ -466,14 +376,16 @@ fn scan_drive_via_mft(
             Some(is_dir) => is_dir,
             None => {
                 orphan_drops += 1;
-                #[cfg(test)]
-                orphan_suffixes.push(suffix.to_string());
                 continue;
             }
         };
 
-        let metadata_path = sid_path.join(&metadata.info.name);
-        let (logical_size, original_path, deleted_at) = if metadata.data.is_empty() {
+        let metadata_path = sid_path.join(&entry.name);
+        let resident = resident_by_record
+            .get(&entry.mft_id)
+            .copied()
+            .unwrap_or(&[]);
+        let (logical_size, original_path, deleted_at) = if resident.is_empty() {
             // 非 resident / 内容缺失：退化为单独读（预期数量≈0，日志可实测）
             non_resident_fallbacks += 1;
             match parse_metadata(&metadata_path) {
@@ -484,7 +396,7 @@ fn scan_drive_via_mft(
                 }
             }
         } else {
-            match parse_metadata_bytes(&metadata.data) {
+            match parse_metadata_bytes(resident) {
                 Some(parsed) => parsed,
                 None => {
                     parse_drops += 1;
@@ -502,7 +414,7 @@ fn scan_drive_via_mft(
         entries.push(
             FileInfo::new(
                 sid_path
-                    .join(format!("$R{}", suffix))
+                    .join(format!("$R{suffix}"))
                     .to_string_lossy()
                     .into_owned(),
                 visible_name,
@@ -514,345 +426,30 @@ fn scan_drive_via_mft(
             .with_original_path(original_path),
         );
     }
+    let pair_ms = pair_started.elapsed().as_millis();
 
-    // [P6] 丢弃分相汇总 + 孤儿全量普查/记录级取证（一次运行判别全部剩余假设）
     info!(
-        "[P6] mft {}: 丢弃分相 orphan {} / parse {} / 非 resident 兜底 {}",
-        drive_letter, orphan_drops, parse_drops, non_resident_fallbacks
+        "[回收站扫描耗时] mft {}: 配对 {}ms → 条目 {}（孤儿 $I 丢弃 {} / 解析失败 {} / 非 resident 兜底 {}）",
+        drive_letter,
+        pair_ms,
+        entries.len(),
+        orphan_drops,
+        parse_drops,
+        non_resident_fallbacks
     );
-    #[cfg(test)]
-    probe_orphan_forensics(&reader, &records, sid_path, &sid_dir_ids, &orphan_suffixes);
 
     let timing = DrivePhaseTiming {
         backend: "mft",
         drive_letter,
-        enumerate_ms,
-        parse_ms,
-        directory_entries: stats.records_seen,
-        metadata_files: stats.resident_extracted,
+        // 枚举相 = 定位 + 单遍读表；解析相 = 纯内存配对（不再读盘）
+        enumerate_ms: locate_ms + read_ms,
+        parse_ms: pair_ms,
+        directory_entries: read.entries.len(),
+        metadata_files: read.resident_hits,
         found_entries: entries.len(),
         non_resident_fallbacks,
     };
     Ok((entries, timing))
-}
-
-/// [P6] 孤儿 $I 的全量普查 + 记录级取证（log-only，零行为变化）。
-///
-/// P5 的"前 5 条 orphan 样本"存在采样偏差：前 5 条恰好全是"$R 早已不在磁盘"的陈旧
-/// $I，真正缺失的 3.7 万条从未被覆盖，于是 orphan/parse 两相始终没被区分。本函数改为：
-///
-/// 1. **全量普查**（无抽样）：每条孤儿 $I 的对应 $R 在磁盘上是否存在、在 pass1 解析结果
-///    里是否有一条同名记录（若在，说明问题在配对侧而不是解析侧）；
-/// 2. **记录级取证**：对"磁盘有 $R、pass1 无记录"的那批，用 OS 文件句柄拿到权威记录号
-///    （文件索引 = MFT 引用），再按记录号**单记录读取**并把属性链 dump 出来——这条路径
-///    与 16MB 块流水线完全独立，因此能同时判别"记录本身有问题"和"块读取/记录号映射有问题"；
-/// 3. **编号连续性**：打印缺失集合的记录号分布，以及样本记录号在 pass1 中的左右邻居，
-///    用于排除"记录号错位"这一类假设。
-#[cfg(all(windows, test))]
-fn probe_orphan_forensics(
-    reader: &mft_core::NtfsFileMetadataReader,
-    records: &[mft_core::MftRecordInfo],
-    sid_path: &Path,
-    sid_dir_ids: &HashSet<u64>,
-    orphans: &[String],
-) {
-    if orphans.is_empty() {
-        return;
-    }
-    let drive = sid_path.display();
-
-    // ---- 1) 全表 $R 名索引（pass1 已解析出的记录）----
-    let mut by_name: HashMap<String, (u64, u64)> = HashMap::with_capacity(records.len() / 4);
-    for record in records {
-        if record
-            .name
-            .get(..2)
-            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("$R"))
-        {
-            by_name.insert(
-                record.name.to_ascii_lowercase(),
-                (record.mft_id, record.parent_id),
-            );
-        }
-    }
-
-    // ---- 2) 全量普查 ----
-    let mut disk_present = 0usize;
-    let mut disk_absent = 0usize;
-    let mut in_pass1_sid = 0usize;
-    let mut in_pass1_other_parent = 0usize;
-    let mut absent_in_pass1 = 0usize;
-    let mut rid_fail = 0usize;
-    let mut present_samples: Vec<String> = Vec::new();
-    let mut absent_samples: Vec<String> = Vec::new();
-    let mut absent_short_name = 0usize;
-    let mut missing: Vec<(String, u64)> = Vec::new();
-    for suffix in orphans {
-        let r_name = format!("$R{suffix}");
-        let path = sid_path.join(&r_name);
-        if !path.exists() {
-            disk_absent += 1;
-            // $I 名字本身可能是 8.3 短名（含 '~'），那样构造出的 $R 名必然不存在——
-            // 这一条把"陈旧 $I"和"名字解析成短名导致的假孤儿"分开
-            if suffix.contains('~') {
-                absent_short_name += 1;
-            }
-            if absent_samples.len() < 5 {
-                absent_samples.push(format!("$I{suffix}"));
-            }
-            continue;
-        }
-        disk_present += 1;
-        if let Some((rid, parent)) = by_name.get(&r_name.to_ascii_lowercase()) {
-            if sid_dir_ids.contains(parent) {
-                in_pass1_sid += 1;
-            } else {
-                in_pass1_other_parent += 1;
-            }
-            if present_samples.len() < 5 {
-                present_samples.push(format!(
-                    "{r_name} rid {rid} parent {parent} parent_ok={}",
-                    sid_dir_ids.contains(parent)
-                ));
-            }
-            continue;
-        }
-        absent_in_pass1 += 1;
-        match file_record_id_via_handle(&path) {
-            Ok(rid) => missing.push((suffix.clone(), rid)),
-            Err(_) => rid_fail += 1,
-        }
-    }
-    info!(
-        "[P6] {drive}: 孤儿 {} 条全量普查 → 磁盘 $R 存在 {} / 不存在 {}（其中 $I 名含 '~' 的短名 {} 条，样本 {:?}）；pass1 有同名 $R 记录 {}（parent∈SID {} / parent 在别处 {}）；pass1 完全没有 {}；句柄取记录号失败 {}",
-        orphans.len(),
-        disk_present,
-        disk_absent,
-        absent_short_name,
-        absent_samples,
-        in_pass1_sid + in_pass1_other_parent,
-        in_pass1_sid,
-        in_pass1_other_parent,
-        absent_in_pass1,
-        rid_fail,
-    );
-    if !present_samples.is_empty() {
-        info!("[P6] {drive}: pass1 有同名记录的样本 {present_samples:?}");
-    }
-    if missing.is_empty() {
-        return;
-    }
-
-    // ---- 3) 记录号分布：缺失集合是否落在某个连续区间 ----
-    let mut rids: Vec<u64> = missing.iter().map(|(_, rid)| *rid).collect();
-    rids.sort_unstable();
-    let quartile = |fraction: f64| rids[((rids.len() as f64 - 1.0) * fraction) as usize];
-    let max_coverable = {
-        // run 链覆盖的记录号上界（与 plan_read_chunks 同口径的估算）：二分找出最后一个有偏移的记录号
-        let mut low = 0u64;
-        let mut high = 4_000_000u64;
-        while low < high {
-            let middle = (low + high + 1) / 2;
-            if reader.probe_record_offset(middle).is_some() {
-                low = middle;
-            } else {
-                high = middle - 1;
-            }
-        }
-        low + 1
-    };
-    info!(
-        "[P6] {drive}: 缺失集合记录号分布 n={} min={} p25={} p50={} p75={} max={}（run 链可覆盖上限 ≈{max_coverable}）直方图 {hist:?}",
-        rids.len(),
-        rids[0],
-        quartile(0.25),
-        quartile(0.5),
-        quartile(0.75),
-        rids[rids.len() - 1],
-        hist = {
-            let mut buckets = [0usize; 10];
-            for rid in &rids {
-                let index = ((*rid as f64 / max_coverable as f64) * 10.0) as usize;
-                buckets[index.min(9)] += 1;
-            }
-            buckets
-        }
-    );
-
-    // ---- 4) 逐条分类：按权威记录号单记录读取，判定丢在哪一级 ----
-    // 全名字枚举下多条条目共享同一个 mft_id，因此只保证非递减（同一记录的名字相邻）
-    let sorted_records = records.windows(2).all(|pair| pair[0].mft_id <= pair[1].mft_id);
-    info!("[P6] {drive}: pass1 记录按 mft_id 是否单调递增 = {sorted_records}");
-    let mut magic_bad = 0usize;
-    let mut fixup_bad = 0usize;
-    let mut walk_bad = 0usize;
-    let mut parse_none = 0usize;
-    let mut parse_none_no_name = 0usize;
-    let mut parse_none_with_name = 0usize;
-    let mut parse_none_name_samples: Vec<String> = Vec::new();
-    let mut parsed_but_absent = 0usize;
-    let mut name_mismatch = 0usize;
-    let mut parent_mismatch = 0usize;
-    let mut with_attr_list = 0usize;
-    let mut read_failed = 0usize;
-    let mut samples: Vec<String> = Vec::new();
-    let mut parsed_absent_samples: Vec<String> = Vec::new();
-    let mut walk_samples: Vec<String> = Vec::new();
-    let mut name_samples: Vec<String> = Vec::new();
-    for (suffix, rid) in &missing {
-        let r_name = format!("$R{suffix}");
-        let view = match reader.probe_record(*rid) {
-            Ok(view) => view,
-            Err(error) => {
-                read_failed += 1;
-                if samples.len() < 4 {
-                    samples.push(format!("{r_name} rid={rid} 读取失败: {error}"));
-                }
-                continue;
-            }
-        };
-        if !view.magic_ok {
-            magic_bad += 1;
-            if samples.len() < 8 {
-                samples.push(format!("{r_name} {}", view.describe()));
-            }
-            continue;
-        }
-        if !view.fixup_ok {
-            fixup_bad += 1;
-            if samples.len() < 8 {
-                samples.push(format!("{r_name} {}", view.describe()));
-            }
-            continue;
-        }
-        if !view.attribute_list.is_empty() {
-            with_attr_list += 1;
-        }
-        if view.walk_error.is_some() {
-            walk_bad += 1;
-            if walk_samples.len() < 4 {
-                walk_samples.push(format!("{r_name} {}", view.describe()));
-            }
-            continue;
-        }
-        if !view.parse_ok {
-            parse_none += 1;
-            if view.file_names.is_empty() {
-                parse_none_no_name += 1;
-            } else {
-                // 有 $FILE_NAME 却仍被 parse_record_info 拒绝：只剩"reparse 位"等旁路条件
-                parse_none_with_name += 1;
-                if parse_none_name_samples.len() < 3 {
-                    parse_none_name_samples.push(format!("{r_name} {}", view.describe()));
-                }
-            }
-            if samples.len() < 8 {
-                samples.push(format!("{r_name} {}", view.describe()));
-            }
-            continue;
-        }
-        let name_ok = view
-            .file_names
-            .iter()
-            .any(|(_, _, name)| name.eq_ignore_ascii_case(&r_name));
-        let parent_ok = view
-            .file_names
-            .iter()
-            .any(|(parent, _, _)| sid_dir_ids.contains(parent));
-        if !name_ok {
-            name_mismatch += 1;
-            if name_samples.len() < 4 {
-                name_samples.push(format!("{r_name} {}", view.describe()));
-            }
-            continue;
-        }
-        if !parent_ok {
-            parent_mismatch += 1;
-        } else {
-            parsed_but_absent += 1;
-            if parsed_absent_samples.len() < 4 {
-                parsed_absent_samples.push(format!("{r_name} {}", view.describe()));
-            }
-        }
-    }
-    info!(
-        "[P6] {drive}: 逐条分类 n={} magic 非 FILE {} / fixup 失败 {} / 属性链越界 {} / parse_record_info=None {}（其中无 $FILE_NAME {} / 有名字仍被拒 {}）/ 名字不符 {} / parent 不符 {} / **正常解析但 pass1 没有** {} / 读取失败 {}（含 $ATTRIBUTE_LIST 的 {} 条）",
-        missing.len(),
-        magic_bad,
-        fixup_bad,
-        walk_bad,
-        parse_none,
-        parse_none_no_name,
-        parse_none_with_name,
-        name_mismatch,
-        parent_mismatch,
-        parsed_but_absent,
-        read_failed,
-        with_attr_list,
-    );
-    for (label, items) in [
-        ("解析正常但 pass1 没有", &parsed_absent_samples),
-        ("有名字仍被拒", &parse_none_name_samples),
-        ("属性链越界", &walk_samples),
-        ("名字不符", &name_samples),
-        ("其他", &samples),
-    ] {
-        for item in items {
-            info!("[P6] {drive}: {label} 样本 {item}");
-        }
-    }
-
-    // ---- 5) 深挖：等距取 24 条，dump 全貌 + 属性列表追踪 + pass1 邻居 ----
-    let stride = (missing.len() / 24).max(1);
-    let mut dumped = 0usize;
-    for index in (0..missing.len()).step_by(stride) {
-        if dumped >= 24 {
-            break;
-        }
-        dumped += 1;
-        let (suffix, rid) = &missing[index];
-        let r_name = format!("$R{suffix}");
-        let view = match reader.probe_record(*rid) {
-            Ok(view) => view,
-            Err(error) => {
-                info!("[P6] {drive}: 深挖 {r_name} rid={rid} 读取失败 {error}");
-                continue;
-            }
-        };
-        // pass1 里这个记录号是什么（若存在），以及左右邻居的名字——排除记录号错位
-        let mut neighbors: Vec<String> = Vec::new();
-        for delta in -2i64..=2 {
-            let probe_id = (*rid as i64 + delta).max(0) as u64;
-            match records.binary_search_by_key(&probe_id, |record| record.mft_id) {
-                Ok(found) => neighbors.push(format!(
-                    "{}:{:?}→{}",
-                    probe_id, records[found].name, records[found].parent_id
-                )),
-                Err(_) => neighbors.push(format!("{probe_id}:<无>")),
-            }
-        }
-        info!("[P6] {drive}: 深挖 {r_name} {}", view.describe());
-        info!(
-            "[P6] {drive}: 深挖 {r_name} rid={rid} pass1邻居 {:?} 记录号字节偏移 {:?}",
-            neighbors,
-            reader.probe_record_offset(*rid)
-        );
-        // $ATTRIBUTE_LIST 追踪：若名字确实在扩展记录里，这里能直接证死
-        for (attribute_type, extension_rid) in view.attribute_list.iter().take(6) {
-            if *extension_rid == *rid {
-                continue;
-            }
-            match reader.probe_record(*extension_rid) {
-                Ok(extension) => info!(
-                    "[P6] {drive}: 深挖 {r_name} 扩展记录(0x{attribute_type:X}) {}",
-                    extension.describe()
-                ),
-                Err(error) => info!(
-                    "[P6] {drive}: 深挖 {r_name} 扩展记录 {extension_rid} 读取失败 {error}"
-                ),
-            }
-        }
-    }
 }
 
 /// One info line per drive plus a wall-clock total. `backend` 告诉读者该盘走的是哪条路径，
@@ -942,7 +539,7 @@ fn parse_metadata_bytes(bytes: &[u8]) -> Option<(u64, String, i64)> {
 #[cfg(all(test, windows))]
 mod tests {
     use super::parse_metadata_bytes;
-    use super::{collect_drive_entries, current_user_sid, scan_drive_via_mft};
+    use super::{collect_drive_entries_via_fs, current_user_sid, scan_drive_via_mft};
     use crate::scanner::{CategoryScanResult, FileInfo, JunkCategory};
     use std::path::PathBuf;
 
@@ -1027,29 +624,32 @@ mod tests {
                     continue;
                 }
 
+                // 对照的 fs 侧必须**显式**走 fs 引擎：若这里调生产入口 `collect_drive_entries`，
+                // 管理员态下它会自动选 MFT，对照就退化成"MFT vs MFT"，永远相等、永远通过。
                 let (fs_entries, fs_timing) =
-                    collect_drive_entries(&sid_path, drive_letter, &JunkCategory::RecycleBin);
+                    collect_drive_entries_via_fs(&sid_path, drive_letter, &JunkCategory::RecycleBin);
                 let (mft_entries, mft_timing) = match scan_drive_via_mft(
                     drive_letter,
                     &sid_path,
-                    &user_sid,
                     &JunkCategory::RecycleBin,
                 ) {
                     Ok(result) => result,
                     Err(error) => panic!("{drive_letter}: 盘 MFT 直读不可用: {error}"),
                 };
-                let (fs_entries_after, _) =
-                    collect_drive_entries(&sid_path, drive_letter, &JunkCategory::RecycleBin);
+                let (fs_entries_after, _) = collect_drive_entries_via_fs(
+                    &sid_path,
+                    drive_letter,
+                    &JunkCategory::RecycleBin,
+                );
                 println!(
-                "{drive_letter}: 盘 mft 计时：第一遍 {}ms / 第二遍 {}ms / 全表记录 {} 条 / resident 提取 {} 条 / 非 resident 兜底 {} 次",
+                "{drive_letter}: 盘 mft 计时：定位+读表 {}ms / 内存配对 {}ms / 目录项 {} 条 / $I 内容 {} 条 / 非 resident 兜底 {} 次",
                 mft_timing.enumerate_ms,
                 mft_timing.parse_ms,
                 mft_timing.directory_entries,
                 mft_timing.metadata_files,
                 mft_timing.non_resident_fallbacks,
             );
-                // 切生产的收益上限就在这一行：fs 枚举（read_dir + 并行 $I 读）的耗时从来没被记过，
-                // 没有它就说不清 MFT 两遍读到底省了多少
+                // 切生产的收益分母就在这一行：fs 枚举（read_dir + 并行 $I 读）的耗时
                 println!(
                     "{drive_letter}: 盘 fs 计时：{} {}ms（read_dir {} + 并行 $I 读解析 {}）",
                     fs_timing.backend,
