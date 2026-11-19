@@ -517,9 +517,21 @@ fn common_parent_path(models: &[ModelItem]) -> Option<PathBuf> {
 }
 
 fn local_drive_letters() -> Vec<char> {
-    ('A'..='Z')
-        .filter(|drive_letter| PathBuf::from(format!("{}:\\", drive_letter)).is_dir())
-        .collect()
+    // L6: delegate to sys_drive's single GetLogicalDrives lookup instead of
+    // blind-probing all 26 letters; the is_dir belt-and-braces re-check stays
+    // inside sys_drive. The last two ('A'..='Z') probes converged in M13 live
+    // here and in scanner/categories.rs.
+    #[cfg(windows)]
+    {
+        crate::sys_drive::existing_drive_letters()
+    }
+
+    #[cfg(not(windows))]
+    {
+        ('A'..='Z')
+            .filter(|drive_letter| PathBuf::from(format!("{}:\\", drive_letter)).is_dir())
+            .collect()
+    }
 }
 
 #[cfg(test)]

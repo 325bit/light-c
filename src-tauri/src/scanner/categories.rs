@@ -394,12 +394,24 @@ impl JunkCategory {
 
 /// Gets the drive letters present on the current system
 fn get_all_drive_letters() -> Vec<char> {
-    ('A'..='Z')
-        .filter(|letter| {
-            let path = std::path::PathBuf::from(format!("{}:\\", letter));
-            path.exists() && path.is_dir()
-        })
-        .collect()
+    // L6: delegate to sys_drive's single GetLogicalDrives lookup instead of
+    // blind-probing all 26 letters; the exists/is_dir belt-and-braces re-check
+    // stays inside sys_drive. The last two ('A'..='Z') probes converged in M13
+    // live here and in ai_models/mft_discovery.rs.
+    #[cfg(windows)]
+    {
+        crate::sys_drive::existing_drive_letters()
+    }
+
+    #[cfg(not(windows))]
+    {
+        ('A'..='Z')
+            .filter(|letter| {
+                let path = std::path::PathBuf::from(format!("{}:\\", letter));
+                path.exists() && path.is_dir()
+            })
+            .collect()
+    }
 }
 
 /// Scan path config
