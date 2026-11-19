@@ -54,11 +54,6 @@ use crate::scanner::leftover_whitelist::{self, LeftoverWhitelistEntry};
 pub enum SafetyCheckResult {
     /// Passed all checks, safe to delete
     Safe,
-    /// A match was found in the registry (legacy variant; the check is no longer run)
-    FoundInRegistry {
-        matched_field: String,
-        matched_value: String,
-    },
     /// Executable files were found (executable check failed)
     ContainsExecutables { files: Vec<String> },
     /// The path is inside a system-protected directory, or a whitelist refused it
@@ -77,8 +72,7 @@ impl SafetyCheckResult {
     pub fn error_code(&self) -> Option<ErrorCode> {
         match self {
             SafetyCheckResult::Safe => None,
-            SafetyCheckResult::FoundInRegistry { .. }
-            | SafetyCheckResult::ContainsExecutables { .. }
+            SafetyCheckResult::ContainsExecutables { .. }
             | SafetyCheckResult::InProtectedPath { .. } => Some(ErrorCode::Protected),
         }
     }
@@ -86,12 +80,6 @@ impl SafetyCheckResult {
     pub fn display_message(&self) -> String {
         match self {
             SafetyCheckResult::Safe => "安全".to_string(),
-            SafetyCheckResult::FoundInRegistry {
-                matched_field,
-                matched_value,
-            } => {
-                format!("注册表中存在匹配: {} = {}", matched_field, matched_value)
-            }
             SafetyCheckResult::ContainsExecutables { files } => {
                 let count = files.len();
                 let preview: Vec<_> = files.iter().take(3).cloned().collect();
@@ -296,10 +284,9 @@ fn executable_verdict(allow_executables: bool, executables: &[String]) -> Safety
 /// This engine performs deep cleanup of uninstall leftovers. Unlike normal deletion, it physically deletes files directly from disk,
 /// without going through the recycle bin, so data cannot be recovered.
 ///
-/// To ensure safety, a "triple safety check protocol" is run before every deletion:
-/// 1. Registry check: confirm the target is not part of an installed program
+/// To ensure safety, the checks run before every deletion are:
+/// 1. Protection rules: the shared `path_guard` table plus the user whitelist
 /// 2. Executable check: confirm the target does not contain a program in use
-/// 3. Whitelist check: confirm the target is not inside a critical system path
 pub struct PermanentDeleteEngine {
     /// Whether delete-on-reboot fallback is enabled
     enable_reboot_fallback: bool,
@@ -322,10 +309,10 @@ impl PermanentDeleteEngine {
     // Safety check protocol (whitelist + executable check)
     // ========================================================================
 
-    /// Perform the full triple safety check
+    /// Perform the full safety check
     ///
     /// Explanation
-    /// This function runs the three safety checks in sequence; any failure blocks the deletion.
+    /// This function runs the checks in sequence; any failure blocks the deletion.
     /// This is the core mechanism protecting user data safety.
     pub fn perform_safety_checks(&self, path: &Path) -> SafetyCheckResult {
         self.perform_safety_checks_with(path, false)
