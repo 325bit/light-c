@@ -44,3 +44,6 @@ release.ps1
 
 # Local packaging script transcript log
 pack-local-run.log
+pack-local-build.log
+pack-local.cmd
+pack-local.ps1
