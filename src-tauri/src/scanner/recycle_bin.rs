@@ -218,6 +218,12 @@ fn collect_drive_entries(
 /// 无需管理员权限——当前用户对自己 SID 目录有完全控制权（H1 时已实测）。
 #[cfg(windows)]
 fn sid_dir_record_id_via_handle(sid_path: &Path) -> Result<u64, String> {
+    file_record_id_via_handle(sid_path)
+}
+
+/// 任意路径（文件或目录）→ 权威 MFT 记录号（OS 文件索引低 48 位）。
+#[cfg(windows)]
+fn file_record_id_via_handle(path: &Path) -> Result<u64, String> {
     use std::os::windows::ffi::OsStrExt;
     use windows::core::PCWSTR;
     use windows::Win32::Storage::FileSystem::{
@@ -226,7 +232,7 @@ fn sid_dir_record_id_via_handle(sid_path: &Path) -> Result<u64, String> {
         FILE_SHARE_WRITE, OPEN_EXISTING,
     };
 
-    let mut units: Vec<u16> = sid_path.as_os_str().encode_wide().collect();
+    let mut units: Vec<u16> = path.as_os_str().encode_wide().collect();
     units.push(0);
 
     // SAFETY: path is a NUL-terminated wide string valid for the whole call; the
@@ -242,12 +248,12 @@ fn sid_dir_record_id_via_handle(sid_path: &Path) -> Result<u64, String> {
             None,
         )
     }
-    .map_err(|error| format!("打开 SID 目录句柄失败: {}", error))?;
+    .map_err(|error| format!("打开句柄失败: {}", error))?;
 
     let mut info = BY_HANDLE_FILE_INFORMATION::default();
     // SAFETY: info is the out-param and lives for the whole call
     unsafe { GetFileInformationByHandle(handle, &mut info) }
-        .map_err(|error| format!("读取 SID 目录文件索引失败: {}", error))?;
+        .map_err(|error| format!("读取文件索引失败: {}", error))?;
 
     // 64 位文件索引 = MFT 引用：低 48 位记录号 + 高 16 位序号，掩码口径与
     // $FILE_NAME 引用一致
@@ -431,14 +437,12 @@ fn scan_drive_via_mft(
 
     let mut entries = Vec::new();
     let mut non_resident_fallbacks = 0usize;
-    // [P5] 丢弃分相诊断（log-only，零行为变化）：D 盘 37,991 个 $I 记录在配对/解析两相
-    // 之一被丢弃，现有日志无法区分。本矩阵一轮区分全部假设。
     let mut orphan_drops = 0usize;
     let mut parse_drops = 0usize;
-    let mut orphan_samples: Vec<String> = Vec::new();
-    let mut parse_samples: Vec<String> = Vec::new();
-    let mut matched_verified = 0usize;
-    let mut verify_diffs: Vec<String> = Vec::new();
+    // [P6] 孤儿 $I 清单：延迟到配对循环之后做全量普查（P5 的"前 5 条"样本有采样偏差，
+    // 前 5 条恰好全是"$R 早已不在磁盘"的陈旧 $I，真正缺失的那 3.7 万条从未被样本覆盖）。
+    #[cfg(test)]
+    let mut orphan_suffixes: Vec<String> = Vec::new();
     for metadata in &metadata_records {
         let Some(suffix) = metadata.info.name.strip_prefix("$I") else {
             continue;
@@ -451,25 +455,8 @@ fn scan_drive_via_mft(
             Some(is_dir) => is_dir,
             None => {
                 orphan_drops += 1;
-                if orphan_samples.len() < 5 {
-                    // 判别 H1a/H1c（$R 记录存在但名字/parent 不对）vs H1b（$R 记录没被解析）
-                    let r_name = format!("$R{suffix}");
-                    let disk_has_r = fs::metadata(sid_path.join(&r_name)).is_ok();
-                    let in_pass1 = match records
-                        .iter()
-                        .find(|record| record.name.eq_ignore_ascii_case(&r_name))
-                    {
-                        Some(record) => format!(
-                            "pass1 有此记录：mft_id {} name={:?} parent {} is_dir {}",
-                            record.mft_id, record.name, record.parent_id, record.is_dir
-                        ),
-                        None => "pass1 无此记录".to_string(),
-                    };
-                    orphan_samples.push(format!(
-                        "{}：磁盘 $R 存在={}，{}",
-                        metadata.info.name, disk_has_r, in_pass1
-                    ));
-                }
+                #[cfg(test)]
+                orphan_suffixes.push(suffix.to_string());
                 continue;
             }
         };
@@ -490,46 +477,10 @@ fn scan_drive_via_mft(
                 Some(parsed) => parsed,
                 None => {
                     parse_drops += 1;
-                    if parse_samples.len() < 5 {
-                        // 判别 H2（提取字节错误）vs H-data（磁盘上的 $I 本来就坏）
-                        let disk_bytes = fs::read(&metadata_path);
-                        let version = metadata
-                            .data
-                            .get(0..8)
-                            .map(|bytes| u64::from_le_bytes(bytes.try_into().unwrap()));
-                        parse_samples.push(format!(
-                            "{}: 提取 {}B version {:?} path_len {:?}；磁盘 {:?}",
-                            metadata.info.name,
-                            metadata.data.len(),
-                            version,
-                            metadata
-                                .data
-                                .get(24..28)
-                                .map(|bytes| u32::from_le_bytes(bytes.try_into().unwrap())),
-                            disk_bytes.as_ref().map(|bytes| bytes.len()),
-                        ));
-                    }
                     continue;
                 }
             }
         };
-
-        // [P5] 命中条目抽样：提取字节与磁盘 $I 字节逐字节对比，验证提取正确性
-        if matched_verified < 5 {
-            matched_verified += 1;
-            match fs::read(&metadata_path) {
-                Ok(disk_bytes) if disk_bytes == metadata.data => {}
-                Ok(disk_bytes) => verify_diffs.push(format!(
-                    "{}: 提取 {}B vs 磁盘 {}B（内容不一致）",
-                    metadata.info.name,
-                    metadata.data.len(),
-                    disk_bytes.len()
-                )),
-                Err(error) => {
-                    verify_diffs.push(format!("{}: 磁盘读取失败 {error}", metadata.info.name))
-                }
-            }
-        }
 
         let visible_name = Path::new(&original_path)
             .file_name()
@@ -553,30 +504,13 @@ fn scan_drive_via_mft(
         );
     }
 
-    // [P5] 丢弃分相汇总：一次运行同时判别 orphan/parse 两相占比与根因
+    // [P6] 丢弃分相汇总 + 孤儿全量普查/记录级取证（一次运行判别全部剩余假设）
     info!(
-        "[P5] mft {}: 丢弃分相 orphan {} / parse {} / 非 resident 兜底 {}；提取一致性差异 {} 条",
-        drive_letter,
-        orphan_drops,
-        parse_drops,
-        non_resident_fallbacks,
-        verify_diffs.len()
+        "[P6] mft {}: 丢弃分相 orphan {} / parse {} / 非 resident 兜底 {}",
+        drive_letter, orphan_drops, parse_drops, non_resident_fallbacks
     );
-    if !orphan_samples.is_empty() {
-        info!(
-            "[P5] mft {}: orphan 样本 {:?}",
-            drive_letter, orphan_samples
-        );
-    }
-    if !parse_samples.is_empty() {
-        info!(
-            "[P5] mft {}: parse 失败样本 {:?}",
-            drive_letter, parse_samples
-        );
-    }
-    if !verify_diffs.is_empty() {
-        info!("[P5] mft {}: 提取一致性 {:?}", drive_letter, verify_diffs);
-    }
+    #[cfg(test)]
+    probe_orphan_forensics(&reader, &records, sid_path, &sid_dir_ids, &orphan_suffixes);
 
     let timing = DrivePhaseTiming {
         backend: "mft",
@@ -589,6 +523,309 @@ fn scan_drive_via_mft(
         non_resident_fallbacks,
     };
     Ok((entries, timing))
+}
+
+/// [P6] 孤儿 $I 的全量普查 + 记录级取证（log-only，零行为变化）。
+///
+/// P5 的"前 5 条 orphan 样本"存在采样偏差：前 5 条恰好全是"$R 早已不在磁盘"的陈旧
+/// $I，真正缺失的 3.7 万条从未被覆盖，于是 orphan/parse 两相始终没被区分。本函数改为：
+///
+/// 1. **全量普查**（无抽样）：每条孤儿 $I 的对应 $R 在磁盘上是否存在、在 pass1 解析结果
+///    里是否有一条同名记录（若在，说明问题在配对侧而不是解析侧）；
+/// 2. **记录级取证**：对"磁盘有 $R、pass1 无记录"的那批，用 OS 文件句柄拿到权威记录号
+///    （文件索引 = MFT 引用），再按记录号**单记录读取**并把属性链 dump 出来——这条路径
+///    与 16MB 块流水线完全独立，因此能同时判别"记录本身有问题"和"块读取/记录号映射有问题"；
+/// 3. **编号连续性**：打印缺失集合的记录号分布，以及样本记录号在 pass1 中的左右邻居，
+///    用于排除"记录号错位"这一类假设。
+#[cfg(all(windows, test))]
+fn probe_orphan_forensics(
+    reader: &mft_core::NtfsFileMetadataReader,
+    records: &[mft_core::MftRecordInfo],
+    sid_path: &Path,
+    sid_dir_ids: &HashSet<u64>,
+    orphans: &[String],
+) {
+    if orphans.is_empty() {
+        return;
+    }
+    let drive = sid_path.display();
+
+    // ---- 1) 全表 $R 名索引（pass1 已解析出的记录）----
+    let mut by_name: HashMap<String, (u64, u64)> = HashMap::with_capacity(records.len() / 4);
+    for record in records {
+        if record
+            .name
+            .get(..2)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("$R"))
+        {
+            by_name.insert(
+                record.name.to_ascii_lowercase(),
+                (record.mft_id, record.parent_id),
+            );
+        }
+    }
+
+    // ---- 2) 全量普查 ----
+    let mut disk_present = 0usize;
+    let mut disk_absent = 0usize;
+    let mut in_pass1_sid = 0usize;
+    let mut in_pass1_other_parent = 0usize;
+    let mut absent_in_pass1 = 0usize;
+    let mut rid_fail = 0usize;
+    let mut present_samples: Vec<String> = Vec::new();
+    let mut absent_samples: Vec<String> = Vec::new();
+    let mut absent_short_name = 0usize;
+    let mut missing: Vec<(String, u64)> = Vec::new();
+    for suffix in orphans {
+        let r_name = format!("$R{suffix}");
+        let path = sid_path.join(&r_name);
+        if !path.exists() {
+            disk_absent += 1;
+            // $I 名字本身可能是 8.3 短名（含 '~'），那样构造出的 $R 名必然不存在——
+            // 这一条把"陈旧 $I"和"名字解析成短名导致的假孤儿"分开
+            if suffix.contains('~') {
+                absent_short_name += 1;
+            }
+            if absent_samples.len() < 5 {
+                absent_samples.push(format!("$I{suffix}"));
+            }
+            continue;
+        }
+        disk_present += 1;
+        if let Some((rid, parent)) = by_name.get(&r_name.to_ascii_lowercase()) {
+            if sid_dir_ids.contains(parent) {
+                in_pass1_sid += 1;
+            } else {
+                in_pass1_other_parent += 1;
+            }
+            if present_samples.len() < 5 {
+                present_samples.push(format!(
+                    "{r_name} rid {rid} parent {parent} parent_ok={}",
+                    sid_dir_ids.contains(parent)
+                ));
+            }
+            continue;
+        }
+        absent_in_pass1 += 1;
+        match file_record_id_via_handle(&path) {
+            Ok(rid) => missing.push((suffix.clone(), rid)),
+            Err(_) => rid_fail += 1,
+        }
+    }
+    info!(
+        "[P6] {drive}: 孤儿 {} 条全量普查 → 磁盘 $R 存在 {} / 不存在 {}（其中 $I 名含 '~' 的短名 {} 条，样本 {:?}）；pass1 有同名 $R 记录 {}（parent∈SID {} / parent 在别处 {}）；pass1 完全没有 {}；句柄取记录号失败 {}",
+        orphans.len(),
+        disk_present,
+        disk_absent,
+        absent_short_name,
+        absent_samples,
+        in_pass1_sid + in_pass1_other_parent,
+        in_pass1_sid,
+        in_pass1_other_parent,
+        absent_in_pass1,
+        rid_fail,
+    );
+    if !present_samples.is_empty() {
+        info!("[P6] {drive}: pass1 有同名记录的样本 {present_samples:?}");
+    }
+    if missing.is_empty() {
+        return;
+    }
+
+    // ---- 3) 记录号分布：缺失集合是否落在某个连续区间 ----
+    let mut rids: Vec<u64> = missing.iter().map(|(_, rid)| *rid).collect();
+    rids.sort_unstable();
+    let quartile = |fraction: f64| rids[((rids.len() as f64 - 1.0) * fraction) as usize];
+    let max_coverable = {
+        // run 链覆盖的记录号上界（与 plan_read_chunks 同口径的估算）：二分找出最后一个有偏移的记录号
+        let mut low = 0u64;
+        let mut high = 4_000_000u64;
+        while low < high {
+            let middle = (low + high + 1) / 2;
+            if reader.probe_record_offset(middle).is_some() {
+                low = middle;
+            } else {
+                high = middle - 1;
+            }
+        }
+        low + 1
+    };
+    info!(
+        "[P6] {drive}: 缺失集合记录号分布 n={} min={} p25={} p50={} p75={} max={}（run 链可覆盖上限 ≈{max_coverable}）直方图 {hist:?}",
+        rids.len(),
+        rids[0],
+        quartile(0.25),
+        quartile(0.5),
+        quartile(0.75),
+        rids[rids.len() - 1],
+        hist = {
+            let mut buckets = [0usize; 10];
+            for rid in &rids {
+                let index = ((*rid as f64 / max_coverable as f64) * 10.0) as usize;
+                buckets[index.min(9)] += 1;
+            }
+            buckets
+        }
+    );
+
+    // ---- 4) 逐条分类：按权威记录号单记录读取，判定丢在哪一级 ----
+    let sorted_records = records.windows(2).all(|pair| pair[0].mft_id < pair[1].mft_id);
+    info!("[P6] {drive}: pass1 记录按 mft_id 是否单调递增 = {sorted_records}");
+    let mut magic_bad = 0usize;
+    let mut fixup_bad = 0usize;
+    let mut walk_bad = 0usize;
+    let mut parse_none = 0usize;
+    let mut parsed_but_absent = 0usize;
+    let mut name_mismatch = 0usize;
+    let mut parent_mismatch = 0usize;
+    let mut with_attr_list = 0usize;
+    let mut read_failed = 0usize;
+    let mut samples: Vec<String> = Vec::new();
+    let mut parsed_absent_samples: Vec<String> = Vec::new();
+    let mut walk_samples: Vec<String> = Vec::new();
+    let mut name_samples: Vec<String> = Vec::new();
+    for (suffix, rid) in &missing {
+        let r_name = format!("$R{suffix}");
+        let view = match reader.probe_record(*rid) {
+            Ok(view) => view,
+            Err(error) => {
+                read_failed += 1;
+                if samples.len() < 4 {
+                    samples.push(format!("{r_name} rid={rid} 读取失败: {error}"));
+                }
+                continue;
+            }
+        };
+        if !view.magic_ok {
+            magic_bad += 1;
+            if samples.len() < 8 {
+                samples.push(format!("{r_name} {}", view.describe()));
+            }
+            continue;
+        }
+        if !view.fixup_ok {
+            fixup_bad += 1;
+            if samples.len() < 8 {
+                samples.push(format!("{r_name} {}", view.describe()));
+            }
+            continue;
+        }
+        if !view.attribute_list.is_empty() {
+            with_attr_list += 1;
+        }
+        if view.walk_error.is_some() {
+            walk_bad += 1;
+            if walk_samples.len() < 4 {
+                walk_samples.push(format!("{r_name} {}", view.describe()));
+            }
+            continue;
+        }
+        if !view.parse_ok {
+            parse_none += 1;
+            if samples.len() < 8 {
+                samples.push(format!("{r_name} {}", view.describe()));
+            }
+            continue;
+        }
+        let name_ok = view
+            .file_names
+            .iter()
+            .any(|(_, _, name)| name.eq_ignore_ascii_case(&r_name));
+        let parent_ok = view
+            .file_names
+            .iter()
+            .any(|(parent, _, _)| sid_dir_ids.contains(parent));
+        if !name_ok {
+            name_mismatch += 1;
+            if name_samples.len() < 4 {
+                name_samples.push(format!("{r_name} {}", view.describe()));
+            }
+            continue;
+        }
+        if !parent_ok {
+            parent_mismatch += 1;
+        } else {
+            parsed_but_absent += 1;
+            if parsed_absent_samples.len() < 4 {
+                parsed_absent_samples.push(format!("{r_name} {}", view.describe()));
+            }
+        }
+    }
+    info!(
+        "[P6] {drive}: 逐条分类 n={} magic 非 FILE {} / fixup 失败 {} / 属性链越界 {} / parse_record_info=None {} / 名字不符 {} / parent 不符 {} / **正常解析但 pass1 没有** {} / 读取失败 {}（含 $ATTRIBUTE_LIST 的 {} 条）",
+        missing.len(),
+        magic_bad,
+        fixup_bad,
+        walk_bad,
+        parse_none,
+        name_mismatch,
+        parent_mismatch,
+        parsed_but_absent,
+        read_failed,
+        with_attr_list,
+    );
+    for (label, items) in [
+        ("解析正常但 pass1 没有", &parsed_absent_samples),
+        ("属性链越界", &walk_samples),
+        ("名字不符", &name_samples),
+        ("其他", &samples),
+    ] {
+        for item in items {
+            info!("[P6] {drive}: {label} 样本 {item}");
+        }
+    }
+
+    // ---- 5) 深挖：等距取 24 条，dump 全貌 + 属性列表追踪 + pass1 邻居 ----
+    let stride = (missing.len() / 24).max(1);
+    let mut dumped = 0usize;
+    for index in (0..missing.len()).step_by(stride) {
+        if dumped >= 24 {
+            break;
+        }
+        dumped += 1;
+        let (suffix, rid) = &missing[index];
+        let r_name = format!("$R{suffix}");
+        let view = match reader.probe_record(*rid) {
+            Ok(view) => view,
+            Err(error) => {
+                info!("[P6] {drive}: 深挖 {r_name} rid={rid} 读取失败 {error}");
+                continue;
+            }
+        };
+        // pass1 里这个记录号是什么（若存在），以及左右邻居的名字——排除记录号错位
+        let mut neighbors: Vec<String> = Vec::new();
+        for delta in -2i64..=2 {
+            let probe_id = (*rid as i64 + delta).max(0) as u64;
+            match records.binary_search_by_key(&probe_id, |record| record.mft_id) {
+                Ok(found) => neighbors.push(format!(
+                    "{}:{:?}→{}",
+                    probe_id, records[found].name, records[found].parent_id
+                )),
+                Err(_) => neighbors.push(format!("{probe_id}:<无>")),
+            }
+        }
+        info!("[P6] {drive}: 深挖 {r_name} {}", view.describe());
+        info!(
+            "[P6] {drive}: 深挖 {r_name} rid={rid} pass1邻居 {:?} 记录号字节偏移 {:?}",
+            neighbors,
+            reader.probe_record_offset(*rid)
+        );
+        // $ATTRIBUTE_LIST 追踪：若名字确实在扩展记录里，这里能直接证死
+        for (attribute_type, extension_rid) in view.attribute_list.iter().take(6) {
+            if *extension_rid == *rid {
+                continue;
+            }
+            match reader.probe_record(*extension_rid) {
+                Ok(extension) => info!(
+                    "[P6] {drive}: 深挖 {r_name} 扩展记录(0x{attribute_type:X}) {}",
+                    extension.describe()
+                ),
+                Err(error) => info!(
+                    "[P6] {drive}: 深挖 {r_name} 扩展记录 {extension_rid} 读取失败 {error}"
+                ),
+            }
+        }
+    }
 }
 
 /// One info line per drive plus a wall-clock total. `backend` 告诉读者该盘走的是哪条路径，

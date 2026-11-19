@@ -613,6 +613,242 @@ impl NtfsFileMetadataReader {
     }
 }
 
+// ============================================================================
+// [P6] 记录级取证视图（`#[cfg(test)]`：生产构建中不存在，零行为影响）
+//
+// 用途：给定一个**权威记录号**（来自 OS 文件句柄的文件索引），把该记录从卷上单独
+// 读出来、应用 fixup、逐属性 dump，回答"这条记录到底长什么样、为什么没进结果集"。
+// 与 `read_and_parse_pipelined` 是两条独立的读取路径（单记录 seek_read 而非 16MB 块），
+// 因此它同时能判别"记录本身有问题"和"块读取/记录号映射有问题"。
+// ============================================================================
+
+#[cfg(test)]
+#[derive(Debug, Default, Clone)]
+pub struct ProbeRecordView {
+    pub record_id: u64,
+    pub offset: u64,
+    pub magic_ok: bool,
+    pub magic: [u8; 4],
+    pub in_use: bool,
+    pub is_dir: bool,
+    pub hardlink_count: u16,
+    pub used_size: u32,
+    pub allocated_size: u32,
+    pub fixup_ok: bool,
+    /// 属性链上的 (type, attribute_length) 序列
+    pub attributes: Vec<(u32, usize)>,
+    /// $FILE_NAME: (parent_id, namespace, name)
+    pub file_names: Vec<(u64, u8, String)>,
+    /// $DATA: (是否非 resident, run 数)
+    pub data_attributes: Vec<(bool, usize)>,
+    /// $ATTRIBUTE_LIST: (attribute_type, 扩展记录号)
+    pub attribute_list: Vec<(u32, u64)>,
+    pub parse_ok: bool,
+    pub parsed_name: Option<String>,
+    pub parsed_parent: Option<u64>,
+    /// 属性链遍历中途失败的说明（越界/长度非法），正常为 None
+    pub walk_error: Option<String>,
+}
+
+#[cfg(test)]
+impl ProbeRecordView {
+    pub fn describe(&self) -> String {
+        let attrs: Vec<String> = self
+            .attributes
+            .iter()
+            .map(|(kind, length)| format!("0x{kind:X}({length})"))
+            .collect();
+        let names: Vec<String> = self
+            .file_names
+            .iter()
+            .map(|(parent, namespace, name)| format!("(parent={parent},ns={namespace},{name:?})"))
+            .collect();
+        let data: Vec<String> = self
+            .data_attributes
+            .iter()
+            .map(|(non_resident, runs)| {
+                format!("({},runs={runs})", if *non_resident { "非resi" } else { "resi" })
+            })
+            .collect();
+        let attr_list: Vec<String> = self
+            .attribute_list
+            .iter()
+            .map(|(kind, record)| format!("0x{kind:X}->{record}"))
+            .collect();
+        format!(
+            "rid={} off={} magic={} in_use={} dir={} links={} used={} alloc={} fixup={} attrs=[{}] names=[{}] data=[{}] attrlist=[{}] parse={} parsed=({:?},{:?}) walk_err={:?}",
+            self.record_id,
+            self.offset,
+            String::from_utf8_lossy(&self.magic),
+            self.in_use,
+            self.is_dir,
+            self.hardlink_count,
+            self.used_size,
+            self.allocated_size,
+            self.fixup_ok,
+            attrs.join(" "),
+            names.join(" "),
+            data.join(" "),
+            attr_list.join(" "),
+            self.parse_ok,
+            self.parsed_name,
+            self.parsed_parent,
+            self.walk_error,
+        )
+    }
+}
+
+/// 记录号 → 卷内字节偏移（按 run 链累计）。与 `plan_read_chunks` 口径一致。
+#[cfg(test)]
+impl NtfsFileMetadataReader {
+    pub fn probe_record_offset(&self, record_id: u64) -> Option<u64> {
+        let record_size = self.file_record_size as u64;
+        let mut base = 0u64;
+        for run in &self.mft_runs {
+            let run_records = run.cluster_count * self.cluster_size / record_size;
+            if record_id < base + run_records {
+                return Some(
+                    (run.start_lcn as u64) * self.cluster_size
+                        + (record_id - base) * record_size,
+                );
+            }
+            base += run_records;
+        }
+        None
+    }
+
+    /// 单独读一条记录并 dump 全貌。**不经过** 16MB 块流水线。
+    pub fn probe_record(&self, record_id: u64) -> Result<ProbeRecordView, String> {
+        let offset = self
+            .probe_record_offset(record_id)
+            .ok_or_else(|| format!("记录号 {record_id} 超出 run 链覆盖范围"))?;
+        let mut raw = vec![0u8; self.file_record_size];
+        let read = self
+            .volume
+            .seek_read(&mut raw, offset)
+            .map_err(|error| format!("单记录读取失败: {error}"))?;
+        if read != raw.len() {
+            return Err(format!("单记录短读 {read}/{}", raw.len()));
+        }
+
+        let mut view = ProbeRecordView {
+            record_id,
+            offset,
+            magic: [raw[0], raw[1], raw[2], raw[3]],
+            ..ProbeRecordView::default()
+        };
+        view.magic_ok = &raw[0..4] == b"FILE";
+        if !view.magic_ok {
+            return Ok(view);
+        }
+
+        view.in_use = read_u16(&raw, 22).is_some_and(|flags| flags & FILE_RECORD_FLAG_IN_USE != 0);
+        view.is_dir = read_u16(&raw, 22).is_some_and(|flags| flags & FILE_RECORD_FLAG_DIRECTORY != 0);
+        view.hardlink_count = read_u16(&raw, 18).unwrap_or(0);
+        view.used_size = read_u32(&raw, 24).unwrap_or(0);
+        view.allocated_size = read_u32(&raw, 28).unwrap_or(0);
+
+        let mut fixed = raw;
+        view.fixup_ok = self.apply_fixup(&mut fixed).is_some();
+        if !view.fixup_ok {
+            return Ok(view);
+        }
+
+        let attributes_offset = read_u16(&fixed, 20).unwrap_or(0) as usize;
+        let mut offset = attributes_offset;
+        while offset + 16 <= fixed.len() {
+            let Some(attribute_type) = read_u32(&fixed, offset) else {
+                view.walk_error = Some(format!("读 type 越界 @{offset}"));
+                break;
+            };
+            if attribute_type == 0xFFFF_FFFF {
+                break;
+            }
+            let Some(attribute_length) = read_u32(&fixed, offset + 4).map(|v| v as usize) else {
+                view.walk_error = Some(format!("读 length 越界 @{offset}"));
+                break;
+            };
+            if attribute_length == 0 || offset + attribute_length > fixed.len() {
+                view.walk_error = Some(format!(
+                    "属性长度非法 0x{attribute_type:X} len={attribute_length} @{offset} (record_len={})",
+                    fixed.len()
+                ));
+                break;
+            }
+
+            view.attributes.push((attribute_type, attribute_length));
+            match attribute_type {
+                0x20 => {
+                    view.attribute_list =
+                        probe_attribute_list_entries(&fixed, offset).unwrap_or_default();
+                }
+                0x30 => {
+                    if let Some((parent_id, name, namespace)) =
+                        parse_file_name_attribute(&fixed, offset)
+                    {
+                        view.file_names.push((parent_id, namespace, name));
+                    }
+                }
+                0x80 => {
+                    let non_resident = *fixed.get(offset + 8).unwrap_or(&0) != 0;
+                    let runs = if non_resident {
+                        probe_data_run_count(&fixed, offset).unwrap_or(0)
+                    } else {
+                        0
+                    };
+                    view.data_attributes.push((non_resident, runs));
+                }
+                _ => {}
+            }
+
+            offset += attribute_length;
+        }
+
+        if let Some(info) = parse_record_info(&fixed, record_id) {
+            view.parse_ok = true;
+            view.parsed_name = Some(info.name);
+            view.parsed_parent = Some(info.parent_id);
+        }
+        Ok(view)
+    }
+}
+
+/// $ATTRIBUTE_LIST（resident）的条目：每条 26 字节，file_reference 低 48 位是扩展记录号。
+#[cfg(test)]
+fn probe_attribute_list_entries(record: &[u8], attribute_offset: usize) -> Option<Vec<(u32, u64)>> {
+    if *record.get(attribute_offset + 8)? != 0 {
+        return None; // 非 resident 属性列表：本议题场景不出现
+    }
+    let value_length = read_u32(record, attribute_offset + 16)? as usize;
+    let value_offset = read_u16(record, attribute_offset + 20)? as usize;
+    let start = attribute_offset.checked_add(value_offset)?;
+    let end = start.checked_add(value_length)?.min(record.len());
+    let value = record.get(start..end)?;
+
+    let mut entries = Vec::new();
+    let mut cursor = 0usize;
+    while cursor + 26 <= value.len() {
+        let attribute_type = read_u32(value, cursor)?;
+        let length = read_u16(value, cursor + 4)? as usize;
+        if length < 26 || cursor + length > value.len() {
+            break;
+        }
+        let file_reference = read_u64(value, cursor + 16)? & 0x0000_FFFF_FFFF_FFFF;
+        entries.push((attribute_type, file_reference));
+        cursor += length;
+    }
+    Some(entries)
+}
+
+#[cfg(test)]
+fn probe_data_run_count(record: &[u8], attribute_offset: usize) -> Option<usize> {
+    let data_run_offset = read_u16(record, attribute_offset + 32)? as usize;
+    let start = attribute_offset + data_run_offset;
+    let length = read_u32(record, attribute_offset + 4)? as usize;
+    let end = attribute_offset + length;
+    parse_data_runs(record.get(start..end)?).map(|runs| runs.len())
+}
+
 /// Judge whether a record is in use from header flags only, without distinguishing files from directories.
 fn looks_like_active_record(record: &[u8]) -> bool {
     if record.len() < 24 || &record[0..4] != b"FILE" {
