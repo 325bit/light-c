@@ -10,8 +10,9 @@ use rayon::prelude::*;
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 #[cfg(windows)]
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock, PoisonError};
 #[cfg(windows)]
 use std::time::Instant;
 
@@ -295,7 +296,25 @@ fn scan_drive_via_mft(
 
     // ---- 第二遍：提取 $I 的 resident 内容 ----
     let pass2_started = Instant::now();
+    // 诊断计数器：filter 零命中时区分"表里没有 $I 名称记录"和"$I 的 parent 与定位结果不一致"
+    let i_named_seen = AtomicUsize::new(0);
+    let unmatched_parents = Mutex::new(HashSet::new());
     let filter = |info: &mft_core::MftRecordInfo| {
+        if info
+            .name
+            .get(..2)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("$I"))
+        {
+            i_named_seen.fetch_add(1, Ordering::Relaxed);
+            if !sid_dir_ids.contains(&info.parent_id) {
+                let mut parents = unmatched_parents
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner);
+                if parents.len() < 8 {
+                    parents.insert(info.parent_id);
+                }
+            }
+        }
         sid_dir_ids.contains(&info.parent_id)
             && !info.is_dir
             && info
@@ -310,6 +329,15 @@ fn scan_drive_via_mft(
     debug!(
         "[回收站扫描耗时] mft {}: pass2 $MFT io {}ms / parse {}ms / 命中 {} 条",
         drive_letter, stats.io_ms, stats.parse_ms, stats.resident_extracted
+    );
+    info!(
+        "[回收站扫描耗时] mft {}: $I 名称记录 {} 条，SID 目录 id {:?}，未命中 parent 样本 {:?}",
+        drive_letter,
+        i_named_seen.load(Ordering::Relaxed),
+        sid_dir_ids,
+        unmatched_parents
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
     );
 
     // ---- $R 配对：与 fs 路径同语义——孤儿 $I 丢弃，$R 目录标记 is_dir ----
