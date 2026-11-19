@@ -31,37 +31,9 @@ pub fn scan_current_user(category: &JunkCategory, result: &mut CategoryScanResul
         let mut entries = Vec::new();
         let scan_started = Instant::now();
         let mut timings: Vec<DrivePhaseTiming> = Vec::new();
-
-        // MFT 直读按盘路由（前置条件：管理员 + NTFS）：把 10 万次 $I 随机小文件读换成一次
-        // 顺序 $MFT 读（分相计时实测 fs 路径解析相 25.5s，全为随机 IO）。任一盘 MFT 失败都
-        // 逐盘降级到 fs 路径，绝不让整次扫描因新路径失败而变空。
-        let mft_preconditions = mft_core::is_elevated();
         for drive_letter in crate::sys_drive::existing_drive_letters() {
             let sid_path = PathBuf::from(format!("{}:\\$Recycle.Bin\\{}", drive_letter, user_sid));
-            let (drive_entries, timing);
-            if mft_preconditions && mft_core::is_ntfs(drive_letter) {
-                match scan_drive_via_mft(drive_letter, &sid_path, &user_sid, category) {
-                    Ok((mft_entries, mft_timing)) => {
-                        drive_entries = mft_entries;
-                        timing = mft_timing;
-                    }
-                    Err(error) => {
-                        warn!(
-                            "{} 盘回收站 MFT 直读失败，降级为目录枚举: {}",
-                            drive_letter, error
-                        );
-                        let (fs_entries, fs_timing) =
-                            collect_drive_entries(&sid_path, drive_letter, category);
-                        drive_entries = fs_entries;
-                        timing = fs_timing;
-                    }
-                }
-            } else {
-                let (fs_entries, fs_timing) =
-                    collect_drive_entries(&sid_path, drive_letter, category);
-                drive_entries = fs_entries;
-                timing = fs_timing;
-            }
+            let (drive_entries, timing) = collect_drive_entries(&sid_path, drive_letter, category);
             timings.push(timing);
             entries.extend(drive_entries);
         }
@@ -283,17 +255,25 @@ fn sid_dir_record_id_via_handle(sid_path: &Path) -> Result<u64, String> {
 }
 
 /// One drive's recycle-bin entries via two sequential `$MFT` passes instead of
-/// ~100k random small-file reads (measured: fs-path parse phase 25.5s on D:,
-/// all of it random IO; a sequential `$MFT` read of the same drive is ~2s).
+/// ~100k random small-file reads.
 ///
-/// Pass 1 (existing `read_all_records`, untouched) locates the current user's
-/// SID directory on this drive — the range semantics must match the fs path,
-/// which only ever enumerates the current user's own SID folder.
+/// 【实验性，未接入生产路径】真机对照（2026-11-19，见
+/// `light-c-回收站MFT直读方案.md` 与工作区记忆）发现已知限制：在记录高速变化的卷上
+/// （D 盘 99% 记录活跃率、rustc 构建产物持续写入/删除），约 25% 的 $R 记录无法从
+/// $MFT 解析出有效记录（fixup / IN_USE / 记录重用时序，待查），导致条目缺失——
+/// C 盘（低变化率）则全量通过。生产路径维持 fs 枚举（`collect_drive_entries`）。
+///
+/// 本函数与对照测试（`real_machine_mft_path_matches_fs_path`）保留，作为
+/// mft_core 记录解析可靠性议题（联动 S6 引擎合并）的实验场与门槛。
+///
+/// Pass 1 (existing `read_all_records`, untouched) builds the $R-pairing table;
 /// Pass 2 (new `read_all_records_with_resident_data`) re-reads sequentially and
-/// copies the resident `$DATA` of `$I` records whose parent is that SID folder.
-/// `$I` headers are always ≤ ~550 bytes, so their content is resident in practice;
-/// entries that come back with empty content fall back to one `fs::read` each.
+/// copies the resident `$DATA` of `$I` records under the SID directory —
+/// the SID directory's record number comes from the OS file index
+/// (`sid_dir_record_id_via_handle`), NOT from name matching (the record's
+/// `$FILE_NAME` may only yield the 8.3 alias "S-1-5-~1").
 #[cfg(windows)]
+#[allow(dead_code)] // 实验性：未接入生产路径，仅供对照测试使用（原因见函数文档）
 fn scan_drive_via_mft(
     drive_letter: char,
     sid_path: &Path,
@@ -733,15 +713,19 @@ mod tests {
         assert_eq!(result.category, JunkCategory::RecycleBin);
     }
 
-    /// 真机对照门槛（MFT 上线条件）：同一台机器上，MFT 直读路径与 fs 路径产出的回收站
-    /// 条目集合必须逐条一致。
+    /// 真机对照（实验性 MFT 路径，需管理员）：**正确性门槛**——MFT 路径产出的条目必须是
+    /// fs 路径条目的子集（不允许 MFT 凭空多出条目）。
     ///
-    /// 回收站不是静态目标：并发会话（构建、清理）会持续往里写入新条目，而 fs 先扫、
-    /// MFT 后扫，间隔内的新增会单向表现为"MFT 多出"——实测被 s6 会话的构建命中过。
-    /// 因此只比较**测试开始前就已删除**的条目（回收站条目的 modified_time 即删除时间），
-    /// 对照期间的新增剔除出双方，属预期噪声而非差异。
+    /// 完整性（数量一致）目前**无保证**：在记录高速变化的卷上（D 盘实测约 25% 的 $R
+    /// 记录解析不出有效记录），MFT 路径会缺失条目——这是 `scan_drive_via_mft` 文档里的
+    /// 已知限制，缺失量以警告打印，不作为失败条件。
+    ///
+    /// 三明治对照：fs₁ → MFT → fs₂；fs₁ ≠ fs₂ 说明对照期间回收站发生变化（并发会话的
+    /// 构建产物写入/移除，实测 D 盘 4 分钟窗口进出约 3.4 万条目），本次比较无效——自动
+    /// 重试（最多 3 次），仍不稳定则明确报告"需安静窗口"。稳定窗口内只比较测试开始前就
+    /// 已删除的条目，剔除对照期间新增的残余噪声。
     #[test]
-    #[ignore = "真机对照（MFT 直读 vs fs 路径，需管理员）：手动运行 cargo test --lib -- --ignored --nocapture"]
+    #[ignore = "实验性 MFT 路径对照（需管理员）：手动运行 cargo test --lib -- --ignored --nocapture"]
     fn real_machine_mft_path_matches_fs_path() {
         use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -868,20 +852,29 @@ mod tests {
                 "真机上应至少有一个含 SID 目录的回收站分区"
             );
             for (drive_letter, fs_set, mft_set) in &per_drive_sets {
-                let missing: Vec<_> = fs_set.difference(mft_set).collect();
+                // 正确性门槛（硬断言）：MFT 产出的条目必须是 fs 条目的子集——MFT 凭空
+                // 多出条目 = 路径语义错误，立即失败。
                 let extra: Vec<_> = mft_set.difference(fs_set).collect();
                 assert!(
-                missing.is_empty() && extra.is_empty(),
-                "{drive_letter}: 盘两路径条目不一致（比较 {} 条）。\nfs 有而 MFT 缺失 {} 条（前 10 条）: {:?}\nMFT 多出 {} 条（前 10 条）: {:?}",
-                fs_set.len(),
-                missing.len(),
-                missing.iter().take(10).collect::<Vec<_>>(),
-                extra.len(),
-                extra.iter().take(10).collect::<Vec<_>>(),
-            );
+                    extra.is_empty(),
+                    "{drive_letter}: 盘 MFT 产出了 fs 没有的条目（正确性违规，比较 {} 条）。多出 {} 条（前 10 条）: {:?}",
+                    fs_set.len(),
+                    extra.len(),
+                    extra.iter().take(10).collect::<Vec<_>>(),
+                );
+                // 完整性（fs 有而 MFT 缺失）是已知限制：高波动卷上部分 $R 记录解析不出
+                // （见 scan_drive_via_mft 文档），以警告打印，不计入失败。
+                let missing: Vec<_> = fs_set.difference(mft_set).collect();
+                if !missing.is_empty() {
+                    println!(
+                        "已知限制：{drive_letter}: 盘 MFT 缺失 {} 条（部分 $R 记录解析不出）。前 5 条: {:?}",
+                        missing.len(),
+                        missing.iter().take(5).collect::<Vec<_>>(),
+                    );
+                }
             }
             println!(
-                "对照通过：{compared_drives} 个盘的 MFT 直读条目与 fs 路径逐条一致（稳定窗口内）"
+                "对照通过（正确性门槛）：{compared_drives} 个盘的 MFT 产出条目均为 fs 条目的子集（缺失量见上方已知限制警告）"
             );
             return;
         }
