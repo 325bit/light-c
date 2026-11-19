@@ -675,6 +675,9 @@ fn probe_orphan_forensics(
     let mut fixup_bad = 0usize;
     let mut walk_bad = 0usize;
     let mut parse_none = 0usize;
+    let mut parse_none_no_name = 0usize;
+    let mut parse_none_with_name = 0usize;
+    let mut parse_none_name_samples: Vec<String> = Vec::new();
     let mut parsed_but_absent = 0usize;
     let mut name_mismatch = 0usize;
     let mut parent_mismatch = 0usize;
@@ -722,6 +725,15 @@ fn probe_orphan_forensics(
         }
         if !view.parse_ok {
             parse_none += 1;
+            if view.file_names.is_empty() {
+                parse_none_no_name += 1;
+            } else {
+                // 有 $FILE_NAME 却仍被 parse_record_info 拒绝：只剩"reparse 位"等旁路条件
+                parse_none_with_name += 1;
+                if parse_none_name_samples.len() < 3 {
+                    parse_none_name_samples.push(format!("{r_name} {}", view.describe()));
+                }
+            }
             if samples.len() < 8 {
                 samples.push(format!("{r_name} {}", view.describe()));
             }
@@ -752,12 +764,14 @@ fn probe_orphan_forensics(
         }
     }
     info!(
-        "[P6] {drive}: 逐条分类 n={} magic 非 FILE {} / fixup 失败 {} / 属性链越界 {} / parse_record_info=None {} / 名字不符 {} / parent 不符 {} / **正常解析但 pass1 没有** {} / 读取失败 {}（含 $ATTRIBUTE_LIST 的 {} 条）",
+        "[P6] {drive}: 逐条分类 n={} magic 非 FILE {} / fixup 失败 {} / 属性链越界 {} / parse_record_info=None {}（其中无 $FILE_NAME {} / 有名字仍被拒 {}）/ 名字不符 {} / parent 不符 {} / **正常解析但 pass1 没有** {} / 读取失败 {}（含 $ATTRIBUTE_LIST 的 {} 条）",
         missing.len(),
         magic_bad,
         fixup_bad,
         walk_bad,
         parse_none,
+        parse_none_no_name,
+        parse_none_with_name,
         name_mismatch,
         parent_mismatch,
         parsed_but_absent,
@@ -766,6 +780,7 @@ fn probe_orphan_forensics(
     );
     for (label, items) in [
         ("解析正常但 pass1 没有", &parsed_absent_samples),
+        ("有名字仍被拒", &parse_none_name_samples),
         ("属性链越界", &walk_samples),
         ("名字不符", &name_samples),
         ("其他", &samples),

@@ -639,6 +639,8 @@ pub struct ProbeRecordView {
     pub attributes: Vec<(u32, usize)>,
     /// $FILE_NAME: (parent_id, namespace, name)
     pub file_names: Vec<(u64, u8, String)>,
+    /// $STANDARD_INFORMATION 的 file attributes 位（bit 0x400 = reparse point，解析器会丢弃）
+    pub si_file_attributes: u32,
     /// $DATA: (是否非 resident, run 数)
     pub data_attributes: Vec<(bool, usize)>,
     /// $ATTRIBUTE_LIST: (attribute_type, 扩展记录号)
@@ -676,7 +678,7 @@ impl ProbeRecordView {
             .map(|(kind, record)| format!("0x{kind:X}->{record}"))
             .collect();
         format!(
-            "rid={} off={} magic={} in_use={} dir={} links={} used={} alloc={} fixup={} attrs=[{}] names=[{}] data=[{}] attrlist=[{}] parse={} parsed=({:?},{:?}) walk_err={:?}",
+            "rid={} off={} magic={} in_use={} dir={} links={} used={} alloc={} si_attr=0x{:X} fixup={} attrs=[{}] names=[{}] data=[{}] attrlist=[{}] parse={} parsed=({:?},{:?}) walk_err={:?}",
             self.record_id,
             self.offset,
             String::from_utf8_lossy(&self.magic),
@@ -685,6 +687,7 @@ impl ProbeRecordView {
             self.hardlink_count,
             self.used_size,
             self.allocated_size,
+            self.si_file_attributes,
             self.fixup_ok,
             attrs.join(" "),
             names.join(" "),
@@ -778,6 +781,11 @@ impl NtfsFileMetadataReader {
 
             view.attributes.push((attribute_type, attribute_length));
             match attribute_type {
+                0x10 => {
+                    if let Some((_, file_attributes)) = parse_standard_info(&fixed, offset) {
+                        view.si_file_attributes = file_attributes;
+                    }
+                }
                 0x20 => {
                     view.attribute_list =
                         probe_attribute_list_entries(&fixed, offset).unwrap_or_default();
