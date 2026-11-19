@@ -272,7 +272,11 @@ fn file_record_id_via_handle(path: &Path) -> Result<u64, String> {
 /// 本函数与对照测试（`real_machine_mft_path_matches_fs_path`）保留，作为
 /// mft_core 记录解析可靠性议题（联动 S6 引擎合并）的实验场与门槛。
 ///
-/// Pass 1 (existing `read_all_records`, untouched) builds the $R-pairing table;
+/// Pass 1 (`read_all_records_all_names`) builds the $R-pairing table. It must be the
+/// **all-names** entry point, not `read_all_records`: a record hosting a hard-link set is
+/// several directory entries at once, and `parse_record_info` keeps only the first name, so a
+/// single-name pass silently hides every `$R` link but the first one (measured on D:: 40,106 of
+/// 152,551 entries, exactly the multi-name records);
 /// Pass 2 (new `read_all_records_with_resident_data`) re-reads sequentially and
 /// copies the resident `$DATA` of `$I` records under the SID directory —
 /// the SID directory's record number comes from the OS file index
@@ -294,7 +298,7 @@ fn scan_drive_via_mft(
     // 完整 SID 字符串匹配永远落空（本轮 gate 的失败根因）。
     let pass1_started = Instant::now();
     let sid_dir_id = sid_dir_record_id_via_handle(sid_path)?;
-    let (records, _stats) = reader.read_all_records(&|_| true)?;
+    let (records, _stats) = reader.read_all_records_all_names(&|_| true)?;
     let recycle_root_ids: HashSet<u64> = records
         .iter()
         .filter(|record| {
@@ -317,7 +321,7 @@ fn scan_drive_via_mft(
         .map(|record| record.mft_id)
         .collect();
     info!(
-        "[回收站扫描耗时] mft {}: 第一遍定位：全表记录 {} 条，$Recycle.Bin 根 {} 个，名字匹配 SID 目录 {:?}，句柄权威记录号 {}",
+        "[回收站扫描耗时] mft {}: 第一遍定位：全表名字条目 {} 条，$Recycle.Bin 根 {} 个，名字匹配 SID 目录 {:?}，句柄权威记录号 {}",
         drive_letter,
         records.len(),
         recycle_root_ids.len(),
@@ -349,7 +353,7 @@ fn scan_drive_via_mft(
         sid_dir_details.join("; ")
     );
     info!(
-        "[回收站扫描耗时] mft {}: 第一遍定位：全表记录 {} 条，$Recycle.Bin 根 {} 个，名字匹配 SID 目录 {:?}，句柄权威记录号 {}",
+        "[回收站扫描耗时] mft {}: 第一遍定位：全表名字条目 {} 条，$Recycle.Bin 根 {} 个，名字匹配 SID 目录 {:?}，句柄权威记录号 {}",
         drive_letter,
         records.len(),
         recycle_root_ids.len(),
@@ -669,7 +673,8 @@ fn probe_orphan_forensics(
     );
 
     // ---- 4) 逐条分类：按权威记录号单记录读取，判定丢在哪一级 ----
-    let sorted_records = records.windows(2).all(|pair| pair[0].mft_id < pair[1].mft_id);
+    // 全名字枚举下多条条目共享同一个 mft_id，因此只保证非递减（同一记录的名字相邻）
+    let sorted_records = records.windows(2).all(|pair| pair[0].mft_id <= pair[1].mft_id);
     info!("[P6] {drive}: pass1 记录按 mft_id 是否单调递增 = {sorted_records}");
     let mut magic_bad = 0usize;
     let mut fixup_bad = 0usize;

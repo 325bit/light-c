@@ -385,7 +385,70 @@ impl NtfsFileMetadataReader {
             progress_cb,
             // The generic pipeline's default callback: exactly the behavior read_all_records
             // has always had. Equivalence is proven by the existing test suite.
-            &|record: &[u8], record_id: u64| parse_record_info(record, record_id),
+            &|record: &[u8], record_id: u64, out: &mut Vec<MftRecordInfo>| {
+                if let Some(info) = parse_record_info(record, record_id) {
+                    out.push(info);
+                }
+            },
+        )?;
+
+        Ok((
+            records,
+            MftReadStats {
+                fragments: self.mft_runs.len(),
+                io_ms: (io_nanos / 1_000_000) as u64,
+                parse_ms: (parse_nanos / 1_000_000) as u64,
+            },
+        ))
+    }
+
+    /// Read the entire `$MFT` like `read_all_records`, but emit **one entry per `$FILE_NAME`**
+    /// instead of one entry per record.
+    ///
+    /// A record that hosts a hard-link set carries one `$FILE_NAME` attribute per link, and every
+    /// link is a separate directory entry: the recycle bin, for instance, renames each link of a
+    /// deleted build tree to its own `$R…` name while all of them keep sharing one MFT record.
+    /// `parse_record_info` deliberately keeps a single name (the first non-8.3 one), so callers
+    /// that enumerate **directory entries** — the recycle-bin `$R` pairing table — must use this
+    /// entry point, otherwise every link but the first one is invisible.
+    ///
+    /// Entries of the same record share `mft_id` and are pushed adjacently, so the result stays
+    /// sorted by `mft_id` (non-decreasing, not strictly increasing).
+    pub fn read_all_records_all_names(
+        &self,
+        progress_cb: &(impl Fn(usize) -> bool + Sync),
+    ) -> Result<(Vec<MftRecordInfo>, MftReadStats), String> {
+        let chunks = self.plan_read_chunks()?;
+        let capacity_hint = chunks
+            .last()
+            .map(|chunk| chunk.base_record_id + chunk.len as u64 / self.file_record_size as u64)
+            .unwrap_or(0) as usize
+            / 2;
+
+        let (io_nanos, parse_nanos, records) = self.read_and_parse_pipelined(
+            &chunks,
+            capacity_hint,
+            progress_cb,
+            &|record: &[u8], record_id: u64, out: &mut Vec<MftRecordInfo>| {
+                let Some(info) = parse_record_info(record, record_id) else {
+                    return;
+                };
+                for (parent_id, name, namespace) in collect_file_names(record) {
+                    // 8.3 别名不是独立目录项，注册进去会让同一个名字多出一条假条目
+                    if namespace == FILE_NAME_NAMESPACE_DOS {
+                        continue;
+                    }
+                    if name.eq_ignore_ascii_case(&info.name) && parent_id == info.parent_id {
+                        out.push(info.clone());
+                    } else {
+                        out.push(MftRecordInfo {
+                            parent_id,
+                            name,
+                            ..info.clone()
+                        });
+                    }
+                }
+            },
         )?;
 
         Ok((
@@ -414,17 +477,19 @@ impl NtfsFileMetadataReader {
         let records_seen = AtomicUsize::new(0);
         let resident_extracted = AtomicUsize::new(0);
 
-        let parse = |record: &[u8], record_id: u64| -> Option<ResidentDataRecord> {
-            let info = parse_record_info(record, record_id)?;
+        let parse = |record: &[u8], record_id: u64, out: &mut Vec<ResidentDataRecord>| {
+            let Some(info) = parse_record_info(record, record_id) else {
+                return;
+            };
             records_seen.fetch_add(1, Ordering::Relaxed);
             if !filter(&info) {
-                return None;
+                return;
             }
             let data = extract_resident_data(record).unwrap_or_default();
             if !data.is_empty() {
                 resident_extracted.fetch_add(1, Ordering::Relaxed);
             }
-            Some(ResidentDataRecord { info, data })
+            out.push(ResidentDataRecord { info, data });
         };
 
         let chunks = self.plan_read_chunks()?;
@@ -459,10 +524,12 @@ impl NtfsFileMetadataReader {
     /// Run reading and parsing in two threads simultaneously: the read thread loads data into buffers per task,
     /// and the parse thread returns buffers for reuse when done.
     ///
-    /// `parse_record` decides what one fixed-up record becomes (`T`). The default entry point
-    /// `read_all_records` passes `parse_record_info`; `read_all_records_with_resident_data`
-    /// passes a callback that also copies resident content — the pipeline itself (two threads,
-    /// 16MB buffer pair, backpressure, buffer recycling) is shared and unchanged.
+    /// `parse_record` decides what the records selected by the coarse filter become and may push
+    /// **more than one** item per record: the default entry point `read_all_records` pushes exactly
+    /// one, `read_all_records_all_names` pushes one per `$FILE_NAME`, and
+    /// `read_all_records_with_resident_data` pushes a record plus its resident content. The
+    /// pipeline itself (two threads, 16MB buffer pair, backpressure, buffer recycling) is shared
+    /// and unchanged.
     ///
     /// Previously it was serial "read a chunk → parse a chunk": measured 1.9 s reading, 0.9 s parsing, 2.8 s combined;
     /// there is no data dependency between the two, so overlapping them makes this section take only the 1.9 s of reading.
@@ -472,7 +539,7 @@ impl NtfsFileMetadataReader {
         chunks: &[MftReadChunk],
         capacity_hint: usize,
         progress_cb: &(impl Fn(usize) -> bool + Sync),
-        parse_record: &(impl Fn(&[u8], u64) -> Option<T> + Sync),
+        parse_record: &(impl Fn(&[u8], u64, &mut Vec<T>) + Sync),
     ) -> Result<(u128, u128, Vec<T>), String> {
         let (ready_tx, ready_rx) = mpsc::channel::<(Vec<u8>, &MftReadChunk)>();
         let (recycle_tx, recycle_rx) = mpsc::channel::<Vec<u8>>();
@@ -537,9 +604,7 @@ impl NtfsFileMetadataReader {
                             && looks_like_active_record(record)
                             && self.apply_fixup(record).is_some()
                         {
-                            if let Some(item) = parse_record(record, record_id) {
-                                records.push(item);
-                            }
+                            parse_record(record, record_id, &mut records);
                         }
 
                         processed += 1;
@@ -979,6 +1044,41 @@ fn parse_file_name_attribute(record: &[u8], attribute_offset: usize) -> Option<(
     ))
 }
 
+/// Every `$FILE_NAME` attribute of a fixup-ed record, in attribute order.
+///
+/// `parse_record_info` keeps a single name because a path-based consumer only needs one. A record
+/// that hosts a hard-link set, however, is **several** directory entries at once (the recycle bin
+/// turns each link of a deleted build tree into its own `$R…` entry while the record stays shared),
+/// and those extra entries are only visible by walking the chain here.
+fn collect_file_names(record: &[u8]) -> Vec<(u64, String, u8)> {
+    let mut names = Vec::new();
+    let Some(attributes_offset) = read_u16(record, 20).map(|offset| offset as usize) else {
+        return names;
+    };
+    let mut offset = attributes_offset;
+    while offset + 16 <= record.len() {
+        let Some(attribute_type) = read_u32(record, offset) else {
+            break;
+        };
+        if attribute_type == 0xFFFF_FFFF {
+            break;
+        }
+        let Some(attribute_length) = read_u32(record, offset + 4).map(|len| len as usize) else {
+            break;
+        };
+        if attribute_length == 0 || offset + attribute_length > record.len() {
+            break;
+        }
+        if attribute_type == 0x30 {
+            if let Some((parent_id, name, namespace)) = parse_file_name_attribute(record, offset) {
+                names.push((parent_id, name, namespace));
+            }
+        }
+        offset += attribute_length;
+    }
+    names
+}
+
 fn parse_standard_info(record: &[u8], attribute_offset: usize) -> Option<(i64, u32)> {
     let value_offset = read_u16(record, attribute_offset + 20)? as usize;
     let value_start = attribute_offset + value_offset;
@@ -1318,6 +1418,55 @@ mod tests {
         // Clear the "in use" flag
         record[22..24].copy_from_slice(&0u16.to_le_bytes());
         assert!(!looks_like_active_record(&record));
+    }
+
+    /// A record hosting a hard-link set carries one `$FILE_NAME` per link. `parse_record_info`
+    /// must keep exactly one (the first non-8.3) so the six path-based callers keep their current
+    /// output, while `collect_file_names` must surface every link: those links are the directory
+    /// entries the recycle-bin `$R` pairing table is built from.
+    #[test]
+    fn collect_file_names_surfaces_every_hard_link() {
+        fn append_file_name(record: &mut Vec<u8>, offset: usize, name: &str, parent: u64, namespace: u8) -> usize {
+            let units: Vec<u16> = name.encode_utf16().collect();
+            let length = (24 + 66 + units.len() * 2 + 7) / 8 * 8;
+            write_attribute_header(record, offset, 0x30, length, 24);
+            record[offset + 24..offset + 32].copy_from_slice(&parent.to_le_bytes());
+            record[offset + 24 + 64] = units.len() as u8;
+            record[offset + 24 + 65] = namespace;
+            for (index, unit) in units.iter().enumerate() {
+                let at = offset + 24 + 66 + index * 2;
+                record[at..at + 2].copy_from_slice(&unit.to_le_bytes());
+            }
+            offset + length
+        }
+
+        let mut record = vec![0u8; 1024];
+        record[0..4].copy_from_slice(b"FILE");
+        record[20..22].copy_from_slice(&56u16.to_le_bytes());
+        record[22..24].copy_from_slice(&FILE_RECORD_FLAG_IN_USE.to_le_bytes());
+
+        let standard_info = 56;
+        write_attribute_header(&mut record, standard_info, 0x10, 96, 24);
+        let mut offset = standard_info + 96;
+        // Three links in the same directory plus the 8.3 alias of one of them
+        offset = append_file_name(&mut record, offset, "$R4YA8QY.o", 830, 1);
+        offset = append_file_name(&mut record, offset, "$RANIKUY.o", 830, 1);
+        offset = append_file_name(&mut record, offset, "$R0RJDZL.o", 830, 1);
+        offset = append_file_name(&mut record, offset, "$RANIKU~1.O", 830, FILE_NAME_NAMESPACE_DOS);
+        let data = offset;
+        write_attribute_header(&mut record, data, 0x80, 24, 24);
+        record[data + 16..data + 20].copy_from_slice(&576u32.to_le_bytes());
+        record[data + 24..data + 28].copy_from_slice(&0xFFFF_FFFFu32.to_le_bytes());
+
+        let info = parse_record_info(&record, 42).expect("应该能解析");
+        assert_eq!(info.name, "$R4YA8QY.o");
+        assert_eq!(info.size, 576);
+
+        let names: Vec<String> = collect_file_names(&record)
+            .into_iter()
+            .map(|(_, name, _)| name)
+            .collect();
+        assert_eq!(names, vec!["$R4YA8QY.o", "$RANIKUY.o", "$R0RJDZL.o", "$RANIKU~1.O"]);
     }
 
     /// Resident `$DATA` content extraction is the whole point of the recycle-bin `$I` reader:
