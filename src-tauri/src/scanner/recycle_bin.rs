@@ -276,6 +276,22 @@ fn scan_drive_via_mft(
         .map(|record| record.mft_id)
         .collect();
     let enumerate_ms = pass1_started.elapsed().as_millis();
+    info!(
+        "[回收站扫描耗时] mft {}: 第一遍定位：全表记录 {} 条，$Recycle.Bin 根 {} 个，当前用户 SID 目录 {} 个",
+        drive_letter,
+        records.len(),
+        recycle_root_ids.len(),
+        sid_dir_ids.len()
+    );
+    // SID 目录定位失败意味着 pass2 必然空手而归——与其静默 Ok(0)（对照测试会误报
+    // "全部缺失"），不如显式报错走逐盘降级，把定位现场的数字带进警告。
+    if sid_dir_ids.is_empty() {
+        return Err(format!(
+            "未在 {drive_letter}: 盘 MFT 中定位到当前用户 SID 目录（全表记录 {} 条，$Recycle.Bin 根 {} 个）",
+            records.len(),
+            recycle_root_ids.len()
+        ));
+    }
 
     // ---- 第二遍：提取 $I 的 resident 内容 ----
     let pass2_started = Instant::now();
@@ -532,7 +548,7 @@ mod tests {
 
             let (fs_entries, _) =
                 collect_drive_entries(&sid_path, drive_letter, &JunkCategory::RecycleBin);
-            let (mft_entries, _) = match scan_drive_via_mft(
+            let (mft_entries, mft_timing) = match scan_drive_via_mft(
                 drive_letter,
                 &sid_path,
                 &user_sid,
@@ -541,6 +557,14 @@ mod tests {
                 Ok(result) => result,
                 Err(error) => panic!("{drive_letter}: 盘 MFT 直读不可用: {error}"),
             };
+            println!(
+                "{drive_letter}: 盘 mft 计时：第一遍 {}ms / 第二遍 {}ms / 全表记录 {} 条 / resident 提取 {} 条 / 非 resident 兜底 {} 次",
+                mft_timing.enumerate_ms,
+                mft_timing.parse_ms,
+                mft_timing.directory_entries,
+                mft_timing.metadata_files,
+                mft_timing.non_resident_fallbacks,
+            );
 
             // 只比较测试开始前就已删除的条目；对照期间新增的条目（其他会话的构建产物）
             // 在两侧的口径天然不同（fs 先扫看不到，MFT 后扫看得到），剔除而非比较。
