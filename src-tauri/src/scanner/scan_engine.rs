@@ -369,11 +369,34 @@ impl ScanEngine {
                 continue;
             }
 
-            // Get file information
-            if let Some(file_info) = self.get_file_info(entry_path, category) {
+            // Get file information from the metadata walkdir already carries
+            if let Some(file_info) = self.file_info_from_metadata(entry_path, &entry, category) {
                 result.add_file(file_info);
             }
         }
+    }
+
+    /// Build a FileInfo from a walkdir entry's metadata.
+    ///
+    /// On Windows the metadata comes from the directory read itself (FindFirstFileW
+    /// data cached in the DirEntry), so this costs no extra syscall — an explicit
+    /// fs::metadata here would be one avoidable CreateFile/stat per matched file.
+    /// Values are identical to fs::metadata for regular files: symlinks never reach
+    /// the callers (is_file() is false for them and follow_links is off).
+    fn file_info_from_metadata(
+        &self,
+        path: &Path,
+        entry: &walkdir::DirEntry,
+        category: &JunkCategory,
+    ) -> Option<FileInfo> {
+        let metadata = match entry.metadata() {
+            Ok(m) => m,
+            Err(e) => {
+                debug!("无法获取文件元数据 {:?}: {}", path, e);
+                return None;
+            }
+        };
+        Some(self.file_info_from_parts(path, &metadata, category))
     }
 
     /// Get file information (files only; directories are already skipped in scan_path)
@@ -386,6 +409,16 @@ impl ScanEngine {
             }
         };
 
+        Some(self.file_info_from_parts(path, &metadata, category))
+    }
+
+    /// Shared FileInfo construction: size and mtime come straight from the metadata.
+    fn file_info_from_parts(
+        &self,
+        path: &Path,
+        metadata: &fs::Metadata,
+        category: &JunkCategory,
+    ) -> FileInfo {
         let name = path
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
@@ -400,14 +433,14 @@ impl ScanEngine {
             .map(|d| d.as_secs() as i64)
             .unwrap_or(0);
 
-        Some(FileInfo::new(
+        FileInfo::new(
             path.to_string_lossy().to_string(),
             name,
             size,
             modified_time,
             false, // always a file, directories never reach this function
             category.clone(),
-        ))
+        )
     }
 
     /// Check whether a file name matches the patterns
@@ -759,7 +792,11 @@ fn walk_root(
             }
             for (category, patterns) in &candidate.rules {
                 if engine.matches_patterns(entry_path, patterns) {
-                    if let Some(file_info) = engine.get_file_info(entry_path, category) {
+                    // walkdir already carries the directory-entry metadata; taking it
+                    // from the entry avoids one CreateFile/stat per matched file.
+                    if let Some(file_info) =
+                        engine.file_info_from_metadata(entry_path, &entry, category)
+                    {
                         emissions.push((category.clone(), file_info));
                     }
                 }
