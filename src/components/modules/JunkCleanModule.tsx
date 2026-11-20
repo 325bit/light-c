@@ -77,6 +77,61 @@ function replaceCategory<T extends { categories: CategoryScanResult[] }>(
 }
 
 /**
+ * 删除完成后保留扫描结果：把已成功删除的文件从各分类里摘除，用户可以继续勾选剩下的，
+ * 不必重新扫描。只摘除 success 且未标记重启删除的条目——重启标记的文件在重启前仍占着磁盘，
+ * 失败的条目留着才有机会重试。
+ *
+ * 整类删除（深扫描勾选整类）时后端已把会话里的未加载页一并删除，has_more 直接置为 false，
+ * 剩余条目按加载列表重算；其余情况按「总数减去已删除的加载项」精确收缩，未加载页不受影响。
+ * 整类删除但会话失效降级（result.warning 有值）时同样退回按加载项收缩。
+ *
+ * 返回 unloadedOffsets：仍有未加载页的分类在删除前的加载条数。后端会话快照删除后不更新，
+ * 分页必须以删除前的偏移切原列表，否则既会漏掉未删的文件、又会把已删的文件翻回来。
+ */
+function pruneResultAfterDelete<T extends ScanResult>(
+  result: T,
+  deletedPathsLower: Set<string>,
+  wholeCategoryDeletedNames: Set<string>,
+): { pruned: T; unloadedOffsets: Map<string, number> } {
+  let totalSize = 0;
+  let totalCount = 0;
+  const unloadedOffsets = new Map<string, number>();
+  const categories = result.categories.map((category) => {
+    const wholeDeleted = wholeCategoryDeletedNames.has(category.display_name);
+    const remaining = category.files.filter(
+      (file) => !deletedPathsLower.has(file.path.toLowerCase()),
+    );
+    let next: CategoryScanResult;
+    if (wholeDeleted) {
+      next = {
+        ...category,
+        files: remaining,
+        has_more: false,
+        file_count: remaining.length,
+        total_size: remaining.reduce((sum, file) => sum + file.size, 0),
+      };
+    } else {
+      const removedSize = category.files
+        .filter((file) => deletedPathsLower.has(file.path.toLowerCase()))
+        .reduce((sum, file) => sum + file.size, 0);
+      next = {
+        ...category,
+        file_count: Math.max(0, category.file_count - (category.files.length - remaining.length)),
+        total_size: Math.max(0, category.total_size - removedSize),
+      };
+      if (next.has_more) unloadedOffsets.set(category.display_name, category.files.length);
+    }
+    totalSize += next.total_size;
+    totalCount += next.file_count;
+    return next;
+  });
+  return {
+    pruned: { ...result, categories, total_size: totalSize, total_file_count: totalCount },
+    unloadedOffsets,
+  };
+}
+
+/**
  * Deep scanning returns only the first screen of each category; when the whole current page is selected and more pages remain, deletion must cover the complete category.
  * This way, when the user sees the category total, pagination does not cause only the first few hundred MB to be cleaned.
  */
@@ -307,6 +362,9 @@ export function JunkCleanModule({ isPageActive = true }: ModuleRenderProps) {
   const [viewAllCategoryName, setViewAllCategoryName] = useState<string | null>(null);
   const scanningRef = useRef(false);
   const cancelRequestedRef = useRef(false);
+  // 删除后后端深扫描会话快照不更新（分页仍按原列表切）：记录仍有未加载页的分类在删除前的
+  // 加载条数，作为后续分页的 offset，"查看全部文件"才不会漏掉未删的文件或翻回已删的文件。
+  const deepPageOffsetRef = useRef<Map<string, number>>(new Map());
   // This used to estimate a scan percentage by "stage number": the backend does not report a progress total
   // (DeepJunkScanProgress only has stage / processed / matched_count / elapsed_ms),
   // so when a stage changed or a new partition restarted the stages, the number could decrease → the progress bar went backwards.
@@ -395,6 +453,7 @@ export function JunkCleanModule({ isPageActive = true }: ModuleRenderProps) {
 
     scanningRef.current = true;
     cancelRequestedRef.current = false;
+    deepPageOffsetRef.current = new Map();
     const currentScanMode = deepScanEnabled ? 'deep' : 'quick';
     setScanMode(currentScanMode);
     updateModuleState('junk', { status: 'scanning', error: null });
@@ -528,15 +587,52 @@ export function JunkCleanModule({ isPageActive = true }: ModuleRenderProps) {
         });
       }
 
-      // Cleanup complete: clear scan and selection state, keeping only the cleanup result for display.
-      // The delete API's file_results already contains real success/failure/reboot-pending details, no rescan verification needed.
+      // 清理完成：保留扫描结果，只摘除真正从磁盘上消失的文件，用户可以继续勾选删除剩下的，
+      // 不用重新扫描。删除 API 的 file_results 已包含真实成功/失败/待重启明细，无需重扫验证。
       setDeleteResult(result);
-      setScanResult(null);
-      setDeepScanResult(null);
-      setSelectedPaths(new Set());
-      setSelectedCategoryNames(new Set());
+
+      // 从磁盘上消失的文件 = 成功且未标记重启删除。重启标记的文件重启前仍占着磁盘，
+      // 失败的条目留着才有机会重试，两者都继续显示在列表里。
+      const deletedLower = new Set(
+        result.file_results
+          .filter((f) => f.success && !f.marked_for_reboot)
+          .map((f) => f.path.toLowerCase()),
+      );
+      // 深扫描整类删除（会话未降级）时后端把未加载页也删了，整类 has_more 清零；
+      // AI 代删时整类目标由 overrideCategoryNames 显式传入，与删除调用用的目标保持一致。
+      const wholeCategoryDeletedNames = new Set(
+        scanMode === 'deep' && !result.warning
+          ? (overrideCategoryNames ?? fullySelectedDeepCategoryNames)
+          : [],
+      );
+      // 深扫描下 scanResult 与 deepScanResult 是同一次扫描的两份引用，剪裁一次、两边同写。
+      const sourceResult = (scanMode === 'deep' ? deepScanResult : null) ?? scanResult;
+      if (sourceResult) {
+        const { pruned, unloadedOffsets } = pruneResultAfterDelete(
+          sourceResult,
+          deletedLower,
+          wholeCategoryDeletedNames,
+        );
+        deepPageOffsetRef.current = unloadedOffsets;
+        setScanResult(pruned);
+        if (scanMode === 'deep') setDeepScanResult(pruned as DeepJunkScanResult);
+        setSelectedPaths(new Set());
+        setSelectedCategoryNames(new Set());
+        updateModuleState('junk', {
+          status: 'done',
+          fileCount: pruned.total_file_count,
+          totalSize: pruned.total_size,
+          error: null,
+        });
+      } else {
+        // 没有可保留的扫描结果（防御分支，正常删除时必有结果）：维持旧行为，只显示结果卡片。
+        setScanResult(null);
+        setDeepScanResult(null);
+        setSelectedPaths(new Set());
+        setSelectedCategoryNames(new Set());
+        updateModuleState('junk', { status: 'done', fileCount: 0, totalSize: 0, error: null });
+      }
       setDeleteProgress(null);
-      updateModuleState('junk', { status: 'done', fileCount: 0, totalSize: 0, error: null });
       triggerHealthRefresh();
 
       // Return the result: AI-assisted deletion uses it to build a "how many deleted, how many failed" result card —
@@ -600,7 +696,7 @@ export function JunkCleanModule({ isPageActive = true }: ModuleRenderProps) {
       // Paired with the flag set above; it must be restored on exit or no further scans will be possible.
       scanningRef.current = false;
     }
-  }, [deepScanResult, excludedDeepPaths, fullySelectedDeepCategoryNames, scanMode, selectedFileCount, selectedPaths, selectedCategoryNames, showToast, t, triggerHealthRefresh, updateModuleState]);
+  }, [deepScanResult, excludedDeepPaths, fullySelectedDeepCategoryNames, scanMode, scanResult, selectedFileCount, selectedPaths, selectedCategoryNames, showToast, t, triggerHealthRefresh, updateModuleState]);
 
   // Junk files are searched by full path by default, while recycle bin entries are searched by their original path, to avoid handing internal $R filenames to the search engine.
   const handleSearchFile = useCallback(async (file: FileInfo) => {
@@ -705,6 +801,7 @@ export function JunkCleanModule({ isPageActive = true }: ModuleRenderProps) {
     setSelectedCategoryNames(new Set());
     setDeleteResult(null);
     setScanMode(null);
+    deepPageOffsetRef.current = new Map();
     updateModuleState('junk', { status: 'idle', error: null, fileCount: 0, totalSize: 0 });
   }, [updateModuleState]);
 
@@ -730,21 +827,29 @@ export function JunkCleanModule({ isPageActive = true }: ModuleRenderProps) {
     setLoadingAllCategory(categoryName);
     try {
       let merged = category;
+      // 删除后加载列表里已有文件被摘除，不再是会话原列表的精确前缀：分页 offset 必须用
+      // 删除前记录的加载条数（deepPageOffsetRef），否则会跳过未删文件、把已删文件翻回来。
+      let offset = deepPageOffsetRef.current.get(categoryName) ?? merged.files.length;
       // Theoretically has_more clears as pages advance; a hard cap is still kept here so bad data cannot freeze the UI
       for (let round = 0; round < 20 && merged.has_more; round += 1) {
         const page = await getDeepJunkCategoryPage(
           deepScanResult.scan_id,
           categoryName,
-          merged.files.length,
+          offset,
           VIEW_ALL_PAGE_SIZE,
         );
         if (page.files.length === 0) break;
+        offset += page.files.length;
         merged = {
           ...merged,
           files: [...merged.files, ...page.files],
           has_more: page.has_more,
         };
       }
+      // 分页中途失败时 offset 只走到已取到的位置，记录下来下次从这里继续；
+      // 整类取完后（has_more 清零）记录就没用了，直接删掉。
+      if (merged.has_more) deepPageOffsetRef.current.set(categoryName, offset);
+      else deepPageOffsetRef.current.delete(categoryName);
       const completed = merged;
       setScanResult((previous) => previous ? replaceCategory(previous, completed) : previous);
       setDeepScanResult((previous) => previous
