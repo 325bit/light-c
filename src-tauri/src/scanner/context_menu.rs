@@ -27,7 +27,10 @@
 // - The scan phase is read-only and never modifies the registry
 // - Deletion requires explicit user confirmation; export a separate .reg backup before deleting each entry
 // - Only entries where "a path can be extracted and the file is genuinely absent" are marked invalid and checked by default;
-//   COM handlers (shellex\ContextMenuHandlers) are display-only: the frontend disables selection and the backend blocks them again
+//   in-use COM handlers (shellex\ContextMenuHandlers) whose DLL lives under the Windows directory are display-only:
+//   the frontend disables selection and the backend blocks them again. In-use handlers of third-party software are
+//   deletable (default unchecked): removing the registration only disables that software's menu entry, and the .reg
+//   backup makes it recoverable. Handlers with an unresolvable CLSID stay protected — better to miss than mis-delete.
 // - HKLM entries are marked as requiring admin privileges; the frontend shows an elevation hint
 // ============================================================================
 
@@ -135,6 +138,40 @@ fn classify_exe_status(exe_path: Option<&str>) -> ExeStatus {
         Some(_) => ExeStatus::Missing,
         None => ExeStatus::Unknown,
     }
+}
+
+/// Where a resolved COM-handler DLL comes from.
+///
+/// The old copy called every in-use handler a "system COM handler", but the judgment never looked at
+/// where the DLL came from — WPS / BaiduNetdisk extensions were labelled "system". A DLL whose path
+/// falls under the Windows directory is genuinely a system component; anything else is third-party.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HandlerOrigin {
+    /// DLL lives under the Windows directory (%SystemRoot%) — a system component
+    System,
+    /// DLL lives elsewhere (third-party software's own directory)
+    ThirdParty,
+}
+
+/// Judges a resolved handler DLL's origin by its path.
+///
+/// Bare module names are already completed by `resolve_bare_module` (System32 / SysWOW64 / system root / PATH)
+/// before reaching here, so a full path is always available for system components. The comparison is
+/// case-insensitive and normalizes forward slashes; a path that merely *starts with* the same text as
+/// the system root (e.g. `C:\Windows-evil\...`) does not count.
+fn classify_handler_origin(dll_path: &str) -> HandlerOrigin {
+    let system_root = std::env::var("SystemRoot").unwrap_or_else(|_| String::from(r"C:\Windows"));
+    let root = system_root.replace('/', "\\").to_lowercase();
+    let root = root.trim_end_matches('\\');
+
+    let lower = dll_path.replace('/', "\\").to_lowercase();
+    if let Some(rest) = lower.strip_prefix(root) {
+        if rest.is_empty() || rest.starts_with('\\') {
+            return HandlerOrigin::System;
+        }
+    }
+    HandlerOrigin::ThirdParty
 }
 
 /// Whether it looks like a CLSID of the form `{90AA3A4E-1CBA-4233-B8BB-535773D48449}`
@@ -340,10 +377,18 @@ pub struct ContextMenuEntry {
     pub exe_status: ExeStatus,
     /// Whether deleting this entry requires admin privileges (HKLM entries do)
     pub needs_admin: bool,
-    /// Whether this is a system-protected entry (cannot be selected for deletion).
+    /// Whether this is a protected entry (cannot be selected for deletion).
     ///
-    /// COM handlers are read-only by default; those whose handler DLL is already gone don't count as protected — they are leftovers and can be cleaned.
+    /// Only two kinds of COM handlers are protected: in-use handlers that are genuine **system components**
+    /// (DLL under the Windows directory), and handlers whose CLSID cannot be resolved (origin unknown —
+    /// better to miss than mis-delete). In-use handlers of third-party software are NOT protected: removing
+    /// the registration only disables that software's right-click entry, and the .reg backup recovers it.
+    /// Handlers whose DLL is already gone don't count as protected either — they are leftovers and can be cleaned.
     pub is_system_protected: bool,
+    /// Origin of a COM handler's DLL (`Some` only when the handler DLL path could be resolved).
+    ///
+    /// `None` for non-COM entries (traditional `shell` form) and for handlers whose CLSID could not be resolved.
+    pub handler_origin: Option<HandlerOrigin>,
     /// Risk level ("safe" | "caution" | "danger")
     pub risk_level: String,
 }
@@ -623,13 +668,31 @@ impl ContextMenuScanner {
         // not counted as invalid and not checked by default — better to miss one than give the user a chance to delete by mistake.
         let exe_status = classify_exe_status(exe_path.as_deref());
 
-        // System-protection check: COM handlers are read-only by default, but those whose **handler DLL is already gone** do not count —
-        // that is exactly an uninstall leftover, and keeping it only makes Explorer look for a non-existent DLL on every right-click.
-        let is_system_protected = is_com_handler && exe_status != ExeStatus::Missing;
+        // Origin of a COM handler's DLL: only meaningful when the handler DLL path could be resolved.
+        let handler_origin = if is_com_handler {
+            exe_path.as_deref().map(classify_handler_origin)
+        } else {
+            None
+        };
+
+        // Protection rule (the old rule "every in-use COM handler is protected" was both too wide and mislabelled):
+        // - system-component handler with its DLL still present → protected (deleting it could break Explorer features);
+        // - handler whose CLSID cannot be resolved → protected (origin unknown; better to miss than mis-delete);
+        // - handler whose DLL is already gone → NOT protected: that is exactly an uninstall leftover,
+        //   and keeping it only makes Explorer look for a non-existent DLL on every right-click;
+        // - third-party in-use handler → NOT protected: deleting the registration merely disables that
+        //   software's menu entry (the software may write it back on update; the .reg backup recovers it).
+        let is_system_protected = is_com_handler
+            && exe_status != ExeStatus::Missing
+            && handler_origin != Some(HandlerOrigin::ThirdParty);
 
         // Risk classification
         let risk_level = if is_system_protected {
             "danger".to_string()
+        } else if is_com_handler && exe_status == ExeStatus::Ok {
+            // Third-party in-use handler: deletable, but deleting it is "turning off a feature",
+            // not cleaning junk — keep it out of the default selection and mark it for review.
+            "caution".to_string()
         } else if needs_admin {
             "caution".to_string()
         } else {
@@ -652,6 +715,7 @@ impl ContextMenuScanner {
             exe_status,
             needs_admin,
             is_system_protected,
+            handler_origin,
             risk_level,
         })
     }
@@ -846,9 +910,15 @@ fn delete_single_entry(req: &ContextMenuDeleteRequest) -> Result<(), String> {
         }
     };
 
-    // Safety valve two: for COM handlers, only allow those "whose handler DLL is already gone".
-    // This must be resolved again; do not trust the scan result — the user may have reinstalled the software between scan and deletion,
+    // Safety valve two: for COM handlers, what may be deleted is restricted. This must be resolved again;
+    // do not trust the scan result — the user may have reinstalled the software between scan and deletion,
     // or someone may have called the command directly, bypassing the UI. If it cannot be determined, do not delete.
+    //
+    // - DLL gone → uninstall leftover, the module's actual target: allow;
+    // - DLL present and under the Windows directory → system component: refuse;
+    // - DLL present elsewhere → third-party in-use handler: allow (deleting the registration merely
+    //   disables that software's menu entry; the .reg backup below recovers it);
+    // - unresolvable → origin unknown: refuse.
     if lower_subpath.contains(r"shellex\contextmenuhandlers") {
         let entry_key = hive
             .open_subkey_with_flags(subpath, KEY_READ)
@@ -857,7 +927,10 @@ fn delete_single_entry(req: &ContextMenuDeleteRequest) -> Result<(), String> {
             Some(dll) if !Path::new(&dll).exists() => { /* DLL is gone, so it's a leftover — allow deletion */
             }
             Some(dll) => {
-                return Err(format!("处理器程序仍然存在（{}），不允许删除", dll));
+                if classify_handler_origin(&dll) == HandlerOrigin::System {
+                    return Err(format!("处理器属于 Windows 系统组件（{}），不允许删除", dll));
+                }
+                // Third-party in-use handler — allow deletion
             }
             None => {
                 return Err("无法确认处理器程序是否还存在，已拒绝删除".to_string());
@@ -1100,5 +1173,42 @@ mod tests {
         let system_root = std::env::var("SystemRoot").expect("Windows 一定有 SystemRoot");
         let existing = format!(r"{}\System32\cmd.exe", system_root);
         assert_eq!(classify_exe_status(Some(&existing)), ExeStatus::Ok);
+    }
+
+    #[test]
+    fn classifies_handler_origin_by_dll_path() {
+        let system_root = std::env::var("SystemRoot").expect("Windows 一定有 SystemRoot");
+        // System directories and the system root itself → system component
+        assert_eq!(
+            classify_handler_origin(&format!(r"{}\System32\shell32.dll", system_root)),
+            HandlerOrigin::System
+        );
+        assert_eq!(
+            classify_handler_origin(&format!(r"{}\SysWOW64\foo.dll", system_root)),
+            HandlerOrigin::System
+        );
+        assert_eq!(
+            classify_handler_origin(&format!(r"{}\foo.dll", system_root)),
+            HandlerOrigin::System
+        );
+        // Forward slashes are normalized
+        assert_eq!(
+            classify_handler_origin(&format!("{}/System32/shell32.dll", system_root)),
+            HandlerOrigin::System
+        );
+        // Third-party install locations stay third-party regardless of case
+        assert_eq!(
+            classify_handler_origin(r"D:\Software\BaiduNetdisk\YunShellExtV164.dll"),
+            HandlerOrigin::ThirdParty
+        );
+        assert_eq!(
+            classify_handler_origin(r"c:\program files\app\ext.dll"),
+            HandlerOrigin::ThirdParty
+        );
+        // A path that merely shares the system-root prefix text is NOT a system component
+        assert_eq!(
+            classify_handler_origin(&format!(r"{}-evil\x.dll", system_root)),
+            HandlerOrigin::ThirdParty
+        );
     }
 }

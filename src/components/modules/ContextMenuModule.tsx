@@ -97,6 +97,10 @@ function EntryRow({ entry, isSelected, onToggle }: EntryRowProps) {
   const isInvalid = isInvalidContextMenuEntry(entry);
   const isUnknown = isUnknownContextMenuEntry(entry);
   const isProtected = entry.is_system_protected;
+  // Third-party in-use handler: deletable, but deleting it disables that software's
+  // right-click entry (the software may write it back on update) — warn, don't block.
+  const isThirdPartyInUse =
+    entry.handler_origin === 'third_party' && entry.exe_status === 'ok';
 
   return (
     <div
@@ -170,7 +174,9 @@ function EntryRow({ entry, isSelected, onToggle }: EntryRowProps) {
             {/* Risk level badge */}
             {entry.risk_level === 'danger' && (
               <span className="px-1.5 py-0.5 rounded text-[0.71rem] font-medium bg-[var(--color-danger)]/15 text-[var(--color-danger)] shrink-0">
-                {moduleT('contextMenu.systemProtected')}
+                {entry.handler_origin === 'system'
+                  ? moduleT('contextMenu.systemComponent')
+                  : moduleT('contextMenu.protectedUnknown')}
               </span>
             )}
             {entry.risk_level === 'caution' && (
@@ -224,10 +230,19 @@ function EntryRow({ entry, isSelected, onToggle }: EntryRowProps) {
             </p>
           )}
 
-          {/* System protection hint */}
+          {/* Protected-entry hint: say WHY it is protected — a system component, or unknown origin */}
           {isProtected && (
             <p className="text-xs mt-0.5 text-[var(--color-danger)]/70">
-              {moduleT('contextMenu.comWarning')}
+              {entry.handler_origin === 'system'
+                ? moduleT('contextMenu.comWarningSystem')
+                : moduleT('contextMenu.comWarningUnknown')}
+            </p>
+          )}
+
+          {/* Third-party in-use handler hint: deletable, but with consequences */}
+          {isThirdPartyInUse && (
+            <p className="text-xs mt-0.5 text-[var(--color-warning)]/80">
+              {moduleT('contextMenu.handlerInUseHint')}
             </p>
           )}
         </div>
@@ -354,8 +369,12 @@ export function ContextMenuModule({ isPageActive = true }: ModuleRenderProps) {
         `目标程序：${target}`,
         `图标来源：${item.icon_path || '（未设置）'}`,
         item.is_system_protected
-          ? '结论：这是**系统保护项**，界面上不允许选中删除。'
-          : `结论：可以清理${item.needs_admin ? '，但需要管理员权限' : ''}（删除前程序会自动备份注册表）。`,
+          ? item.handler_origin === 'system'
+            ? '结论：这是 **Windows 系统组件** 的 COM 处理器，界面受保护，不允许选中删除。'
+            : '结论：这是受保护的 COM 处理器（程序来源无法确认），界面不允许选中删除。'
+          : item.handler_origin === 'third_party' && item.exe_status === 'ok'
+            ? `结论：这是第三方软件的在用 COM 处理器，可以删除以关闭它的右键入口${item.needs_admin ? '，但需要管理员权限' : ''}；注意这属于功能关闭而非垃圾清理，软件更新后可能会写回。`
+            : `结论：可以清理${item.needs_admin ? '，但需要管理员权限' : ''}（删除前程序会自动备份注册表）。`,
       ].join('\n');
     },
     summary: () => {

@@ -1282,8 +1282,18 @@ export interface ContextMenuEntry {
   exe_status: 'ok' | 'missing' | 'unknown';
   /** Whether administrator privileges are required to delete */
   needs_admin: boolean;
-  /** Whether it is a system-protected entry (cannot be selected for deletion) */
+  /**
+   * Whether this entry is protected (cannot be selected for deletion).
+   * Only in-use COM handlers that are genuine system components (DLL under the Windows
+   * directory) and handlers whose origin cannot be determined are protected.
+   */
   is_system_protected: boolean;
+  /**
+   * Origin of a COM handler's DLL; null for non-COM entries and handlers whose
+   * CLSID could not be resolved.
+   * system = DLL under the Windows directory / third_party = DLL elsewhere.
+   */
+  handler_origin: 'system' | 'third_party' | null;
   /** Risk level ("safe" | "caution" | "danger") */
   risk_level: string;
 }
