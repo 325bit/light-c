@@ -15,10 +15,13 @@
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Mutex;
+use std::thread;
 use std::time::{Duration, Instant};
 
 use log::{debug, info, warn};
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use super::delete_attempt::{
@@ -526,6 +529,14 @@ pub struct EnhancedDeleteProgress {
 const DELETE_PROGRESS_INTERVAL: Duration = Duration::from_millis(500);
 /// Normal batch progress interval, avoiding the overhead of sending an IPC event for every file.
 const DELETE_PROGRESS_BATCH_SIZE: usize = 500;
+/// 单一进度汇报者的唤醒周期：读原子计数，按双阈值决定是否发射（回收站删除提速方案 §5.2）。
+const RECYCLE_PROGRESS_REPORTER_TICK: Duration = Duration::from_millis(100);
+/// 回收站并行 worker 数上限；环境变量超出上限时截断到这里（§5.1）。
+const RECYCLE_MAX_WORKERS: usize = 32;
+/// 默认 worker 数的封顶值：min(逻辑核数, 8) 只是初始默认，不是已论证的最优值（真机矩阵待测）。
+const RECYCLE_DEFAULT_WORKER_CAP: usize = 8;
+/// 覆盖回收站批并行度的环境变量，供真机 1/2/4/8/16/32 矩阵实测（§5.1）。
+const LIGHTC_RECYCLE_DELETE_WORKERS: &str = "LIGHTC_RECYCLE_DELETE_WORKERS";
 
 impl EnhancedDeleteResult {
     pub fn new() -> Self {
@@ -706,13 +717,19 @@ impl EnhancedDeleteEngine {
     /// Delete a list of files and report progress in batches.
     ///
     /// The callback runs on the delete thread; the caller may only do lightweight notifications and must not perform file IO there.
+    ///
+    /// 回收站批次改为有界并行后（提速方案 §5.2），回调会被"单一进度汇报者
+    /// 线程"与主线程先后调用，因此要求 `F: Send` 并在内部以 Mutex 串行化——
+    /// 任意时刻只有一个调用方（汇报者线程在 install 内阻塞等待期间，主线程
+    /// 不碰回调），锁无实际竞争。调用方的闭包捕获 AppHandle（Send + Sync），
+    /// 天然满足新边界。
     pub fn delete_files_with_progress<F>(
         &self,
         paths: &[String],
-        mut on_progress: F,
+        on_progress: F,
     ) -> EnhancedDeleteResult
     where
-        F: FnMut(EnhancedDeleteProgress),
+        F: FnMut(EnhancedDeleteProgress) + Send,
     {
         let mut result = EnhancedDeleteResult::new();
         let total_count = paths.len();
@@ -720,8 +737,16 @@ impl EnhancedDeleteEngine {
         let mut processed_count = 0usize;
         let mut last_progress_at = Instant::now();
 
+        // 回调的跨线程共享入口（§5.2）：所有发射都经这一把 Mutex 串行化。
+        let on_progress = Mutex::new(on_progress);
+        let emit_now = |progress: EnhancedDeleteProgress| {
+            let mut callback =
+                on_progress.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            callback(progress);
+        };
+
         // Push the cleaning phase once when the delete task first enters the execution thread, so small tasks do not appear to have no progress.
-        on_progress(EnhancedDeleteProgress {
+        emit_now(EnhancedDeleteProgress {
             phase: "cleaning".to_string(),
             processed_count: 0,
             total_count,
@@ -741,7 +766,7 @@ impl EnhancedDeleteEngine {
                 return;
             }
 
-            on_progress(EnhancedDeleteProgress {
+            emit_now(EnhancedDeleteProgress {
                 phase: "cleaning".to_string(),
                 processed_count: processed,
                 total_count,
@@ -770,77 +795,153 @@ impl EnhancedDeleteEngine {
             .iter()
             .partition(|p| crate::path_guard::compare_key(Path::new(p)).contains("\\$recycle.bin"));
 
-        // Recycle entries are deleted one by one so a bad volume or a foreign-SID entry cannot
-        // drag the others down.
+        // Recycle entries are deleted with bounded parallelism (回收站删除提速方案 §5.1):
+        // one complete $R → $I entry is one scheduling unit, cross-drive flattened into one
+        // par_iter; a bad volume or a foreign-SID entry fails alone and never drags the
+        // others down. Still not SHEmptyRecycleBinW (H1): its semantics is "empty the
+        // whole volume", which silently wipes entries the user did not select.
         if !recycle_paths.is_empty() {
             info!(
-                "检测到 {} 个回收站条目，按条目删除 $R/$I 对",
+                "检测到 {} 个回收站条目，有界并行删除 $R/$I 对",
                 recycle_paths.len()
             );
 
-            // Sizes must be read before deletion, because afterwards the paths no longer exist and would report 0 bytes.
-            let mut recycle_by_drive: BTreeMap<String, Vec<(String, u64, u64)>> = BTreeMap::new();
+            // Sizes are read inside the worker (the paths would report 0 bytes after
+            // deletion), merged into the parallel pass instead of the old serial
+            // pre-scan: §8.1's baseline measured the $I read alone at 26% of the
+            // whole batch, so paying it serially first would cap the speedup.
+            //
+            // Cluster sizes are pre-computed per volume into an immutable map:
+            // cluster_size_for_drive takes two lock() calls per entry, which under
+            // parallelism would reintroduce exactly the serialization this pass
+            // removes (§5.1). Workers never touch the engine's mutex.
+            let mut drive_cluster: HashMap<String, u32> = HashMap::new();
             for path in &recycle_paths {
-                let logical_size = self.get_file_size(Path::new(path));
-                let Some(drive_root) = recycle_drive_root(path) else {
-                    let physical_size = self.calculate_physical_size(logical_size);
-                    result.record(OutcomeKind::Failed, logical_size, physical_size);
-                    result.file_results.push(FileDeleteResult {
-                        path: (*path).clone(),
-                        success: false,
-                        logical_size,
-                        physical_size,
-                        failure_reason: Some(DeleteFailureReason::Other(
-                            "回收站路径缺少有效盘符".to_string(),
-                        )),
-                        marked_for_reboot: false,
-                    });
-                    // Invalid recycle bin paths also count as processed, so the progress total still converges to 100% on bad input.
-                    processed_count += 1;
-                    emit_progress(processed_count, &result);
-                    continue;
-                };
-                // The recycle bin supports multiple drives, so physical size must use the cluster size of the volume holding the entry, not a fixed C drive value.
-                let physical_size =
-                    align_physical_size(logical_size, self.cluster_size_for_drive(&drive_root));
-                recycle_by_drive.entry(drive_root).or_default().push((
-                    (*path).clone(),
-                    logical_size,
-                    physical_size,
-                ));
+                if let Some(root) = recycle_drive_root(path) {
+                    // entry + clone（盘根仅 3 字符，命中路径的克隆开销可忽略）：
+                    // `or_insert_with` 闭包还要借用 `root` 做查询，直接 move 会
+                    // E0382；`contains_key` + `insert` 则触发 clippy::map_entry。
+                    drive_cluster
+                        .entry(root.clone())
+                        .or_insert_with(|| self.cluster_size_for_drive(&root));
+                }
             }
 
-            for (_drive_root, entries) in recycle_by_drive {
-                for (path, logical_size, physical_size) in entries {
-                    match delete_recycle_entry(&path) {
-                        Ok(()) => {
-                            result.record(OutcomeKind::Freed, logical_size, physical_size);
-                            result.file_results.push(FileDeleteResult {
-                                path,
-                                success: true,
-                                logical_size,
-                                physical_size,
-                                failure_reason: None,
-                                marked_for_reboot: false,
-                            });
-                        }
-                        Err(error) => {
-                            warn!("回收站条目删除失败: {}", error);
-                            result.record(OutcomeKind::Failed, logical_size, physical_size);
-                            result.file_results.push(FileDeleteResult {
-                                path,
-                                success: false,
-                                logical_size,
-                                physical_size,
-                                failure_reason: Some(DeleteFailureReason::Other(error)),
-                                marked_for_reboot: false,
-                            });
-                        }
-                    }
-                    processed_count += 1;
+            let workers = resolve_recycle_worker_count();
+            info!(
+                "回收站批次并行度: {} workers（可用 {} 环境变量覆盖；1/2/4/8/16/32 矩阵待真机实测）",
+                workers, LIGHTC_RECYCLE_DELETE_WORKERS
+            );
+            let pool = match rayon::ThreadPoolBuilder::new()
+                .num_threads(workers)
+                .thread_name(|index| format!("recycle-del-{index}"))
+                .build()
+            {
+                Ok(pool) => Some(pool),
+                // §5.1: a pool-creation failure fails the batch explicitly per entry —
+                // never a silent fall-back onto the global rayon pool, which scan
+                // tasks share.
+                Err(error) => {
+                    warn!("回收站并行线程池创建失败，本批条目将显式失败: {}", error);
+                    None
                 }
-                emit_progress(processed_count, &result);
-            }
+            };
+
+            let counters = RecycleCounters::default();
+            let recycle_started = Instant::now();
+            // 停止旗标放在 thread::scope 之外：声明在外层函数作用域里，
+            // 汇报者线程的借用生命周期才成立（scope 内声明的局部量借用会被
+            // spawn 的非 move 闭包捕获而报 E0373）。
+            let stop_reporter = AtomicBool::new(false);
+
+            let outcomes: Vec<RecycleEntryOutcome> = std::thread::scope(|scope| {
+                // §5.2: single progress reporter. Workers only fetch_add the atomic
+                // counters and never touch the UI callback; the reporter wakes on a
+                // fixed tick, reads the counters, and emits under the existing
+                // 500-entries / 500-ms dual threshold — the count threshold compares
+                // against the completed snapshot of the last emission, so progress
+                // always moves forward and always reaches 100% (completed =
+                // succeeded + failed).
+                let reporter = scope.spawn(|| {
+                    let mut last_emit = Instant::now();
+                    let mut last_emitted_completed = 0usize;
+                    loop {
+                        thread::sleep(RECYCLE_PROGRESS_REPORTER_TICK);
+                        if stop_reporter.load(Ordering::Acquire) {
+                            return;
+                        }
+                        let completed = counters.completed.load(Ordering::Relaxed);
+                        let due = completed.saturating_sub(last_emitted_completed)
+                            >= DELETE_PROGRESS_BATCH_SIZE
+                            || (completed > 0 && last_emit.elapsed() >= DELETE_PROGRESS_INTERVAL);
+                        if !due {
+                            continue;
+                        }
+                        last_emit = Instant::now();
+                        last_emitted_completed = completed;
+                        emit_now(recycle_progress_snapshot(
+                            &counters,
+                            total_count,
+                            started_at,
+                        ));
+                    }
+                });
+
+                let outcomes = match &pool {
+                    Some(pool) => pool.install(|| {
+                        recycle_paths
+                            .par_iter()
+                            .map(|path| self.recycle_entry_worker(path, &drive_cluster, &counters))
+                            .collect::<Vec<RecycleEntryOutcome>>()
+                    }),
+                    None => recycle_paths
+                        .iter()
+                        .map(|path| self.recycle_entry_pool_unavailable(path, &counters))
+                        .collect(),
+                };
+
+                stop_reporter.store(true, Ordering::Release);
+                let _ = reporter.join();
+                outcomes
+            });
+
+            // §5.3: phase timings are aggregated in memory from the collected
+            // outcomes — no measurement I/O is added anywhere.
+            let timings = summarize_recycle_timings(&outcomes);
+            log_recycle_phase_timings(
+                &timings,
+                recycle_paths.len(),
+                recycle_started.elapsed(),
+                workers,
+            );
+
+            // Aggregation runs on the main thread in request order: `record`'s
+            // bucket rules stay the serial version's, and file_results order is
+            // the original request order (stronger than the old grouping's
+            // drive-ascending order; the UI depends on nothing beyond stability).
+            apply_recycle_outcomes(&mut result, outcomes, &mut processed_count);
+
+            // §5.5: data-freed counts every entry whose $R blob left the disk,
+            // including ones whose $I twin failed afterwards — those entries are
+            // failures for the front end but their data is gone regardless.
+            info!(
+                "回收站批次: 完整成功 {} 条（{} 字节），数据已释放量 {} 字节（含 $I 删除失败的条目）",
+                result.success_count, result.freed_physical_size, counters.data_freed.load(Ordering::Relaxed)
+            );
+
+            // The reporter is stopped, so force-send one corrected final progress
+            // built from the ordered results — failure entries included, the UI's
+            // processed count must reach total_count (§5.2).
+            emit_now(EnhancedDeleteProgress {
+                phase: "cleaning".to_string(),
+                processed_count,
+                total_count,
+                success_count: result.success_count,
+                failed_count: result.failed_count,
+                reboot_pending_count: result.reboot_pending_count,
+                freed_physical_size: result.freed_physical_size,
+                elapsed_ms: started_at.elapsed().as_millis() as u64,
+            });
         }
 
         // Delete normal files one by one
@@ -865,6 +966,106 @@ impl EnhancedDeleteEngine {
         );
 
         result
+    }
+
+    /// One recycle-bin entry = one complete scheduling unit (§3 约束 3)：尺寸读取、
+    /// 校验、`$R → $I` 删除顺序全部发生在本函数内部；worker 之间除原子计数外
+    /// 无共享可变状态。簇大小来自预计算的不可变 map（§5.1），不触碰
+    /// `cluster_sizes` 的 Mutex——那把锁每条要 lock 两次，并行下会重新引入
+    /// 串行点。
+    fn recycle_entry_worker(
+        &self,
+        path: &str,
+        drive_cluster: &HashMap<String, u32>,
+        counters: &RecycleCounters,
+    ) -> RecycleEntryOutcome {
+        let read_started = Instant::now();
+        let logical_size = self.get_file_size(Path::new(path));
+        let metadata_read_ms = read_started.elapsed().as_millis() as u64;
+
+        let drive_root = recycle_drive_root(path);
+        // 缺少有效盘符的路径保持原口径：不尝试删除，物理大小按默认簇对齐，
+        // 记为失败（进度总数仍然收敛）。
+        let Some(drive_root) = drive_root else {
+            let outcome = RecycleEntryOutcome {
+                path: path.to_string(),
+                logical_size,
+                physical_size: self.calculate_physical_size(logical_size),
+                kind: OutcomeKind::Failed,
+                failure_reason: Some(DeleteFailureReason::Other(
+                    "回收站路径缺少有效盘符".to_string(),
+                )),
+                is_dir_entry: Path::new(path).is_dir(),
+                drive_root: None,
+                data_freed: false,
+                metadata_read_ms,
+                data_delete_ms: 0,
+                metadata_delete_ms: 0,
+            };
+            counters.record(&outcome);
+            return outcome;
+        };
+
+        let physical_size = align_physical_size(
+            logical_size,
+            drive_cluster
+                .get(&drive_root)
+                .copied()
+                .unwrap_or(self.cluster_size),
+        );
+
+        let deletion = delete_recycle_entry(path);
+        if let Err(error) = &deletion.outcome {
+            warn!("回收站条目删除失败: {}", error);
+        }
+        let (kind, failure_reason) = match &deletion.outcome {
+            Ok(()) => (OutcomeKind::Freed, None),
+            Err(error) => (
+                OutcomeKind::Failed,
+                Some(DeleteFailureReason::Other(error.clone())),
+            ),
+        };
+        let outcome = RecycleEntryOutcome {
+            path: path.to_string(),
+            logical_size,
+            physical_size,
+            kind,
+            failure_reason,
+            is_dir_entry: deletion.is_dir_entry,
+            drive_root: Some(drive_root),
+            data_freed: deletion.data_freed,
+            metadata_read_ms,
+            data_delete_ms: deletion.data_delete_ms,
+            metadata_delete_ms: deletion.metadata_delete_ms,
+        };
+        counters.record(&outcome);
+        outcome
+    }
+
+    /// 线程池创建失败的显式失败路径（§5.1）：条目不执行任何删除动作，
+    /// 也不静默回退到全局 rayon 池（避免与扫描任务争抢线程）。
+    fn recycle_entry_pool_unavailable(
+        &self,
+        path: &str,
+        counters: &RecycleCounters,
+    ) -> RecycleEntryOutcome {
+        let outcome = RecycleEntryOutcome {
+            path: path.to_string(),
+            logical_size: 0,
+            physical_size: 0,
+            kind: OutcomeKind::Failed,
+            failure_reason: Some(DeleteFailureReason::Other(
+                "回收站并行线程池创建失败，本批未执行".to_string(),
+            )),
+            is_dir_entry: false,
+            drive_root: recycle_drive_root(path),
+            data_freed: false,
+            metadata_read_ms: 0,
+            data_delete_ms: 0,
+            metadata_delete_ms: 0,
+        };
+        counters.record(&outcome);
+        outcome
     }
 
     /// Delete a single file.
@@ -1125,40 +1326,319 @@ fn recycle_entry_twin_path(path: &str) -> Option<String> {
 /// `is_current_user_entry_path` pins the target to the current user's own recycle
 /// data; the $I twin must live in the same directory. A tampered frontend therefore
 /// cannot aim this at arbitrary files or at another account's entries.
-fn delete_recycle_entry(path: &str) -> Result<(), String> {
+///
+/// 返回 `RecycleEntryDeletion` 而不是裸 `Result`（提速方案 §5.5）：失败可能是
+/// "半途失败"——`$R` 已物理删除而 `$I` 清理失败。终态照旧如实报失败，但
+/// `data_freed` 必须记录数据已不可恢复的事实，供统计口径拆分。
+fn delete_recycle_entry(path: &str) -> RecycleEntryDeletion {
     let file_path = Path::new(path);
-    crate::path_guard::validate_deletable(file_path).map_err(|error| error.to_string())?;
+    if let Err(error) = crate::path_guard::validate_deletable(file_path) {
+        return RecycleEntryDeletion::refused(error.to_string());
+    }
     if !crate::scanner::recycle_bin::is_current_user_entry_path(path) {
-        return Err(format!(
+        return RecycleEntryDeletion::refused(format!(
             "路径不是当前用户的回收站数据文件，已拒绝: {}",
             path
         ));
     }
-    let metadata_path = recycle_entry_twin_path(path)
-        .ok_or_else(|| format!("路径不是 $R 回收站条目，已拒绝删除: {}", path))?;
+    let Some(metadata_path) = recycle_entry_twin_path(path) else {
+        return RecycleEntryDeletion::refused(format!(
+            "路径不是 $R 回收站条目，已拒绝删除: {}",
+            path
+        ));
+    };
 
     // Clear hidden/system/read-only attributes first: $Recycle.Bin contents carry the
     // hidden bit, and std::fs removal refuses read-only files.
+    let data_started = Instant::now();
     let _ = windows_api::remove_protection_attributes(path);
-    if file_path.is_dir() {
+    let data_result = if file_path.is_dir() {
         fs::remove_dir_all(file_path)
-            .map_err(|error| format!("删除回收站数据目录失败: {}", error))?;
+            .map_err(|error| format!("删除回收站数据目录失败: {}", error))
     } else {
-        fs::remove_file(file_path).map_err(|error| format!("删除回收站数据文件失败: {}", error))?;
+        fs::remove_file(file_path).map_err(|error| format!("删除回收站数据文件失败: {}", error))
+    };
+    let data_delete_ms = data_started.elapsed().as_millis() as u64;
+    if let Err(error) = data_result {
+        return RecycleEntryDeletion {
+            outcome: Err(error),
+            is_dir_entry: file_path.is_dir(),
+            data_freed: false,
+            data_delete_ms,
+            metadata_delete_ms: 0,
+        };
     }
 
     // The data blob is gone; remove the metadata so Explorer stops showing the entry.
     // Deleting the data first means a metadata failure can never hide live data — worst
     // case is a phantom entry, reported honestly as a failure here.
+    let metadata_started = Instant::now();
     let _ = windows_api::remove_protection_attributes(&metadata_path);
-    fs::remove_file(&metadata_path).map_err(|error| {
+    let metadata_result = fs::remove_file(&metadata_path).map_err(|error| {
         format!(
             "回收站数据已删除但元数据清理失败 ({}): {}",
             metadata_path, error
         )
-    })?;
+    });
+    let metadata_delete_ms = metadata_started.elapsed().as_millis() as u64;
+    RecycleEntryDeletion {
+        outcome: metadata_result,
+        is_dir_entry: file_path.is_dir(),
+        data_freed: true,
+        data_delete_ms,
+        metadata_delete_ms,
+    }
+}
 
-    Ok(())
+// ============================================================================
+// Recycle-bin batch: bounded parallel deletion (回收站删除提速方案 §5.1–§5.5)
+// ============================================================================
+
+/// 单条回收站条目的终态结果 = 一个完整调度单位。
+///
+/// 返回结构体而不是 `Result` 是方案的硬约束（§5.5）：单条失败不得短路并行
+/// collect，也不得丢失“$R 已删、$I 失败”时数据已释放的事实。聚合侧保证
+/// `N_results == N_submitted` 且 `completed == succeeded + failed`。
+struct RecycleEntryOutcome {
+    path: String,
+    logical_size: u64,
+    physical_size: u64,
+    kind: OutcomeKind,
+    failure_reason: Option<DeleteFailureReason>,
+    /// 该条目的 `$R` 是否为目录（决定 §5.3 的目录/文件计时桶）。
+    is_dir_entry: bool,
+    drive_root: Option<String>,
+    /// `$R` 数据 blob 是否已物理删除（`$I` 失败时也为 true，§5.5 口径）。
+    data_freed: bool,
+    /// §5.3 三相位计时：`$I` 元数据读取 / `$R` 删除 / `$I` 删除，分开统计。
+    metadata_read_ms: u64,
+    data_delete_ms: u64,
+    metadata_delete_ms: u64,
+}
+
+/// 一次条目删除的终态 + 相位信息（`delete_recycle_entry` 的返回值）。
+struct RecycleEntryDeletion {
+    outcome: Result<(), String>,
+    /// `$R` 是否为目录（复用删除路径里已有的 `is_dir` 判定，不额外 stat）。
+    is_dir_entry: bool,
+    /// `$R` 数据 blob 是否已物理删除（`$I` 失败时也为 true，§5.5 口径）。
+    data_freed: bool,
+    data_delete_ms: u64,
+    metadata_delete_ms: u64,
+}
+
+impl RecycleEntryDeletion {
+    /// 校验拒绝：未触碰任何文件，无相位耗时。
+    fn refused(message: String) -> Self {
+        Self {
+            outcome: Err(message),
+            is_dir_entry: false,
+            data_freed: false,
+            data_delete_ms: 0,
+            metadata_delete_ms: 0,
+        }
+    }
+}
+
+/// 回收站批的原子计数器（§5.2）：worker 只 `fetch_add`，单一进度汇报者只
+/// `load`，两者之间无锁、无 Mutex 竞争。
+struct RecycleCounters {
+    completed: AtomicUsize,
+    succeeded: AtomicUsize,
+    failed: AtomicUsize,
+    /// 完整成功（`$R` 与 `$I` 都删除）确认释放的物理字节——前端口径。
+    freed_physical: AtomicU64,
+    /// 数据已释放量（`$R` 删除即计入，含 `$I` 失败条目）——内部口径，§5.5。
+    data_freed: AtomicU64,
+}
+
+impl Default for RecycleCounters {
+    fn default() -> Self {
+        Self {
+            completed: AtomicUsize::new(0),
+            succeeded: AtomicUsize::new(0),
+            failed: AtomicUsize::new(0),
+            freed_physical: AtomicU64::new(0),
+            data_freed: AtomicU64::new(0),
+        }
+    }
+}
+
+impl RecycleCounters {
+    fn record(&self, outcome: &RecycleEntryOutcome) {
+        self.completed.fetch_add(1, Ordering::Relaxed);
+        match outcome.kind {
+            OutcomeKind::Freed => {
+                self.succeeded.fetch_add(1, Ordering::Relaxed);
+                self.freed_physical
+                    .fetch_add(outcome.physical_size, Ordering::Relaxed);
+            }
+            // 回收站条目没有重启标记路径（delete_recycle_entry 不产生该终态）；
+            // 防御性归入失败，保证 completed 恒等于 succeeded + failed。
+            OutcomeKind::RebootPending | OutcomeKind::Failed => {
+                self.failed.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+        if outcome.data_freed {
+            self.data_freed
+                .fetch_add(outcome.logical_size, Ordering::Relaxed);
+        }
+    }
+}
+
+/// 汇报者线程发射的进度快照：全部字段来自原子计数，completed 为进度分母
+/// 基准（有失败条目也必须能到 100%，§5.2）。
+fn recycle_progress_snapshot(
+    counters: &RecycleCounters,
+    total_count: usize,
+    started_at: Instant,
+) -> EnhancedDeleteProgress {
+    EnhancedDeleteProgress {
+        phase: "cleaning".to_string(),
+        processed_count: counters.completed.load(Ordering::Relaxed),
+        total_count,
+        success_count: counters.succeeded.load(Ordering::Relaxed),
+        failed_count: counters.failed.load(Ordering::Relaxed),
+        reboot_pending_count: 0,
+        freed_physical_size: counters.freed_physical.load(Ordering::Relaxed),
+        elapsed_ms: started_at.elapsed().as_millis() as u64,
+    }
+}
+
+/// 回收站批并行度解析（§5.1）。纯函数、不读环境变量，矩阵直接单测：
+/// 缺失 → `min(逻辑核数, 8)`；解析失败 / `0` / 负数 → 默认值 + warn；
+/// 超上限 → 截断 + warn。
+fn parse_recycle_worker_count(raw: Option<&str>, logical_cpus: usize) -> usize {
+    let default = logical_cpus.min(RECYCLE_DEFAULT_WORKER_CAP);
+    let Some(raw) = raw.map(str::trim).filter(|raw| !raw.is_empty()) else {
+        return default;
+    };
+    match raw.parse::<usize>() {
+        Ok(0) => {
+            warn!(
+                "{}=0 无效，回退默认并发度 {}",
+                LIGHTC_RECYCLE_DELETE_WORKERS, default
+            );
+            default
+        }
+        Ok(count) if count > RECYCLE_MAX_WORKERS => {
+            warn!(
+                "{}={} 超出上限 {}，已截断",
+                LIGHTC_RECYCLE_DELETE_WORKERS, count, RECYCLE_MAX_WORKERS
+            );
+            RECYCLE_MAX_WORKERS
+        }
+        Ok(count) => count,
+        Err(_) => {
+            warn!(
+                "{}='{}' 无法解析，回退默认并发度 {}",
+                LIGHTC_RECYCLE_DELETE_WORKERS, raw, default
+            );
+            default
+        }
+    }
+}
+
+fn resolve_recycle_worker_count() -> usize {
+    let raw = std::env::var(LIGHTC_RECYCLE_DELETE_WORKERS).ok();
+    parse_recycle_worker_count(raw.as_deref(), num_cpus::get())
+}
+
+/// 聚合在主线程按请求顺序执行（rayon 保序收集的顺序 = 提交顺序）：
+/// `record` 的记账规则与串行版共用同一套，`N_results == N_submitted`。
+fn apply_recycle_outcomes(
+    result: &mut EnhancedDeleteResult,
+    outcomes: Vec<RecycleEntryOutcome>,
+    processed_count: &mut usize,
+) {
+    for outcome in outcomes {
+        result.record(outcome.kind, outcome.logical_size, outcome.physical_size);
+        result.file_results.push(FileDeleteResult {
+            path: outcome.path,
+            success: outcome.kind == OutcomeKind::Freed,
+            logical_size: outcome.logical_size,
+            physical_size: outcome.physical_size,
+            failure_reason: outcome.failure_reason,
+            // 回收站条目没有重启标记路径。
+            marked_for_reboot: false,
+        });
+        *processed_count += 1;
+    }
+}
+
+/// 每卷分相计时（§5.3）：条目级 `Instant` 相位，纯内存聚合，不新增测量 I/O。
+/// 目录条目耗时单独成桶——它是 `remove_dir_all` 递归删除的代价，为 §8 的
+/// P4（目录递归优化）决策积累数据。
+#[derive(Debug, Default)]
+struct RecycleDriveTiming {
+    entries: usize,
+    dir_entries: usize,
+    /// 目录条目三相耗时之和（单条墙钟 ≈ 三相之和）。
+    dir_phase_ms: u64,
+    file_entries: usize,
+    /// 文件条目三相耗时之和。
+    file_phase_ms: u64,
+    metadata_read_ms: u64,
+    data_delete_ms: u64,
+    metadata_delete_ms: u64,
+}
+
+fn summarize_recycle_timings(
+    outcomes: &[RecycleEntryOutcome],
+) -> BTreeMap<String, RecycleDriveTiming> {
+    let mut timings: BTreeMap<String, RecycleDriveTiming> = BTreeMap::new();
+    for outcome in outcomes {
+        let entry = timings
+            .entry(outcome.drive_root.clone().unwrap_or_else(|| "?".to_string()))
+            .or_default();
+        entry.entries += 1;
+        let phase_total =
+            outcome.metadata_read_ms + outcome.data_delete_ms + outcome.metadata_delete_ms;
+        if outcome.is_dir_entry {
+            entry.dir_entries += 1;
+            entry.dir_phase_ms += phase_total;
+        } else {
+            entry.file_entries += 1;
+            entry.file_phase_ms += phase_total;
+        }
+        entry.metadata_read_ms += outcome.metadata_read_ms;
+        entry.data_delete_ms += outcome.data_delete_ms;
+        entry.metadata_delete_ms += outcome.metadata_delete_ms;
+    }
+    timings
+}
+
+fn log_recycle_phase_timings(
+    timings: &BTreeMap<String, RecycleDriveTiming>,
+    entries: usize,
+    wall: Duration,
+    workers: usize,
+) {
+    for (drive, timing) in timings {
+        info!(
+            "[回收站删除耗时] {drive}: {} 条（目录 {} ≈ {}ms / 文件 {} ≈ {}ms）→ $I 读 {}ms + $R 删 {}ms + $I 删 {}ms",
+            timing.entries,
+            timing.dir_entries,
+            timing.dir_phase_ms,
+            timing.file_entries,
+            timing.file_phase_ms,
+            timing.metadata_read_ms,
+            timing.data_delete_ms,
+            timing.metadata_delete_ms,
+        );
+    }
+    let throughput = if wall.as_millis() > 0 {
+        entries as f64 * 1000.0 / wall.as_millis() as f64
+    } else {
+        0.0
+    };
+    info!(
+        "[回收站删除耗时] 总计 {}ms（workers {}, {} 条目）→ 条目吞吐 {:.0}/s",
+        wall.as_millis(),
+        workers,
+        entries,
+        throughput
+    );
 }
 
 impl Default for EnhancedDeleteEngine {
@@ -1430,11 +1910,143 @@ mod tests {
         // Traversal input is rejected by path_guard before anything is touched.
         assert!(
             delete_recycle_entry(r"C:\$Recycle.Bin\S-1-5-21\..\..\Windows\System32\config")
+                .outcome
                 .is_err()
         );
         // An arbitrary user file is not a current-user recycle data entry.
-        assert!(delete_recycle_entry(r"C:\Temp\definitely-not-recycle.txt").is_err());
+        assert!(delete_recycle_entry(r"C:\Temp\definitely-not-recycle.txt")
+            .outcome
+            .is_err());
         // A recycle-bin path without the $R prefix (e.g. the $I metadata itself) is rejected.
-        assert!(delete_recycle_entry(r"C:\$Recycle.Bin\S-1-5-21\$I00000001").is_err());
+        assert!(delete_recycle_entry(r"C:\$Recycle.Bin\S-1-5-21\$I00000001")
+            .outcome
+            .is_err());
+    }
+
+    // ========================================================================
+    // 回收站批有界并行（提速方案 §5.1–§5.5）
+    // ========================================================================
+
+    fn synthetic_recycle_outcome(path: &str, kind: OutcomeKind, physical: u64) -> RecycleEntryOutcome {
+        RecycleEntryOutcome {
+            path: path.to_string(),
+            logical_size: physical,
+            physical_size: physical,
+            kind,
+            failure_reason: (kind == OutcomeKind::Failed)
+                .then(|| DeleteFailureReason::Other("synthetic failure".to_string())),
+            is_dir_entry: false,
+            drive_root: Some("D:\\".to_string()),
+            data_freed: kind == OutcomeKind::Freed,
+            metadata_read_ms: 0,
+            data_delete_ms: 0,
+            metadata_delete_ms: 0,
+        }
+    }
+
+    /// 并发度解析矩阵（§5.1）：缺失/解析失败/0/负数回退默认，超上限截断，
+    /// 默认 = min(逻辑核数, 8) 只是初始值。
+    #[test]
+    fn recycle_worker_count_parses_the_override_matrix() {
+        assert_eq!(parse_recycle_worker_count(None, 16), 8);
+        assert_eq!(parse_recycle_worker_count(Some("4"), 16), 4);
+        assert_eq!(parse_recycle_worker_count(Some(" 8 "), 16), 8);
+        // 解析失败 / 零 / 负数 / 空串：回退默认。
+        assert_eq!(parse_recycle_worker_count(Some("abc"), 16), 8);
+        assert_eq!(parse_recycle_worker_count(Some("0"), 16), 8);
+        assert_eq!(parse_recycle_worker_count(Some("-2"), 16), 8);
+        assert_eq!(parse_recycle_worker_count(Some(""), 16), 8);
+        // 超上限截断到 RECYCLE_MAX_WORKERS；默认 = min(逻辑核数, 封顶)。
+        assert_eq!(parse_recycle_worker_count(Some("999"), 16), RECYCLE_MAX_WORKERS);
+        assert_eq!(parse_recycle_worker_count(None, 2), 2);
+    }
+
+    /// §5.5 硬约束：结果条数 == 提交条数，且 file_results 保持请求顺序
+    /// （rayon par_iter + collect 的保序收集由聚合侧落实）。
+    #[test]
+    fn recycle_outcomes_apply_in_request_order_and_conserve_counts() {
+        let outcomes = vec![
+            synthetic_recycle_outcome("A", OutcomeKind::Freed, 100),
+            synthetic_recycle_outcome("B", OutcomeKind::Failed, 200),
+            synthetic_recycle_outcome("C", OutcomeKind::Freed, 300),
+        ];
+        let mut result = EnhancedDeleteResult::new();
+        let mut processed = 0usize;
+        apply_recycle_outcomes(&mut result, outcomes, &mut processed);
+
+        assert_eq!(processed, 3);
+        assert_eq!(result.file_results.len(), 3);
+        assert_eq!(result.success_count, 2);
+        assert_eq!(result.failed_count, 1);
+        assert_eq!(result.freed_physical_size, 400);
+        let paths: Vec<_> = result.file_results.iter().map(|r| r.path.as_str()).collect();
+        assert_eq!(paths, vec!["A", "B", "C"]);
+    }
+
+    /// §5.5 口径拆分：`$R` 已删但 `$I` 失败的条目计入 failed（不进前端的
+    /// freed_physical），但 data_freed 统计必须如实计入数据已释放量。
+    #[test]
+    fn recycle_counters_keep_data_freed_out_of_freed_physical() {
+        let counters = RecycleCounters::default();
+        let outcome = RecycleEntryOutcome {
+            path: "x".to_string(),
+            logical_size: 512,
+            physical_size: 4096,
+            kind: OutcomeKind::Failed,
+            failure_reason: Some(DeleteFailureReason::Other("$I 删除失败".to_string())),
+            is_dir_entry: false,
+            drive_root: Some("D:\\".to_string()),
+            data_freed: true,
+            metadata_read_ms: 1,
+            data_delete_ms: 2,
+            metadata_delete_ms: 3,
+        };
+        counters.record(&outcome);
+
+        assert_eq!(counters.completed.load(Ordering::Relaxed), 1);
+        assert_eq!(counters.succeeded.load(Ordering::Relaxed), 0);
+        assert_eq!(counters.failed.load(Ordering::Relaxed), 1);
+        assert_eq!(counters.freed_physical.load(Ordering::Relaxed), 0);
+        assert_eq!(counters.data_freed.load(Ordering::Relaxed), 512);
+    }
+
+    /// 完整成功条目同时进两个口径：freed_physical（前端）与 data_freed（内部）。
+    #[test]
+    fn recycle_counters_count_full_success_in_both_buckets() {
+        let counters = RecycleCounters::default();
+        let outcome = synthetic_recycle_outcome("ok", OutcomeKind::Freed, 100);
+        counters.record(&outcome);
+
+        assert_eq!(counters.succeeded.load(Ordering::Relaxed), 1);
+        assert_eq!(counters.freed_physical.load(Ordering::Relaxed), 100);
+        assert_eq!(counters.data_freed.load(Ordering::Relaxed), 100);
+    }
+
+    /// §5.3 分桶：目录条目与文件条目的相位耗时分列，按卷归组。
+    #[test]
+    fn recycle_timing_summary_splits_dir_and_file_entries_per_drive() {
+        let mut dir = synthetic_recycle_outcome("dir-entry", OutcomeKind::Freed, 0);
+        dir.is_dir_entry = true;
+        dir.drive_root = Some("D:\\".to_string());
+        dir.metadata_read_ms = 1;
+        dir.data_delete_ms = 2;
+        dir.metadata_delete_ms = 3;
+        let mut file = synthetic_recycle_outcome("file-entry", OutcomeKind::Freed, 0);
+        file.is_dir_entry = false;
+        file.drive_root = Some("D:\\".to_string());
+        file.metadata_read_ms = 10;
+        file.data_delete_ms = 20;
+        file.metadata_delete_ms = 30;
+
+        let timings = summarize_recycle_timings(&[dir, file]);
+        let timing = timings.get("D:\\").expect("D 盘聚合应存在");
+        assert_eq!(timing.entries, 2);
+        assert_eq!(timing.dir_entries, 1);
+        assert_eq!(timing.dir_phase_ms, 6);
+        assert_eq!(timing.file_entries, 1);
+        assert_eq!(timing.file_phase_ms, 60);
+        assert_eq!(timing.metadata_read_ms, 11);
+        assert_eq!(timing.data_delete_ms, 22);
+        assert_eq!(timing.metadata_delete_ms, 33);
     }
 }
