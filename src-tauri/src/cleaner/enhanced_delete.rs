@@ -537,13 +537,16 @@ const DELETE_PROGRESS_INTERVAL: Duration = Duration::from_millis(500);
 /// Normal batch progress interval, avoiding the overhead of sending an IPC event for every file.
 const DELETE_PROGRESS_BATCH_SIZE: usize = 500;
 /// 单一进度汇报者的唤醒周期：读原子计数，按双阈值决定是否发射（回收站删除提速方案 §5.2）。
-const RECYCLE_PROGRESS_REPORTER_TICK: Duration = Duration::from_millis(100);
-/// 回收站并行 worker 数上限；环境变量超出上限时截断到这里（§5.1）。
-const RECYCLE_MAX_WORKERS: usize = 32;
+const DELETE_PROGRESS_REPORTER_TICK: Duration = Duration::from_millis(100);
+/// 并行 worker 数上限；环境变量超出上限时截断到这里（§5.1）。
+const DELETE_MAX_WORKERS: usize = 32;
 /// 默认 worker 数的封顶值：min(逻辑核数, 8) 只是初始默认，不是已论证的最优值（真机矩阵待测）。
-const RECYCLE_DEFAULT_WORKER_CAP: usize = 8;
+const DELETE_DEFAULT_WORKER_CAP: usize = 8;
 /// 覆盖回收站批并行度的环境变量，供真机 1/2/4/8/16/32 矩阵实测（§5.1）。
 const LIGHTC_RECYCLE_DELETE_WORKERS: &str = "LIGHTC_RECYCLE_DELETE_WORKERS";
+/// 覆盖普通文件批并行度的环境变量。刻意不复用回收站那个名字：两批的负载形状不同，
+/// 默认并发度后续可能分开调，共用一个开关会让两件事耦合。
+const LIGHTC_NORMAL_DELETE_WORKERS: &str = "LIGHTC_NORMAL_DELETE_WORKERS";
 
 impl EnhancedDeleteResult {
     pub fn new() -> Self {
@@ -693,15 +696,11 @@ impl EnhancedDeleteEngine {
         ((logical_size + cluster_size - 1) / cluster_size) * cluster_size
     }
 
-    /// Calculate physical usage by the file's partition, avoiding applying the C drive cluster size when deeply cleaning D/E drives.
-    fn calculate_physical_size_for_path(&self, path: &Path, logical_size: u64) -> u64 {
-        let Some(drive_root) = crate::sys_drive::drive_root_of(path) else {
-            return self.calculate_physical_size(logical_size);
-        };
-        let cluster_size = self.cluster_size_for_drive(&drive_root);
-        align_physical_size(logical_size, cluster_size)
-    }
-
+    /// Resolve a volume's cluster size once per batch.
+    ///
+    /// The batch loops call this while pre-computing their immutable map; individual
+    /// entries never call it, because its two lock() calls would become the serial
+    /// point of a parallel batch.
     fn cluster_size_for_drive(&self, drive_root: &str) -> u32 {
         if let Ok(cache) = self.cluster_sizes.lock() {
             if let Some(cluster_size) = cache.get(drive_root) {
@@ -743,7 +742,6 @@ impl EnhancedDeleteEngine {
         let total_count = paths.len();
         let started_at = Instant::now();
         let mut processed_count = 0usize;
-        let mut last_progress_at = Instant::now();
 
         // 回调的跨线程共享入口（§5.2）：所有发射都经这一把 Mutex 串行化。
         let on_progress = Mutex::new(on_progress);
@@ -764,28 +762,6 @@ impl EnhancedDeleteEngine {
             freed_physical_size: 0,
             elapsed_ms: 0,
         });
-
-        // Progress events carry only aggregated data, avoiding slowing down the actual cleanup during bulk deletion.
-        let mut emit_progress = |processed: usize, current_result: &EnhancedDeleteResult| {
-            let should_emit = processed == total_count
-                || processed.saturating_sub(1) % DELETE_PROGRESS_BATCH_SIZE == 0
-                || last_progress_at.elapsed() >= DELETE_PROGRESS_INTERVAL;
-            if !should_emit {
-                return;
-            }
-
-            emit_now(EnhancedDeleteProgress {
-                phase: "cleaning".to_string(),
-                processed_count: processed,
-                total_count,
-                success_count: current_result.success_count,
-                failed_count: current_result.failed_count,
-                reboot_pending_count: current_result.reboot_pending_count,
-                freed_physical_size: current_result.freed_physical_size,
-                elapsed_ms: started_at.elapsed().as_millis() as u64,
-            });
-            last_progress_at = Instant::now();
-        };
 
         info!("增强删除引擎：开始删除 {} 个文件", paths.len());
 
@@ -874,7 +850,7 @@ impl EnhancedDeleteEngine {
                     let mut last_emit = Instant::now();
                     let mut last_emitted_completed = 0usize;
                     loop {
-                        thread::sleep(RECYCLE_PROGRESS_REPORTER_TICK);
+                        thread::sleep(DELETE_PROGRESS_REPORTER_TICK);
                         if stop_reporter.load(Ordering::Acquire) {
                             return;
                         }
@@ -952,15 +928,129 @@ impl EnhancedDeleteEngine {
             });
         }
 
-        // Delete normal files one by one
-        for path in normal_paths {
-            // The bucket comes back from `delete_single_file`; the loop no longer
-            // reconstructs it from `failure_reason`.
-            let (file_result, kind) = self.delete_single_file(path);
-            result.record(kind, file_result.logical_size, file_result.physical_size);
-            result.file_results.push(file_result);
-            processed_count += 1;
-            emit_progress(processed_count, &result);
+        // Ordinary files used to be a plain `for` loop — the last serial batch in this
+        // engine. It now uses the same shape as the recycle batch above (bounded pool,
+        // ordered collect, single progress reporter), because the two loads share the
+        // property that made the recycle batch pay off: each entry is a handful of
+        // metadata syscalls, so the batch is latency-bound, not bandwidth-bound.
+        //
+        // The scheduling unit is one submitted path, exactly as before: a directory
+        // entry is still one `remove_dir_all`, and its children are objects, not
+        // entries.
+        if !normal_paths.is_empty() {
+            // Same reason as the recycle batch: `cluster_size_for_drive` takes two
+            // lock() calls per entry, which would be a serial point once the workers
+            // run in parallel. Resolve each volume once into an immutable map.
+            let mut drive_cluster: HashMap<String, u32> = HashMap::new();
+            for path in &normal_paths {
+                if let Some(root) = crate::sys_drive::drive_root_of(Path::new(path)) {
+                    drive_cluster
+                        .entry(root.clone())
+                        .or_insert_with(|| self.cluster_size_for_drive(&root));
+                }
+            }
+
+            let workers = resolve_normal_worker_count();
+            info!(
+                "普通文件批次并行度: {} workers（可用 {} 环境变量覆盖）",
+                workers, LIGHTC_NORMAL_DELETE_WORKERS
+            );
+            let pool = match rayon::ThreadPoolBuilder::new()
+                .num_threads(workers)
+                .thread_name(|index| format!("normal-del-{index}"))
+                .build()
+            {
+                Ok(pool) => Some(pool),
+                // Same rule as the recycle batch: never fall back to the global rayon
+                // pool, which the scan tasks share. A batch that cannot get its own
+                // pool fails explicitly instead.
+                Err(error) => {
+                    warn!("普通文件并行线程池创建失败，本批条目将显式失败: {}", error);
+                    None
+                }
+            };
+
+            let counters = NormalDeleteCounters::default();
+            let policy = self.attempt_policy();
+            // The recycle batch already advanced this counter; the reporter reports
+            // `base + completed` so the UI's processed count stays monotonic across
+            // both batches of one request.
+            let base_processed = processed_count;
+            let normal_started = Instant::now();
+            let stop_reporter = AtomicBool::new(false);
+
+            let outcomes: Vec<NormalEntryOutcome> = std::thread::scope(|scope| {
+                let reporter = scope.spawn(|| {
+                    let mut last_emit = Instant::now();
+                    let mut last_emitted_completed = 0usize;
+                    loop {
+                        thread::sleep(DELETE_PROGRESS_REPORTER_TICK);
+                        if stop_reporter.load(Ordering::Acquire) {
+                            return;
+                        }
+                        let completed = counters.completed.load(Ordering::Relaxed);
+                        let due = completed.saturating_sub(last_emitted_completed)
+                            >= DELETE_PROGRESS_BATCH_SIZE
+                            || (completed > 0 && last_emit.elapsed() >= DELETE_PROGRESS_INTERVAL);
+                        if !due {
+                            continue;
+                        }
+                        last_emit = Instant::now();
+                        last_emitted_completed = completed;
+                        emit_now(normal_progress_snapshot(
+                            &counters,
+                            base_processed,
+                            total_count,
+                            started_at,
+                        ));
+                    }
+                });
+
+                let outcomes = match &pool {
+                    Some(pool) => pool.install(|| {
+                        normal_paths
+                            .par_iter()
+                            .map(|path| {
+                                self.normal_entry_worker(path, &drive_cluster, &policy, &counters)
+                            })
+                            .collect::<Vec<NormalEntryOutcome>>()
+                    }),
+                    None => normal_paths
+                        .iter()
+                        .map(|path| self.normal_entry_pool_unavailable(path, &counters))
+                        .collect(),
+                };
+
+                stop_reporter.store(true, Ordering::Release);
+                let _ = reporter.join();
+                outcomes
+            });
+
+            let timing = summarize_normal_timings(&outcomes);
+            log_normal_phase_timing(
+                &timing,
+                normal_paths.len(),
+                normal_started.elapsed(),
+                workers,
+            );
+
+            // Ordered aggregation on the main thread: `record`'s bucket rules stay the
+            // serial version's, and `file_results` order stays the request order.
+            apply_normal_outcomes(&mut result, outcomes, &mut processed_count);
+
+            // The reporter is stopped, so force-send one final progress built from the
+            // ordered results — the UI's processed count must reach total_count even
+            // when every entry failed.
+            emit_now(EnhancedDeleteProgress {
+                phase: "cleaning".to_string(),
+                processed_count,
+                total_count,
+                success_count: result.success_count,
+                failed_count: result.failed_count,
+                reboot_pending_count: result.reboot_pending_count,
+                freed_physical_size: result.freed_physical_size,
+                elapsed_ms: started_at.elapsed().as_millis() as u64,
+            });
         }
 
         result.generate_summary();
@@ -1080,111 +1170,81 @@ impl EnhancedDeleteEngine {
         outcome
     }
 
-    /// Delete a single file.
+    /// Delete a single ordinary file entry and return its terminal outcome.
     ///
-    /// Returns the bucket alongside the result so the batch loop does not have to
-    /// reconstruct it. It used to `match &file_result.failure_reason`, i.e. derive
-    /// "was this a success" from a field that exists for the tooltip.
-    fn delete_single_file(&self, path: &str) -> (FileDeleteResult, OutcomeKind) {
+    /// Called from every worker of the bounded pool, so the body must stay free of
+    /// shared mutable state: the size comes from the pre-computed volume map, the
+    /// scope gate is pure string matching, and the only shared object is the atomic
+    /// counter. The gate order is the serial version's, unchanged: size first (a
+    /// refused entry still reports its size), then the gate, then the ladder.
+    fn normal_entry_worker(
+        &self,
+        path: &str,
+        drive_cluster: &HashMap<String, u32>,
+        policy: &AttemptPolicy,
+        counters: &NormalDeleteCounters,
+    ) -> NormalEntryOutcome {
+        let entry_started = Instant::now();
         let file_path = Path::new(path);
 
-        // Get the file size
+        // Sampled before the delete: `is_dir()` on a deleted path is always false, which
+        // is exactly how the recycle batch's directory bucket reported 0 entries for a
+        // whole round before it was fixed.
+        let is_dir_entry = file_path.is_dir();
+
         let logical_size = self.get_file_size(file_path);
-        let physical_size = self.calculate_physical_size_for_path(file_path, logical_size);
-
-        // S3a: the traversal gate, the protection table and the scope layers are one
-        // call now. `EnhancedClean` skips the junk allowlist and the
-        // `\windows\` extension layer, because the deep scanner deliberately
-        // surfaces installers under `C://Windows//Temp`.
-        if let Err(error) = ensure_deletable(file_path, DeleteScope::EnhancedClean) {
-            let reason = match error.code {
-                ErrorCode::Protected => DeleteFailureReason::SystemProtected,
-                _ => DeleteFailureReason::OutOfScope,
-            };
-            return (
-                FileDeleteResult {
-                    path: path.to_string(),
-                    success: false,
-                    logical_size,
-                    physical_size,
-                    failure_reason: Some(reason),
-                    marked_for_reboot: false,
-                },
-                OutcomeKind::Failed,
-            );
-        }
-
-        // Check whether the file exists
-        if !file_path.exists() {
-            return (
-                FileDeleteResult {
-                    path: path.to_string(),
-                    success: false,
-                    logical_size,
-                    physical_size,
-                    failure_reason: Some(DeleteFailureReason::NotFound),
-                    marked_for_reboot: false,
-                },
-                OutcomeKind::Failed,
-            );
-        }
-
-        // S3b: the ladder (attributes -> ownership -> reboot queue) is one call
-        // now. The policy below keeps this engine's product decisions: attribute
-        // clearing always, ownership only inside the whitelist and only when the
-        // user allowed it (or for rebuildable caches, which the cleanup wizard
-        // deletes anyway), reboot queue behind that same whitelist.
-        let outcome = attempt_delete(
-            file_path,
-            DeleteScope::EnhancedClean,
-            &self.attempt_policy(),
-        );
-
-        let result = match &outcome {
-            DeleteOutcome::Freed => {
-                debug!("成功删除: {}", path);
-                FileDeleteResult {
-                    path: path.to_string(),
-                    success: true,
-                    logical_size,
-                    physical_size,
-                    failure_reason: None,
-                    marked_for_reboot: false,
-                }
-            }
-            DeleteOutcome::RebootPending => {
-                info!("文件已标记为重启删除: {}", path);
-                FileDeleteResult {
-                    path: path.to_string(),
-                    success: false,
-                    logical_size,
-                    physical_size,
-                    failure_reason: Some(DeleteFailureReason::MarkedForReboot),
-                    marked_for_reboot: true,
-                }
-            }
-            DeleteOutcome::Failed(error) => {
-                // The code picks the reason. `Other` only carries the English
-                // diagnostic for the tooltip, so no sentence is assembled here —
-                // this used to be `Other(format!("权限不足：{}", message))`.
-                let reason = match error.code {
-                    ErrorCode::TargetInUse => DeleteFailureReason::FileLocked,
-                    ErrorCode::PermissionDenied => DeleteFailureReason::PermissionDenied,
-                    ErrorCode::NotFound => DeleteFailureReason::NotFound,
-                    _ => DeleteFailureReason::Other(error.message.clone()),
-                };
-                FileDeleteResult {
-                    path: path.to_string(),
-                    success: false,
-                    logical_size,
-                    physical_size,
-                    failure_reason: Some(reason),
-                    marked_for_reboot: false,
-                }
-            }
+        // Cluster size comes from the immutable map: same volume, same alignment the
+        // old `calculate_physical_size_for_path` produced through the mutex.
+        let physical_size = match crate::sys_drive::drive_root_of(file_path) {
+            Some(root) => align_physical_size(
+                logical_size,
+                drive_cluster
+                    .get(&root)
+                    .copied()
+                    .unwrap_or(self.cluster_size),
+            ),
+            // No drive-letter prefix (UNC or extended-length path): keep the old
+            // fallback, which aligned against the C: cluster size.
+            None => self.calculate_physical_size(logical_size),
         };
 
-        (result, outcome.kind())
+        // One construction site for the outcome: the verdict only picks the bucket and
+        // the reportable reason, so no exit can forget the timing field.
+        let (kind, failure_reason) = normal_entry_verdict(file_path, path, policy);
+
+        let outcome = NormalEntryOutcome {
+            path: path.to_string(),
+            logical_size,
+            physical_size,
+            kind,
+            failure_reason,
+            is_dir_entry,
+            entry_us: entry_started.elapsed().as_micros() as u64,
+        };
+        counters.record(&outcome);
+        outcome
+    }
+
+    /// Explicit failure path when the pool cannot be created, mirroring the recycle
+    /// batch: no entry runs, and the global rayon pool is not used as a fall-back.
+    fn normal_entry_pool_unavailable(
+        &self,
+        path: &str,
+        counters: &NormalDeleteCounters,
+    ) -> NormalEntryOutcome {
+        let outcome = NormalEntryOutcome {
+            path: path.to_string(),
+            logical_size: 0,
+            physical_size: 0,
+            kind: OutcomeKind::Failed,
+            failure_reason: Some(DeleteFailureReason::Other(
+                "普通文件并行线程池创建失败，本批未执行".to_string(),
+            )),
+            is_dir_entry: false,
+            entry_us: 0,
+        };
+        counters.record(&outcome);
+        outcome
     }
 
     /// This engine's rung selection; see `delete_attempt::AttemptPolicy`.
@@ -1521,34 +1581,34 @@ fn recycle_progress_snapshot(
     }
 }
 
-/// 回收站批并行度解析（§5.1）。纯函数、不读环境变量，矩阵直接单测：
+/// 批次并行度解析（§5.1）。纯函数、不读环境变量，矩阵直接单测：
 /// 缺失 → `min(逻辑核数, 8)`；解析失败 / `0` / 负数 → 默认值 + warn；
 /// 超上限 → 截断 + warn。
-fn parse_recycle_worker_count(raw: Option<&str>, logical_cpus: usize) -> usize {
-    let default = logical_cpus.min(RECYCLE_DEFAULT_WORKER_CAP);
+///
+/// 回收站批与普通文件批共用这一份实现：解析规则只有一条，写两份迟早不一致
+/// （`variable` 只用于日志措辞）。
+fn parse_worker_count(raw: Option<&str>, logical_cpus: usize, variable: &str) -> usize {
+    let default = logical_cpus.min(DELETE_DEFAULT_WORKER_CAP);
     let Some(raw) = raw.map(str::trim).filter(|raw| !raw.is_empty()) else {
         return default;
     };
     match raw.parse::<usize>() {
         Ok(0) => {
-            warn!(
-                "{}=0 无效，回退默认并发度 {}",
-                LIGHTC_RECYCLE_DELETE_WORKERS, default
-            );
+            warn!("{}=0 无效，回退默认并发度 {}", variable, default);
             default
         }
-        Ok(count) if count > RECYCLE_MAX_WORKERS => {
+        Ok(count) if count > DELETE_MAX_WORKERS => {
             warn!(
                 "{}={} 超出上限 {}，已截断",
-                LIGHTC_RECYCLE_DELETE_WORKERS, count, RECYCLE_MAX_WORKERS
+                variable, count, DELETE_MAX_WORKERS
             );
-            RECYCLE_MAX_WORKERS
+            DELETE_MAX_WORKERS
         }
         Ok(count) => count,
         Err(_) => {
             warn!(
                 "{}='{}' 无法解析，回退默认并发度 {}",
-                LIGHTC_RECYCLE_DELETE_WORKERS, raw, default
+                variable, raw, default
             );
             default
         }
@@ -1557,7 +1617,20 @@ fn parse_recycle_worker_count(raw: Option<&str>, logical_cpus: usize) -> usize {
 
 fn resolve_recycle_worker_count() -> usize {
     let raw = std::env::var(LIGHTC_RECYCLE_DELETE_WORKERS).ok();
-    parse_recycle_worker_count(raw.as_deref(), num_cpus::get())
+    parse_worker_count(
+        raw.as_deref(),
+        num_cpus::get(),
+        LIGHTC_RECYCLE_DELETE_WORKERS,
+    )
+}
+
+fn resolve_normal_worker_count() -> usize {
+    let raw = std::env::var(LIGHTC_NORMAL_DELETE_WORKERS).ok();
+    parse_worker_count(
+        raw.as_deref(),
+        num_cpus::get(),
+        LIGHTC_NORMAL_DELETE_WORKERS,
+    )
 }
 
 /// 聚合在主线程按请求顺序执行（rayon 保序收集的顺序 = 提交顺序）：
@@ -1667,6 +1740,234 @@ impl Default for EnhancedDeleteEngine {
     fn default() -> Self {
         Self::new()
     }
+}
+
+// ----------------------------------------------------------------------------
+// Ordinary-file batch: per-entry outcome, counters, aggregation, timing
+//
+// Same contract as the recycle batch (worker returns a terminal outcome, the main
+// thread applies them in request order), kept as a separate type because the
+// buckets genuinely differ: this batch has a reboot bucket, and it has no $I phase
+// to time. Sharing `RecycleEntryOutcome` here would mean carrying fields nobody
+// fills in and a `data_freed` flag that means nothing for a plain `remove_file`.
+// ----------------------------------------------------------------------------
+
+/// One ordinary-file entry's terminal outcome, produced by a worker.
+struct NormalEntryOutcome {
+    path: String,
+    logical_size: u64,
+    physical_size: u64,
+    kind: OutcomeKind,
+    failure_reason: Option<DeleteFailureReason>,
+    /// Sampled before the delete; `is_dir()` on a deleted path is always false.
+    is_dir_entry: bool,
+    /// Wall time inside the worker for this entry: size read + gate + ladder.
+    entry_us: u64,
+}
+
+/// The gate + ladder verdict for one ordinary-file entry.
+///
+/// Kept out of the worker so the worker has exactly one place that builds an
+/// outcome: the serial version built a full `FileDeleteResult` in each branch, which
+/// is how the size fields drifted apart between branches.
+fn normal_entry_verdict(
+    file_path: &Path,
+    path: &str,
+    policy: &AttemptPolicy,
+) -> (OutcomeKind, Option<DeleteFailureReason>) {
+    // S3a: the traversal gate, the protection table and the scope layers are one call
+    // now. `EnhancedClean` skips the junk allowlist and the `\windows\` extension
+    // layer, because the deep scanner deliberately surfaces installers under
+    // `C://Windows//Temp`. Pure string policy matching, no I/O: every worker may call
+    // it per entry without contending on anything.
+    if let Err(error) = ensure_deletable(file_path, DeleteScope::EnhancedClean) {
+        let reason = match error.code {
+            ErrorCode::Protected => DeleteFailureReason::SystemProtected,
+            _ => DeleteFailureReason::OutOfScope,
+        };
+        return (OutcomeKind::Failed, Some(reason));
+    }
+
+    // Kept on purpose, although it is one stat on a path that is about to be stat'ed
+    // again. `exists()` answers false for *any* stat failure, so removing it would not
+    // only cost one syscall, it would move entries between buckets: a path whose
+    // attributes cannot be read (access denied, sharing violation) is reported as
+    // `NotFound` today and would become `PermissionDenied` / `FileLocked` instead. That
+    // is a classification change, which this batch is explicitly not allowed to make.
+    if !file_path.exists() {
+        return (OutcomeKind::Failed, Some(DeleteFailureReason::NotFound));
+    }
+
+    // S3b: the ladder (attributes -> ownership -> reboot queue) is one call now.
+    match attempt_delete(file_path, DeleteScope::EnhancedClean, policy) {
+        DeleteOutcome::Freed => {
+            debug!("成功删除: {}", path);
+            (OutcomeKind::Freed, None)
+        }
+        DeleteOutcome::RebootPending => {
+            info!("文件已标记为重启删除: {}", path);
+            (
+                OutcomeKind::RebootPending,
+                Some(DeleteFailureReason::MarkedForReboot),
+            )
+        }
+        DeleteOutcome::Failed(error) => {
+            // The code picks the reason. `Other` only carries the English diagnostic
+            // for the tooltip, so no sentence is assembled here.
+            let reason = match error.code {
+                ErrorCode::TargetInUse => DeleteFailureReason::FileLocked,
+                ErrorCode::PermissionDenied => DeleteFailureReason::PermissionDenied,
+                ErrorCode::NotFound => DeleteFailureReason::NotFound,
+                _ => DeleteFailureReason::Other(error.message.clone()),
+            };
+            (OutcomeKind::Failed, Some(reason))
+        }
+    }
+}
+
+/// Atomic counters for the ordinary-file batch: workers only `fetch_add`, the single
+/// progress reporter only `load`. No lock is taken on the hot path.
+struct NormalDeleteCounters {
+    completed: AtomicUsize,
+    succeeded: AtomicUsize,
+    failed: AtomicUsize,
+    reboot_pending: AtomicUsize,
+    /// Physical bytes confirmed freed — the same caliber `record` keeps in the result.
+    freed_physical: AtomicU64,
+}
+
+impl Default for NormalDeleteCounters {
+    fn default() -> Self {
+        Self {
+            completed: AtomicUsize::new(0),
+            succeeded: AtomicUsize::new(0),
+            failed: AtomicUsize::new(0),
+            reboot_pending: AtomicUsize::new(0),
+            freed_physical: AtomicU64::new(0),
+        }
+    }
+}
+
+impl NormalDeleteCounters {
+    /// Mirror `EnhancedDeleteResult::record`'s bucket rules, so the live progress and
+    /// the final result can never disagree about what a reboot-pending entry is: not a
+    /// success, and its bytes are not freed.
+    fn record(&self, outcome: &NormalEntryOutcome) {
+        self.completed.fetch_add(1, Ordering::Relaxed);
+        match outcome.kind {
+            OutcomeKind::Freed => {
+                self.succeeded.fetch_add(1, Ordering::Relaxed);
+                self.freed_physical
+                    .fetch_add(outcome.physical_size, Ordering::Relaxed);
+            }
+            OutcomeKind::RebootPending => {
+                self.reboot_pending.fetch_add(1, Ordering::Relaxed);
+            }
+            OutcomeKind::Failed => {
+                self.failed.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+    }
+}
+
+/// Progress snapshot built purely from atomics. `base_processed` is the count the
+/// recycle batch already contributed to the same request, so the UI's processed
+/// figure keeps increasing across both batches.
+fn normal_progress_snapshot(
+    counters: &NormalDeleteCounters,
+    base_processed: usize,
+    total_count: usize,
+    started_at: Instant,
+) -> EnhancedDeleteProgress {
+    EnhancedDeleteProgress {
+        phase: "cleaning".to_string(),
+        processed_count: base_processed + counters.completed.load(Ordering::Relaxed),
+        total_count,
+        success_count: counters.succeeded.load(Ordering::Relaxed),
+        failed_count: counters.failed.load(Ordering::Relaxed),
+        reboot_pending_count: counters.reboot_pending.load(Ordering::Relaxed),
+        freed_physical_size: counters.freed_physical.load(Ordering::Relaxed),
+        elapsed_ms: started_at.elapsed().as_millis() as u64,
+    }
+}
+
+/// Apply outcomes on the main thread in request order. `record` keeps the serial
+/// version's bucket rules and `file_results` keeps the submitted order, which is what
+/// the front end already sees per entry.
+fn apply_normal_outcomes(
+    result: &mut EnhancedDeleteResult,
+    outcomes: Vec<NormalEntryOutcome>,
+    processed_count: &mut usize,
+) {
+    for outcome in outcomes {
+        result.record(outcome.kind, outcome.logical_size, outcome.physical_size);
+        result.file_results.push(FileDeleteResult {
+            path: outcome.path,
+            success: outcome.kind == OutcomeKind::Freed,
+            logical_size: outcome.logical_size,
+            physical_size: outcome.physical_size,
+            failure_reason: outcome.failure_reason,
+            marked_for_reboot: outcome.kind == OutcomeKind::RebootPending,
+        });
+        *processed_count += 1;
+    }
+}
+
+/// Entry timings for the ordinary-file batch (§5.3 caliber): directory entries cost a
+/// tree walk to size and a recursive delete, so they are bucketed apart from files.
+#[derive(Debug, Default)]
+struct NormalBatchTiming {
+    entries: usize,
+    dir_entries: usize,
+    dir_entry_us: u64,
+    file_entries: usize,
+    file_entry_us: u64,
+}
+
+fn summarize_normal_timings(outcomes: &[NormalEntryOutcome]) -> NormalBatchTiming {
+    let mut timing = NormalBatchTiming::default();
+    for outcome in outcomes {
+        timing.entries += 1;
+        if outcome.is_dir_entry {
+            timing.dir_entries += 1;
+            timing.dir_entry_us += outcome.entry_us;
+        } else {
+            timing.file_entries += 1;
+            timing.file_entry_us += outcome.entry_us;
+        }
+    }
+    timing
+}
+
+fn log_normal_phase_timing(
+    timing: &NormalBatchTiming,
+    entries: usize,
+    wall: Duration,
+    workers: usize,
+) {
+    let per_entry_ms = |total_us: u64, count: usize| {
+        if count == 0 {
+            0.0
+        } else {
+            micros_as_ms(total_us) / count as f64
+        }
+    };
+    let throughput = if wall.as_millis() > 0 {
+        entries as f64 * 1000.0 / wall.as_millis() as f64
+    } else {
+        0.0
+    };
+    info!(
+        "[普通文件删除耗时] 总计 {}ms（workers {}, {} 条目: 文件 {} ≈ {:.2}ms/条 / 目录 {} ≈ {:.2}ms/条）→ 条目吞吐 {:.0}/s",
+        wall.as_millis(),
+        workers,
+        entries,
+        timing.file_entries,
+        per_entry_ms(timing.file_entry_us, timing.file_entries),
+        timing.dir_entries,
+        per_entry_ms(timing.dir_entry_us, timing.dir_entries),
+        throughput
+    );
 }
 
 // ============================================================================
@@ -1967,20 +2268,29 @@ mod tests {
     }
 
     /// 并发度解析矩阵（§5.1）：缺失/解析失败/0/负数回退默认，超上限截断，
-    /// 默认 = min(逻辑核数, 8) 只是初始值。
+    /// 默认 = min(逻辑核数, 8) 只是初始值。两批共用同一个纯函数，所以矩阵只测一遍。
     #[test]
-    fn recycle_worker_count_parses_the_override_matrix() {
-        assert_eq!(parse_recycle_worker_count(None, 16), 8);
-        assert_eq!(parse_recycle_worker_count(Some("4"), 16), 4);
-        assert_eq!(parse_recycle_worker_count(Some(" 8 "), 16), 8);
+    fn worker_count_parses_the_override_matrix() {
+        let variable = LIGHTC_RECYCLE_DELETE_WORKERS;
+        assert_eq!(parse_worker_count(None, 16, variable), 8);
+        assert_eq!(parse_worker_count(Some("4"), 16, variable), 4);
+        assert_eq!(parse_worker_count(Some(" 8 "), 16, variable), 8);
         // 解析失败 / 零 / 负数 / 空串：回退默认。
-        assert_eq!(parse_recycle_worker_count(Some("abc"), 16), 8);
-        assert_eq!(parse_recycle_worker_count(Some("0"), 16), 8);
-        assert_eq!(parse_recycle_worker_count(Some("-2"), 16), 8);
-        assert_eq!(parse_recycle_worker_count(Some(""), 16), 8);
-        // 超上限截断到 RECYCLE_MAX_WORKERS；默认 = min(逻辑核数, 封顶)。
-        assert_eq!(parse_recycle_worker_count(Some("999"), 16), RECYCLE_MAX_WORKERS);
-        assert_eq!(parse_recycle_worker_count(None, 2), 2);
+        assert_eq!(parse_worker_count(Some("abc"), 16, variable), 8);
+        assert_eq!(parse_worker_count(Some("0"), 16, variable), 8);
+        assert_eq!(parse_worker_count(Some("-2"), 16, variable), 8);
+        assert_eq!(parse_worker_count(Some(""), 16, variable), 8);
+        // 超上限截断到 DELETE_MAX_WORKERS；默认 = min(逻辑核数, 封顶)。
+        assert_eq!(
+            parse_worker_count(Some("999"), 16, variable),
+            DELETE_MAX_WORKERS
+        );
+        assert_eq!(parse_worker_count(None, 2, variable), 2);
+        // 普通文件批走同一套规则，只是变量名不同（变量名只影响日志措辞）。
+        assert_eq!(
+            parse_worker_count(Some("3"), 16, LIGHTC_NORMAL_DELETE_WORKERS),
+            3
+        );
     }
 
     /// §5.5 硬约束：结果条数 == 提交条数，且 file_results 保持请求顺序
