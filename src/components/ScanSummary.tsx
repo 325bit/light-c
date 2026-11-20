@@ -254,6 +254,14 @@ export function ScanSummary({
                   }),
                   deleteResult.skipped_size > 0 ? t('skippedSize', { size: formatSize(deleteResult.skipped_size) }) : '',
                   deleteResult.reboot_pending_count > 0 ? t('rebootPending', { count: deleteResult.reboot_pending_count }) : '',
+                  // Average speed over the whole batch: the engine measures
+                  // `duration_ms` itself, so this is time spent deleting, not
+                  // time the UI spent waiting for the result.
+                  deleteResult.duration_ms > 0 && deleteResult.success_count > 0
+                    ? t('avgDeleteSpeed', {
+                        speed: Math.round(deleteResult.success_count / (deleteResult.duration_ms / 1000)),
+                      })
+                    : '',
                 ].filter(Boolean).join('')}
               </p>
             </div>

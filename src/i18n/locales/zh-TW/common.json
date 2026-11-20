@@ -145,6 +145,7 @@
   "scanDuration": "掃描耗時",
   "cleanCompleted": "清理完成",
   "deleteStats": "成功 {{success}} 個，實際釋放 {{size}}",
+  "avgDeleteSpeed": "，平均 {{speed}} 個/秒",
   "skippedSize": "，{{size}} 跳過",
   "rebootPending": "，{{count}} 個待重啟刪除",
   "rebootPendingDesc": "部分檔案被系統佔用，將在下次重啟後自動刪除",

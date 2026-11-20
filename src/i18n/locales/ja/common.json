@@ -131,6 +131,7 @@
   "scanDuration": "スキャン時間",
   "cleanCompleted": "クリーン完了",
   "deleteStats": "{{success}} 件成功、{{size}} を解放",
+  "avgDeleteSpeed": "、平均 {{speed}} 件/秒",
   "skippedSize": "、{{size}} をスキップ",
   "rebootPending": "、{{count}} 件は再起動後に削除",
   "rebootPendingDesc": "一部のファイルは使用中のため、次回再起動後に削除されます",

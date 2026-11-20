@@ -817,6 +817,8 @@ export interface EnhancedDeleteResult {
   file_results: FileDeleteResult[];
   /** Whether a reboot is required to complete the cleanup */
   needs_reboot: boolean;
+  /** Wall-clock time the batch took, measured inside the engine (ms); 0 when not reported */
+  duration_ms: number;
   /** Summary message (WeChat style) */
   summary_message: string;
   /** Warning hints during cleanup (e.g. downgrade due to an expired deep-scan session), null on normal deletion */

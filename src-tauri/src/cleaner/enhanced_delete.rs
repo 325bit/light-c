@@ -496,6 +496,13 @@ pub struct EnhancedDeleteResult {
     pub file_results: Vec<FileDeleteResult>,
     /// Whether a reboot is needed to complete cleanup
     pub needs_reboot: bool,
+    /// Wall-clock time the whole batch took, in milliseconds.
+    ///
+    /// Measured inside the engine, so the UI's average speed reflects the
+    /// deletion itself instead of the time the WebView spent waiting for it
+    /// (queueing, IPC, re-render). Stays 0 for callers that build a result by
+    /// hand instead of going through `delete_files`.
+    pub duration_ms: u64,
     /// Summary message (WeChat style)
     pub summary_message: String,
     /// Warning messages during cleanup (e.g. a downgrade caused by an expired deep-scan session); None for a normal deletion.
@@ -549,6 +556,7 @@ impl EnhancedDeleteResult {
             skipped_size: 0,
             file_results: Vec::new(),
             needs_reboot: false,
+            duration_ms: 0,
             summary_message: String::new(),
             warning: None,
         }
@@ -956,6 +964,7 @@ impl EnhancedDeleteEngine {
         }
 
         result.generate_summary();
+        result.duration_ms = started_at.elapsed().as_millis() as u64;
 
         info!(
             "增强删除完成: 成功 {}, 失败 {}, 待重启 {}, 释放 {} 字节",

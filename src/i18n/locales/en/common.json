@@ -131,6 +131,7 @@
   "scanDuration": "Scan time",
   "cleanCompleted": "Cleanup complete",
   "deleteStats": "{{success}} succeeded, {{size}} freed",
+  "avgDeleteSpeed": ", {{speed}} files/s on average",
   "skippedSize": ", {{size}} skipped",
   "rebootPending": ", {{count}} pending reboot",
   "rebootPendingDesc": "Some files are in use and will be deleted after the next restart",

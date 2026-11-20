@@ -131,6 +131,7 @@
   "scanDuration": "扫描耗时",
   "cleanCompleted": "清理完成",
   "deleteStats": "成功 {{success}} 个，实际释放 {{size}}",
+  "avgDeleteSpeed": "，平均 {{speed}} 个/秒",
   "skippedSize": "，{{size}} 跳过",
   "rebootPending": "，{{count}} 个待重启删除",
   "rebootPendingDesc": "部分文件被系统占用，将在下次重启后自动删除",
