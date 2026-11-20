@@ -1352,7 +1352,11 @@ fn delete_recycle_entry(path: &str) -> RecycleEntryDeletion {
     // hidden bit, and std::fs removal refuses read-only files.
     let data_started = Instant::now();
     let _ = windows_api::remove_protection_attributes(path);
-    let data_result = if file_path.is_dir() {
+    // Sampled before the blob goes away: `is_dir()` on a deleted path is always
+    // false, which silently bucketed every entry as a file in the timing log.
+    // This is the same check the removal branch needs, so it costs no extra stat.
+    let is_dir_entry = file_path.is_dir();
+    let data_result = if is_dir_entry {
         fs::remove_dir_all(file_path)
             .map_err(|error| format!("删除回收站数据目录失败: {}", error))
     } else {
@@ -1362,7 +1366,7 @@ fn delete_recycle_entry(path: &str) -> RecycleEntryDeletion {
     if let Err(error) = data_result {
         return RecycleEntryDeletion {
             outcome: Err(error),
-            is_dir_entry: file_path.is_dir(),
+            is_dir_entry,
             data_freed: false,
             data_delete_ms,
             metadata_delete_ms: 0,
@@ -1383,7 +1387,7 @@ fn delete_recycle_entry(path: &str) -> RecycleEntryDeletion {
     let metadata_delete_ms = metadata_started.elapsed().as_millis() as u64;
     RecycleEntryDeletion {
         outcome: metadata_result,
-        is_dir_entry: file_path.is_dir(),
+        is_dir_entry,
         data_freed: true,
         data_delete_ms,
         metadata_delete_ms,
