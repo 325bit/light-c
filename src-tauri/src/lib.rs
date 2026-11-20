@@ -39,6 +39,23 @@ pub mod bench_api {
 }
 
 // ============================================================================
+/// Export layer for integration tests
+///
+/// Same rationale as `bench_api`: `tests/` targets are a separate crate and can
+/// only reach `pub` items, while the business modules stay private. This layer
+/// re-exports only the frozen delete-engine contract
+/// (`EnhancedDeleteEngine::delete_files_with_progress` plus its result and
+/// progress structs) so `tests/recycle_delete.rs` can verify the end-to-end
+/// result semantics without widening any business module.
+#[doc(hidden)]
+pub mod test_api {
+    pub use crate::cleaner::{
+        DeleteFailureReason, EnhancedDeleteEngine, EnhancedDeleteProgress, EnhancedDeleteResult,
+        FileDeleteResult,
+    };
+}
+
+// ============================================================================
 /// Application entry point
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
