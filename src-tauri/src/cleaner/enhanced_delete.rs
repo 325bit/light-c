@@ -981,7 +981,10 @@ impl EnhancedDeleteEngine {
     ) -> RecycleEntryOutcome {
         let read_started = Instant::now();
         let logical_size = self.get_file_size(Path::new(path));
-        let metadata_read_ms = read_started.elapsed().as_millis() as u64;
+        // Microseconds, not milliseconds: a single entry's $I read is ~10 µs, and
+        // truncating to whole milliseconds silently zeroed the whole phase at low
+        // worker counts (measured: 113 ms reported for 15 001 entries).
+        let metadata_read_us = read_started.elapsed().as_micros() as u64;
 
         let drive_root = recycle_drive_root(path);
         // 缺少有效盘符的路径保持原口径：不尝试删除，物理大小按默认簇对齐，
@@ -998,9 +1001,9 @@ impl EnhancedDeleteEngine {
                 is_dir_entry: Path::new(path).is_dir(),
                 drive_root: None,
                 data_freed: false,
-                metadata_read_ms,
-                data_delete_ms: 0,
-                metadata_delete_ms: 0,
+                metadata_read_us,
+                data_delete_us: 0,
+                metadata_delete_us: 0,
             };
             counters.record(&outcome);
             return outcome;
@@ -1034,9 +1037,9 @@ impl EnhancedDeleteEngine {
             is_dir_entry: deletion.is_dir_entry,
             drive_root: Some(drive_root),
             data_freed: deletion.data_freed,
-            metadata_read_ms,
-            data_delete_ms: deletion.data_delete_ms,
-            metadata_delete_ms: deletion.metadata_delete_ms,
+            metadata_read_us,
+            data_delete_us: deletion.data_delete_us,
+            metadata_delete_us: deletion.metadata_delete_us,
         };
         counters.record(&outcome);
         outcome
@@ -1060,9 +1063,9 @@ impl EnhancedDeleteEngine {
             is_dir_entry: false,
             drive_root: recycle_drive_root(path),
             data_freed: false,
-            metadata_read_ms: 0,
-            data_delete_ms: 0,
-            metadata_delete_ms: 0,
+            metadata_read_us: 0,
+            data_delete_us: 0,
+            metadata_delete_us: 0,
         };
         counters.record(&outcome);
         outcome
@@ -1362,14 +1365,14 @@ fn delete_recycle_entry(path: &str) -> RecycleEntryDeletion {
     } else {
         fs::remove_file(file_path).map_err(|error| format!("删除回收站数据文件失败: {}", error))
     };
-    let data_delete_ms = data_started.elapsed().as_millis() as u64;
+    let data_delete_us = data_started.elapsed().as_micros() as u64;
     if let Err(error) = data_result {
         return RecycleEntryDeletion {
             outcome: Err(error),
             is_dir_entry,
             data_freed: false,
-            data_delete_ms,
-            metadata_delete_ms: 0,
+            data_delete_us,
+            metadata_delete_us: 0,
         };
     }
 
@@ -1384,13 +1387,13 @@ fn delete_recycle_entry(path: &str) -> RecycleEntryDeletion {
             metadata_path, error
         )
     });
-    let metadata_delete_ms = metadata_started.elapsed().as_millis() as u64;
+    let metadata_delete_us = metadata_started.elapsed().as_micros() as u64;
     RecycleEntryDeletion {
         outcome: metadata_result,
         is_dir_entry,
         data_freed: true,
-        data_delete_ms,
-        metadata_delete_ms,
+        data_delete_us,
+        metadata_delete_us,
     }
 }
 
@@ -1415,9 +1418,9 @@ struct RecycleEntryOutcome {
     /// `$R` 数据 blob 是否已物理删除（`$I` 失败时也为 true，§5.5 口径）。
     data_freed: bool,
     /// §5.3 三相位计时：`$I` 元数据读取 / `$R` 删除 / `$I` 删除，分开统计。
-    metadata_read_ms: u64,
-    data_delete_ms: u64,
-    metadata_delete_ms: u64,
+    metadata_read_us: u64,
+    data_delete_us: u64,
+    metadata_delete_us: u64,
 }
 
 /// 一次条目删除的终态 + 相位信息（`delete_recycle_entry` 的返回值）。
@@ -1427,8 +1430,8 @@ struct RecycleEntryDeletion {
     is_dir_entry: bool,
     /// `$R` 数据 blob 是否已物理删除（`$I` 失败时也为 true，§5.5 口径）。
     data_freed: bool,
-    data_delete_ms: u64,
-    metadata_delete_ms: u64,
+    data_delete_us: u64,
+    metadata_delete_us: u64,
 }
 
 impl RecycleEntryDeletion {
@@ -1438,8 +1441,8 @@ impl RecycleEntryDeletion {
             outcome: Err(message),
             is_dir_entry: false,
             data_freed: false,
-            data_delete_ms: 0,
-            metadata_delete_ms: 0,
+            data_delete_us: 0,
+            metadata_delete_us: 0,
         }
     }
 }
@@ -1578,13 +1581,13 @@ struct RecycleDriveTiming {
     entries: usize,
     dir_entries: usize,
     /// 目录条目三相耗时之和（单条墙钟 ≈ 三相之和）。
-    dir_phase_ms: u64,
+    dir_phase_us: u64,
     file_entries: usize,
     /// 文件条目三相耗时之和。
-    file_phase_ms: u64,
-    metadata_read_ms: u64,
-    data_delete_ms: u64,
-    metadata_delete_ms: u64,
+    file_phase_us: u64,
+    metadata_read_us: u64,
+    data_delete_us: u64,
+    metadata_delete_us: u64,
 }
 
 fn summarize_recycle_timings(
@@ -1597,19 +1600,25 @@ fn summarize_recycle_timings(
             .or_default();
         entry.entries += 1;
         let phase_total =
-            outcome.metadata_read_ms + outcome.data_delete_ms + outcome.metadata_delete_ms;
+            outcome.metadata_read_us + outcome.data_delete_us + outcome.metadata_delete_us;
         if outcome.is_dir_entry {
             entry.dir_entries += 1;
-            entry.dir_phase_ms += phase_total;
+            entry.dir_phase_us += phase_total;
         } else {
             entry.file_entries += 1;
-            entry.file_phase_ms += phase_total;
+            entry.file_phase_us += phase_total;
         }
-        entry.metadata_read_ms += outcome.metadata_read_ms;
-        entry.data_delete_ms += outcome.data_delete_ms;
-        entry.metadata_delete_ms += outcome.metadata_delete_ms;
+        entry.metadata_read_us += outcome.metadata_read_us;
+        entry.data_delete_us += outcome.data_delete_us;
+        entry.metadata_delete_us += outcome.metadata_delete_us;
     }
     timings
+}
+
+/// Microsecond counters are logged as milliseconds with one decimal, so a phase
+/// that costs 10 µs per entry stays visible instead of rounding to zero.
+fn micros_as_ms(micros: u64) -> f64 {
+    micros as f64 / 1000.0
 }
 
 fn log_recycle_phase_timings(
@@ -1620,15 +1629,15 @@ fn log_recycle_phase_timings(
 ) {
     for (drive, timing) in timings {
         info!(
-            "[回收站删除耗时] {drive}: {} 条（目录 {} ≈ {}ms / 文件 {} ≈ {}ms）→ $I 读 {}ms + $R 删 {}ms + $I 删 {}ms",
+            "[回收站删除耗时] {drive}: {} 条（目录 {} ≈ {:.1}ms / 文件 {} ≈ {:.1}ms）→ $I 读 {:.1}ms + $R 删 {:.1}ms + $I 删 {:.1}ms",
             timing.entries,
             timing.dir_entries,
-            timing.dir_phase_ms,
+            micros_as_ms(timing.dir_phase_us),
             timing.file_entries,
-            timing.file_phase_ms,
-            timing.metadata_read_ms,
-            timing.data_delete_ms,
-            timing.metadata_delete_ms,
+            micros_as_ms(timing.file_phase_us),
+            micros_as_ms(timing.metadata_read_us),
+            micros_as_ms(timing.data_delete_us),
+            micros_as_ms(timing.metadata_delete_us),
         );
     }
     let throughput = if wall.as_millis() > 0 {
@@ -1942,9 +1951,9 @@ mod tests {
             is_dir_entry: false,
             drive_root: Some("D:\\".to_string()),
             data_freed: kind == OutcomeKind::Freed,
-            metadata_read_ms: 0,
-            data_delete_ms: 0,
-            metadata_delete_ms: 0,
+            metadata_read_us: 0,
+            data_delete_us: 0,
+            metadata_delete_us: 0,
         }
     }
 
@@ -2001,9 +2010,9 @@ mod tests {
             is_dir_entry: false,
             drive_root: Some("D:\\".to_string()),
             data_freed: true,
-            metadata_read_ms: 1,
-            data_delete_ms: 2,
-            metadata_delete_ms: 3,
+            metadata_read_us: 1,
+            data_delete_us: 2,
+            metadata_delete_us: 3,
         };
         counters.record(&outcome);
 
@@ -2032,25 +2041,25 @@ mod tests {
         let mut dir = synthetic_recycle_outcome("dir-entry", OutcomeKind::Freed, 0);
         dir.is_dir_entry = true;
         dir.drive_root = Some("D:\\".to_string());
-        dir.metadata_read_ms = 1;
-        dir.data_delete_ms = 2;
-        dir.metadata_delete_ms = 3;
+        dir.metadata_read_us = 1;
+        dir.data_delete_us = 2;
+        dir.metadata_delete_us = 3;
         let mut file = synthetic_recycle_outcome("file-entry", OutcomeKind::Freed, 0);
         file.is_dir_entry = false;
         file.drive_root = Some("D:\\".to_string());
-        file.metadata_read_ms = 10;
-        file.data_delete_ms = 20;
-        file.metadata_delete_ms = 30;
+        file.metadata_read_us = 10;
+        file.data_delete_us = 20;
+        file.metadata_delete_us = 30;
 
         let timings = summarize_recycle_timings(&[dir, file]);
         let timing = timings.get("D:\\").expect("D 盘聚合应存在");
         assert_eq!(timing.entries, 2);
         assert_eq!(timing.dir_entries, 1);
-        assert_eq!(timing.dir_phase_ms, 6);
+        assert_eq!(timing.dir_phase_us, 6);
         assert_eq!(timing.file_entries, 1);
-        assert_eq!(timing.file_phase_ms, 60);
-        assert_eq!(timing.metadata_read_ms, 11);
-        assert_eq!(timing.data_delete_ms, 22);
-        assert_eq!(timing.metadata_delete_ms, 33);
+        assert_eq!(timing.file_phase_us, 60);
+        assert_eq!(timing.metadata_read_us, 11);
+        assert_eq!(timing.data_delete_us, 22);
+        assert_eq!(timing.metadata_delete_us, 33);
     }
 }
