@@ -24,6 +24,8 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use cleanup_c_lib::test_api::{DeleteFailureReason, EnhancedDeleteEngine};
 
@@ -52,11 +54,24 @@ fn scratch_file(dir: &Path, name: &str, payload: &[u8]) -> PathBuf {
 }
 
 /// Path-compare form matching the engine's own normalization: backslash
-/// separators, ASCII-lowercased.
+/// separators, ASCII-lowercased, no `\\?\` verbatim prefix.
 fn compare_form(path: &Path) -> String {
-    path.to_string_lossy()
-        .replace('/', "\\")
-        .to_ascii_lowercase()
+    let text = path.to_string_lossy();
+    // `canonicalize` hands back a verbatim path (`\\?\C:\...`) while the shell
+    // records a plain one in `$I`, so the prefix has to go before comparing.
+    let text = text.strip_prefix(r"\\?\").unwrap_or(&text);
+    text.replace('/', "\\").to_ascii_lowercase()
+}
+
+/// Compare key for a path that is about to leave its original location.
+///
+/// The parent is canonicalized *before* the file is moved: `%TEMP%` on this
+/// machine is the 8.3 short form `C:\Users\PASSAC~1\AppData\Local\Temp`, while
+/// the shell records the expanded long path in `$I`. Comparing the raw strings
+/// silently never matches (AGENTS.md §3: 8.3 names must be expanded first).
+fn moved_path_compare_key(path: &Path) -> Option<String> {
+    let parent = fs::canonicalize(path.parent()?).ok()?;
+    Some(compare_form(&parent.join(path.file_name()?)))
 }
 
 // ============================================================================
@@ -141,8 +156,7 @@ fn recycle_metadata_original_path(metadata_bytes: &[u8]) -> Option<String> {
 ///
 /// SID folders that cannot be read (other accounts) are skipped — the entry we
 /// just sent landed in the current user's own folder anyway.
-fn find_recycle_data_path(sent_path: &Path) -> Option<PathBuf> {
-    let sent_key = compare_form(sent_path);
+fn find_recycle_data_path(sent_path: &Path, sent_key: &str) -> Option<PathBuf> {
     let volume_root = sent_path.ancestors().last()?;
     let recycle_bin = volume_root.join("$Recycle.Bin");
 
@@ -167,6 +181,31 @@ fn find_recycle_data_path(sent_path: &Path) -> Option<PathBuf> {
         }
     }
     None
+}
+
+/// Upper bound on how long the shell may need to publish the `$I`/`$R` pair
+/// after `SHFileOperationW` returns.
+const RECYCLE_ENTRY_VISIBLE_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Poll for the just-sent entry until it becomes visible in the SID folder.
+///
+/// `SHFileOperationW` can return before the pair is fully written: measured on
+/// this machine, the `$I` file's last-write timestamp landed in the same
+/// millisecond as the call returning, and a single immediate enumeration missed
+/// it entirely (a half-written `$I` also parses to `None`, so it would be
+/// skipped rather than misread). That is a shell-side publication delay, not an
+/// engine defect, so the test waits instead of racing it.
+fn wait_for_recycle_data_path(sent_path: &Path, sent_key: &str) -> Option<PathBuf> {
+    let deadline = Instant::now() + RECYCLE_ENTRY_VISIBLE_TIMEOUT;
+    loop {
+        if let Some(found) = find_recycle_data_path(sent_path, sent_key) {
+            return Some(found);
+        }
+        if Instant::now() >= deadline {
+            return None;
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
 }
 
 // ============================================================================
@@ -353,6 +392,14 @@ fn one_rejected_recycle_path_does_not_fail_the_remaining_entries() {
 /// failure. Run manually on an idle machine with
 /// `cargo test --test recycle_delete -- --ignored`; needs a normal user
 /// session (no elevation) on a volume with a `$Recycle.Bin`.
+///
+/// Two harness pitfalls found the hard way (2026-11-20), both handled above
+/// rather than papered over:
+/// 1. `%TEMP%` is the 8.3 short name `C:\Users\PASSAC~1\...` while `$I`
+///    records the long form, so the compare key must come from
+///    `moved_path_compare_key` — the raw strings never match;
+/// 2. `SHFileOperationW` can return before the pair is published, so the
+///    lookup polls for a bounded time instead of racing the shell.
 #[test]
 #[ignore = "touches the real recycle bin: sends one real entry through the shell and deletes it for real; run explicitly with --ignored on an idle machine (no elevation, no concurrent bin writes/wipes)"]
 fn recycle_bin_round_trip_deletes_both_pair_halves() {
@@ -360,6 +407,10 @@ fn recycle_bin_round_trip_deletes_both_pair_halves() {
 
     let dir = scratch_dir("roundtrip");
     let file = scratch_file(&dir, "roundtrip.txt", PAYLOAD);
+    // Resolved while the file still sits at its original location; after the
+    // move the short-name parent can no longer be expanded.
+    let sent_key =
+        moved_path_compare_key(&file).expect("the sent path must resolve to a long name");
 
     send_to_recycle_bin(&file).expect("file must land in the recycle bin");
     assert!(
@@ -367,8 +418,11 @@ fn recycle_bin_round_trip_deletes_both_pair_halves() {
         "the shell must have moved the file out of its original location"
     );
 
-    let data_path = find_recycle_data_path(&file)
-        .expect("the just-sent entry must be findable via its $I metadata");
+    let data_path = wait_for_recycle_data_path(&file, &sent_key).unwrap_or_else(|| {
+        panic!(
+            "the just-sent entry never became findable via its $I metadata within {RECYCLE_ENTRY_VISIBLE_TIMEOUT:?} (key {sent_key})"
+        )
+    });
 
     let result =
         EnhancedDeleteEngine::new().delete_files(&[data_path.to_string_lossy().into_owned()]);
